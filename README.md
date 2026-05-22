@@ -86,6 +86,12 @@ https://raw.githubusercontent.com/owner/repo/main/payloads/file.lua
 - **Database:** SQLite (sql.js)
 - **Log Server:** UDP (port 8080)
 
+## Upcoming Features
+
+- **Wake on LAN** - Automatically wake PS5 from standby mode
+- **Auto Start Game** - Automatically launch selected game when PS5 powers on
+- **Auto Load Payload** - Automatically send payload without user interaction after game starts
+
 ## License
 
 MIT
