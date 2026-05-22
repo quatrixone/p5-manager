@@ -5,6 +5,7 @@ import NetworkSender from './components/NetworkSender';
 import LogViewer from './components/LogViewer';
 import AutoloadBuilder from './components/AutoloadBuilder';
 import LogServer from './components/LogServer';
+import PS5Control from './components/PS5Control';
 
 const API = '/api';
 
@@ -276,6 +277,7 @@ function App() {
     { id: 'profiles', label: 'Profiles' },
     { id: 'autoload', label: 'Autoload' },
     { id: 'sender', label: 'Send' },
+    { id: 'remote', label: 'Remote' },
     { id: 'logserver', label: 'LUA log' },
     { id: 'logs', label: 'Logs' }
   ];
@@ -347,6 +349,7 @@ function App() {
             onCheckStatus={checkPs5Status}
           />
         )}
+        {activeTab === 'remote' && <PS5Control profiles={profiles} />}
         {activeTab === 'logserver' && <LogServer profiles={profiles} />}
         {activeTab === 'logs' && (
           <LogViewer logs={logs} onRefresh={fetchLogs} />
