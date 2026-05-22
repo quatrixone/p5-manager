@@ -8,6 +8,7 @@ import profilesRouter from './routes/profiles.js';
 import ps5Router from './routes/ps5.js';
 import logsRouter from './routes/logs.js';
 import backupRouter from './routes/backup.js';
+import logServerRouter from './routes/logServer.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -26,6 +27,7 @@ app.use('/api/profiles', profilesRouter);
 app.use('/api/ps5', ps5Router);
 app.use('/api/logs', logsRouter);
 app.use('/api/backup', backupRouter);
+app.use('/api/logserver', logServerRouter);
 
 const distPath = path.join(__dirname, '../../dist');
 if (process.env.NODE_ENV === 'production' && require('fs').existsSync(distPath)) {
@@ -41,6 +43,10 @@ app.get('/api/health', (req, res) => {
 
 await initializeDatabase();
 
+// Auto-start log server
+import { startLogServer } from './routes/logServer.js';
+startLogServer(8080);
+
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`PS5 PayloadManager API running on port ${PORT}`);
+  console.log(`PS5WebPayload Manager API running on port ${PORT}`);
 });
