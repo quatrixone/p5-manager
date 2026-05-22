@@ -34,65 +34,177 @@ router.get('/', (req, res) => {
   }
 });
 
-router.post('/fetch', async (req, res) => {
+router.post('/fetch-url', async (req, res) => {
   try {
-    const { repo, filePath } = req.body;
+    const { url } = req.body;
 
-    if (!repo) {
-      return res.status(400).json({ error: 'Repository URL required' });
+    if (!url) {
+      return res.status(400).json({ error: 'URL required' });
     }
-
-    log('info', `Fetching payloads from: ${repo}`);
-
-    const apiUrl = repo.replace('github.com', 'api.github.com/repos');
-    const response = await fetch(`${apiUrl}/contents/${filePath || ''}`, {
-      headers: { 'Accept': 'application/vnd.github.v3+json' }
-    });
-
-    if (!response.ok) {
-      throw new Error(`GitHub API error: ${response.status}`);
-    }
-
-    const contents = await response.json();
-    const items = Array.isArray(contents) ? contents : [contents];
 
     ensurePayloadsDir();
 
-    const db = getDatabase();
-    const results = [];
+    // Check if it's a releases URL
+    const releasesMatch = url.match(/github\.com\/([^\/]+)\/([^\/]+)\/releases(?:\/tag\/([^\/\?#]+))?/i);
+    if (releasesMatch) {
+      const [, owner, repo, tag] = releasesMatch;
+      log('info', `Fetching releases: ${owner}/${repo} (tag: ${tag || 'latest'})`);
 
-    for (const item of items) {
-      if (item.name.endsWith('.bin') || item.name.endsWith('.zip')) {
-        const downloadUrl = item.download_url;
-        const fileResponse = await fetch(downloadUrl);
-        const buffer = await fileResponse.buffer();
+      const apiUrl = tag
+        ? `https://api.github.com/repos/${owner}/${repo}/releases/tags/${tag}`
+        : `https://api.github.com/repos/${owner}/${repo}/releases/latest`;
 
-        const filename = item.name;
+      const response = await fetch(apiUrl, { headers: { 'Accept': 'application/vnd.github.v3+json' } });
+
+      if (!response.ok) {
+        throw new Error(`GitHub API error: ${response.status}`);
+      }
+
+      const release = await response.json();
+      const results = [];
+      const db = getDatabase();
+      const version = release.tag_name || 'latest';
+
+      for (const asset of release.assets) {
+        const name = asset.name.toLowerCase();
+        const isLuaOrElf = name.endsWith('.lua') || name.endsWith('.elf');
+        const isZip = name.endsWith('.zip');
+
+        if (isLuaOrElf || isZip) {
+          const downloadUrl = asset.browser_download_url;
+          const fileResponse = await fetch(downloadUrl);
+          const buffer = await fileResponse.arrayBuffer().then(ab => Buffer.from(ab));
+
+          if (isZip) {
+            try {
+              const zip = new AdmZip(buffer);
+              const zipEntries = zip.getEntries();
+
+              for (const entry of zipEntries) {
+                const entryName = entry.entryName.toLowerCase();
+                if (entryName.endsWith('.lua') || entryName.endsWith('.elf')) {
+                  const entryBuffer = entry.getData();
+                  const baseName = entry.entryName.replace(/\.(lua|elf)$/i, '');
+                  const ext = entry.entryName.match(/\.(lua|elf)$/i)[0];
+                  const filenameWithVersion = `${baseName}-${version}${ext}`;
+                  const filepath = path.join(payloadsDir, filenameWithVersion);
+
+                  fs.writeFileSync(filepath, entryBuffer);
+                  db.run(
+                    'INSERT INTO payloads (name, filename, filepath, source_url, size, version) VALUES (?, ?, ?, ?, ?, ?)',
+                    [filenameWithVersion, filenameWithVersion, filepath, downloadUrl, entryBuffer.length, version]
+                  );
+                  const lastId = db.exec('SELECT last_insert_rowid()')[0].values[0][0];
+                  results.push({ id: lastId, name: filenameWithVersion, size: entryBuffer.length, version });
+                  log('info', `Extracted from ZIP ${version}: ${entry.entryName}`);
+                }
+              }
+            } catch (zipError) {
+              log('error', `Failed to extract ZIP ${asset.name}: ${zipError.message}`);
+            }
+          } else {
+            const baseName = asset.name.replace(/\.(lua|elf)$/i, '');
+            const ext = asset.name.match(/\.(lua|elf)$/i)[0];
+            const filenameWithVersion = `${baseName}-${version}${ext}`;
+            const filepath = path.join(payloadsDir, filenameWithVersion);
+
+            fs.writeFileSync(filepath, buffer);
+            db.run(
+              'INSERT INTO payloads (name, filename, filepath, source_url, size, version) VALUES (?, ?, ?, ?, ?, ?)',
+              [filenameWithVersion, filenameWithVersion, filepath, downloadUrl, buffer.length, version]
+            );
+            const lastId = db.exec('SELECT last_insert_rowid()')[0].values[0][0];
+            results.push({ id: lastId, name: filenameWithVersion, size: buffer.length, version });
+            log('info', `Downloaded from release ${version}: ${asset.name}`);
+          }
+        }
+      }
+
+      saveDatabase();
+      if (results.length === 0) {
+        return res.json({ success: true, downloaded: [], message: 'No .lua or .elf files found in release' });
+      }
+      return res.json({ success: true, downloaded: results });
+    }
+
+    // Check if it's a direct blob URL - convert to raw
+    const blobMatch = url.match(/github\.com\/([^\/]+)\/([^\/]+)\/blob\/([^\s?#]+)/i);
+    if (blobMatch) {
+      const [, owner, repo, filePath] = blobMatch;
+      const rawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${filePath}`;
+      log('info', `Fetching raw: ${rawUrl}`);
+
+      const response = await fetch(rawUrl, {
+        headers: { 'Accept': 'application/octet-stream' },
+        redirect: 'follow'
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to fetch: ${response.status} ${response.statusText}`);
+      }
+
+      const buffer = await response.arrayBuffer().then(ab => Buffer.from(ab));
+      const filename = filePath.split('/').pop();
+
+      if (!buffer.length) {
+        throw new Error('Downloaded file is empty');
+      }
+
+      if (filename.endsWith('.lua') || filename.endsWith('.elf')) {
         const filepath = path.join(payloadsDir, filename);
-
         fs.writeFileSync(filepath, buffer);
 
+        const db = getDatabase();
         db.run(
           'INSERT INTO payloads (name, filename, filepath, source_url, size) VALUES (?, ?, ?, ?, ?)',
-          [item.name, filename, filepath, downloadUrl, buffer.length]
+          [filename, filename, filepath, url, buffer.length]
         );
-
         const lastId = db.exec('SELECT last_insert_rowid()')[0].values[0][0];
+        saveDatabase();
 
-        results.push({
-          id: lastId,
-          name: item.name,
-          size: buffer.length
-        });
-
-        log('info', `Downloaded: ${item.name}`);
+        log('info', `Downloaded: ${filename} (${buffer.length} bytes)`);
+        return res.json({ success: true, downloaded: [{ id: lastId, name: filename, size: buffer.length }] });
       }
     }
 
-    saveDatabase();
-    res.json({ success: true, downloaded: results });
+    // Check for raw URL
+    const rawMatch = url.match(/raw\.githubusercontent\.com\/([^\/]+)\/([^\/]+)\/([^\/\?#]+)\/(.+)/i);
+    if (rawMatch) {
+      const [, owner, repo, branch, ...pathParts] = rawMatch;
+      const filePath = pathParts.join('/');
+      const rawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${filePath}`;
+      log('info', `Fetching raw: ${rawUrl}`);
+
+      const response = await fetch(rawUrl);
+      if (!response.ok) {
+        throw new Error(`Failed to fetch: ${response.status}`);
+      }
+
+      const buffer = await response.arrayBuffer().then(ab => Buffer.from(ab));
+      const filename = filePath.split('/').pop();
+
+      if (!filename.endsWith('.lua') && !filename.endsWith('.elf')) {
+        return res.status(400).json({ error: 'Only .lua and .elf files are supported' });
+      }
+
+      const filepath = path.join(payloadsDir, filename);
+      fs.writeFileSync(filepath, buffer);
+
+      const db = getDatabase();
+      db.run(
+        'INSERT INTO payloads (name, filename, filepath, source_url, size) VALUES (?, ?, ?, ?, ?)',
+        [filename, filename, filepath, url, buffer.length]
+      );
+      const lastId = db.exec('SELECT last_insert_rowid()')[0].values[0][0];
+      saveDatabase();
+
+      log('info', `Downloaded: ${filename}`);
+      return res.json({ success: true, downloaded: [{ id: lastId, name: filename, size: buffer.length }] });
+    }
+
+    throw new Error('Invalid GitHub URL');
   } catch (error) {
-    log('error', `Fetch failed: ${error.message}`);
+    log('error', `Fetch URL failed: ${error.message}`);
     res.status(500).json({ error: error.message });
   }
 });
@@ -130,10 +242,49 @@ router.post('/upload', (req, res) => {
   }
 });
 
+router.post('/send-raw', async (req, res) => {
+  try {
+    const { ip, port, name, data } = req.body;
+
+    if (!ip || !port || !data) {
+      return res.status(400).json({ error: 'IP, port, and data required' });
+    }
+
+    const buffer = Buffer.from(data, 'base64');
+    const targetPort = name?.endsWith('.lua') ? 9026 : port;
+
+    log('info', `Sending raw payload to ${ip}:${targetPort}`);
+
+    const net = await import('net');
+    const client = new net.Socket();
+
+    await new Promise((resolve, reject) => {
+      client.connect(targetPort, ip, () => {
+        client.write(buffer, (err) => {
+          if (err) reject(err);
+          else resolve();
+        });
+      });
+
+      client.on('error', reject);
+      client.setTimeout(10000);
+    });
+
+    client.end();
+    client.destroy();
+
+    log('info', `Raw payload sent to ${ip}:${targetPort}`);
+    res.json({ success: true, message: `Sent to ${ip}:${targetPort}` });
+  } catch (error) {
+    log('error', `Send raw failed: ${error.message}`);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 router.post('/send/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const { ip, port } = req.body;
+    const { ip } = req.body;
 
     const db = getDatabase();
     const stmt = db.prepare('SELECT * FROM payloads WHERE id = ?');
@@ -154,9 +305,9 @@ router.post('/send/:id', async (req, res) => {
 
     const fileData = fs.readFileSync(payload.filepath);
 
-    log('info', `Sending ${payload.name} to ${ip}:${port || 9021}`);
+    const targetPort = payload.name.toLowerCase().endsWith('.lua') ? 9026 : 9021;
 
-    const targetPort = port || 9021;
+    log('info', `Sending ${payload.name} to ${ip}:${targetPort}`);
 
     const net = await import('net');
     const client = new net.Socket();
@@ -181,6 +332,59 @@ router.post('/send/:id', async (req, res) => {
     res.json({ success: true, message: `Sent to ${ip}:${targetPort}` });
   } catch (error) {
     log('error', `Send failed: ${error.message}`);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.put('/:id/update', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const db = getDatabase();
+    const stmt = db.prepare('SELECT * FROM payloads WHERE id = ?');
+    stmt.bind([parseInt(id)]);
+    let payload = null;
+    if (stmt.step()) {
+      payload = stmt.getAsObject();
+    }
+    stmt.free();
+
+    if (!payload) {
+      return res.status(404).json({ error: 'Payload not found' });
+    }
+
+    if (!payload.source_url) {
+      return res.status(400).json({ error: 'Payload has no source URL' });
+    }
+
+    // Re-download from source URL
+    let url = payload.source_url;
+
+    // Convert blob URL to raw URL if needed
+    if (url.includes('/blob/')) {
+      const blobMatch = url.match(/github\.com\/([^\/]+)\/([^\/]+)\/blob\/([^\s?#]+)/i);
+      if (blobMatch) {
+        const [, owner, repo, filePath] = blobMatch;
+        url = `https://raw.githubusercontent.com/${owner}/${repo}/${filePath}`;
+      }
+    }
+
+    const response = await fetch(url);
+
+    if (!response.ok) {
+      throw new Error(`Failed to fetch: ${response.status}`);
+    }
+
+    const buffer = await response.arrayBuffer().then(ab => Buffer.from(ab));
+    fs.writeFileSync(payload.filepath, buffer);
+
+    db.run('UPDATE payloads SET size = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [buffer.length, parseInt(id)]);
+    saveDatabase();
+
+    log('info', `Updated payload: ${payload.name}`);
+    res.json({ success: true, message: 'Payload updated' });
+  } catch (error) {
+    log('error', `Update failed: ${error.message}`);
     res.status(500).json({ error: error.message });
   }
 });

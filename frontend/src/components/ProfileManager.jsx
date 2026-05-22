@@ -1,45 +1,41 @@
 import { useState } from 'react';
 
-function ProfileManager({ profiles, onCreate, onUpdate, onDelete }) {
+function ProfileManager({ profiles, onCreate, onUpdate, onDelete, onSetDefault }) {
   const [name, setName] = useState('');
   const [ip, setIp] = useState('');
-  const [port, setPort] = useState('9021');
   const [editingId, setEditingId] = useState(null);
 
   const handleSubmit = (e) => {
     e.preventDefault();
     if (editingId) {
-      onUpdate(editingId, name, ip, parseInt(port));
+      onUpdate(editingId, name, ip);
       setEditingId(null);
     } else {
-      onCreate(name, ip, parseInt(port));
+      onCreate(name, ip);
     }
     setName('');
     setIp('');
-    setPort('9021');
   };
 
   const startEdit = (profile) => {
     setEditingId(profile.id);
     setName(profile.name);
     setIp(profile.ip_address);
-    setPort(profile.port?.toString() || '9021');
   };
 
   const cancelEdit = () => {
     setEditingId(null);
     setName('');
     setIp('');
-    setPort('9021');
   };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-      <section style={{ background: '#16213e', padding: '1.5rem', borderRadius: 12 }}>
-        <h2 style={{ marginBottom: '1rem', fontSize: '1.25rem' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+      <section style={{ background: '#16213e', padding: '1rem', borderRadius: 12 }}>
+        <h2 style={{ marginBottom: '1rem', fontSize: '1rem', fontWeight: 500 }}>
           {editingId ? 'Edit Profile' : 'Add New Profile'}
         </h2>
-        <form onSubmit={handleSubmit} style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', alignItems: 'flex-end' }}>
+        <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
             <label style={{ fontSize: '0.85rem', color: '#aaa' }}>Name</label>
             <input
@@ -48,7 +44,7 @@ function ProfileManager({ profiles, onCreate, onUpdate, onDelete }) {
               value={name}
               onChange={e => setName(e.target.value)}
               required
-              style={{ padding: '0.75rem', borderRadius: 6, border: '1px solid #0f3460', background: '#1a1a2e', color: '#fff', width: 150 }}
+              style={{ padding: '0.75rem', borderRadius: 6, border: '1px solid #0f3460', background: '#1a1a2e', color: '#fff', fontSize: '1rem' }}
             />
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
@@ -59,48 +55,49 @@ function ProfileManager({ profiles, onCreate, onUpdate, onDelete }) {
               value={ip}
               onChange={e => setIp(e.target.value)}
               required
-              style={{ padding: '0.75rem', borderRadius: 6, border: '1px solid #0f3460', background: '#1a1a2e', color: '#fff', width: 150 }}
+              style={{ padding: '0.75rem', borderRadius: 6, border: '1px solid #0f3460', background: '#1a1a2e', color: '#fff', fontSize: '1rem' }}
             />
           </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
-            <label style={{ fontSize: '0.85rem', color: '#aaa' }}>Port</label>
-            <input
-              type="number"
-              value={port}
-              onChange={e => setPort(e.target.value)}
-              style={{ padding: '0.75rem', borderRadius: 6, border: '1px solid #0f3460', background: '#1a1a2e', color: '#fff', width: 100 }}
-            />
-          </div>
-          <button type="submit" style={{ padding: '0.75rem 1.5rem', background: editingId ? '#f39c12' : '#e94560', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 500 }}>
-            {editingId ? 'Update' : 'Add'}
-          </button>
-          {editingId && (
-            <button type="button" onClick={cancelEdit} style={{ padding: '0.75rem 1rem', background: '#666', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}>
-              Cancel
+          <div style={{ display: 'flex', gap: '0.5rem' }}>
+            <button type="submit" style={{ padding: '0.75rem', background: editingId ? '#f39c12' : '#e94560', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 500, fontSize: '1rem', flex: 1, minHeight: 44 }}>
+              {editingId ? 'Update' : 'Add'}
             </button>
-          )}
+            {editingId && (
+              <button type="button" onClick={cancelEdit} style={{ padding: '0.75rem', background: '#666', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', minHeight: 44 }}>
+                Cancel
+              </button>
+            )}
+          </div>
         </form>
       </section>
 
-      <section style={{ background: '#16213e', padding: '1.5rem', borderRadius: 12 }}>
-        <h2 style={{ marginBottom: '1rem', fontSize: '1.25rem' }}>Saved Profiles ({profiles.length})</h2>
+      <section style={{ background: '#16213e', padding: '1rem', borderRadius: 12 }}>
+        <h2 style={{ marginBottom: '1rem', fontSize: '1rem', fontWeight: 500 }}>Saved Profiles ({profiles.length})</h2>
         {profiles.length === 0 ? (
           <p style={{ color: '#888', textAlign: 'center', padding: '2rem' }}>No profiles saved. Add one above.</p>
         ) : (
-          <div style={{ display: 'grid', gap: '0.75rem' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
             {profiles.map(profile => (
-              <div key={profile.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '1rem', background: '#0f3460', borderRadius: 8 }}>
+              <div key={profile.id} style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', padding: '0.75rem', background: profile.is_default ? '#1a5276' : '#0f3460', borderRadius: 8, border: profile.is_default ? '2px solid #27ae60' : 'none' }}>
                 <div>
-                  <div style={{ fontWeight: 500 }}>{profile.name}</div>
+                  <div style={{ fontWeight: 500, fontSize: '0.95rem', display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                    {profile.name}
+                    {profile.is_default && <span style={{ fontSize: '0.7rem', background: '#27ae60', padding: '0.1rem 0.5rem', borderRadius: 4 }}>Default</span>}
+                  </div>
                   <div style={{ fontSize: '0.85rem', color: '#aaa' }}>
-                    {profile.ip_address}:{profile.port || 9021}
+                    {profile.ip_address}
                   </div>
                 </div>
-                <div style={{ display: 'flex', gap: '0.5rem' }}>
-                  <button onClick={() => startEdit(profile)} style={{ padding: '0.5rem 1rem', background: '#3498db', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}>
+                <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                  {!profile.is_default && (
+                    <button onClick={() => onSetDefault(profile.id)} style={{ padding: '0.5rem 0.75rem', background: '#27ae60', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: '0.85rem', minHeight: 36 }}>
+                      Set Default
+                    </button>
+                  )}
+                  <button onClick={() => startEdit(profile)} style={{ padding: '0.5rem 0.75rem', background: '#3498db', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: '0.85rem', minHeight: 36 }}>
                     Edit
                   </button>
-                  <button onClick={() => onDelete(profile.id)} style={{ padding: '0.5rem 1rem', background: '#c0392b', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}>
+                  <button onClick={() => onDelete(profile.id)} style={{ padding: '0.5rem 0.75rem', background: '#c0392b', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: '0.85rem', minHeight: 36 }}>
                     Delete
                   </button>
                 </div>
