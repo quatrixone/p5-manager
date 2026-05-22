@@ -1,0 +1,19 @@
+{
+  "name": "ps5-payload-manager-backend",
+  "version": "1.0.0",
+  "description": "PS5 PayloadManager Web Backend",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "sql.js": "^1.10.3",
+    "adm-zip": "^0.5.10",
+    "node-fetch": "^3.3.2",
+    "dotenv": "^16.4.1"
+  }
+}
