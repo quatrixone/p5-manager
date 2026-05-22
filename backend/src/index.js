@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import fs from 'fs';
 import { initializeDatabase } from './db/init.js';
 import payloadsRouter from './routes/payloads.js';
 import profilesRouter from './routes/profiles.js';
@@ -29,17 +30,17 @@ app.use('/api/logs', logsRouter);
 app.use('/api/backup', backupRouter);
 app.use('/api/logserver', logServerRouter);
 
-const distPath = path.join(__dirname, '../../dist');
-if (process.env.NODE_ENV === 'production' && require('fs').existsSync(distPath)) {
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+const distPath = path.join(__dirname, '../dist');
+if (process.env.NODE_ENV === 'production' && fs.existsSync(distPath)) {
   app.use(express.static(distPath));
   app.get('*', (req, res) => {
     res.sendFile(path.join(distPath, 'index.html'));
   });
 }
-
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
-});
 
 await initializeDatabase();
 

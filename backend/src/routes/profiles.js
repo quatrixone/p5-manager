@@ -40,9 +40,35 @@ router.get('/:id', (req, res) => {
   }
 });
 
+router.get('/default', (req, res) => {
+  try {
+    const db = getDatabase();
+    const stmt = db.prepare('SELECT * FROM profiles WHERE is_default = 1 LIMIT 1');
+    let profile = null;
+    if (stmt.step()) {
+      profile = stmt.getAsObject();
+    }
+    stmt.free();
+
+    // If no default, get the first profile
+    if (!profile) {
+      const allStmt = db.prepare('SELECT * FROM profiles ORDER BY id LIMIT 1');
+      if (allStmt.step()) {
+        profile = allStmt.getAsObject();
+      }
+      allStmt.free();
+    }
+
+    res.json(profile || { error: 'No profile found' });
+  } catch (error) {
+    log('error', `Failed to get default profile: ${error.message}`);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 router.post('/', (req, res) => {
   try {
-    const { name, ip_address, port } = req.body;
+    const { name, ip_address } = req.body;
 
     if (!name || !ip_address) {
       return res.status(400).json({ error: 'Name and IP address required' });
@@ -50,8 +76,8 @@ router.post('/', (req, res) => {
 
     const db = getDatabase();
     db.run(
-      'INSERT INTO profiles (name, ip_address, port) VALUES (?, ?, ?)',
-      [name, ip_address, port || 9021]
+      'INSERT INTO profiles (name, ip_address) VALUES (?, ?)',
+      [name, ip_address]
     );
 
     const lastId = db.exec('SELECT last_insert_rowid()')[0].values[0][0];
@@ -69,7 +95,7 @@ router.post('/', (req, res) => {
 router.put('/:id', (req, res) => {
   try {
     const { id } = req.params;
-    const { name, ip_address, port } = req.body;
+    const { name, ip_address } = req.body;
 
     const db = getDatabase();
 
@@ -86,8 +112,8 @@ router.put('/:id', (req, res) => {
     }
 
     db.run(
-      'UPDATE profiles SET name = ?, ip_address = ?, port = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-      [name || existing.name, ip_address || existing.ip_address, port || existing.port, parseInt(id)]
+      'UPDATE profiles SET name = ?, ip_address = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      [name || existing.name, ip_address || existing.ip_address, parseInt(id)]
     );
 
     saveDatabase();
@@ -113,6 +139,27 @@ router.delete('/:id', (req, res) => {
     res.json({ success: true });
   } catch (error) {
     log('error', `Failed to delete profile: ${error.message}`);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.post('/:id/set-default', (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const db = getDatabase();
+
+    // First, unset all defaults
+    db.run('UPDATE profiles SET is_default = 0');
+
+    // Then set the selected one as default
+    db.run('UPDATE profiles SET is_default = 1 WHERE id = ?', [parseInt(id)]);
+    saveDatabase();
+
+    log('info', `Set profile ${id} as default`);
+    res.json({ success: true });
+  } catch (error) {
+    log('error', `Failed to set default profile: ${error.message}`);
     res.status(500).json({ error: error.message });
   }
 });

@@ -17,7 +17,7 @@ RUN npm ci --only=production && npm cache clean --force
 
 COPY backend/ ./
 
-COPY --from=frontend-builder /app/frontend/dist ./dist
+COPY --from=frontend-builder /app/dist ./dist
 
 RUN mkdir -p /app/data/payloads
 
@@ -25,8 +25,6 @@ ENV NODE_ENV=production
 ENV PORT=3001
 
 EXPOSE 3001
-
-USER node
 
 ENTRYPOINT ["dumb-init", "--"]
 CMD ["node", "src/index.js"]

@@ -275,36 +275,36 @@ function App() {
     { id: 'payloads', label: 'Payloads' },
     { id: 'profiles', label: 'Profiles' },
     { id: 'autoload', label: 'Autoload' },
-    { id: 'sender', label: 'Network Send' },
-    { id: 'logserver', label: 'LUA log server' },
+    { id: 'sender', label: 'Send' },
+    { id: 'logserver', label: 'LUA log' },
     { id: 'logs', label: 'Logs' }
   ];
 
   return (
     <div style={{ minHeight: '100vh', background: '#1a1a2e', color: '#eee' }}>
-      <header style={{ background: '#16213e', padding: '1rem 2rem', borderBottom: '1px solid #0f3460' }}>
-        <h1 style={{ fontSize: '1.5rem', fontWeight: 600 }}>PS5WebPayload Manager</h1>
+      <header style={{ background: '#16213e', padding: '0.75rem 1rem', borderBottom: '1px solid #0f3460' }}>
+        <h1 style={{ fontSize: '1.25rem', fontWeight: 600, textAlign: 'center' }}>PS5WebPayload Manager</h1>
       </header>
 
       {notification && (
         <div style={{
-          position: 'fixed', top: 20, right: 20, padding: '1rem 1.5rem', borderRadius: 8,
+          position: 'fixed', top: 60, left: '50%', transform: 'translateX(-50%)', padding: '0.75rem 1.5rem', borderRadius: 8,
           background: notification.type === 'error' ? '#e74c3c' : notification.type === 'success' ? '#27ae60' : '#3498db',
-          color: '#fff', zIndex: 1000, boxShadow: '0 4px 12px rgba(0,0,0,0.3)'
+          color: '#fff', zIndex: 1000, boxShadow: '0 4px 12px rgba(0,0,0,0.3)', maxWidth: '90vw', textAlign: 'center'
         }}>
           {notification.message}
         </div>
       )}
 
-      <nav style={{ display: 'flex', gap: '0.5rem', padding: '1rem 2rem', background: '#16213e', borderBottom: '1px solid #0f3460' }}>
+      <nav style={{ display: 'flex', gap: '0.25rem', padding: '0.5rem', background: '#16213e', borderBottom: '1px solid #0f3460', overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
         {tabs.map(tab => (
           <button
             key={tab.id}
             onClick={() => setActiveTab(tab.id)}
             style={{
-              padding: '0.75rem 1.5rem', border: 'none', borderRadius: 6, cursor: 'pointer',
-              background: activeTab === tab.id ? '#e94560' : '#0f3460', color: '#fff',
-              fontWeight: 500, transition: 'background 0.2s'
+              padding: '0.6rem 1rem', border: 'none', borderRadius: 6, cursor: 'pointer', whiteSpace: 'nowrap',
+              background: activeTab === tab.id ? '#e94560' : 'transparent', color: '#fff',
+              fontWeight: 500, transition: 'background 0.2s', fontSize: '0.9rem', minHeight: 44
             }}
           >
             {tab.label}
@@ -312,7 +312,7 @@ function App() {
         ))}
       </nav>
 
-      <main style={{ padding: '2rem', maxWidth: 1400, margin: '0 auto' }}>
+      <main style={{ padding: '1rem', maxWidth: 1400, margin: '0 auto' }}>
         {activeTab === 'payloads' && (
           <PayloadList
             payloads={payloads}

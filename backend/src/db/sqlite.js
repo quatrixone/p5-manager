@@ -4,7 +4,7 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const dbPath = path.join(__dirname, '../../data/payloads.db');
+const dbPath = path.join(__dirname, '../../../data/payloads.db');
 const dbDir = path.dirname(dbPath);
 
 let db = null;
@@ -30,11 +30,18 @@ export async function initDatabase() {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
       ip_address TEXT NOT NULL,
-      port INTEGER DEFAULT 9021,
+      is_default INTEGER DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
+
+  // Add is_default column if it doesn't exist
+  try {
+    db.run(`ALTER TABLE profiles ADD COLUMN is_default INTEGER DEFAULT 0`);
+  } catch (e) {
+    // Column already exists
+  }
 
   db.run(`
     CREATE TABLE IF NOT EXISTS payloads (
@@ -46,9 +53,17 @@ export async function initDatabase() {
       version TEXT,
       size INTEGER,
       sha256 TEXT,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
+
+  // Add updated_at column if it doesn't exist (for existing databases)
+  try {
+    db.run(`ALTER TABLE payloads ADD COLUMN updated_at DATETIME DEFAULT CURRENT_TIMESTAMP`);
+  } catch (e) {
+    // Column already exists
+  }
 
   db.run(`
     CREATE TABLE IF NOT EXISTS autoload_sequences (
@@ -94,10 +109,10 @@ export function saveDatabase() {
 }
 
 export function log(level, message) {
+  console.log(`[${level.toUpperCase()}] ${message}`);
   if (!db) return;
   db.run('INSERT INTO logs (level, message) VALUES (?, ?)', [level, message]);
   saveDatabase();
-  console.log(`[${level.toUpperCase()}] ${message}`);
 }
 
 export function getLogs(limit = 100) {
