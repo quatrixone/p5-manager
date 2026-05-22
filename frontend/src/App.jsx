@@ -4,6 +4,7 @@ import ProfileManager from './components/ProfileManager';
 import NetworkSender from './components/NetworkSender';
 import LogViewer from './components/LogViewer';
 import AutoloadBuilder from './components/AutoloadBuilder';
+import LogServer from './components/LogServer';
 
 const API = '/api';
 
@@ -77,10 +78,30 @@ function App() {
     }
   };
 
-  const sendPayload = async (payloadId, profileId) => {
-    const profile = profiles.find(p => p.id === profileId);
+  const fetchFromGitHubUrl = async (url) => {
+    try {
+      const res = await fetch(`${API}/payloads/fetch-url`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url })
+      });
+      const data = await res.json();
+      if (data.success) {
+        showNotification(`Downloaded ${data.downloaded.length} payload(s)`, 'success');
+        fetchPayloads();
+        fetchLogs();
+      } else {
+        showNotification(data.error, 'error');
+      }
+    } catch (err) {
+      showNotification(err.message, 'error');
+    }
+  };
+
+  const sendPayload = async (payloadId) => {
+    const profile = profiles[0];
     if (!profile) {
-      showNotification('Please select a profile', 'error');
+      showNotification('Please create a profile first', 'error');
       return;
     }
     try {
@@ -112,12 +133,51 @@ function App() {
     }
   };
 
-  const createProfile = async (name, ip, port) => {
+  const updatePayload = async (id) => {
+    try {
+      const res = await fetch(`${API}/payloads/${id}/update`, { method: 'PUT' });
+      const data = await res.json();
+      if (data.success) {
+        showNotification('Payload updated', 'success');
+        fetchPayloads();
+        fetchLogs();
+      } else {
+        showNotification(data.error, 'error');
+      }
+    } catch (err) {
+      showNotification(err.message, 'error');
+    }
+  };
+
+  const uploadPayload = async (file) => {
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      const base64 = btoa(new Uint8Array(arrayBuffer).reduce((data, byte) => data + String.fromCharCode(byte), ''));
+
+      const res = await fetch(`${API}/payloads/upload`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: file.name, data: base64 })
+      });
+      const data = await res.json();
+      if (data.success) {
+        showNotification('Payload uploaded', 'success');
+        fetchPayloads();
+        fetchLogs();
+      } else {
+        showNotification(data.error, 'error');
+      }
+    } catch (err) {
+      showNotification(err.message, 'error');
+    }
+  };
+
+  const createProfile = async (name, ip) => {
     try {
       await fetch(`${API}/profiles`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, ip_address: ip, port })
+        body: JSON.stringify({ name, ip_address: ip })
       });
       showNotification('Profile created', 'success');
       fetchProfiles();
@@ -127,16 +187,26 @@ function App() {
     }
   };
 
-  const updateProfile = async (id, name, ip, port) => {
+  const updateProfile = async (id, name, ip) => {
     try {
       await fetch(`${API}/profiles/${id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, ip_address: ip, port })
+        body: JSON.stringify({ name, ip_address: ip })
       });
       showNotification('Profile updated', 'success');
       fetchProfiles();
       fetchLogs();
+    } catch (err) {
+      showNotification(err.message, 'error');
+    }
+  };
+
+  const setDefaultProfile = async (id) => {
+    try {
+      await fetch(`${API}/profiles/${id}/set-default`, { method: 'POST' });
+      showNotification('Default profile set', 'success');
+      fetchProfiles();
     } catch (err) {
       showNotification(err.message, 'error');
     }
@@ -206,13 +276,14 @@ function App() {
     { id: 'profiles', label: 'Profiles' },
     { id: 'autoload', label: 'Autoload' },
     { id: 'sender', label: 'Network Send' },
+    { id: 'logserver', label: 'LUA log server' },
     { id: 'logs', label: 'Logs' }
   ];
 
   return (
     <div style={{ minHeight: '100vh', background: '#1a1a2e', color: '#eee' }}>
       <header style={{ background: '#16213e', padding: '1rem 2rem', borderBottom: '1px solid #0f3460' }}>
-        <h1 style={{ fontSize: '1.5rem', fontWeight: 600 }}>PS5 Payload Manager</h1>
+        <h1 style={{ fontSize: '1.5rem', fontWeight: 600 }}>PS5WebPayload Manager</h1>
       </header>
 
       {notification && (
@@ -246,11 +317,11 @@ function App() {
           <PayloadList
             payloads={payloads}
             profiles={profiles}
-            onFetch={fetchFromGitHub}
+            onFetchUrl={fetchFromGitHubUrl}
             onSend={sendPayload}
             onDelete={deletePayload}
-            onExportBackup={exportBackup}
-            onImportBackup={importBackup}
+            onUpdate={updatePayload}
+            onUpload={uploadPayload}
           />
         )}
         {activeTab === 'profiles' && (
@@ -259,6 +330,7 @@ function App() {
             onCreate={createProfile}
             onUpdate={updateProfile}
             onDelete={deleteProfile}
+            onSetDefault={setDefaultProfile}
           />
         )}
         {activeTab === 'autoload' && (
@@ -275,6 +347,7 @@ function App() {
             onCheckStatus={checkPs5Status}
           />
         )}
+        {activeTab === 'logserver' && <LogServer profiles={profiles} />}
         {activeTab === 'logs' && (
           <LogViewer logs={logs} onRefresh={fetchLogs} />
         )}

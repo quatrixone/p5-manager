@@ -6,7 +6,7 @@ export async function initializeDatabase() {
   if (initialized) return;
   await initDatabase();
   initialized = true;
-  log('info', 'PS5 PayloadManager API started');
+  log('info', 'PS5WebPayload Manager API started');
 }
 
 export { log, getLogs, clearLogs };

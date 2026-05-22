@@ -1,4 +1,4 @@
-# PS5 Payload Manager
+# PS5WebPayload Manager
 
 Web-based manager for downloading and sending PS5 payloads (LUA and ELF files).
 
