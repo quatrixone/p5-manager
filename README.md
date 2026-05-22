@@ -13,7 +13,7 @@ Web-based manager for downloading and sending PS5 payloads (LUA and ELF files).
 **Requirements:**
 - PS5 console on same network
 - Star Wars Racer Revenge (CUSA03474 USA or CUSA03492 EU)
-- PS5 firmware 12.00 or lower for LUA payloads
+- PS5 firmware 12.70 or lower for LUA payloads
 
 ## Quick Start
 
