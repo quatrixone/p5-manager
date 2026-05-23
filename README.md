@@ -22,6 +22,8 @@ Web-based manager for downloading and sending PS5 payloads (LUA and ELF files).
 ### Docker Compose (Recommended)
 
 ```bash
+git clone https://github.com/psdeviant/ps5webpayload-manager.git
+cd ps5webpayload-manager
 docker-compose up -d
 ```
 
