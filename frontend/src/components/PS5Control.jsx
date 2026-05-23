@@ -1,4 +1,6 @@
 import { useState, useEffect } from 'react';
+import ScriptRunner from './ScriptRunner.jsx';
+import PairPS5 from './PairPS5.jsx';
 
 const API = '/api';
 
@@ -12,15 +14,18 @@ function PS5Control({ profiles }) {
   const [loading, setLoading] = useState(false);
   const [selectedGame, setSelectedGame] = useState('');
   const [customTitleId, setCustomTitleId] = useState('');
+  const [isPaired, setIsPaired] = useState(false);
+  const [showPairing, setShowPairing] = useState(false);
 
   const defaultProfile = profiles.find(p => p.is_default) || profiles[0];
 
   const fetchStatus = async () => {
     if (!defaultProfile) return;
     try {
-      const res = await fetch(`${API}/ps5/status/${defaultProfile.ip_address}`);
+      const res = await fetch(`${API}/ps5control/status?ip=${defaultProfile.ip_address}`);
       const data = await res.json();
       setStatus(data);
+      setIsPaired(data.paired || false);
     } catch (err) {
       setStatus({ status: 'unreachable', error: err.message });
     }
@@ -36,10 +41,14 @@ function PS5Control({ profiles }) {
     if (!defaultProfile) return;
     setLoading(true);
     try {
-      const res = await fetch(`${API}/ps5control/wake`, {
+      const body = { ip: defaultProfile.ip_address };
+      if (defaultProfile.mac_address) {
+        body.mac = defaultProfile.mac_address;
+      }
+      const res = await fetch(`${API}/ps5control/wol`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ip: defaultProfile.ip_address })
+        body: JSON.stringify(body)
       });
       const data = await res.json();
       if (data.success) {
@@ -59,7 +68,7 @@ function PS5Control({ profiles }) {
     setLoading(true);
     try {
       const game = KNOWN_GAMES.find(g => g.titleId === titleId);
-      await fetch(`${API}/ps5control/launch`, {
+      const res = await fetch(`${API}/ps5control/launch`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -68,13 +77,17 @@ function PS5Control({ profiles }) {
           name: game?.name || titleId
         })
       });
+      const data = await res.json();
+      if (data.success) {
+        setTimeout(fetchStatus, 3000);
+      }
     } catch (err) {
       console.error('Launch error:', err);
     }
     setLoading(false);
   };
 
-  const handleInput = async (button) => {
+  const handleSendInput = async (button) => {
     if (!defaultProfile) return;
     try {
       await fetch(`${API}/ps5control/input`, {
@@ -102,6 +115,7 @@ function PS5Control({ profiles }) {
           <h2 style={{ fontSize: '1rem', fontWeight: 500 }}>PS5 Remote Control</h2>
           <div style={{ color: '#aaa', fontSize: '0.85rem' }}>
             Using: <span style={{ color: '#27ae60' }}>{defaultProfile.name}</span> ({defaultProfile.ip_address})
+            {defaultProfile.mac_address && <span style={{ color: '#888' }}> • {defaultProfile.mac_address}</span>}
           </div>
         </div>
 
@@ -116,15 +130,45 @@ function PS5Control({ profiles }) {
           }}>
             {status?.status === 'running' ? 'Running' : status?.status === 'standby' ? 'Standby' : 'Off/Unreachable'}
           </div>
+          <div style={{
+            padding: '0.5rem 1rem',
+            borderRadius: 6,
+            background: isPaired ? '#27ae60' : '#e74c3c',
+            color: '#fff',
+            fontWeight: 500,
+            fontSize: '0.85rem'
+          }}>
+            {isPaired ? '✓ Paired' : '✗ Not Paired'}
+          </div>
           <button
             onClick={handleWake}
             disabled={loading}
             style={{ padding: '0.75rem 1.5rem', background: '#3498db', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 500, fontSize: '1rem', minHeight: 44 }}
           >
-            Wake / Zapnúť
+            Wake on LAN
           </button>
         </div>
+
+        {!isPaired && (
+          <button
+            onClick={() => setShowPairing(!showPairing)}
+            style={{
+              marginTop: '0.5rem',
+              padding: '0.5rem 1rem',
+              background: showPairing ? '#e94560' : '#27ae60',
+              color: '#fff', border: 'none', borderRadius: 6,
+              cursor: 'pointer', fontSize: '0.85rem'
+            }}
+          >
+            {showPairing ? 'Hide Pairing' : 'Pair PS5'}
+          </button>
+        )}
       </section>
+
+      {/* Pairing Section */}
+      {showPairing && !isPaired && (
+        <PairPS5 ip={defaultProfile.ip_address} onPaired={() => { setIsPaired(true); setShowPairing(false); }} />
+      )}
 
       <section style={{ background: '#16213e', padding: '1rem', borderRadius: 12 }}>
         <h2 style={{ fontSize: '1rem', fontWeight: 500, marginBottom: '1rem' }}>Launch Application</h2>
@@ -162,18 +206,8 @@ function PS5Control({ profiles }) {
       </section>
 
       <section style={{ background: '#16213e', padding: '1rem', borderRadius: 12 }}>
-        <h2 style={{ fontSize: '1rem', fontWeight: 500, marginBottom: '1rem' }}>Controller Input</h2>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '0.5rem' }}>
-          {['up', 'down', 'left', 'right', 'x', 'circle', 'square', 'triangle', 'ps', 'options', 'touchpad'].map(btn => (
-            <button
-              key={btn}
-              onClick={() => handleInput(btn)}
-              style={{ padding: '0.75rem', background: '#0f3460', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: '0.85rem', minHeight: 44, textTransform: 'uppercase' }}
-            >
-              {btn}
-            </button>
-          ))}
-        </div>
+        <h2 style={{ fontSize: '1rem', fontWeight: 500, marginBottom: '1rem' }}>Script Runner</h2>
+        <ScriptRunner ip={defaultProfile.ip_address} onSendInput={handleSendInput} />
       </section>
     </div>
   );
