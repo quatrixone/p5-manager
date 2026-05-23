@@ -106,6 +106,12 @@ All application data is stored in Docker volumes and persists across container r
 - **Database:** SQLite (sql.js) with persistent Docker volume
 - **Log Server:** UDP (port 8080)
 
+## Platform
+
+- Runs on any platform with Docker (Linux, macOS, Windows)
+- Network mode: host (required for PS5 payload delivery)
+- Tested on: Raspberry Pi, x86_64 servers
+
 ## License
 
 MIT
