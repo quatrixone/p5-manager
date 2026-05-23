@@ -89,17 +89,15 @@ https://raw.githubusercontent.com/owner/repo/main/payloads/file.lua
 All application data is stored in Docker volumes and persists across container rebuilds:
 
 ```bash
-# Data location
 ./data/
   payloads.db    # SQLite database (profiles, payloads, settings)
   payloads/      # Uploaded payload files
-
-# To backup
-tar -czf backup.tar.gz ./data/
-
-# To restore
-tar -xzf backup.tar.gz
 ```
+
+**Backup & Restore via Web UI:**
+- Go to **Settings → Backup** tab
+- Click **Export Backup** to download all data as JSON
+- Click **Restore** and select a backup file to restore
 
 ## Tech Stack
 

@@ -21,6 +21,13 @@ router.get('/', (req, res) => {
     }
     payloadStmt.free();
 
+    const sequences = [];
+    const seqStmt = db.prepare('SELECT * FROM autoload_sequences');
+    while (seqStmt.step()) {
+      sequences.push(seqStmt.getAsObject());
+    }
+    seqStmt.free();
+
     const settings = [];
     const settingsStmt = db.prepare('SELECT * FROM settings');
     while (settingsStmt.step()) {
@@ -34,6 +41,7 @@ router.get('/', (req, res) => {
       data: {
         profiles,
         payloads,
+        sequences,
         settings
       }
     };
@@ -60,9 +68,19 @@ router.post('/', (req, res) => {
     db.run('DELETE FROM profiles');
     for (const profile of data.profiles) {
       db.run(
-        'INSERT INTO profiles (name, ip_address, port) VALUES (?, ?, ?)',
-        [profile.name, profile.ip_address, profile.port || 9021]
+        'INSERT INTO profiles (name, ip_address, mac_address, port, is_default) VALUES (?, ?, ?, ?, ?)',
+        [profile.name, profile.ip_address, profile.mac_address, profile.port || 9021, profile.is_default || 0]
       );
+    }
+
+    if (data.sequences) {
+      db.run('DELETE FROM autoload_sequences');
+      for (const seq of data.sequences) {
+        db.run(
+          'INSERT INTO autoload_sequences (profile_id, name, steps, schedule_cron, schedule_enabled) VALUES (?, ?, ?, ?, ?)',
+          [seq.profile_id, seq.name, seq.steps, seq.schedule_cron, seq.schedule_enabled || 0]
+        );
+      }
     }
 
     if (data.settings) {

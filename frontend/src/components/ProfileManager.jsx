@@ -3,30 +3,34 @@ import { useState } from 'react';
 function ProfileManager({ profiles, onCreate, onUpdate, onDelete, onSetDefault }) {
   const [name, setName] = useState('');
   const [ip, setIp] = useState('');
+  const [mac, setMac] = useState('');
   const [editingId, setEditingId] = useState(null);
 
   const handleSubmit = (e) => {
     e.preventDefault();
     if (editingId) {
-      onUpdate(editingId, name, ip);
+      onUpdate(editingId, name, ip, mac);
       setEditingId(null);
     } else {
-      onCreate(name, ip);
+      onCreate(name, ip, mac);
     }
     setName('');
     setIp('');
+    setMac('');
   };
 
   const startEdit = (profile) => {
     setEditingId(profile.id);
     setName(profile.name);
     setIp(profile.ip_address);
+    setMac(profile.mac_address || '');
   };
 
   const cancelEdit = () => {
     setEditingId(null);
     setName('');
     setIp('');
+    setMac('');
   };
 
   return (
@@ -58,6 +62,16 @@ function ProfileManager({ profiles, onCreate, onUpdate, onDelete, onSetDefault }
               style={{ padding: '0.75rem', borderRadius: 6, border: '1px solid #0f3460', background: '#1a1a2e', color: '#fff', fontSize: '1rem' }}
             />
           </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+            <label style={{ fontSize: '0.85rem', color: '#aaa' }}>MAC Address (for Wake-on-LAN)</label>
+            <input
+              type="text"
+              placeholder="AA:BB:CC:DD:EE:FF"
+              value={mac}
+              onChange={e => setMac(e.target.value)}
+              style={{ padding: '0.75rem', borderRadius: 6, border: '1px solid #0f3460', background: '#1a1a2e', color: '#fff', fontSize: '1rem' }}
+            />
+          </div>
           <div style={{ display: 'flex', gap: '0.5rem' }}>
             <button type="submit" style={{ padding: '0.75rem', background: editingId ? '#f39c12' : '#e94560', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 500, fontSize: '1rem', flex: 1, minHeight: 44 }}>
               {editingId ? 'Update' : 'Add'}
@@ -86,6 +100,7 @@ function ProfileManager({ profiles, onCreate, onUpdate, onDelete, onSetDefault }
                   </div>
                   <div style={{ fontSize: '0.85rem', color: '#aaa' }}>
                     {profile.ip_address}
+                    {profile.mac_address && <span style={{ color: '#27ae60' }}> • {profile.mac_address}</span>}
                   </div>
                 </div>
                 <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
