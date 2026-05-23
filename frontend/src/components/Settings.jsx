@@ -44,18 +44,14 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
   const handleBackup = async () => {
     try {
       setBackupStatus('Creating backup...');
-      const [profilesRes, payloadsRes] = await Promise.all([
-        fetch(`${API}/profiles`),
-        fetch(`${API}/payloads`)
-      ]);
-      const profiles = await profilesRes.json();
-      const payloads = await payloadsRes.json();
-      const backup = { version: '1.0', timestamp: new Date().toISOString(), profiles, payloads };
-      const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
+      const res = await fetch(`${API}/backup`);
+      if (!res.ok) throw new Error('Backup failed');
+
+      const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `ps5-backup-${new Date().toISOString().split('T')[0]}.json`;
+      a.download = `backup-${new Date().toISOString().split('T')[0]}.zip`;
       a.click();
       URL.revokeObjectURL(url);
       setBackupStatus('Backup created successfully!');
@@ -69,17 +65,20 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
     if (!restoreFile) return;
     try {
       setBackupStatus('Restoring...');
-      const text = await restoreFile.text();
-      const backup = JSON.parse(text);
-      if (backup.profiles) {
-        for (const profile of backup.profiles) {
-          await fetch(`${API}/profiles`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name: profile.name, ip_address: profile.ip_address, mac_address: profile.mac_address })
-          });
-        }
+      const arrayBuffer = await restoreFile.arrayBuffer();
+      const base64 = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
+
+      const res = await fetch(`${API}/backup`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ zip: base64 })
+      });
+
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || 'Restore failed');
       }
+
       setBackupStatus('Restore completed!');
       setTimeout(() => setBackupStatus(''), 3000);
       if (onProfileCreate) onProfileCreate();
@@ -247,7 +246,7 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
           <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
             <div style={{ padding: '1rem', background: '#0f3460', borderRadius: 8 }}>
               <h4 style={{ color: '#fff', marginBottom: '0.5rem' }}>Backup</h4>
-              <p style={{ color: '#aaa', fontSize: '0.85rem', marginBottom: '1rem' }}>Download all profiles and payloads as JSON.</p>
+              <p style={{ color: '#aaa', fontSize: '0.85rem', marginBottom: '1rem' }}>Download all profiles, payloads, sequences, and settings as ZIP.</p>
               <button onClick={handleBackup} style={{ padding: '0.75rem 1.5rem', background: '#27ae60', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: '1rem' }}>
                 Download Backup
               </button>
@@ -255,8 +254,8 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
 
             <div style={{ padding: '1rem', background: '#0f3460', borderRadius: 8 }}>
               <h4 style={{ color: '#fff', marginBottom: '0.5rem' }}>Restore</h4>
-              <p style={{ color: '#aaa', fontSize: '0.85rem', marginBottom: '1rem' }}>Upload a backup JSON file to restore profiles.</p>
-              <input type="file" accept=".json" onChange={e => setRestoreFile(e.target.files[0])}
+              <p style={{ color: '#aaa', fontSize: '0.85rem', marginBottom: '1rem' }}>Upload a backup ZIP file to restore all data.</p>
+              <input type="file" accept=".zip" onChange={e => setRestoreFile(e.target.files[0])}
                 style={{ marginBottom: '0.75rem', color: '#fff', fontSize: '0.85rem' }} />
               <button onClick={handleRestore} disabled={!restoreFile}
                 style={{ padding: '0.75rem 1.5rem', background: restoreFile ? '#3498db' : '#555', color: '#fff', border: 'none', borderRadius: 6, cursor: restoreFile ? 'pointer' : 'not-allowed', fontSize: '1rem' }}>

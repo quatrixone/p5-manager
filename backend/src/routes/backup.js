@@ -1,10 +1,26 @@
 import express from 'express';
+import path from 'path';
+import fs from 'fs';
+import { fileURLToPath } from 'url';
+import AdmZip from 'adm-zip';
 import { getDatabase, saveDatabase, log } from '../db/sqlite.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const dataDir = path.join(__dirname, '../../data');
+const payloadsDir = path.join(dataDir, 'payloads');
 
 const router = express.Router();
 
+function ensurePayloadsDir() {
+  if (!fs.existsSync(payloadsDir)) {
+    fs.mkdirSync(payloadsDir, { recursive: true });
+  }
+}
+
 router.get('/', (req, res) => {
   try {
+    ensurePayloadsDir();
+
     const db = getDatabase();
 
     const profiles = [];
@@ -46,9 +62,29 @@ router.get('/', (req, res) => {
       }
     };
 
+    // Create ZIP with backup data and payload files
+    const zip = new AdmZip();
+
+    // Add backup.json with all database data
+    zip.addFile('backup.json', JSON.stringify(backup, null, 2));
+
+    // Add payload files
+    for (const payload of payloads) {
+      if (fs.existsSync(payload.filepath)) {
+        zip.addFile(path.join('payloads', payload.filename), fs.readFileSync(payload.filepath));
+      }
+    }
+
+    const zipBuffer = zip.toBuffer();
+
     log('info', 'Backup exported');
 
-    res.json(backup);
+    res.set({
+      'Content-Type': 'application/zip',
+      'Content-Disposition': `attachment; filename="backup-${new Date().toISOString().slice(0, 10)}.zip"`,
+      'Content-Length': zipBuffer.length
+    });
+    res.send(zipBuffer);
   } catch (error) {
     log('error', `Backup export failed: ${error.message}`);
     res.status(500).json({ error: error.message });
@@ -57,13 +93,38 @@ router.get('/', (req, res) => {
 
 router.post('/', (req, res) => {
   try {
-    const { data } = req.body;
+    let data;
+    let payloadFiles = {};
+
+    // Check if request is a ZIP file (has base64 encoded zip)
+    if (req.body.zip) {
+      try {
+        const zipBuffer = Buffer.from(req.body.zip, 'base64');
+        const zip = new AdmZip(zipBuffer);
+        const zipEntries = zip.getEntries();
+
+        for (const entry of zipEntries) {
+          if (entry.entryName === 'backup.json') {
+            data = JSON.parse(entry.getData().toString('utf8'));
+          } else if (entry.entryName.startsWith('payloads/')) {
+            const filename = path.basename(entry.entryName);
+            payloadFiles[filename] = entry.getData();
+          }
+        }
+      } catch (zipError) {
+        return res.status(400).json({ error: `Invalid ZIP file: ${zipError.message}` });
+      }
+    } else if (req.body.data) {
+      // Legacy JSON format
+      data = req.body.data;
+    }
 
     if (!data || !data.profiles) {
       return res.status(400).json({ error: 'Invalid backup data' });
     }
 
     const db = getDatabase();
+    ensurePayloadsDir();
 
     db.run('DELETE FROM profiles');
     for (const profile of data.profiles) {
@@ -89,6 +150,30 @@ router.post('/', (req, res) => {
         db.run(
           'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)',
           [setting.key, setting.value]
+        );
+      }
+    }
+
+    // Restore payloads if included in backup
+    if (data.payloads && data.payloads.length > 0) {
+      db.run('DELETE FROM payloads');
+      for (const payload of data.payloads) {
+        const filepath = path.join(payloadsDir, payload.filename);
+
+        // Restore payload file if it exists in the ZIP
+        if (payloadFiles[payload.filename]) {
+          fs.writeFileSync(filepath, payloadFiles[payload.filename]);
+        } else if (fs.existsSync(filepath)) {
+          // File already exists, use it
+        } else {
+          // Skip payload that has no file
+          continue;
+        }
+
+        const size = fs.existsSync(filepath) ? fs.statSync(filepath).size : payload.size;
+        db.run(
+          'INSERT INTO payloads (name, filename, filepath, source_url, version, size) VALUES (?, ?, ?, ?, ?, ?)',
+          [payload.name, payload.filename, filepath, payload.source_url || null, payload.version || null, size]
         );
       }
     }
