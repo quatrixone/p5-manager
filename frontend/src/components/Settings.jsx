@@ -2,19 +2,12 @@ import { useState } from 'react';
 
 const API = '/api';
 
-const KNOWN_GAMES = [
-  { titleId: 'CUSA03474', name: 'Star Wars Racer Revenge (USA)' },
-  { titleId: 'CUSA03492', name: 'Star Wars Racer Revenge (EU)' },
-];
-
-function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete, onProfileSetDefault, onLaunch, onWake, onSendInput }) {
+function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete, onProfileSetDefault }) {
   const [activeSection, setActiveSection] = useState('profiles');
   const [backupStatus, setBackupStatus] = useState('');
   const [restoreFile, setRestoreFile] = useState(null);
   const [editingProfile, setEditingProfile] = useState(null);
   const [profileForm, setProfileForm] = useState({ name: '', ip: '', mac: '' });
-  const [selectedGame, setSelectedGame] = useState('');
-  const [customTitleId, setCustomTitleId] = useState('');
 
   const handleAddProfile = () => {
     setEditingProfile('new');
@@ -90,7 +83,7 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
       <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
-        {['profiles', 'remote', 'backup'].map(section => (
+        {['profiles', 'backup'].map(section => (
           <button
             key={section}
             onClick={() => setActiveSection(section)}
@@ -175,66 +168,6 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
               ))}
             </div>
           )}
-        </section>
-      )}
-
-      {/* REMOTE SECTION */}
-      {activeSection === 'remote' && (
-        <section style={{ background: '#16213e', padding: '1rem', borderRadius: 12 }}>
-          <h3 style={{ fontSize: '1rem', fontWeight: 500, marginBottom: '1rem' }}>Remote Control</h3>
-
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-            {/* Wake on LAN */}
-            <div style={{ padding: '1rem', background: '#0f3460', borderRadius: 8 }}>
-              <h4 style={{ color: '#fff', marginBottom: '0.5rem' }}>Wake on LAN</h4>
-              <p style={{ color: '#aaa', fontSize: '0.85rem', marginBottom: '1rem' }}>
-                {profiles.find(p => p.is_default)?.mac_address
-                  ? `Using MAC: ${profiles.find(p => p.is_default).mac_address}`
-                  : 'Add a profile with MAC address to use Wake on LAN'}
-              </p>
-              <button
-                onClick={onWake}
-                disabled={!profiles.find(p => p.is_default)?.mac_address}
-                style={{ padding: '0.75rem 1.5rem', background: '#3498db', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: '1rem' }}
-              >
-                Wake on LAN
-              </button>
-            </div>
-
-            {/* Launch Application */}
-            <div style={{ padding: '1rem', background: '#0f3460', borderRadius: 8 }}>
-              <h4 style={{ color: '#fff', marginBottom: '0.5rem' }}>Launch Application</h4>
-              <select value={selectedGame} onChange={e => { setSelectedGame(e.target.value); setCustomTitleId(''); }}
-                style={{ width: '100%', padding: '0.75rem', borderRadius: 6, background: '#1a1a2e', color: '#fff', border: '1px solid #0f3460', fontSize: '1rem', marginBottom: '0.5rem' }}>
-                <option value="">Select known game...</option>
-                {KNOWN_GAMES.map(g => <option key={g.titleId} value={g.titleId}>{g.name}</option>)}
-              </select>
-              <div style={{ color: '#888', fontSize: '0.85rem', textAlign: 'center', marginBottom: '0.5rem' }}>or</div>
-              <input type="text" placeholder="Custom titleId (e.g. CUSAXXXXX)" value={customTitleId}
-                onChange={e => { setCustomTitleId(e.target.value); setSelectedGame(''); }}
-                style={{ width: '100%', padding: '0.75rem', borderRadius: 6, background: '#1a1a2e', color: '#fff', border: '1px solid #0f3460', fontSize: '1rem', marginBottom: '0.75rem' }} />
-              <button
-                onClick={() => onLaunch(customTitleId || selectedGame)}
-                disabled={!selectedGame && !customTitleId}
-                style={{ padding: '0.75rem', background: (!selectedGame && !customTitleId) ? '#555' : '#27ae60', color: '#fff', border: 'none', borderRadius: 6, cursor: (!selectedGame && !customTitleId) ? 'not-allowed' : 'pointer', fontSize: '1rem' }}
-              >
-                Launch
-              </button>
-            </div>
-
-            {/* Script Runner Reference */}
-            <div style={{ padding: '1rem', background: '#0f3460', borderRadius: 8 }}>
-              <h4 style={{ color: '#fff', marginBottom: '0.5rem' }}>Script Runner Commands</h4>
-              <p style={{ color: '#aaa', fontSize: '0.85rem', lineHeight: 1.6 }}>
-                Available commands for Script Runner in Remote tab:
-                <br/><code style={{ background: '#1a1a2e', padding: '0.1rem 0.3rem', borderRadius: 3 }}>left, right, up, down</code> - D-pad
-                <br/><code style={{ background: '#1a1a2e', padding: '0.1rem 0.3rem', borderRadius: 3 }}>x, cross, circle, square, triangle</code> - Face buttons
-                <br/><code style={{ background: '#1a1a2e', padding: '0.1rem 0.3rem', borderRadius: 3 }}>ps, options, touchpad</code> - System buttons
-                <br/><code style={{ background: '#1a1a2e', padding: '0.1rem 0.3rem', borderRadius: 3 }}>L1, R1, L2, R2, L3, R3</code> - Triggers
-                <br/><code style={{ background: '#1a1a2e', padding: '0.1rem 0.3rem', borderRadius: 3 }}>wait X</code> - Wait X milliseconds
-              </p>
-            </div>
-          </div>
         </section>
       )}
 
