@@ -110,7 +110,6 @@ All application data is stored in Docker volumes and persists across container r
 
 - Runs on any platform with Docker (Linux, macOS, Windows)
 - Network mode: host (required for PS5 payload delivery)
-- Tested on: Raspberry Pi, x86_64 servers
 
 ## License
 
