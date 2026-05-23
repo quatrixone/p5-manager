@@ -7,7 +7,7 @@ import AdmZip from 'adm-zip';
 import { getDatabase, saveDatabase, log } from '../db/sqlite.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const dataDir = path.join(__dirname, '../../../data');
+const dataDir = path.join(__dirname, '../../data');
 const payloadsDir = path.join(dataDir, 'payloads');
 
 const router = express.Router();
@@ -84,18 +84,16 @@ router.post('/fetch-url', async (req, res) => {
                 const entryName = entry.entryName.toLowerCase();
                 if (entryName.endsWith('.lua') || entryName.endsWith('.elf')) {
                   const entryBuffer = entry.getData();
-                  const baseName = entry.entryName.replace(/\.(lua|elf)$/i, '');
-                  const ext = entry.entryName.match(/\.(lua|elf)$/i)[0];
-                  const filenameWithVersion = `${baseName}-${version}${ext}`;
-                  const filepath = path.join(payloadsDir, filenameWithVersion);
+                  const filename = entry.entryName.split('/').pop();
+                  const filepath = path.join(payloadsDir, filename);
 
                   fs.writeFileSync(filepath, entryBuffer);
                   db.run(
                     'INSERT INTO payloads (name, filename, filepath, source_url, size, version) VALUES (?, ?, ?, ?, ?, ?)',
-                    [filenameWithVersion, filenameWithVersion, filepath, downloadUrl, entryBuffer.length, version]
+                    [filename, filename, filepath, downloadUrl, entryBuffer.length, version]
                   );
                   const lastId = db.exec('SELECT last_insert_rowid()')[0].values[0][0];
-                  results.push({ id: lastId, name: filenameWithVersion, size: entryBuffer.length, version });
+                  results.push({ id: lastId, name: filename, size: entryBuffer.length, version });
                   log('info', `Extracted from ZIP ${version}: ${entry.entryName}`);
                 }
               }
@@ -103,18 +101,16 @@ router.post('/fetch-url', async (req, res) => {
               log('error', `Failed to extract ZIP ${asset.name}: ${zipError.message}`);
             }
           } else {
-            const baseName = asset.name.replace(/\.(lua|elf)$/i, '');
-            const ext = asset.name.match(/\.(lua|elf)$/i)[0];
-            const filenameWithVersion = `${baseName}-${version}${ext}`;
-            const filepath = path.join(payloadsDir, filenameWithVersion);
+            const filename = asset.name;
+            const filepath = path.join(payloadsDir, filename);
 
             fs.writeFileSync(filepath, buffer);
             db.run(
               'INSERT INTO payloads (name, filename, filepath, source_url, size, version) VALUES (?, ?, ?, ?, ?, ?)',
-              [filenameWithVersion, filenameWithVersion, filepath, downloadUrl, buffer.length, version]
+              [filename, filename, filepath, downloadUrl, buffer.length, version]
             );
             const lastId = db.exec('SELECT last_insert_rowid()')[0].values[0][0];
-            results.push({ id: lastId, name: filenameWithVersion, size: buffer.length, version });
+            results.push({ id: lastId, name: filename, size: buffer.length, version });
             log('info', `Downloaded from release ${version}: ${asset.name}`);
           }
         }
@@ -131,7 +127,8 @@ router.post('/fetch-url', async (req, res) => {
     const blobMatch = url.match(/github\.com\/([^\/]+)\/([^\/]+)\/blob\/([^\s?#]+)/i);
     if (blobMatch) {
       const [, owner, repo, filePath] = blobMatch;
-      const rawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${filePath}`;
+      const decodedPath = decodeURIComponent(filePath);
+      const rawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${decodedPath}`;
       log('info', `Fetching raw: ${rawUrl}`);
 
       const response = await fetch(rawUrl, {
@@ -144,7 +141,7 @@ router.post('/fetch-url', async (req, res) => {
       }
 
       const buffer = await response.arrayBuffer().then(ab => Buffer.from(ab));
-      const filename = filePath.split('/').pop();
+      const filename = decodedPath.split('/').pop();
 
       if (!buffer.length) {
         throw new Error('Downloaded file is empty');
@@ -181,7 +178,7 @@ router.post('/fetch-url', async (req, res) => {
       }
 
       const buffer = await response.arrayBuffer().then(ab => Buffer.from(ab));
-      const filename = filePath.split('/').pop();
+      const filename = decodeURIComponent(filePath.split('/').pop());
 
       if (!filename.endsWith('.lua') && !filename.endsWith('.elf')) {
         return res.status(400).json({ error: 'Only .lua and .elf files are supported' });
@@ -357,8 +354,23 @@ router.put('/:id/update', async (req, res) => {
       return res.status(400).json({ error: 'Payload has no source URL' });
     }
 
-    // Re-download from source URL
     let url = payload.source_url;
+    let newVersion = null;
+
+    // Check for releases-based URL to compare versions
+    const releasesMatch = payload.source_url.match(/github\.com\/([^\/]+)\/([^\/]+)\/releases\/assets\/([^\s?#]+)/i);
+    if (releasesMatch) {
+      const [, owner, repo] = releasesMatch;
+      const apiUrl = `https://api.github.com/repos/${owner}/${repo}/releases/latest`;
+      const response = await fetch(apiUrl, { headers: { 'Accept': 'application/vnd.github.v3+json' } });
+      if (response.ok) {
+        const release = await response.json();
+        newVersion = release.tag_name || 'latest';
+        if (payload.version === newVersion) {
+          return res.json({ success: false, error: 'No newer version available', currentVersion: payload.version, newVersion });
+        }
+      }
+    }
 
     // Convert blob URL to raw URL if needed
     if (url.includes('/blob/')) {
@@ -382,7 +394,7 @@ router.put('/:id/update', async (req, res) => {
     saveDatabase();
 
     log('info', `Updated payload: ${payload.name}`);
-    res.json({ success: true, message: 'Payload updated' });
+    res.json({ success: true, message: 'Payload updated', newVersion });
   } catch (error) {
     log('error', `Update failed: ${error.message}`);
     res.status(500).json({ error: error.message });

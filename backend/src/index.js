@@ -11,6 +11,7 @@ import logsRouter from './routes/logs.js';
 import backupRouter from './routes/backup.js';
 import logServerRouter from './routes/logServer.js';
 import ps5ControlRouter from './routes/ps5control.js';
+import sequencesRouter from './routes/sequences.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -31,6 +32,7 @@ app.use('/api/logs', logsRouter);
 app.use('/api/backup', backupRouter);
 app.use('/api/logserver', logServerRouter);
 app.use('/api/ps5control', ps5ControlRouter);
+app.use('/api/sequences', sequencesRouter);
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });

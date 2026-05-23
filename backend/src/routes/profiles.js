@@ -68,7 +68,7 @@ router.get('/default', (req, res) => {
 
 router.post('/', (req, res) => {
   try {
-    const { name, ip_address } = req.body;
+    const { name, ip_address, mac_address } = req.body;
 
     if (!name || !ip_address) {
       return res.status(400).json({ error: 'Name and IP address required' });
@@ -76,15 +76,14 @@ router.post('/', (req, res) => {
 
     const db = getDatabase();
     db.run(
-      'INSERT INTO profiles (name, ip_address) VALUES (?, ?)',
-      [name, ip_address]
+      'INSERT INTO profiles (name, ip_address, mac_address) VALUES (?, ?, ?)',
+      [name, ip_address, mac_address || null]
     );
 
     const lastId = db.exec('SELECT last_insert_rowid()')[0].values[0][0];
     saveDatabase();
 
     log('info', `Created profile: ${name} (${ip_address})`);
-
     res.json({ success: true, id: lastId });
   } catch (error) {
     log('error', `Failed to create profile: ${error.message}`);
@@ -95,7 +94,7 @@ router.post('/', (req, res) => {
 router.put('/:id', (req, res) => {
   try {
     const { id } = req.params;
-    const { name, ip_address } = req.body;
+    const { name, ip_address, mac_address } = req.body;
 
     const db = getDatabase();
 
@@ -112,13 +111,12 @@ router.put('/:id', (req, res) => {
     }
 
     db.run(
-      'UPDATE profiles SET name = ?, ip_address = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-      [name || existing.name, ip_address || existing.ip_address, parseInt(id)]
+      'UPDATE profiles SET name = ?, ip_address = ?, mac_address = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      [name || existing.name, ip_address || existing.ip_address, mac_address !== undefined ? mac_address : existing.mac_address, parseInt(id)]
     );
 
     saveDatabase();
     log('info', `Updated profile: ${id}`);
-
     res.json({ success: true });
   } catch (error) {
     log('error', `Failed to update profile: ${error.message}`);
