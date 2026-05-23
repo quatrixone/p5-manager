@@ -7,7 +7,6 @@ Web-based manager for downloading and sending PS5 payloads (LUA and ELF files).
 - Upload custom payloads from your computer
 - Automatic port detection (LUA payloads use port 9026, ELF use 9021)
 - Built-in LUA Log Server for receiving debug output from payloads
-- PS5 Remote Control via playactor (Wake on LAN, Launch, Controller Input)
 - Multiple PS5 profile support
 - **Persistent Storage** - all data (profiles, payloads, settings) survives container rebuilds
 - **Auto-Default** - first profile automatically becomes default
@@ -54,14 +53,13 @@ cd backend && npm run dev
 
 ## Usage
 
-1. **Add a PS5 Profile** - Go to Profiles tab and add your PS5 IP address and MAC address
+1. **Add a PS5 Profile** - Go to Settings tab and add your PS5 IP address and MAC address
    - First profile is automatically set as default
    - No need to click "Set Default" if you only have one profile
 2. **Fetch Payloads** - Use Fetch from GitHub URL or Upload File
-3. **Send Payload** - Go to Network Send tab, select payload and click Send
-4. **LUA Log Server** - Go to LUA log server tab, click Start to begin receiving logs
-5. **Remote Control** - Go to Remote tab for Wake on LAN, Launch, and Script Runner
-6. **Settings** - Go to Settings tab for profiles management, remote settings, and backup/restore
+3. **Send Payload** - Go to Send tab, select payload and click Send
+4. **LUA Log Server** - Go to Logs tab for receiving payload debug output
+5. **Settings** - Go to Settings tab for profiles management and backup/restore
 
 ### Supported GitHub URLs
 
@@ -103,43 +101,12 @@ tar -czf backup.tar.gz ./data/
 tar -xzf backup.tar.gz
 ```
 
-## PS5 Remote Control
-
-### Wake on LAN
-Automatically wakes PS5 using the MAC address from your profile.
-
-### Launch Application
-Launch games or applications by selecting from known games or entering a custom titleId.
-
-### Script Runner
-Write scripts to send controller inputs programmatically:
-
-```bash
-# Example script:
-down
-wait 500
-right
-wait 500
-x
-wait 1000
-circle
-```
-
-**Available commands:**
-- `left`, `right`, `up`, `down` - D-pad
-- `x`, `cross`, `circle`, `square`, `triangle` - Face buttons
-- `ps`, `options`, `touchpad` - System buttons
-- `L1`, `R1`, `L2`, `R2` - Triggers
-- `L3`, `R3` - Stick press
-- `wait X` - Wait X milliseconds
-
 ## Tech Stack
 
 - **Backend:** Node.js + Express
 - **Frontend:** React + Vite
 - **Database:** SQLite (sql.js) with persistent Docker volume
 - **Log Server:** UDP (port 8080)
-- **Remote Control:** playactor CLI
 
 ## License
 
