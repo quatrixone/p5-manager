@@ -4,7 +4,7 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const dbPath = path.join(__dirname, '../../../data/payloads.db');
+const dbPath = path.join(__dirname, '../../data/payloads.db');
 const dbDir = path.dirname(dbPath);
 
 let db = null;
@@ -30,11 +30,19 @@ export async function initDatabase() {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
       ip_address TEXT NOT NULL,
+      mac_address TEXT,
       is_default INTEGER DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
+
+  // Add mac_address column if it doesn't exist
+  try {
+    db.run(`ALTER TABLE profiles ADD COLUMN mac_address TEXT`);
+  } catch (e) {
+    // Column already exists
+  }
 
   // Add is_default column if it doesn't exist
   try {
@@ -71,10 +79,26 @@ export async function initDatabase() {
       profile_id INTEGER NOT NULL,
       name TEXT NOT NULL,
       steps TEXT NOT NULL,
+      schedule_cron TEXT,
+      schedule_enabled INTEGER DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE
     )
   `);
+
+  // Add schedule columns if they don't exist
+  try {
+    db.run(`ALTER TABLE autoload_sequences ADD COLUMN schedule_cron TEXT`);
+  } catch (e) {
+    // Column already exists
+  }
+
+  try {
+    db.run(`ALTER TABLE autoload_sequences ADD COLUMN schedule_enabled INTEGER DEFAULT 0`);
+  } catch (e) {
+    // Column already exists
+  }
 
   db.run(`
     CREATE TABLE IF NOT EXISTS logs (

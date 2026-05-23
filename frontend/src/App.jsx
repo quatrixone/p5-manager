@@ -1,16 +1,18 @@
 import { useState, useEffect, useCallback } from 'react';
 import PayloadList from './components/PayloadList';
-import ProfileManager from './components/ProfileManager';
 import NetworkSender from './components/NetworkSender';
 import LogViewer from './components/LogViewer';
 import AutoloadBuilder from './components/AutoloadBuilder';
-import LogServer from './components/LogServer';
 import PS5Control from './components/PS5Control';
+import Settings from './components/Settings';
 
 const API = '/api';
 
 function App() {
-  const [activeTab, setActiveTab] = useState('payloads');
+  const [activeTab, setActiveTab] = useState(() => {
+    const saved = localStorage.getItem('activeTab');
+    return saved || 'payloads';
+  });
   const [payloads, setPayloads] = useState([]);
   const [profiles, setProfiles] = useState([]);
   const [logs, setLogs] = useState([]);
@@ -58,6 +60,10 @@ function App() {
     const interval = setInterval(fetchLogs, 5000);
     return () => clearInterval(interval);
   }, [fetchPayloads, fetchProfiles, fetchLogs]);
+
+  useEffect(() => {
+    localStorage.setItem('activeTab', activeTab);
+  }, [activeTab]);
 
   const fetchFromGitHub = async (repo, filePath) => {
     try {
@@ -143,7 +149,7 @@ function App() {
         fetchPayloads();
         fetchLogs();
       } else {
-        showNotification(data.error, 'error');
+        showNotification(data.error || 'Update failed', 'warning');
       }
     } catch (err) {
       showNotification(err.message, 'error');
@@ -173,27 +179,36 @@ function App() {
     }
   };
 
-  const createProfile = async (name, ip) => {
+  const createProfile = async (name, ip, mac) => {
     try {
       await fetch(`${API}/profiles`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, ip_address: ip })
+        body: JSON.stringify({ name, ip_address: ip, mac_address: mac })
       });
       showNotification('Profile created', 'success');
       fetchProfiles();
       fetchLogs();
+      // If this is the first profile, set it as default
+      if (profiles.length === 0) {
+        const res = await fetch(`${API}/profiles`);
+        const allProfiles = await res.json();
+        if (allProfiles.length === 1) {
+          await fetch(`${API}/profiles/${allProfiles[0].id}/set-default`, { method: 'POST' });
+          fetchProfiles();
+        }
+      }
     } catch (err) {
       showNotification(err.message, 'error');
     }
   };
 
-  const updateProfile = async (id, name, ip) => {
+  const updateProfile = async (id, name, ip, mac) => {
     try {
       await fetch(`${API}/profiles/${id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, ip_address: ip })
+        body: JSON.stringify({ name, ip_address: ip, mac_address: mac })
       });
       showNotification('Profile updated', 'success');
       fetchProfiles();
@@ -274,12 +289,11 @@ function App() {
 
   const tabs = [
     { id: 'payloads', label: 'Payloads' },
-    { id: 'profiles', label: 'Profiles' },
     { id: 'autoload', label: 'Autoload' },
     { id: 'sender', label: 'Send' },
     { id: 'remote', label: 'Remote' },
-    { id: 'logserver', label: 'LUA log' },
-    { id: 'logs', label: 'Logs' }
+    { id: 'logs', label: 'Logs' },
+    { id: 'settings', label: 'Settings' }
   ];
 
   return (
@@ -326,20 +340,8 @@ function App() {
             onUpload={uploadPayload}
           />
         )}
-        {activeTab === 'profiles' && (
-          <ProfileManager
-            profiles={profiles}
-            onCreate={createProfile}
-            onUpdate={updateProfile}
-            onDelete={deleteProfile}
-            onSetDefault={setDefaultProfile}
-          />
-        )}
         {activeTab === 'autoload' && (
-          <AutoloadBuilder
-            profiles={profiles}
-            payloads={payloads}
-          />
+          <AutoloadBuilder profiles={profiles} payloads={payloads} onNotification={showNotification} />
         )}
         {activeTab === 'sender' && (
           <NetworkSender
@@ -350,9 +352,48 @@ function App() {
           />
         )}
         {activeTab === 'remote' && <PS5Control profiles={profiles} />}
-        {activeTab === 'logserver' && <LogServer profiles={profiles} />}
+        {activeTab === 'settings' && (
+          <Settings
+            profiles={profiles}
+            onProfileCreate={createProfile}
+            onProfileUpdate={updateProfile}
+            onProfileDelete={deleteProfile}
+            onProfileSetDefault={setDefaultProfile}
+            onLaunch={(titleId) => {
+              const profile = profiles.find(p => p.is_default) || profiles[0];
+              if (profile) {
+                const game = KNOWN_GAMES.find(g => g.titleId === titleId);
+                fetch(`${API}/ps5control/launch`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ ip: profile.ip_address, titleId, name: game?.name || titleId })
+                }).then(() => showNotification(`Launched ${game?.name || titleId}`, 'success'));
+              }
+            }}
+            onWake={() => {
+              const profile = profiles.find(p => p.is_default) || profiles[0];
+              if (profile?.mac_address) {
+                fetch(`${API}/ps5control/wol`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ mac: profile.mac_address, ip: profile.ip_address })
+                }).then(() => showNotification('Wake on LAN sent', 'success'));
+              }
+            }}
+            onSendInput={(button) => {
+              const profile = profiles.find(p => p.is_default) || profiles[0];
+              if (profile) {
+                fetch(`${API}/ps5control/input`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ ip: profile.ip_address, button })
+                });
+              }
+            }}
+          />
+        )}
         {activeTab === 'logs' && (
-          <LogViewer logs={logs} onRefresh={fetchLogs} />
+          <LogViewer logs={logs} onRefresh={fetchLogs} profiles={profiles} />
         )}
       </main>
     </div>

@@ -7,8 +7,10 @@ Web-based manager for downloading and sending PS5 payloads (LUA and ELF files).
 - Upload custom payloads from your computer
 - Automatic port detection (LUA payloads use port 9026, ELF use 9021)
 - Built-in LUA Log Server for receiving debug output from payloads
-- Multiple PS5 profile support with default selection
-- Network status checking
+- PS5 Remote Control via playactor (Wake on LAN, Launch, Controller Input)
+- Multiple PS5 profile support
+- **Persistent Storage** - all data (profiles, payloads, settings) survives container rebuilds
+- **Auto-Default** - first profile automatically becomes default
 
 **Requirements:**
 - PS5 console on same network
@@ -23,7 +25,7 @@ Web-based manager for downloading and sending PS5 payloads (LUA and ELF files).
 docker-compose up -d
 ```
 
-The app will be available at `http://your-server:3000`
+The app will be available at `http://your-server:3001`
 
 ### Manual (Node.js)
 
@@ -50,11 +52,14 @@ cd backend && npm run dev
 
 ## Usage
 
-1. **Add a PS5 Profile** - Go to Profiles tab and add your PS5 IP address
-2. **Set Default Profile** - Click "Set Default" on your PS5 profile
-3. **Fetch Payloads** - Use Fetch from GitHub URL or Upload File
-4. **Send Payload** - Go to Network Send tab, select payload and click Send
-5. **LUA Log Server** - Go to LUA log server tab, click Start to begin receiving logs
+1. **Add a PS5 Profile** - Go to Profiles tab and add your PS5 IP address and MAC address
+   - First profile is automatically set as default
+   - No need to click "Set Default" if you only have one profile
+2. **Fetch Payloads** - Use Fetch from GitHub URL or Upload File
+3. **Send Payload** - Go to Network Send tab, select payload and click Send
+4. **LUA Log Server** - Go to LUA log server tab, click Start to begin receiving logs
+5. **Remote Control** - Go to Remote tab for Wake on LAN, Launch, and Script Runner
+6. **Settings** - Go to Settings tab for profiles management, remote settings, and backup/restore
 
 ### Supported GitHub URLs
 
@@ -79,18 +84,60 @@ https://raw.githubusercontent.com/owner/repo/main/payloads/file.lua
 | LUA (.lua)  | 9026  |
 | ELF (.elf)  | 9021  |
 
+## Persistent Storage
+
+All application data is stored in Docker volumes and persists across container rebuilds:
+
+```bash
+# Data location
+./data/
+  payloads.db    # SQLite database (profiles, payloads, settings)
+  payloads/      # Uploaded payload files
+
+# To backup
+tar -czf backup.tar.gz ./data/
+
+# To restore
+tar -xzf backup.tar.gz
+```
+
+## PS5 Remote Control
+
+### Wake on LAN
+Automatically wakes PS5 using the MAC address from your profile.
+
+### Launch Application
+Launch games or applications by selecting from known games or entering a custom titleId.
+
+### Script Runner
+Write scripts to send controller inputs programmatically:
+
+```bash
+# Example script:
+down
+wait 500
+right
+wait 500
+x
+wait 1000
+circle
+```
+
+**Available commands:**
+- `left`, `right`, `up`, `down` - D-pad
+- `x`, `cross`, `circle`, `square`, `triangle` - Face buttons
+- `ps`, `options`, `touchpad` - System buttons
+- `L1`, `R1`, `L2`, `R2` - Triggers
+- `L3`, `R3` - Stick press
+- `wait X` - Wait X milliseconds
+
 ## Tech Stack
 
 - **Backend:** Node.js + Express
 - **Frontend:** React + Vite
-- **Database:** SQLite (sql.js)
+- **Database:** SQLite (sql.js) with persistent Docker volume
 - **Log Server:** UDP (port 8080)
-
-## Upcoming Features
-
-- **Wake on LAN** - Automatically wake PS5 from standby mode
-- **Auto Start Game** - Automatically launch selected game when PS5 powers on
-- **Auto Load Payload** - Automatically send payload without user interaction after game starts
+- **Remote Control:** playactor CLI
 
 ## License
 
