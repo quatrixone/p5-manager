@@ -96,8 +96,8 @@ All application data is stored in Docker volumes and persists across container r
 
 **Backup & Restore via Web UI:**
 - Go to **Settings → Backup** tab
-- Click **Export Backup** to download all data as JSON
-- Click **Restore** and select a backup file to restore
+- Click **Download Backup** to export all data (profiles, payloads, sequences, settings) as a ZIP file
+- Click **Restore Backup** and select a backup ZIP to restore everything
 
 ## Tech Stack
 
