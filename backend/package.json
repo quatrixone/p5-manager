@@ -10,10 +10,12 @@
   },
   "dependencies": {
     "adm-zip": "^0.5.10",
+    "basic-ftp": "^6.0.1",
     "cors": "^2.8.5",
     "dotenv": "^16.4.1",
     "express": "^4.18.2",
     "node-fetch": "^3.3.2",
-    "sql.js": "^1.10.3"
+    "sql.js": "^1.10.3",
+    "webtorrent": "^3.0.16"
   }
 }

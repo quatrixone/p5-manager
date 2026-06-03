@@ -1,0 +1,7 @@
+[
+  { "name": "Payload Kernel Logger (klogsrv)", "url": "https://github.com/john-tornblom/ps5-payload-klogsrv/releases/latest/download/klogsrv.elf" },
+  { "name": "ps5-backpork.elf", "url": "https://github.com/BestPig/BackPork/releases/download/0.1/ps5-backpork.elf" },
+  { "name": "kstuff.elf", "url": "https://github.com/EchoStretch/kstuff-lite/releases/download/v1.06/kstuff.elf" },
+  { "name": "shadowmountplus.elf", "url": "https://github.com/drakmor/ShadowMountPlus/releases/download/1.6test11/ShadowMountPlus_1.6test11.zip" },
+  { "name": "micromount.elf", "url": "https://github.com/PSBrew/MicroMount/releases/latest/download/micromount.elf" }
+]

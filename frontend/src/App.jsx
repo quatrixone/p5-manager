@@ -1,17 +1,32 @@
 import { useState, useEffect, useCallback } from 'react';
 import PayloadList from './components/PayloadList';
-import NetworkSender from './components/NetworkSender';
 import LogViewer from './components/LogViewer';
 import AutoloadBuilder from './components/AutoloadBuilder';
 import PS5Control from './components/PS5Control';
 import Settings from './components/Settings';
+import FileOps from './components/FileOps';
+import { useMediaQuery } from './hooks/useSSE';
+import './styles.css';
 
 const API = '/api';
 
+const tabs = [
+  { id: 'payloads', label: 'Payloads', icon: '📦' },
+  { id: 'autoload', label: 'Autoload', icon: '⚡' },
+  { id: 'files', label: 'File Ops', icon: '📁' },
+  { id: 'remote', label: 'PS5 Control', icon: '🎮' },
+  { id: 'logs', label: 'Logs', icon: '📋' },
+  { id: 'settings', label: 'Settings', icon: '⚙️' }
+];
+
 function App() {
+  const isMobile = useMediaQuery('(max-width: 768px)');
   const [activeTab, setActiveTab] = useState(() => {
     const saved = localStorage.getItem('activeTab');
-    return saved || 'payloads';
+    // Dashboard and standalone remoteplay tabs were removed - migrate.
+    if (!saved || saved === 'dashboard') return 'payloads';
+    if (saved === 'remoteplay') return 'remote';
+    return saved;
   });
   const [payloads, setPayloads] = useState([]);
   const [profiles, setProfiles] = useState([]);
@@ -135,7 +150,7 @@ function App() {
       showNotification('Payload deleted', 'success');
       fetchPayloads();
       fetchLogs();
-    } catch (err) {
+          } catch (err) {
       showNotification(err.message, 'error');
     }
   };
@@ -148,8 +163,27 @@ function App() {
         showNotification('Payload updated', 'success');
         fetchPayloads();
         fetchLogs();
-      } else {
+              } else {
         showNotification(data.error || 'Update failed', 'warning');
+      }
+    } catch (err) {
+      showNotification(err.message, 'error');
+    }
+  };
+
+  const restoreDefaultPayloads = async (force = false) => {
+    try {
+      const res = await fetch(`${API}/payloads/defaults/restore${force ? '?force=1' : ''}`, { method: 'POST' });
+      const data = await res.json();
+      if (data.success) {
+        const a = data.added?.length || 0;
+        const s = data.skipped?.length || 0;
+        const f = data.failed?.length || 0;
+        showNotification(`Defaults: +${a} added, ${s} kept${f ? `, ${f} failed` : ''}`, f ? 'warning' : 'success');
+        fetchPayloads();
+        fetchLogs();
+      } else {
+        showNotification(data.error || 'Restore failed', 'error');
       }
     } catch (err) {
       showNotification(err.message, 'error');
@@ -171,7 +205,7 @@ function App() {
         showNotification('Payload uploaded', 'success');
         fetchPayloads();
         fetchLogs();
-      } else {
+              } else {
         showNotification(data.error, 'error');
       }
     } catch (err) {
@@ -179,12 +213,12 @@ function App() {
     }
   };
 
-  const createProfile = async (name, ip, mac) => {
+  const createProfile = async (name, ip, mac, credential) => {
     try {
       await fetch(`${API}/profiles`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, ip_address: ip, mac_address: mac })
+        body: JSON.stringify({ name, ip_address: ip, mac_address: mac, credential })
       });
       showNotification('Profile created', 'success');
       fetchProfiles();
@@ -203,12 +237,12 @@ function App() {
     }
   };
 
-  const updateProfile = async (id, name, ip, mac) => {
+  const updateProfile = async (id, name, ip, mac, credential) => {
     try {
       await fetch(`${API}/profiles/${id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, ip_address: ip, mac_address: mac })
+        body: JSON.stringify({ name, ip_address: ip, mac_address: mac, credential })
       });
       showNotification('Profile updated', 'success');
       fetchProfiles();
@@ -287,46 +321,54 @@ function App() {
     }
   };
 
-  const tabs = [
-    { id: 'payloads', label: 'Payloads' },
-    { id: 'autoload', label: 'Autoload' },
-    { id: 'sender', label: 'Send' },
-    { id: 'remote', label: 'Remote' },
-    { id: 'logs', label: 'Logs' },
-    { id: 'settings', label: 'Settings' }
-  ];
+  const mobileNav = (
+    <nav className="bottom-nav">
+      <div className="bottom-nav-inner">
+        {tabs.map(tab => (
+          <button
+            key={tab.id}
+            className={`bottom-nav-item ${activeTab === tab.id ? 'active' : ''}`}
+            onClick={() => setActiveTab(tab.id)}
+          >
+            <span className="bottom-nav-icon">{tab.icon}</span>
+            <span>{tab.label}</span>
+          </button>
+        ))}
+      </div>
+    </nav>
+  );
+
+  const desktopTabs = (
+    <nav className="top-tabs desktop-only">
+      {tabs.map(tab => (
+        <button
+          key={tab.id}
+          className={`tab-btn ${activeTab === tab.id ? 'active' : ''}`}
+          onClick={() => setActiveTab(tab.id)}
+        >
+          {tab.icon} {tab.label}
+        </button>
+      ))}
+    </nav>
+  );
 
   return (
-    <div style={{ minHeight: '100vh', background: '#1a1a2e', color: '#eee' }}>
-      <header style={{ background: '#16213e', padding: '0.75rem 1rem', borderBottom: '1px solid #0f3460' }}>
+    <div style={{ minHeight: '100vh', background: 'var(--bg)', color: 'var(--text)' }}>
+      <header style={{ background: 'var(--panel)', padding: '0.75rem 1rem', borderBottom: '1px solid var(--border)' }}>
         <h1 style={{ fontSize: '1.25rem', fontWeight: 600, textAlign: 'center' }}>PS5WebPayload Manager</h1>
       </header>
 
       {notification && (
         <div style={{
           position: 'fixed', top: 60, left: '50%', transform: 'translateX(-50%)', padding: '0.75rem 1.5rem', borderRadius: 8,
-          background: notification.type === 'error' ? '#e74c3c' : notification.type === 'success' ? '#27ae60' : '#3498db',
+          background: notification.type === 'error' ? 'var(--red)' : notification.type === 'success' ? 'var(--green)' : 'var(--blue)',
           color: '#fff', zIndex: 1000, boxShadow: '0 4px 12px rgba(0,0,0,0.3)', maxWidth: '90vw', textAlign: 'center'
         }}>
           {notification.message}
         </div>
       )}
 
-      <nav style={{ display: 'flex', gap: '0.25rem', padding: '0.5rem', background: '#16213e', borderBottom: '1px solid #0f3460', overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
-        {tabs.map(tab => (
-          <button
-            key={tab.id}
-            onClick={() => setActiveTab(tab.id)}
-            style={{
-              padding: '0.6rem 1rem', border: 'none', borderRadius: 6, cursor: 'pointer', whiteSpace: 'nowrap',
-              background: activeTab === tab.id ? '#e94560' : 'transparent', color: '#fff',
-              fontWeight: 500, transition: 'background 0.2s', fontSize: '0.9rem', minHeight: 44
-            }}
-          >
-            {tab.label}
-          </button>
-        ))}
-      </nav>
+      {isMobile ? mobileNav : desktopTabs}
 
       <main style={{ padding: '1rem', maxWidth: 1400, margin: '0 auto' }}>
         {activeTab === 'payloads' && (
@@ -338,20 +380,16 @@ function App() {
             onDelete={deletePayload}
             onUpdate={updatePayload}
             onUpload={uploadPayload}
+            onRestoreDefaults={restoreDefaultPayloads}
           />
         )}
         {activeTab === 'autoload' && (
           <AutoloadBuilder profiles={profiles} payloads={payloads} onNotification={showNotification} />
         )}
-        {activeTab === 'sender' && (
-          <NetworkSender
-            profiles={profiles}
-            payloads={payloads}
-            onSend={sendPayload}
-            onCheckStatus={checkPs5Status}
-          />
+        {activeTab === 'remote' && <PS5Control profiles={profiles} onNotification={showNotification} />}
+        {activeTab === 'files' && (
+          <FileOps profiles={profiles} onNotification={showNotification} />
         )}
-        {activeTab === 'remote' && <PS5Control profiles={profiles} />}
         {activeTab === 'settings' && (
           <Settings
             profiles={profiles}
@@ -362,12 +400,11 @@ function App() {
             onLaunch={(titleId) => {
               const profile = profiles.find(p => p.is_default) || profiles[0];
               if (profile) {
-                const game = KNOWN_GAMES.find(g => g.titleId === titleId);
                 fetch(`${API}/ps5control/launch`, {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ ip: profile.ip_address, titleId, name: game?.name || titleId })
-                }).then(() => showNotification(`Launched ${game?.name || titleId}`, 'success'));
+                  body: JSON.stringify({ ip: profile.ip_address, titleId })
+                }).then(() => showNotification(`Launched ${titleId}`, 'success'));
               }
             }}
             onWake={() => {
@@ -378,16 +415,6 @@ function App() {
                   headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify({ mac: profile.mac_address, ip: profile.ip_address })
                 }).then(() => showNotification('Wake on LAN sent', 'success'));
-              }
-            }}
-            onSendInput={(button) => {
-              const profile = profiles.find(p => p.is_default) || profiles[0];
-              if (profile) {
-                fetch(`${API}/ps5control/input`, {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ ip: profile.ip_address, button })
-                });
               }
             }}
           />
