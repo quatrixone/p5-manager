@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 
 const API = '/api';
 
@@ -24,24 +24,10 @@ const AVAILABLE_COMMANDS = [
   { cmd: 'wait', desc: 'Wait X ms (e.g. wait 1000)' },
 ];
 
-function ScriptRunner({ ip, onSendInput }) {
-  const [script, setScript] = useState(`// Example script:
-left
-right
-up
-down
-wait 500
-x
-circle
-triangle
-square
-ps
-options
-touchpad
-L1
-R1
-L2
-R2`);
+function ScriptRunner({ ip, onSendInput, scripts, onScriptsChange }) {
+  const [scriptName, setScriptName] = useState('');
+  const [script, setScript] = useState('');
+  const [editingId, setEditingId] = useState(null);
   const [output, setOutput] = useState([]);
   const [isRunning, setIsRunning] = useState(false);
   const [stopRequested, setStopRequested] = useState(false);
@@ -101,7 +87,7 @@ R2`);
     addOutput('⏹ Stop requested...', 'warning');
   };
 
-  const runScript = async () => {
+  const runScript = async (scriptToRun) => {
     if (!ip) {
       addOutput('No PS5 IP address configured', 'error');
       return;
@@ -112,7 +98,7 @@ R2`);
     setOutput([]);
     addOutput('▶ Starting script...', 'info');
 
-    const lines = script.split('\n');
+    const lines = scriptToRun.split('\n');
     let lineNum = 0;
 
     for (const line of lines) {
@@ -142,7 +128,6 @@ R2`);
         addOutput(`Line ${lineNum}: Command failed, continuing...`, 'warning');
       }
 
-      // Small delay between commands to avoid flooding
       await new Promise(resolve => setTimeout(resolve, 100));
     }
 
@@ -152,13 +137,90 @@ R2`);
   };
 
   const insertCommand = (cmd) => {
-    setScript(prev => prev + `\n${cmd}`);
+    setScript(prev => prev + (prev ? '\n' : '') + cmd);
+  };
+
+  const saveScript = async () => {
+    if (!scriptName.trim() || !script.trim()) {
+      addOutput('Name and script required', 'error');
+      return;
+    }
+
+    try {
+      const method = editingId ? 'PUT' : 'POST';
+      const url = editingId ? `${API}/input-scripts/${editingId}` : `${API}/input-scripts`;
+      const res = await fetch(url, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: scriptName, script })
+      });
+      const data = await res.json();
+      if (data.success) {
+        addOutput(editingId ? 'Script updated' : 'Script saved', 'success');
+        setScriptName('');
+        setScript('');
+        setEditingId(null);
+        onScriptsChange();
+      }
+    } catch (err) {
+      addOutput(err.message, 'error');
+    }
+  };
+
+  const loadScript = (scriptToLoad) => {
+    setScriptName(scriptToLoad.name);
+    setScript(scriptToLoad.script);
+    setEditingId(scriptToLoad.id);
+    addOutput(`Loaded: ${scriptToLoad.name}`, 'info');
+  };
+
+  const deleteScript = async (id) => {
+    if (!confirm('Delete this script?')) return;
+    try {
+      await fetch(`${API}/input-scripts/${id}`, { method: 'DELETE' });
+      addOutput('Script deleted', 'success');
+      onScriptsChange();
+      if (editingId === id) {
+        setScriptName('');
+        setScript('');
+        setEditingId(null);
+      }
+    } catch (err) {
+      addOutput(err.message, 'error');
+    }
+  };
+
+  const clearForm = () => {
+    setScriptName('');
+    setScript('');
+    setEditingId(null);
   };
 
   const clearOutput = () => setOutput([]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+      {/* Saved Scripts */}
+      {scripts && scripts.length > 0 && (
+        <div style={{ background: '#16213e', padding: '1rem', borderRadius: 12 }}>
+          <h3 style={{ fontSize: '0.9rem', fontWeight: 500, marginBottom: '0.75rem', color: '#27ae60' }}>
+            Saved Scripts ({scripts.length})
+          </h3>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', maxHeight: 200, overflowY: 'auto' }}>
+            {scripts.map(s => (
+              <div key={s.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.5rem', background: '#0f3460', borderRadius: 6 }}>
+                <span style={{ flex: 1, cursor: 'pointer', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} onClick={() => loadScript(s)}>{s.name}</span>
+                <div style={{ display: 'flex', gap: '0.25rem' }}>
+                  <button onClick={() => runScript(s.script)} disabled={isRunning} style={{ padding: '0.3rem 0.5rem', background: '#27ae60', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: '0.75rem' }}>▶</button>
+                  <button onClick={() => loadScript(s)} disabled={isRunning} style={{ padding: '0.3rem 0.5rem', background: '#3498db', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: '0.75rem' }}>✏️</button>
+                  <button onClick={() => deleteScript(s.id)} style={{ padding: '0.3rem 0.5rem', background: '#e74c3c', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: '0.75rem' }}>🗑</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Command Reference */}
       <div style={{ background: '#16213e', padding: '1rem', borderRadius: 12 }}>
         <h3 style={{ fontSize: '0.9rem', fontWeight: 500, marginBottom: '0.75rem', color: '#27ae60' }}>
@@ -208,21 +270,30 @@ R2`);
       {/* Script Editor */}
       <div style={{ background: '#16213e', padding: '1rem', borderRadius: 12 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
-          <h3 style={{ fontSize: '0.9rem', fontWeight: 500 }}>Script Editor</h3>
+          <h3 style={{ fontSize: '0.9rem', fontWeight: 500 }}>
+            {editingId ? `Editing: ${scriptName}` : 'New Script'}
+          </h3>
           <div style={{ display: 'flex', gap: '0.5rem' }}>
             <button
-              onClick={() => setScript('')}
+              onClick={clearForm}
               disabled={isRunning}
               style={{ padding: '0.4rem 0.75rem', background: '#666', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: '0.8rem' }}
             >
               Clear
             </button>
             <button
-              onClick={runScript}
-              disabled={isRunning || !ip}
+              onClick={saveScript}
+              disabled={isRunning || !scriptName.trim() || !script.trim()}
               style={{ padding: '0.4rem 0.75rem', background: isRunning ? '#555' : '#27ae60', color: '#fff', border: 'none', borderRadius: 4, cursor: isRunning ? 'not-allowed' : 'pointer', fontSize: '0.8rem' }}
             >
-              {isRunning ? 'Running...' : '▶ Run Script'}
+              💾 Save
+            </button>
+            <button
+              onClick={() => runScript(script)}
+              disabled={isRunning || !script.trim()}
+              style={{ padding: '0.4rem 0.75rem', background: isRunning ? '#555' : '#e94560', color: '#fff', border: 'none', borderRadius: 4, cursor: isRunning ? 'not-allowed' : 'pointer', fontSize: '0.8rem' }}
+            >
+              {isRunning ? 'Running...' : '▶ Run'}
             </button>
             {isRunning && (
               <button
@@ -233,6 +304,16 @@ R2`);
               </button>
             )}
           </div>
+        </div>
+        <div style={{ marginBottom: '0.75rem' }}>
+          <input
+            type="text"
+            placeholder="Script name"
+            value={scriptName}
+            onChange={e => setScriptName(e.target.value)}
+            disabled={isRunning}
+            style={{ width: '100%', padding: '0.75rem', borderRadius: 6, background: '#1a1a2e', color: '#fff', border: '1px solid #0f3460', fontSize: '1rem', marginBottom: '0.5rem' }}
+          />
         </div>
         <textarea
           value={script}
@@ -248,7 +329,7 @@ cross
 circle`}
           style={{
             width: '100%',
-            minHeight: 200,
+            minHeight: 150,
             padding: '0.75rem',
             borderRadius: 8,
             background: isRunning ? '#1a1a2e' : '#0a0a15',
@@ -277,8 +358,8 @@ circle`}
           </button>
         </div>
         <div style={{
-          minHeight: 150,
-          maxHeight: 250,
+          minHeight: 100,
+          maxHeight: 200,
           overflowY: 'auto',
           fontFamily: 'monospace',
           fontSize: '0.8rem',

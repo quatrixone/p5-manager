@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" fill="#1a1a2e"/>
+  <rect x="40" y="100" width="432" height="312" rx="32" fill="#16213e" stroke="#e94560" stroke-width="8"/>
+  <circle cx="150" cy="200" r="50" fill="#e94560"/>
+  <circle cx="362" cy="200" r="50" fill="#3498db"/>
+  <rect x="120" y="300" width="272" height="32" rx="8" fill="#e94560"/>
+  <text x="256" y="430" text-anchor="middle" fill="#fff" font-size="56" font-weight="bold">PS5</text>
+</svg>

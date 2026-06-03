@@ -1,12 +1,33 @@
 services:
+  chiaki:
+    build:
+      context: ./chiaki
+      dockerfile: Dockerfile
+    image: chiaki-sidecar:latest
+    restart: unless-stopped
+    # host networking so pyremoteplay can do UDP discovery + Remote Play
+    # streaming with the PS5 directly on the LAN (no port forwarding pain).
+    network_mode: host
+    environment:
+      - CHIAKI_SIDECAR_HOST=127.0.0.1
+      - CHIAKI_SIDECAR_PORT=9555
+      - CHIAKI_SIDECAR_LOG=info
+
   app:
     build:
       context: .
       dockerfile: Dockerfile
     volumes:
       - ./data:/app/data
+      - /mnt:/mnt
+      - /mnt/sda1:/mnt/sda1
+      - /mnt/sdb1:/mnt/sdb1
     environment:
       - NODE_ENV=production
       - PORT=3001
+      - DATA_DIR=/app/data
+      - CHIAKI_SIDECAR_URL=http://127.0.0.1:9555
+    depends_on:
+      - chiaki
     restart: unless-stopped
     network_mode: host

@@ -9,9 +9,17 @@ import profilesRouter from './routes/profiles.js';
 import ps5Router from './routes/ps5.js';
 import logsRouter from './routes/logs.js';
 import backupRouter from './routes/backup.js';
-import logServerRouter from './routes/logServer.js';
+import logServerRouter, { startLogServer } from './routes/logServer.js';
+import kernelLogServerRouter, { startKernelLogServer } from './routes/kernelLogServer.js';
 import ps5ControlRouter from './routes/ps5control.js';
 import sequencesRouter from './routes/sequences.js';
+import settingsRouter from './routes/settings.js';
+import inputScriptsRouter from './routes/inputScripts.js';
+import micromountRouter from './routes/micromount.js';
+import downloaderRouter from './routes/downloader.js';
+import eventsRouter from './routes/events.js';
+import remoteplayRouter from './routes/remoteplay.js';
+import { ensureDefaultPayloads } from './lib/defaultPayloads.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -31,8 +39,15 @@ app.use('/api/ps5', ps5Router);
 app.use('/api/logs', logsRouter);
 app.use('/api/backup', backupRouter);
 app.use('/api/logserver', logServerRouter);
+app.use('/api/kernellog', kernelLogServerRouter);
 app.use('/api/ps5control', ps5ControlRouter);
 app.use('/api/sequences', sequencesRouter);
+app.use('/api/settings', settingsRouter);
+app.use('/api/input-scripts', inputScriptsRouter);
+app.use('/api/micromount', micromountRouter);
+app.use('/api/downloader', downloaderRouter);
+app.use('/api/events', eventsRouter);
+app.use('/api/remoteplay', remoteplayRouter);
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
@@ -49,8 +64,19 @@ if (process.env.NODE_ENV === 'production' && fs.existsSync(distPath)) {
 await initializeDatabase();
 
 // Auto-start log server
-import { startLogServer } from './routes/logServer.js';
 startLogServer(8080);
+
+// Auto-start kernel log server
+startKernelLogServer(3232);
+
+// Make sure built-in templates and log viewer have the payloads they need,
+// even on an empty database. Runs in the background so a slow network does
+// not block API startup.
+ensureDefaultPayloads().then((s) => {
+  console.log(`[defaults] payloads added=${s.added.length} skipped=${s.skipped.length} failed=${s.failed.length}`);
+}).catch((e) => {
+  console.warn(`[defaults] payload bootstrap error: ${e.message}`);
+});
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`PS5WebPayload Manager API running on port ${PORT}`);

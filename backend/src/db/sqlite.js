@@ -3,8 +3,13 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const dbPath = path.join(__dirname, '../../data/payloads.db');
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+// docker: /app/src/db/sqlite.js -> /app
+// dev: /path/to/backend/src/db/sqlite.js -> /path/to
+const isInDocker = __dirname.startsWith('/app');
+const projectRoot = isInDocker ? '/app' : path.resolve(__dirname, '../..');
+const dbPath = path.join(projectRoot, 'data', 'payloads.db');
 const dbDir = path.dirname(dbPath);
 
 let db = null;
@@ -50,6 +55,27 @@ export async function initDatabase() {
   } catch (e) {
     // Column already exists
   }
+
+  // Add credential column if it doesn't exist
+  try {
+    db.run(`ALTER TABLE profiles ADD COLUMN credential TEXT`);
+  } catch (e) {
+    // Column already exists
+  }
+
+  // Add port column if it doesn't exist
+  try {
+    db.run(`ALTER TABLE profiles ADD COLUMN port INTEGER DEFAULT 9021`);
+  } catch (e) {
+    // Column already exists
+  }
+
+  // Remote Play (chiaki) identity. psn_account_id is the OAuth-derived ID,
+  // rp_user_profile holds the pyremoteplay profile dict with registration
+  // credentials (kept as JSON text).
+  try { db.run(`ALTER TABLE profiles ADD COLUMN psn_account_id TEXT`); } catch (e) {}
+  try { db.run(`ALTER TABLE profiles ADD COLUMN psn_online_id TEXT`); } catch (e) {}
+  try { db.run(`ALTER TABLE profiles ADD COLUMN rp_user_profile TEXT`); } catch (e) {}
 
   db.run(`
     CREATE TABLE IF NOT EXISTS payloads (
@@ -100,6 +126,12 @@ export async function initDatabase() {
     // Column already exists
   }
 
+  try {
+    db.run(`ALTER TABLE autoload_sequences ADD COLUMN updated_at DATETIME DEFAULT CURRENT_TIMESTAMP`);
+  } catch (e) {
+    // Column already exists
+  }
+
   db.run(`
     CREATE TABLE IF NOT EXISTS logs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -113,6 +145,33 @@ export async function initDatabase() {
     CREATE TABLE IF NOT EXISTS settings (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
+    )
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS input_scripts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      script TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS micromount_sources (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      type TEXT NOT NULL DEFAULT 'local',
+      path TEXT NOT NULL,
+      smb_host TEXT,
+      smb_share TEXT,
+      smb_username TEXT,
+      smb_password TEXT,
+      smb_domain TEXT,
+      enabled INTEGER DEFAULT 1,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
 

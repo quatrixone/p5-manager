@@ -51,38 +51,45 @@ router.post('/send', async (req, res) => {
 router.get('/status/:ip', async (req, res) => {
   try {
     const { ip } = req.params;
-    const port = req.query.port || 9021;
+    const ports = [9021, 9020, 8080, 6970]; // Common ports for payloads (elf/lua)
 
-    log('info', `Checking PS5 status at ${ip}:${port}`);
+    log('info', `Checking PS5 status at ${ip}`);
 
     const net = await import('net');
 
-    const isReachable = await new Promise((resolve) => {
+    // Check multiple ports - if any is open, PS5 is reachable with payload
+    const checkPort = (port) => new Promise((resolve) => {
       const client = new net.Socket();
-      client.setTimeout(3000);
+      client.setTimeout(2000);
 
       client.on('connect', () => {
         client.destroy();
-        resolve(true);
+        resolve({ port, reachable: true });
       });
 
       client.on('timeout', () => {
         client.destroy();
-        resolve(false);
+        resolve({ port, reachable: false });
       });
 
       client.on('error', () => {
         client.destroy();
-        resolve(false);
+        resolve({ port, reachable: false });
       });
 
       client.connect(port, ip);
     });
 
+    // Check all ports in parallel
+    const results = await Promise.all(ports.map(checkPort));
+    const openPort = results.find(r => r.reachable);
+    const isReachable = !!openPort;
+
     res.json({
       ip,
-      port,
       reachable: isReachable,
+      openPort: openPort ? openPort.port : null,
+      portsChecked: ports,
       timestamp: new Date().toISOString()
     });
   } catch (error) {

@@ -5,9 +5,11 @@ import { fileURLToPath } from 'url';
 import fetch from 'node-fetch';
 import AdmZip from 'adm-zip';
 import { getDatabase, saveDatabase, log } from '../db/sqlite.js';
+import { ensureDefaultPayloads, ESSENTIAL_PAYLOADS } from '../lib/defaultPayloads.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const dataDir = path.join(__dirname, '../../data');
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const dataDir = process.env.DATA_DIR || path.join(process.cwd(), 'data');
 const payloadsDir = path.join(dataDir, 'payloads');
 
 const router = express.Router();
@@ -34,6 +36,29 @@ router.get('/', (req, res) => {
   }
 });
 
+// List the essential built-in payloads that the manager auto-installs.
+router.get('/defaults', (req, res) => {
+  res.json(ESSENTIAL_PAYLOADS.map(p => ({
+    filename: p.filename,
+    url: p.url,
+    tag: p.tag,
+    description: p.description,
+  })));
+});
+
+// Manually re-run the default-payload bootstrap. With ?force=1, re-download
+// even payloads that already exist (overwrites the local files).
+router.post('/defaults/restore', async (req, res) => {
+  try {
+    const force = req.query.force === '1' || req.body?.force === true;
+    const summary = await ensureDefaultPayloads({ force });
+    res.json({ success: true, ...summary });
+  } catch (error) {
+    log('error', `Restore defaults failed: ${error.message}`);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 router.post('/fetch-url', async (req, res) => {
   try {
     const { url } = req.body;
@@ -43,6 +68,17 @@ router.post('/fetch-url', async (req, res) => {
     }
 
     ensurePayloadsDir();
+
+    const db = getDatabase();
+
+    // Check if payload with this URL already exists
+    const existingStmt = db.prepare('SELECT id FROM payloads WHERE source_url = ?');
+    existingStmt.bind([url]);
+    const exists = existingStmt.step();
+    existingStmt.free();
+    if (exists) {
+      return res.json({ success: true, downloaded: [], message: 'Payload already exists' });
+    }
 
     // Check if it's a releases URL
     const releasesMatch = url.match(/github\.com\/([^\/]+)\/([^\/]+)\/releases(?:\/tag\/([^\/\?#]+))?/i);
@@ -62,7 +98,6 @@ router.post('/fetch-url', async (req, res) => {
 
       const release = await response.json();
       const results = [];
-      const db = getDatabase();
       const version = release.tag_name || 'latest';
 
       for (const asset of release.assets) {
@@ -148,10 +183,18 @@ router.post('/fetch-url', async (req, res) => {
       }
 
       if (filename.endsWith('.lua') || filename.endsWith('.elf')) {
+        // Check if already exists
+        const checkStmt = db.prepare('SELECT id FROM payloads WHERE source_url = ?');
+        checkStmt.bind([url]);
+        if (checkStmt.step()) {
+          checkStmt.free();
+          return res.json({ success: true, downloaded: [], message: 'Payload already exists' });
+        }
+        checkStmt.free();
+
         const filepath = path.join(payloadsDir, filename);
         fs.writeFileSync(filepath, buffer);
 
-        const db = getDatabase();
         db.run(
           'INSERT INTO payloads (name, filename, filepath, source_url, size) VALUES (?, ?, ?, ?, ?)',
           [filename, filename, filepath, url, buffer.length]
@@ -184,10 +227,18 @@ router.post('/fetch-url', async (req, res) => {
         return res.status(400).json({ error: 'Only .lua and .elf files are supported' });
       }
 
+      // Check if already exists
+      const checkStmt = db.prepare('SELECT id FROM payloads WHERE source_url = ?');
+      checkStmt.bind([url]);
+      if (checkStmt.step()) {
+        checkStmt.free();
+        return res.json({ success: true, downloaded: [], message: 'Payload already exists' });
+      }
+      checkStmt.free();
+
       const filepath = path.join(payloadsDir, filename);
       fs.writeFileSync(filepath, buffer);
 
-      const db = getDatabase();
       db.run(
         'INSERT INTO payloads (name, filename, filepath, source_url, size) VALUES (?, ?, ?, ?, ?)',
         [filename, filename, filepath, url, buffer.length]
@@ -296,11 +347,22 @@ router.post('/send/:id', async (req, res) => {
       return res.status(404).json({ error: 'Payload not found' });
     }
 
-    if (!fs.existsSync(payload.filepath)) {
+    let filepath = payload.filepath;
+    // Check if file exists at stored path, otherwise try current payloadsDir
+    if (!fs.existsSync(filepath)) {
+      const alternatePath = path.join(payloadsDir, path.basename(filepath));
+      if (fs.existsSync(alternatePath)) {
+        filepath = alternatePath;
+      } else {
+        return res.status(404).json({ error: 'Payload file not found on disk' });
+      }
+    }
+
+    if (!fs.existsSync(filepath)) {
       return res.status(404).json({ error: 'Payload file not found on disk' });
     }
 
-    const fileData = fs.readFileSync(payload.filepath);
+    const fileData = fs.readFileSync(filepath);
 
     const targetPort = payload.name.toLowerCase().endsWith('.lua') ? 9026 : 9021;
 
@@ -358,7 +420,7 @@ router.put('/:id/update', async (req, res) => {
     let newVersion = null;
 
     // Check for releases-based URL to compare versions
-    const releasesMatch = payload.source_url.match(/github\.com\/([^\/]+)\/([^\/]+)\/releases\/assets\/([^\s?#]+)/i);
+    const releasesMatch = payload.source_url.match(/github\.com\/([^\/]+)\/([^\/]+)\/releases(?:\/tag\/([^\/\?#]+)|\/download\/([^\/\?#]+))\/([^\s?#]+)/i);
     if (releasesMatch) {
       const [, owner, repo] = releasesMatch;
       const apiUrl = `https://api.github.com/repos/${owner}/${repo}/releases/latest`;
@@ -366,10 +428,12 @@ router.put('/:id/update', async (req, res) => {
       if (response.ok) {
         const release = await response.json();
         newVersion = release.tag_name || 'latest';
-        if (payload.version === newVersion) {
-          return res.json({ success: false, error: 'No newer version available', currentVersion: payload.version, newVersion });
-        }
+        // Don't auto-update - user must click update button
       }
+    }
+
+    if (newVersion && payload.version === newVersion) {
+      return res.json({ success: false, error: 'No newer version available', currentVersion: payload.version, newVersion: null });
     }
 
     // Convert blob URL to raw URL if needed
@@ -388,9 +452,15 @@ router.put('/:id/update', async (req, res) => {
     }
 
     const buffer = await response.arrayBuffer().then(ab => Buffer.from(ab));
-    fs.writeFileSync(payload.filepath, buffer);
 
-    db.run('UPDATE payloads SET size = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [buffer.length, parseInt(id)]);
+    // Ensure file is written to current payloadsDir
+    let filepath = payload.filepath;
+    if (!fs.existsSync(filepath) || !filepath.startsWith(payloadsDir)) {
+      filepath = path.join(payloadsDir, payload.filename || path.basename(filepath));
+    }
+    fs.writeFileSync(filepath, buffer);
+
+    db.run('UPDATE payloads SET size = ?, version = COALESCE(?, version), updated_at = CURRENT_TIMESTAMP WHERE id = ?', [buffer.length, newVersion, parseInt(id)]);
     saveDatabase();
 
     log('info', `Updated payload: ${payload.name}`);
@@ -426,6 +496,55 @@ router.delete('/:id', (req, res) => {
     res.json({ success: true });
   } catch (error) {
     log('error', `Delete failed: ${error.message}`);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.get('/:id/check-update', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const db = getDatabase();
+    const stmt = db.prepare('SELECT * FROM payloads WHERE id = ?');
+    stmt.bind([parseInt(id)]);
+    let payload = null;
+    if (stmt.step()) {
+      payload = stmt.getAsObject();
+    }
+    stmt.free();
+
+    if (!payload) {
+      return res.status(404).json({ error: 'Payload not found' });
+    }
+
+    if (!payload.source_url) {
+      return res.json({ success: false, error: 'No source URL' });
+    }
+
+    // Match both /releases/assets/ and /releases/download/ URL formats
+    const releasesMatch = payload.source_url.match(/github\.com\/([^\/]+)\/([^\/]+)\/releases(?:\/tag\/([^\/\?#]+)|\/download\/([^\/\?#]+))\/([^\s?#]+)/i);
+    if (!releasesMatch) {
+      return res.json({ success: false, error: 'Not a releases URL' });
+    }
+
+    const [, owner, repo] = releasesMatch;
+    const apiUrl = `https://api.github.com/repos/${owner}/${repo}/releases/latest`;
+    const response = await fetch(apiUrl, { headers: { 'Accept': 'application/vnd.github.v3+json' } });
+
+    if (!response.ok) {
+      return res.status(response.status).json({ success: false, error: 'GitHub API error' });
+    }
+
+    const release = await response.json();
+    const newVersion = release.tag_name || 'latest';
+
+    if (payload.version === newVersion) {
+      return res.json({ success: true, updateAvailable: false, currentVersion: payload.version, newVersion: null });
+    }
+
+    res.json({ success: true, updateAvailable: true, currentVersion: payload.version, newVersion });
+  } catch (error) {
+    log('error', `Check update failed: ${error.message}`);
     res.status(500).json({ error: error.message });
   }
 });

@@ -1,19 +1,56 @@
 import { useState, useEffect } from 'react';
+import PairPS5 from './PairPS5';
+import ScriptRunner from './ScriptRunner';
+import RemotePlay from './RemotePlay';
+import Badge from './UI/Badge';
 
 const API = '/api';
 
-const KNOWN_GAMES = [
-  { titleId: 'CUSA03474', name: 'Star Wars Racer Revenge (USA)' },
-  { titleId: 'CUSA03492', name: 'Star Wars Racer Revenge (EU)' },
-];
-
-function PS5Control({ profiles }) {
+function PS5Control({ profiles, onNotification }) {
   const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [selectedGame, setSelectedGame] = useState('');
-  const [customTitleId, setCustomTitleId] = useState('');
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [credential, setCredential] = useState('');
+  const [capturing, setCapturing] = useState(false);
+  const [captureStatus, setCaptureStatus] = useState(null);
+  const [scripts, setScripts] = useState([]);
+  const [notification, setNotification] = useState(null);
 
   const defaultProfile = profiles.find(p => p.is_default) || profiles[0];
+
+  const showToast = (message, type = 'info') => {
+    if (onNotification) {
+      onNotification(message, type);
+      return;
+    }
+    setNotification({ message, type });
+    setTimeout(() => setNotification(null), 3000);
+  };
+
+  const fetchScripts = async () => {
+    try {
+      const res = await fetch(`${API}/input-scripts`);
+      const data = await res.json();
+      setScripts(data);
+    } catch (err) {
+      console.error('Failed to fetch scripts:', err);
+    }
+  };
+
+  useEffect(() => {
+    if (defaultProfile) {
+      fetchStatus();
+      fetchCaptureStatus();
+    }
+  }, [defaultProfile]);
+
+  useEffect(() => {
+    if (!defaultProfile) return;
+    const interval = setInterval(() => {
+      fetchStatus();
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [defaultProfile]);
 
   const fetchStatus = async () => {
     if (!defaultProfile) return;
@@ -26,155 +63,227 @@ function PS5Control({ profiles }) {
     }
   };
 
-  useEffect(() => {
-    fetchStatus();
-    const interval = setInterval(fetchStatus, 5000);
-    return () => clearInterval(interval);
-  }, [defaultProfile]);
+  const fetchCaptureStatus = async () => {
+    try {
+      const res = await fetch(`${API}/ps5control/capture-status`);
+      const data = await res.json();
+      setCaptureStatus(data);
+      if (data.credential && !capturing) setCredential(data.credential);
+    } catch (err) {
+      console.error('Failed to fetch capture status:', err);
+    }
+  };
 
   const handleWake = async () => {
     if (!defaultProfile) return;
     setLoading(true);
     try {
+      const credToUse = defaultProfile.credential || credential;
       const res = await fetch(`${API}/ps5control/wake`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ip: defaultProfile.ip_address, credential: credToUse })
+      });
+      const data = await res.json();
+      if (data.success) {
+        showToast('Wake on LAN sent!', 'success');
+        setTimeout(fetchStatus, 3000);
+      } else {
+        showToast('Wake failed: ' + (data.error || 'Unknown error'), 'error');
+      }
+    } catch (err) {
+      showToast('Wake error: ' + err.message, 'error');
+    }
+    setLoading(false);
+  };
+
+  const handleCaptureCredential = async () => {
+    if (!defaultProfile) return;
+    setCapturing(true);
+    try {
+      const res = await fetch(`${API}/ps5control/capture-credential`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ip: defaultProfile.ip_address })
       });
       const data = await res.json();
-      if (data.success) {
-        setTimeout(fetchStatus, 3000);
+      setCapturing(false);
+      if (data.success && data.credential) {
+        setCredential(data.credential);
+        showToast('Credential captured!', 'success');
+      } else {
+        showToast('Failed to capture: ' + (data.error || 'Unknown error'), 'error');
       }
     } catch (err) {
-      console.error('Wake error:', err);
+      setCapturing(false);
+      showToast('Capture error: ' + err.message, 'error');
     }
-    setLoading(false);
   };
 
-  const handleLaunch = async () => {
-    if (!defaultProfile) return;
-    const titleId = customTitleId || selectedGame;
-    if (!titleId) return;
-
-    setLoading(true);
+  const handleStopCapture = async () => {
     try {
-      const game = KNOWN_GAMES.find(g => g.titleId === titleId);
-      await fetch(`${API}/ps5control/launch`, {
-        method: 'POST',
+      const res = await fetch(`${API}/ps5control/capture-stop`, { method: 'POST' });
+      const data = await res.json();
+      if (data.credential) {
+        setCredential(data.credential);
+        showToast('Credential saved!', 'success');
+      } else {
+        showToast('No credential captured', 'info');
+      }
+    } catch (err) {
+      showToast('Stop error: ' + err.message, 'error');
+    }
+  };
+
+  const handleSaveCredential = async () => {
+    if (!defaultProfile || !captureStatus?.credential) return;
+    try {
+      await fetch(`${API}/profiles/${defaultProfile.id}`, {
+        method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          ip: defaultProfile.ip_address,
-          titleId,
-          name: game?.name || titleId
+          name: defaultProfile.name,
+          ip_address: defaultProfile.ip_address,
+          mac_address: defaultProfile.mac_address,
+          credential: captureStatus.credential
         })
       });
+      showToast('Credential saved!', 'success');
     } catch (err) {
-      console.error('Launch error:', err);
+      showToast('Failed to save: ' + err.message, 'error');
     }
-    setLoading(false);
   };
 
-  const handleInput = async (button) => {
-    if (!defaultProfile) return;
-    try {
-      await fetch(`${API}/ps5control/input`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ip: defaultProfile.ip_address, button })
-      });
-    } catch (err) {
-      console.error('Input error:', err);
-    }
+  const getStatusBadge = () => {
+    if (!status) return <Badge variant="muted">Unknown</Badge>;
+    if (!status.reachable) return <Badge variant="danger">Offline</Badge>;
+    if (status.openPort === 9021) return <Badge variant="success">ELF Active</Badge>;
+    if (status.openPort === 9020) return <Badge variant="warning">LUA Active</Badge>;
+    return <Badge variant="info">Standby</Badge>;
   };
 
   if (!defaultProfile) {
     return (
-      <div style={{ background: '#16213e', padding: '1rem', borderRadius: 12 }}>
-        <p style={{ color: '#888' }}>No profile found. Please create a profile first.</p>
+      <div className="comp-card">
+        <div className="comp-card-body">
+          <div className="empty-state">
+            <div className="empty-state-icon">🎮</div>
+            <div className="empty-state-title">No PS5 Profile</div>
+            <div className="empty-state-text">Create a profile in Settings first</div>
+          </div>
+        </div>
       </div>
     );
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-      <section style={{ background: '#16213e', padding: '1rem', borderRadius: 12 }}>
-        <div style={{ marginBottom: '1rem' }}>
-          <h2 style={{ fontSize: '1rem', fontWeight: 500 }}>PS5 Remote Control</h2>
-          <div style={{ color: '#aaa', fontSize: '0.85rem' }}>
-            Using: <span style={{ color: '#27ae60' }}>{defaultProfile.name}</span> ({defaultProfile.ip_address})
-          </div>
+    <div>
+      {notification && (
+        <div style={{
+          position: 'fixed', top: 80, left: '50%', transform: 'translateX(-50%)',
+          padding: 'var(--space-sm) var(--space-lg)', borderRadius: 8,
+          background: notification.type === 'error' ? 'var(--red)' : notification.type === 'success' ? 'var(--green)' : 'var(--blue)',
+          color: 'var(--text)', zIndex: 3000, fontSize: '0.9rem', fontWeight: 500,
+        }}>
+          {notification.message}
         </div>
+      )}
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
-          <div style={{
-            padding: '0.5rem 1rem',
-            borderRadius: 6,
-            background: status?.status === 'running' ? '#27ae60' : status?.status === 'standby' ? '#f39c12' : '#c0392b',
-            color: '#fff',
-            fontWeight: 500,
-            fontSize: '0.9rem'
-          }}>
-            {status?.status === 'running' ? 'Running' : status?.status === 'standby' ? 'Standby' : 'Off/Unreachable'}
+      <div className="comp-card mb-md">
+        <div className="flex items-center gap-md p-md">
+          <span style={{ fontSize: '3rem' }}>🎮</span>
+          <div className="flex-1">
+            <div className="flex items-center gap-sm">
+              <span className="font-bold" style={{ fontSize: '1.2rem' }}>{defaultProfile.name}</span>
+              {getStatusBadge()}
+            </div>
+            <div className="text-muted">{defaultProfile.ip_address}</div>
+            {status?.openPort && <div className="text-xs text-muted">Port: {status.openPort}</div>}
           </div>
-          <button
-            onClick={handleWake}
-            disabled={loading}
-            style={{ padding: '0.75rem 1.5rem', background: '#3498db', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 500, fontSize: '1rem', minHeight: 44 }}
-          >
-            Wake / Zapnúť
-          </button>
+          <button className="btn btn-sm btn-ghost" onClick={fetchStatus}>🔄</button>
         </div>
-      </section>
+      </div>
 
-      <section style={{ background: '#16213e', padding: '1rem', borderRadius: 12 }}>
-        <h2 style={{ fontSize: '1rem', fontWeight: 500, marginBottom: '1rem' }}>Launch Application</h2>
+      <div className="grid-2 mb-md">
+        <button className="btn btn-primary" onClick={handleWake} disabled={loading}>
+          {loading ? '⏳' : '⏰'} Wake
+        </button>
+        <button className="btn btn-secondary" onClick={fetchStatus}>
+          🔍 Check Status
+        </button>
+      </div>
 
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-          <select
-            value={selectedGame}
-            onChange={e => { setSelectedGame(e.target.value); setCustomTitleId(''); }}
-            style={{ padding: '0.75rem', borderRadius: 6, background: '#1a1a2e', color: '#fff', border: '1px solid #0f3460', fontSize: '1rem' }}
-          >
-            <option value="">Select known game...</option>
-            {KNOWN_GAMES.map(g => (
-              <option key={g.titleId} value={g.titleId}>{g.name}</option>
-            ))}
-          </select>
+      <div className="mb-md">
+        <RemotePlay profiles={profiles} onNotification={showToast} />
+      </div>
 
-          <div style={{ color: '#888', fontSize: '0.85rem', textAlign: 'center' }}>alebo</div>
-
-          <input
-            type="text"
-            placeholder="Custom titleId (e.g. CUSAXXXXX)"
-            value={customTitleId}
-            onChange={e => { setCustomTitleId(e.target.value); setSelectedGame(''); }}
-            style={{ padding: '0.75rem', borderRadius: 6, border: '1px solid #0f3460', background: '#1a1a2e', color: '#fff', fontSize: '1rem' }}
+      <div className="comp-card mb-md">
+        <div className="comp-card-header">
+          <span className="comp-card-title">⌨️ Input Scripts</span>
+        </div>
+        <div className="comp-card-body">
+          <p className="text-sm text-muted mb-sm">
+            Scripts play back via the Remote Play sidecar above. Pair the PS5 first.
+          </p>
+          <ScriptRunner
+            ip={defaultProfile.ip_address}
+            scripts={scripts}
+            onScriptsChange={fetchScripts}
           />
-
-          <button
-            onClick={handleLaunch}
-            disabled={loading || (!selectedGame && !customTitleId)}
-            style={{ padding: '0.75rem', background: (!selectedGame && !customTitleId) ? '#555' : '#27ae60', color: '#fff', border: 'none', borderRadius: 6, cursor: (!selectedGame && !customTitleId) ? 'not-allowed' : 'pointer', fontWeight: 500, fontSize: '1rem', minHeight: 44 }}
-          >
-            Launch / Spustiť
-          </button>
         </div>
-      </section>
+      </div>
 
-      <section style={{ background: '#16213e', padding: '1rem', borderRadius: 12 }}>
-        <h2 style={{ fontSize: '1rem', fontWeight: 500, marginBottom: '1rem' }}>Controller Input</h2>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '0.5rem' }}>
-          {['up', 'down', 'left', 'right', 'x', 'circle', 'square', 'triangle', 'ps', 'options', 'touchpad'].map(btn => (
-            <button
-              key={btn}
-              onClick={() => handleInput(btn)}
-              style={{ padding: '0.75rem', background: '#0f3460', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: '0.85rem', minHeight: 44, textTransform: 'uppercase' }}
-            >
-              {btn}
-            </button>
-          ))}
+      <button
+        className="btn btn-ghost btn-block mb-md"
+        onClick={() => setShowAdvanced(!showAdvanced)}
+      >
+        {showAdvanced ? '▲' : '▼'} Advanced (credential capture, legacy pair)
+      </button>
+
+      {showAdvanced && (
+        <div className="flex-col gap-md">
+          <div className="comp-card">
+            <div className="comp-card-header">
+              <span className="comp-card-title">🔑 Credential Capture</span>
+            </div>
+            <div className="comp-card-body">
+              <p className="text-sm text-muted mb-md">
+                Capture PS5 credential for Wake on LAN. Put PS5 in deep sleep first.
+              </p>
+              <div className="flex gap-sm flex-wrap">
+                <button
+                  className="btn btn-secondary"
+                  onClick={handleCaptureCredential}
+                  disabled={capturing || captureStatus?.active}
+                >
+                  {capturing || captureStatus?.active ? '⏳ Listening...' : '🎯 Capture'}
+                </button>
+                {(capturing || captureStatus?.active) && (
+                  <button className="btn btn-danger" onClick={handleStopCapture}>⏹ Stop</button>
+                )}
+                {captureStatus?.credential && (
+                  <button className="btn btn-success" onClick={handleSaveCredential}>💾 Save</button>
+                )}
+              </div>
+              {captureStatus?.credential && (
+                <div className="mt-sm text-xs text-muted">Saved: {captureStatus.credential}</div>
+              )}
+            </div>
+          </div>
+
+          <div className="comp-card">
+            <div className="comp-card-header">
+              <span className="comp-card-title">🔗 Legacy PIN pair</span>
+            </div>
+            <div className="comp-card-body">
+              <p className="text-sm text-muted mb-sm">
+                Native UDP PIN pairing (kept for compatibility). Prefer the Remote Play card above.
+              </p>
+              <PairPS5 ip={defaultProfile.ip_address} />
+            </div>
+          </div>
         </div>
-      </section>
+      )}
     </div>
   );
 }
