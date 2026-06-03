@@ -83,9 +83,6 @@ export default function FileBrowser({
   const [sortDir, setSortDir] = useState('asc');
 
   const listRef = useRef(null);
-  const startX = useRef(0);
-  const swipeFile = useRef(null);
-  const swipeOffset = useRef(0);
 
   useEffect(() => {
     fetch(`${API}/micromount/sources`).then(r => r.json()).then(rows => {
@@ -210,45 +207,6 @@ export default function FileBrowser({
     } else {
       setMultiSelect(true);
     }
-  };
-
-  const handleTouchStart = (e, filename) => {
-    startX.current = e.touches[0].clientX;
-    swipeFile.current = filename;
-    swipeOffset.current = 0;
-  };
-
-  const handleTouchMove = (e) => {
-    if (!swipeFile.current) return;
-    const dx = e.touches[0].clientX - startX.current;
-    swipeOffset.current = dx;
-    if (listRef.current) {
-      const item = listRef.current.querySelector(`[data-file="${swipeFile.current}"]`);
-      if (item) {
-        item.style.transform = `translateX(${dx}px)`;
-        item.style.transition = 'none';
-      }
-    }
-  };
-
-  const handleTouchEnd = (e) => {
-    if (!swipeFile.current) return;
-    const dx = swipeOffset.current;
-    const item = listRef.current?.querySelector(`[data-file="${swipeFile.current}"]`);
-    if (item) {
-      item.style.transform = '';
-      item.style.transition = 'transform 0.2s ease';
-    }
-
-    if (Math.abs(dx) > 80 && enableDelete && dx < 0) {
-      const f = files.find(f => f.name === swipeFile.current);
-      if (f) deleteEntry(f);
-    } else if (Math.abs(dx) > 80 && enableFtpUpload && kind === 'local' && ftpIp && dx > 0) {
-      const f = files.find(f => f.name === swipeFile.current);
-      if (f) ftpUpload(f);
-    }
-    swipeFile.current = null;
-    swipeOffset.current = 0;
   };
 
   const deleteEntry = async (entry) => {
@@ -457,18 +415,8 @@ export default function FileBrowser({
         onClick={() => {
           if (multiSelect) toggleSelect(f.name);
         }}
-        onTouchStart={(e) => handleTouchStart(e, f.name)}
-        onTouchMove={handleTouchMove}
-        onTouchEnd={handleTouchEnd}
-        style={{
-          position: 'relative',
-          overflow: 'visible',
-          touchAction: 'pan-y',
-        }}
+        style={{ position: 'relative' }}
       >
-        <div className="file-card-swipe-left" />
-        <div className="file-card-swipe-right" />
-
         <div className="file-card-content" style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-sm)', padding: 'var(--space-sm) var(--space-md)' }}>
           {multiSelect && (
             <input
@@ -583,14 +531,21 @@ export default function FileBrowser({
         </div>
 
         {breadcrumbs.length > 0 && (
-          <div className="flex items-center gap-xs text-sm flex-wrap" style={{ color: 'var(--muted)' }}>
+          <div className="flex items-center gap-xs text-sm flex-wrap">
             <span style={{ fontSize: '1rem' }}>{kind === 'local' ? '💾' : kind === 'smb' ? '📂' : '🎮'}</span>
             {breadcrumbs.map((crumb, i) => (
               <span key={i} className="flex items-center gap-xs">
                 {i > 0 && <span style={{ color: 'var(--muted)' }}>›</span>}
                 <button
-                  className="text-sm text-muted-hover"
-                  style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px 4px', borderRadius: 4 }}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    cursor: 'pointer',
+                    padding: '2px 4px',
+                    borderRadius: 4,
+                    color: 'var(--text)',
+                    fontSize: '0.85rem',
+                  }}
                   onClick={() => navigateBreadcrumb(crumb.path)}
                 >
                   {crumb.label}
@@ -666,9 +621,6 @@ export default function FileBrowser({
           </div>
         )}
 
-        <div className="text-xs text-muted" style={{ textAlign: 'center' }}>
-          💡 Swipe left = delete • Swipe right = add upload to queue
-        </div>
       </div>
     </div>
   );
