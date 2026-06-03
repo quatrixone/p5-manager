@@ -1,12 +1,11 @@
 import { useState, useEffect } from 'react';
-import PairPS5 from './PairPS5';
 import ScriptRunner from './ScriptRunner';
 import RemotePlay from './RemotePlay';
 import Badge from './UI/Badge';
 
 const API = '/api';
 
-function PS5Control({ profiles, onNotification }) {
+function PS5Control({ profiles, onNotification, onProfilesChanged }) {
   const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -213,8 +212,13 @@ function PS5Control({ profiles, onNotification }) {
         </button>
       </div>
 
-      <div className="mb-md">
-        <RemotePlay profiles={profiles} onNotification={showToast} />
+      <div className="comp-card mb-md">
+        <div className="comp-card-header">
+          <span className="comp-card-title">🕹️ PS Remote Play</span>
+        </div>
+        <div className="comp-card-body">
+          <RemotePlay profiles={profiles} onNotification={showToast} onProfilesChanged={onProfilesChanged} />
+        </div>
       </div>
 
       <div className="comp-card mb-md">
@@ -237,7 +241,7 @@ function PS5Control({ profiles, onNotification }) {
         className="btn btn-ghost btn-block mb-md"
         onClick={() => setShowAdvanced(!showAdvanced)}
       >
-        {showAdvanced ? '▲' : '▼'} Advanced (credential capture, legacy pair)
+        {showAdvanced ? '▲' : '▼'} Advanced (credential capture)
       </button>
 
       {showAdvanced && (
@@ -268,18 +272,6 @@ function PS5Control({ profiles, onNotification }) {
               {captureStatus?.credential && (
                 <div className="mt-sm text-xs text-muted">Saved: {captureStatus.credential}</div>
               )}
-            </div>
-          </div>
-
-          <div className="comp-card">
-            <div className="comp-card-header">
-              <span className="comp-card-title">🔗 Legacy PIN pair</span>
-            </div>
-            <div className="comp-card-body">
-              <p className="text-sm text-muted mb-sm">
-                Native UDP PIN pairing (kept for compatibility). Prefer the Remote Play card above.
-              </p>
-              <PairPS5 ip={defaultProfile.ip_address} />
             </div>
           </div>
         </div>

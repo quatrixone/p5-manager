@@ -386,7 +386,7 @@ function App() {
         {activeTab === 'autoload' && (
           <AutoloadBuilder profiles={profiles} payloads={payloads} onNotification={showNotification} />
         )}
-        {activeTab === 'remote' && <PS5Control profiles={profiles} onNotification={showNotification} />}
+        {activeTab === 'remote' && <PS5Control profiles={profiles} onNotification={showNotification} onProfilesChanged={fetchProfiles} />}
         {activeTab === 'files' && (
           <FileOps profiles={profiles} onNotification={showNotification} />
         )}

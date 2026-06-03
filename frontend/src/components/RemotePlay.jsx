@@ -89,7 +89,7 @@ function AnalogStick({ side, onChange }) {
   );
 }
 
-export default function RemotePlay({ profiles, onNotification }) {
+export default function RemotePlay({ profiles, onNotification, onProfilesChanged }) {
   const [profileId, setProfileId] = useState('');
   const profile = useMemo(() => profiles.find(p => String(p.id) === String(profileId)) || null, [profiles, profileId]);
 
@@ -149,9 +149,11 @@ export default function RemotePlay({ profiles, onNotification }) {
       if (!r.success) throw new Error(r.error);
       onNotification?.(`Linked PSN account: ${r.online_id || r.account_id}`, 'success');
       setRedirectUrl('');
-      // Mutate local profile snapshot optimistically.
+      // Mutate local snapshot for immediate UI feedback, then ask the parent
+      // to refetch profiles so the new field reaches the rest of the tree.
       profile.psn_account_id = r.account_id;
       profile.psn_online_id = r.online_id;
+      onProfilesChanged?.();
     } catch (e) {
       onNotification?.(`OAuth exchange failed: ${e.message}`, 'error');
     } finally {
@@ -178,6 +180,7 @@ export default function RemotePlay({ profiles, onNotification }) {
       onNotification?.('PS5 paired for Remote Play', 'success');
       setPin('');
       profile.rp_user_profile = JSON.stringify(r.profile);
+      onProfilesChanged?.();
     } catch (e) {
       onNotification?.(`Pair failed: ${e.message}`, 'error');
     } finally {
@@ -195,6 +198,7 @@ export default function RemotePlay({ profiles, onNotification }) {
         body: JSON.stringify({ profile_id: profile.id }),
       });
       profile.rp_user_profile = null;
+      onProfilesChanged?.();
       onNotification?.('Forgotten', 'success');
     } catch (e) {
       onNotification?.(e.message, 'error');
@@ -285,71 +289,88 @@ export default function RemotePlay({ profiles, onNotification }) {
         )}
       </Section>
 
-      {!accountLinked && (
-        <Section
-          title="1 · Link PSN account"
-          hint="Sony OAuth → opens in a new tab. Sign in, then when the page goes blank or to a 'redirect' URL, copy the FULL URL from the browser address bar and paste below."
-        >
-          <button className="btn btn-primary" disabled={oauthBusy || !profile} onClick={startOAuth}>
-            {oauthBusy ? '⏳ Opening…' : '🔗 Open Sony login'}
-          </button>
-          {loginUrl && (
-            <a href={loginUrl} target="_blank" rel="noopener noreferrer" className="text-xs text-muted truncate">
-              {loginUrl}
-            </a>
-          )}
-          <label className="text-sm text-muted" style={{ display: 'block' }}>Redirect URL after sign-in</label>
-          <textarea
-            className="input"
-            rows={2}
-            placeholder="https://my.account.sony.com/...?code=..."
-            value={redirectUrl}
-            onChange={e => setRedirectUrl(e.target.value)}
-          />
-          <button className="btn btn-success" disabled={oauthBusy || !redirectUrl.trim() || !profile} onClick={finishOAuth}>
-            {oauthBusy ? '⏳' : '✓ Extract account ID'}
-          </button>
-        </Section>
-      )}
+      <Section
+        title={accountLinked ? '1 · PSN account ✓' : '1 · Link PSN account'}
+        hint={accountLinked
+          ? `Linked as ${profile?.psn_online_id || profile?.psn_account_id}. Re-link below if you switch PSN accounts.`
+          : "Sony OAuth → opens in a new tab. Sign in, then when the page goes blank or to a 'redirect' URL, copy the FULL URL from the browser address bar and paste below."}
+      >
+        <button className="btn btn-primary" disabled={oauthBusy || !profile} onClick={startOAuth}>
+          {oauthBusy ? '⏳ Opening…' : accountLinked ? '🔄 Re-link Sony account' : '🔗 Open Sony login'}
+        </button>
+        {loginUrl && (
+          <a href={loginUrl} target="_blank" rel="noopener noreferrer" className="text-xs text-muted truncate">
+            {loginUrl}
+          </a>
+        )}
+        <label className="text-sm text-muted" style={{ display: 'block' }}>Redirect URL after sign-in</label>
+        <textarea
+          className="input"
+          rows={2}
+          placeholder="https://my.account.sony.com/...?code=..."
+          value={redirectUrl}
+          onChange={e => setRedirectUrl(e.target.value)}
+        />
+        <button className="btn btn-success" disabled={oauthBusy || !redirectUrl.trim() || !profile} onClick={finishOAuth}>
+          {oauthBusy ? '⏳' : '✓ Extract account ID'}
+        </button>
+      </Section>
 
-      {accountLinked && !paired && (
-        <Section
-          title="2 · Pair PS5 (PIN)"
-          hint="On the PS5: Settings → System → Remote Play → Link Device. Type the 8-digit PIN below."
-        >
-          <input
-            className="input"
-            inputMode="numeric"
-            maxLength={9}
-            placeholder="12345678"
-            value={pin}
-            onChange={e => setPin(e.target.value)}
-            style={{ fontSize: '1.5rem', letterSpacing: 4, textAlign: 'center' }}
-          />
-          <button className="btn btn-success" disabled={pairBusy || pin.replace(/\D/g, '').length < 8} onClick={pair}>
-            {pairBusy ? '⏳ Pairing…' : '🤝 Pair'}
+      <Section
+        title={paired ? '2 · Pair PS5 (PIN) ✓' : '2 · Pair PS5 (PIN)'}
+        hint={
+          !accountLinked
+            ? 'Link your PSN account in step 1 first.'
+            : paired
+              ? 'Already paired. Enter a fresh 8-digit PIN here to re-pair, or click Forget to drop the saved credentials.'
+              : 'On the PS5: Settings → System → Remote Play → Link Device. Type the 8-digit PIN shown there below.'
+        }
+      >
+        <input
+          className="input"
+          inputMode="numeric"
+          maxLength={9}
+          placeholder="12345678"
+          value={pin}
+          onChange={e => setPin(e.target.value)}
+          disabled={!accountLinked}
+          style={{ fontSize: '1.5rem', letterSpacing: 4, textAlign: 'center' }}
+        />
+        <div className="flex gap-sm flex-wrap">
+          <button
+            className="btn btn-success"
+            disabled={!accountLinked || pairBusy || pin.replace(/\D/g, '').length < 8}
+            onClick={pair}
+          >
+            {pairBusy ? '⏳ Pairing…' : paired ? '🔄 Re-pair' : '🤝 Pair'}
           </button>
-        </Section>
-      )}
-
-      {paired && (
-        <Section
-          title={liveSession ? '🟢 Live session' : '3 · Start session'}
-          status={sessionState}
-          hint={liveSession ? null : 'Start a control-only Remote Play session. PS5 will boot Remote Play but we ignore the video stream.'}
-        >
-          <div className="flex gap-sm">
-            {!liveSession ? (
-              <button className="btn btn-primary" disabled={sessionState === 'connecting'} onClick={startSession}>
-                ▶ Start
-              </button>
-            ) : (
-              <button className="btn btn-danger" onClick={stopSession}>⏹ Stop</button>
-            )}
+          {paired && (
             <button className="btn btn-ghost" onClick={forgetPair}>🗑 Forget pairing</button>
-          </div>
-        </Section>
-      )}
+          )}
+        </div>
+      </Section>
+
+      <Section
+        title={liveSession ? '🟢 Live session' : '3 · Start session'}
+        status={paired ? sessionState : 'pair first'}
+        hint={
+          !paired
+            ? 'Pair the PS5 in step 2 first.'
+            : liveSession
+              ? null
+              : 'Start a control-only Remote Play session. PS5 will boot Remote Play but we ignore the video stream.'
+        }
+      >
+        <div className="flex gap-sm">
+          {!liveSession ? (
+            <button className="btn btn-primary" disabled={!paired || sessionState === 'connecting'} onClick={startSession}>
+              ▶ Start
+            </button>
+          ) : (
+            <button className="btn btn-danger" onClick={stopSession}>⏹ Stop</button>
+          )}
+        </div>
+      </Section>
 
       {liveSession && (
         <Section title="🎮 Controller">

@@ -1,6 +1,5 @@
 import { Router } from 'express';
 import dgram from 'dgram';
-import crypto from 'crypto';
 import { getDatabase } from '../db/sqlite.js';
 
 const router = Router();
@@ -59,74 +58,6 @@ async function sendPs5Wake(ip, credential) {
           console.log(`Wake packet sent to ${ip}:${WAKE_PORT}`);
           sock.close();
           resolve();
-        }
-      });
-    });
-  });
-}
-
-function buildRegistrationRequest(sessionId) {
-  const version = Buffer.from([0x01, 0x01, 0x00, 0x00]);
-  const requestType = Buffer.from([0x00]);
-  const sessionIdBytes = Buffer.from(sessionId, 'hex');
-  const clientId = crypto.randomBytes(16).toString('hex');
-
-  const packet = Buffer.concat([
-    CHIAKI_MAGIC,
-    version,
-    requestType,
-    Buffer.from([sessionIdBytes.length]),
-    sessionIdBytes,
-    Buffer.from(clientId)
-  ]);
-
-  return packet;
-}
-
-function buildPinConfirmation(sessionId, pin) {
-  const version = Buffer.from([0x01, 0x01, 0x00, 0x00]);
-  const requestType = Buffer.from([0x01]);
-  const sessionIdBytes = Buffer.from(sessionId, 'hex');
-  const pinBytes = Buffer.from(pin.padStart(4, '0').slice(0, 4));
-
-  const packet = Buffer.concat([
-    CHIAKI_MAGIC,
-    version,
-    requestType,
-    Buffer.from([sessionIdBytes.length]),
-    sessionIdBytes,
-    pinBytes
-  ]);
-
-  return packet;
-}
-
-function sendUdpPacket(packet, host, port = PS5_DISCOVERY_PORT, timeout = 10000) {
-  return new Promise((resolve, reject) => {
-    const sock = dgram.createSocket({ type: 'udp4', reuseAddr: true });
-
-    sock.on('error', (err) => {
-      sock.close();
-      reject(err);
-    });
-
-    const timeoutId = setTimeout(() => {
-      sock.close();
-      reject(new Error('Timeout'));
-    }, timeout);
-
-    sock.on('message', (msg, rinfo) => {
-      clearTimeout(timeoutId);
-      sock.close();
-      resolve(msg);
-    });
-
-    sock.bind(undefined, '0.0.0.0', () => {
-      sock.send(packet, 0, packet.length, port, host, (err) => {
-        if (err) {
-          clearTimeout(timeoutId);
-          sock.close();
-          reject(err);
         }
       });
     });
@@ -233,65 +164,6 @@ router.post('/capture-stop', (req, res) => {
     credential: captureState.credential,
     message: captureState.credential ? 'Capture stopped with credential' : 'Capture stopped - no credential'
   });
-});
-
-router.get('/pairstatus', async (req, res) => {
-  try {
-    const { ip } = req.query;
-    if (!ip) {
-      return res.status(400).json({ success: false, error: 'IP address required' });
-    }
-
-    try {
-      await sendUdpPacket(Buffer.concat([CHIAKI_MAGIC, Buffer.from([0x00, 0x00, 0x00, 0x00])]), ip, PS5_DISCOVERY_PORT, 3000);
-      res.json({ success: true, paired: false, ip });
-    } catch (err) {
-      res.json({ success: false, paired: false, ip, error: err.message });
-    }
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-router.post('/pair/init', async (req, res) => {
-  try {
-    const { ip } = req.body;
-    if (!ip) {
-      return res.status(400).json({ success: false, error: 'IP address required' });
-    }
-
-    const sessionId = crypto.randomBytes(32).toString('hex');
-    const packet = buildRegistrationRequest(sessionId);
-
-    try {
-      await sendUdpPacket(packet, ip, PS5_DISCOVERY_PORT, 8000);
-      res.json({ success: true, sessionId, message: 'Enter PIN on PS5 screen' });
-    } catch (err) {
-      res.status(500).json({ success: false, error: 'No response from PS5. Make sure PS5 is showing PIN.' });
-    }
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-router.post('/pair/confirm', async (req, res) => {
-  try {
-    const { ip, pin, sessionId } = req.body;
-    if (!ip || !pin || !sessionId) {
-      return res.status(400).json({ success: false, error: 'IP, PIN, and sessionId required' });
-    }
-
-    const packet = buildPinConfirmation(sessionId, pin);
-
-    try {
-      await sendUdpPacket(packet, ip, PS5_DISCOVERY_PORT, 8000);
-      res.json({ success: true, message: 'PS5 paired successfully!' });
-    } catch (err) {
-      res.status(500).json({ success: false, error: 'Pairing failed. Invalid PIN or PS5 not responding.' });
-    }
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
 });
 
 router.post('/wake', async (req, res) => {
