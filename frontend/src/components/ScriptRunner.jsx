@@ -31,6 +31,66 @@ function ScriptRunner({ ip, onSendInput, scripts, onScriptsChange }) {
   const [output, setOutput] = useState([]);
   const [isRunning, setIsRunning] = useState(false);
   const [stopRequested, setStopRequested] = useState(false);
+  const [sessionState, setSessionState] = useState('idle'); // idle | connecting | connected | stopping
+  const [sessionId, setSessionId] = useState('');
+
+  // Poll the cached RP session status for this IP every 4s so users see when
+  // a session is open (vs. starting on first input).
+  useEffect(() => {
+    if (!ip) return;
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const r = await fetch(`${API}/remoteplay/quick-status?ip=${encodeURIComponent(ip)}`).then(r => r.json());
+        if (cancelled) return;
+        if (r.success && r.active) {
+          setSessionState('connected');
+          setSessionId(r.session_id || '');
+        } else if (sessionState === 'connected' || sessionState === 'connecting') {
+          // Don't clobber a "connecting" state we just initiated.
+          if (sessionState !== 'connecting') setSessionState('idle');
+        }
+      } catch (_) {}
+    };
+    tick();
+    const id = setInterval(tick, 4000);
+    return () => { cancelled = true; clearInterval(id); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ip]);
+
+  const startSession = async () => {
+    if (!ip) return;
+    setSessionState('connecting');
+    try {
+      const r = await fetch(`${API}/remoteplay/quick-start`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ip }),
+      }).then(r => r.json());
+      if (!r.success) throw new Error(r.error);
+      setSessionId(r.session_id || '');
+      setSessionState('connected');
+      addOutput(`▶ Session started (${r.session_id})`, 'success');
+    } catch (e) {
+      setSessionState('idle');
+      addOutput(`Session start failed: ${e.message}`, 'error');
+    }
+  };
+
+  const stopSession = async () => {
+    if (!ip) return;
+    setSessionState('stopping');
+    try {
+      await fetch(`${API}/remoteplay/quick-stop`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ip }),
+      });
+      addOutput('⏹ Session stopped', 'info');
+    } catch (e) {
+      addOutput(`Session stop error: ${e.message}`, 'warning');
+    }
+    setSessionState('idle');
+    setSessionId('');
+  };
 
   const addOutput = (msg, type = 'info') => {
     setOutput(prev => [...prev, { msg, type, time: new Date().toLocaleTimeString() }]);
@@ -198,8 +258,44 @@ function ScriptRunner({ ip, onSendInput, scripts, onScriptsChange }) {
 
   const clearOutput = () => setOutput([]);
 
+  const sessionColor = sessionState === 'connected' ? '#27ae60'
+    : sessionState === 'connecting' ? '#f39c12'
+    : sessionState === 'stopping' ? '#e67e22' : '#7f8c8d';
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+      {/* Remote Play session control */}
+      <div style={{ background: '#16213e', padding: '0.75rem 1rem', borderRadius: 12, display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+        <span style={{
+          display: 'inline-flex', alignItems: 'center', gap: '0.4rem',
+          background: '#0f3460', borderRadius: 999, padding: '0.25rem 0.75rem', fontSize: '0.8rem',
+        }}>
+          <span style={{ width: 8, height: 8, borderRadius: '50%', background: sessionColor }} />
+          RP session: <b style={{ color: sessionColor }}>{sessionState}</b>
+          {sessionId && <span style={{ color: '#888', fontFamily: 'monospace', fontSize: '0.7rem' }}>{sessionId.slice(0, 8)}</span>}
+        </span>
+        {sessionState !== 'connected' ? (
+          <button
+            onClick={startSession}
+            disabled={!ip || sessionState === 'connecting'}
+            style={{ padding: '0.4rem 0.8rem', background: '#27ae60', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: '0.8rem' }}
+          >
+            {sessionState === 'connecting' ? '⏳ Starting…' : '▶ Start session'}
+          </button>
+        ) : (
+          <button
+            onClick={stopSession}
+            disabled={sessionState === 'stopping'}
+            style={{ padding: '0.4rem 0.8rem', background: '#e74c3c', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: '0.8rem' }}
+          >
+            ⏹ Stop session
+          </button>
+        )}
+        <span style={{ color: '#888', fontSize: '0.75rem', flex: 1 }}>
+          Optional — the first input will auto-open a session too, but starting it explicitly avoids the first-command delay.
+        </span>
+      </div>
+
       {/* Saved Scripts */}
       {scripts && scripts.length > 0 && (
         <div style={{ background: '#16213e', padding: '1rem', borderRadius: 12 }}>

@@ -151,6 +151,14 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
     setSteps([...steps, { type: 'wait', duration: ms, name: `Wait ${waitTime} ${waitUnit}` }]);
   };
 
+  const addRpSessionStep = (action = 'start') => {
+    setSteps([...steps, {
+      type: 'rp_session',
+      action,
+      name: action === 'stop' ? 'Stop Remote Play session' : 'Start Remote Play session',
+    }]);
+  };
+
   const addDownloadStep = () => {
     if (!dlUrl.trim()) return;
     setSteps([...steps, {
@@ -216,6 +224,50 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
     setSteps(newSteps);
   };
 
+  // Generic step patcher — used by inline editors below. Re-derives the
+  // displayed `name` so the saved sequence is self-describing.
+  const patchStep = (index, patch) => {
+    const newSteps = [...steps];
+    const current = newSteps[index];
+    const merged = { ...current, ...patch };
+
+    if (merged.type === 'input_script') {
+      const sc = inputScripts.find(s => s.id === merged.scriptId);
+      if (sc) {
+        merged.scriptName = sc.name;
+        merged.script = sc.script;
+        merged.name = `Input: ${sc.name}`;
+      }
+    } else if (merged.type === 'payload') {
+      if (merged.payloadId) {
+        const p = payloads?.find(x => x.id === merged.payloadId);
+        if (p) {
+          merged.payloadName = p.filename || p.name;
+          merged.name = `Send ${merged.payloadName}`;
+        }
+      } else if (merged.payloadName) {
+        merged.name = `Send ${merged.payloadName}`;
+      }
+    } else if (merged.type === 'check_port') {
+      merged.name = `Check port ${merged.port || '?'}`;
+    } else if (merged.type === 'rp_session') {
+      merged.name = merged.action === 'stop' ? 'Stop Remote Play session' : 'Start Remote Play session';
+    } else if (merged.type === 'download') {
+      const url = merged.url || '';
+      const tail = url.split('/').pop() || url;
+      merged.name = url ? `Download ${tail.slice(0, 32)}` : 'Download';
+    } else if (merged.type === 'extract') {
+      merged.name = `Extract ${merged.local_path || ''}`.trim();
+    } else if (merged.type === 'convert') {
+      merged.name = `Convert ${merged.source_path || ''}`.trim();
+    } else if (merged.type === 'ftp_upload') {
+      merged.name = `FTP upload ${(merged.local_path || '').split('/').pop() || ''}`.trim();
+    }
+
+    newSteps[index] = merged;
+    setSteps(newSteps);
+  };
+
   const removeStep = (index) => {
     setSteps(steps.filter((_, i) => i !== index));
   };
@@ -228,7 +280,7 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
     setSteps(newSteps);
   };
 
-  const needsProfile = steps.some(s => ['wol', 'payload', 'check_port', 'input_script', 'ftp_upload'].includes(s.type));
+  const needsProfile = steps.some(s => ['wol', 'payload', 'check_port', 'input_script', 'ftp_upload', 'rp_session'].includes(s.type));
 
   const saveSequence = async () => {
     if (!sequenceName || steps.length === 0) {
@@ -356,6 +408,7 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
       case 'extract': return '📂';
       case 'ftp_upload': return '⬆️';
       case 'convert': return '🔄';
+      case 'rp_session': return '🕹️';
       default: return '•';
     }
   };
@@ -613,6 +666,7 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
                 <button className="btn btn-sm btn-secondary" onClick={() => setShowAddStepMenu('check_port')}>🔌 Port Check</button>
                 <button className="btn btn-sm btn-secondary" onClick={() => setShowAddStepMenu('payload')}>📦 Payload</button>
                 <button className="btn btn-sm btn-secondary" onClick={() => setShowAddStepMenu('input_script')}>▶️ Script</button>
+                <button className="btn btn-sm btn-secondary" onClick={() => setShowAddStepMenu('rp_session')}>🕹️ RP session</button>
                 <button className="btn btn-sm btn-secondary" onClick={() => setShowAddStepMenu('klog_read')}>📜 Klog</button>
                 <button className="btn btn-sm btn-secondary" onClick={() => setShowAddStepMenu('lua_log_read')}>📝 Lua Log</button>
                 <button className="btn btn-sm btn-secondary" onClick={() => setShowAddStepMenu('wait')}>⏱ Wait</button>
@@ -779,6 +833,25 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
                 </div>
               )}
 
+              {showAddStepMenu === 'rp_session' && (
+                <div className="p-md flex-col gap-sm" style={{ background: 'var(--panel2)', borderRadius: 8 }}>
+                  <p className="text-sm text-muted">
+                    Opens (or closes) a Remote Play session for the selected profile so subsequent
+                    input scripts execute against a warm session. Pair the PS5 in PS5 Control first.
+                  </p>
+                  <div className="flex gap-sm">
+                    <button className="btn btn-success"
+                      onClick={() => { addRpSessionStep('start'); setShowAddStepMenu(null); }}>
+                      ▶ Add Start session
+                    </button>
+                    <button className="btn btn-danger"
+                      onClick={() => { addRpSessionStep('stop'); setShowAddStepMenu(null); }}>
+                      ⏹ Add Stop session
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {showAddStepMenu === 'wait' && (
                 <div className="p-md" style={{ background: 'var(--panel2)', borderRadius: 8 }}>
                   <label className="text-sm text-muted mb-sm" style={{ display: 'block' }}>Wait Duration</label>
@@ -919,27 +992,167 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
               ) : (
                 <div className="flex-col gap-sm">
                   {steps.map((step, index) => (
-                    <div key={index} className="flex items-center gap-sm p-sm" style={{ background: 'var(--panel2)', borderRadius: 6 }}>
+                    <div key={index} className="flex items-center gap-sm p-sm flex-wrap" style={{ background: 'var(--panel2)', borderRadius: 6 }}>
                       <span className="badge" style={{ background: 'var(--panel)', minWidth: 28, textAlign: 'center' }}>
                         {index + 1}
                       </span>
                       <span style={{ fontSize: '1.2rem', width: 24, textAlign: 'center' }}>{getStepIcon(step.type)}</span>
-                      {step.type === 'wait' ? (
-                        <div className="flex-1 flex items-center gap-sm">
+                      <div className="flex-1 flex items-center gap-sm flex-wrap" style={{ minWidth: 0 }}>
+                        {step.type === 'wait' && (
+                          <>
+                            <span className="text-sm text-muted">Wait</span>
+                            <input
+                              type="number"
+                              className="input"
+                              style={{ width: 80 }}
+                              value={getWaitDisplayValue(step.duration)}
+                              onChange={e => updateWaitStep(index, humanToMs(parseFloat(e.target.value) || 0, getWaitDisplayUnit(step.duration)))}
+                              min={0.1}
+                              step={0.5}
+                            />
+                            <span className="text-sm text-muted">{getWaitDisplayUnit(step.duration)}</span>
+                          </>
+                        )}
+                        {step.type === 'input_script' && (
+                          <>
+                            <span className="text-sm text-muted">Script:</span>
+                            <select
+                              className="select"
+                              style={{ flex: 1, minWidth: 160 }}
+                              value={step.scriptId || ''}
+                              onChange={e => patchStep(index, { scriptId: parseInt(e.target.value) || null })}
+                            >
+                              <option value="">— pick a script —</option>
+                              {inputScripts.map(s => (
+                                <option key={s.id} value={s.id}>{s.name}</option>
+                              ))}
+                            </select>
+                          </>
+                        )}
+                        {step.type === 'payload' && (
+                          <>
+                            <span className="text-sm text-muted">Payload:</span>
+                            <select
+                              className="select"
+                              style={{ flex: 1, minWidth: 160 }}
+                              value={step.payloadId || ''}
+                              onChange={e => {
+                                const v = e.target.value;
+                                if (v === '__name__') return;
+                                patchStep(index, { payloadId: v ? parseInt(v) : null, payloadName: v ? null : step.payloadName });
+                              }}
+                            >
+                              <option value="">— by id —</option>
+                              {(payloads || []).map(p => (
+                                <option key={p.id} value={p.id}>{p.filename || p.name}</option>
+                              ))}
+                            </select>
+                            <span className="text-xs text-muted">or by name:</span>
+                            <input
+                              className="input"
+                              style={{ width: 140 }}
+                              placeholder="e.g. p2jb.lua"
+                              value={step.payloadName || ''}
+                              onChange={e => patchStep(index, { payloadName: e.target.value, payloadId: null })}
+                            />
+                          </>
+                        )}
+                        {step.type === 'check_port' && (
+                          <>
+                            <span className="text-sm text-muted">Port:</span>
+                            <input
+                              type="number"
+                              className="input"
+                              style={{ width: 90 }}
+                              value={step.port || ''}
+                              onChange={e => patchStep(index, { port: parseInt(e.target.value) || 0 })}
+                              min={1}
+                              max={65535}
+                            />
+                            <span className="text-xs text-muted">retry steps</span>
+                            <input
+                              type="number"
+                              className="input"
+                              style={{ width: 60 }}
+                              value={step.retryFromStep ?? ''}
+                              onChange={e => patchStep(index, { retryFromStep: e.target.value === '' ? null : parseInt(e.target.value) })}
+                              placeholder="from"
+                            />
+                            <span className="text-xs text-muted">–</span>
+                            <input
+                              type="number"
+                              className="input"
+                              style={{ width: 60 }}
+                              value={step.retryToStep ?? ''}
+                              onChange={e => patchStep(index, { retryToStep: e.target.value === '' ? null : parseInt(e.target.value) })}
+                              placeholder="to"
+                            />
+                          </>
+                        )}
+                        {step.type === 'rp_session' && (
+                          <>
+                            <span className="text-sm text-muted">Action:</span>
+                            <select
+                              className="select"
+                              style={{ width: 120 }}
+                              value={step.action || 'start'}
+                              onChange={e => patchStep(index, { action: e.target.value })}
+                            >
+                              <option value="start">▶ Start</option>
+                              <option value="stop">⏹ Stop</option>
+                            </select>
+                          </>
+                        )}
+                        {step.type === 'download' && (
                           <input
-                            type="number"
                             className="input"
-                            style={{ width: 80 }}
-                            value={getWaitDisplayValue(step.duration)}
-                            onChange={e => updateWaitStep(index, humanToMs(parseFloat(e.target.value) || 0, getWaitDisplayUnit(step.duration)))}
-                            min={0.1}
-                            step={0.5}
+                            style={{ flex: 1, minWidth: 160 }}
+                            placeholder="https://…"
+                            value={step.url || ''}
+                            onChange={e => patchStep(index, { url: e.target.value })}
                           />
-                          <span className="text-sm text-muted">{getWaitDisplayUnit(step.duration)}</span>
-                        </div>
-                      ) : (
-                        <span className="flex-1 text-sm truncate">{step.name}</span>
-                      )}
+                        )}
+                        {step.type === 'extract' && (
+                          <input
+                            className="input"
+                            style={{ flex: 1, minWidth: 160 }}
+                            placeholder="archive path on local-fs"
+                            value={step.local_path || ''}
+                            onChange={e => patchStep(index, { local_path: e.target.value })}
+                          />
+                        )}
+                        {step.type === 'convert' && (
+                          <input
+                            className="input"
+                            style={{ flex: 1, minWidth: 160 }}
+                            placeholder="source path"
+                            value={step.source_path || ''}
+                            onChange={e => patchStep(index, { source_path: e.target.value })}
+                          />
+                        )}
+                        {step.type === 'ftp_upload' && (
+                          <>
+                            <input
+                              className="input"
+                              style={{ flex: 1, minWidth: 140 }}
+                              placeholder="local file"
+                              value={step.local_path || ''}
+                              onChange={e => patchStep(index, { local_path: e.target.value })}
+                            />
+                            <span className="text-xs text-muted">→</span>
+                            <input
+                              className="input"
+                              style={{ flex: 1, minWidth: 140 }}
+                              placeholder="/data/homebrew"
+                              value={step.dest_path || ''}
+                              onChange={e => patchStep(index, { dest_path: e.target.value })}
+                            />
+                          </>
+                        )}
+                        {!['wait','input_script','payload','check_port','rp_session','download','extract','convert','ftp_upload'].includes(step.type) && (
+                          <span className="flex-1 text-sm truncate">{step.name}</span>
+                        )}
+                      </div>
                       <button
                         className="btn btn-sm btn-ghost"
                         onClick={() => moveStep(index, -1)}

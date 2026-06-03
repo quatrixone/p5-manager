@@ -344,6 +344,20 @@ async function execInputScript(step, ctx) {
   }
 }
 
+async function execRpSession(step, ctx) {
+  if (!ctx.profile) throw new Error('rp_session step needs a profile');
+  const action = step.action || 'start';
+  if (action === 'start') {
+    // /quick-start ensures (and caches) a Remote Play session for this IP
+    // using stored pair credentials. Subsequent input_script steps reuse it.
+    await apiFetch('POST', '/remoteplay/quick-start', { ip: ctx.profile.ip_address, profile_id: ctx.profile.id });
+  } else if (action === 'stop') {
+    await apiFetch('POST', '/remoteplay/quick-stop', { ip: ctx.profile.ip_address });
+  } else {
+    throw new Error(`rp_session: unknown action "${action}"`);
+  }
+}
+
 const STEP_EXEC = {
   wait: execWait,
   wol: execWol,
@@ -354,6 +368,7 @@ const STEP_EXEC = {
   ftp_upload: execFtpUpload,
   convert: execConvert,
   input_script: execInputScript,
+  rp_session: execRpSession,
   // Stubs for older types kept for backwards compatibility (no-op for now)
   klog_read: async () => {},
   lua_log_read: async () => {},
@@ -534,6 +549,19 @@ const DEFAULT_TEMPLATES = [
       { type: 'extract', source: 'local-fs', local_path: '/data/mkpfs/game.rar', dest_kind: 'local-fs', dest_local_path: '/data/mkpfs', name: 'Extract game.rar' },
       { type: 'convert', mode: 'pack-file', source_path: '/data/mkpfs/game.exfat', name: 'Convert to .ffpfsc' },
       { type: 'ftp_upload', local_path: '/data/mkpfs/game.ffpfsc', dest_path: '/data/homebrew', name: 'Upload .ffpfsc to PS5' },
+    ],
+    requiresProfile: true,
+  },
+  {
+    id: 'tpl-full-game',
+    name: 'Full game (RP session → launch script → verify ELF)',
+    description: 'Start a Remote Play session, run an input script that launches the game, wait for it to boot, then succeed when the ELF port (9021) is open.',
+    steps: [
+      { type: 'rp_session', action: 'start', name: 'Start Remote Play session' },
+      { type: 'input_script', scriptId: null, scriptName: '(pick after loading template)', script: '// edit this step to pick your launch script', name: 'Run input: launch game' },
+      { type: 'wait', duration: 20000, name: 'Wait 20 seconds for game to boot' },
+      { type: 'check_port', port: 9021, retryFromStep: 3, retryToStep: 3, name: 'Verify ELF port 9021 (success)' },
+      { type: 'rp_session', action: 'stop', name: 'Stop Remote Play session' },
     ],
     requiresProfile: true,
   },
