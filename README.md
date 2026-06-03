@@ -163,7 +163,7 @@ Backup & restore the whole thing as a ZIP from **Settings → Backup**.
 ## Platform
 
 - Linux / macOS / Windows with Docker (host networking required)
-- Tested on Debian (dietpi) and Raspberry Pi-class hardware
+- Tested on Debian on amd64 / Intel x86_64 hardware
 
 ## License
 

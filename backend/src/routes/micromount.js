@@ -1099,7 +1099,7 @@ router.put('/browser-prefs', (req, res) => {
 
 router.get('/local/roots', (req, res) => {
   const roots = [];
-  for (const r of ['/mnt', '/home', '/data', '/tmp', '/media', '/srv']) {
+  for (const r of ['/mnt', '/home', '/data', '/tmp', '/media']) {
     try {
       if (fs.existsSync(r) && fs.statSync(r).isDirectory()) roots.push(r);
     } catch (_) {}

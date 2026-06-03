@@ -63,35 +63,6 @@ export function useKeyboard(shortcuts) {
   }, []);
 }
 
-export function useSwipe(elRef, onSwipeLeft, onSwipeRight, threshold = 50) {
-  const startX = useRef(0);
-
-  useEffect(() => {
-    const el = elRef.current;
-    if (!el) return;
-
-    const handleTouchStart = (e) => {
-      startX.current = e.touches[0].clientX;
-    };
-
-    const handleTouchEnd = (e) => {
-      const dx = e.changedTouches[0].clientX - startX.current;
-      if (Math.abs(dx) > threshold) {
-        if (dx < 0 && onSwipeLeft) onSwipeLeft();
-        else if (dx > 0 && onSwipeRight) onSwipeRight();
-      }
-    };
-
-    el.addEventListener('touchstart', handleTouchStart, { passive: true });
-    el.addEventListener('touchend', handleTouchEnd, { passive: true });
-
-    return () => {
-      el.removeEventListener('touchstart', handleTouchStart);
-      el.removeEventListener('touchend', handleTouchEnd);
-    };
-  }, [elRef, onSwipeLeft, onSwipeRight, threshold]);
-}
-
 export function useMediaQuery(query) {
   const [matches, setMatches] = useState(() => window.matchMedia(query).matches);
 

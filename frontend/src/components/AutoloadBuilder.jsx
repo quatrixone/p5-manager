@@ -469,16 +469,17 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
     <div className="flex-col gap-md">
       {activeView === 'list' && (
         <>
-          <div className="flex justify-between items-center">
-            <div>
+          <div className="flex justify-between items-center gap-sm flex-wrap">
+            <div style={{ minWidth: 0 }}>
               <h2 className="font-bold" style={{ fontSize: '1.25rem' }}>Sequences</h2>
               <span className="text-muted text-sm">{sequences.length} saved</span>
             </div>
             <button
               className="btn btn-success"
+              style={{ minHeight: 44 }}
               onClick={() => { resetForm(); setActiveView('create'); }}
             >
-              + New
+              + New sequence
             </button>
           </div>
 
@@ -490,16 +491,16 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
               </div>
               <div className="comp-card-body flex-col gap-sm">
                 {templates.map(tpl => (
-                  <div key={tpl.id} className="flex justify-between items-start gap-md p-sm"
+                  <div key={tpl.id} className="flex-col gap-sm p-sm"
                     style={{ background: 'var(--panel2)', borderRadius: 8 }}>
-                    <div className="flex-1" style={{ minWidth: 0 }}>
-                      <div className="font-medium">{tpl.name}</div>
-                      <div className="text-xs text-muted">{tpl.description}</div>
+                    <div style={{ minWidth: 0 }}>
+                      <div className="font-medium" style={{ wordBreak: 'break-word' }}>{tpl.name}</div>
+                      <div className="text-xs text-muted" style={{ wordBreak: 'break-word' }}>{tpl.description}</div>
                       <div className="text-xs text-muted mt-xs">
                         {tpl.steps.map(s => getStepIcon(s.type)).join(' ')} ({tpl.steps.length} steps)
                       </div>
                     </div>
-                    <button className="btn btn-sm btn-primary" onClick={() => loadTemplate(tpl)}>Use</button>
+                    <button className="btn btn-primary" style={{ minHeight: 44 }} onClick={() => loadTemplate(tpl)}>Use this template</button>
                   </div>
                 ))}
               </div>
@@ -520,24 +521,22 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
             <div className="flex-col gap-sm">
               {sequences.map(seq => (
                 <div key={seq.id} className="comp-card">
-                  <div className="comp-card-body">
-                    <div className="flex justify-between items-start gap-md">
-                      <div className="flex-1">
-                        <div className="font-medium">{seq.name}</div>
-                        <div className="text-sm text-muted">
-                          {seq.profile_name || 'Unknown'} • {JSON.parse(seq.steps || '[]').length} steps
+                  <div className="comp-card-body flex-col gap-sm">
+                    <div className="flex-1" style={{ minWidth: 0 }}>
+                      <div className="font-medium" style={{ wordBreak: 'break-word' }}>{seq.name}</div>
+                      <div className="text-sm text-muted">
+                        {seq.profile_name || 'Unknown'} • {JSON.parse(seq.steps || '[]').length} steps
+                      </div>
+                      {seq.schedule_cron && (
+                        <div className="text-xs mt-sm" style={{ color: seq.schedule_enabled ? 'var(--green)' : 'var(--muted)' }}>
+                          {seq.schedule_enabled ? '🔄' : '⏸'} {formatSchedule(seq.schedule_cron)}
                         </div>
-                        {seq.schedule_cron && (
-                          <div className="text-xs mt-sm" style={{ color: seq.schedule_enabled ? 'var(--green)' : 'var(--muted)' }}>
-                            {seq.schedule_enabled ? '🔄' : '⏸'} {formatSchedule(seq.schedule_cron)}
-                          </div>
-                        )}
-                      </div>
-                      <div className="flex gap-xs">
-                        <button className="btn btn-sm btn-primary" onClick={() => runSequence(seq.id)}>▶ Run</button>
-                        <button className="btn btn-sm btn-secondary" onClick={() => editSequenceLoad(seq)}>✏️</button>
-                        <button className="btn btn-sm btn-danger" onClick={() => deleteSequence(seq.id)}>✕</button>
-                      </div>
+                      )}
+                    </div>
+                    <div className="flex gap-sm flex-wrap" style={{ marginTop: 'var(--space-xs)' }}>
+                      <button className="btn btn-primary" style={{ flex: '1 1 100px', minHeight: 44 }} onClick={() => runSequence(seq.id)}>▶ Run</button>
+                      <button className="btn btn-secondary" style={{ flex: '0 1 auto', minHeight: 44, minWidth: 48 }} onClick={() => editSequenceLoad(seq)} aria-label="Edit">✏️ Edit</button>
+                      <button className="btn btn-danger" style={{ flex: '0 1 auto', minHeight: 44, minWidth: 48 }} onClick={() => deleteSequence(seq.id)} aria-label="Delete">🗑</button>
                     </div>
                   </div>
                 </div>
@@ -549,9 +548,9 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
 
       {(activeView === 'create' || activeView === 'edit') && (
         <>
-          <div className="flex justify-between items-center">
-            <h2 className="font-bold" style={{ fontSize: '1.25rem' }}>{editSequence ? 'Edit Sequence' : 'New Sequence'}</h2>
-            <button className="btn btn-ghost" onClick={resetForm}>← Back</button>
+          <div className="flex justify-between items-center gap-sm flex-wrap">
+            <h2 className="font-bold" style={{ fontSize: '1.25rem', wordBreak: 'break-word' }}>{editSequence ? 'Edit Sequence' : 'New Sequence'}</h2>
+            <button className="btn btn-ghost" onClick={resetForm} style={{ minHeight: 44 }}>← Back to list</button>
           </div>
 
           <div className="comp-card">
@@ -657,19 +656,19 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
               <span className="comp-card-title">➕ Add Step</span>
             </div>
             <div className="comp-card-body flex-col gap-md">
-              <div className="flex gap-sm flex-wrap">
-                <button className="btn btn-sm btn-secondary" onClick={() => setShowAddStepMenu('download')}>⬇️ Download</button>
-                <button className="btn btn-sm btn-secondary" onClick={() => setShowAddStepMenu('extract')}>📂 Extract</button>
-                <button className="btn btn-sm btn-secondary" onClick={() => setShowAddStepMenu('convert')}>🔄 Convert</button>
-                <button className="btn btn-sm btn-secondary" onClick={() => setShowAddStepMenu('ftp_upload')}>⬆️ FTP Upload</button>
-                <button className="btn btn-sm btn-secondary" onClick={() => setShowAddStepMenu('wol')}>📡 Wake</button>
-                <button className="btn btn-sm btn-secondary" onClick={() => setShowAddStepMenu('check_port')}>🔌 Port Check</button>
-                <button className="btn btn-sm btn-secondary" onClick={() => setShowAddStepMenu('payload')}>📦 Payload</button>
-                <button className="btn btn-sm btn-secondary" onClick={() => setShowAddStepMenu('input_script')}>▶️ Script</button>
-                <button className="btn btn-sm btn-secondary" onClick={() => setShowAddStepMenu('rp_session')}>🕹️ RP session</button>
-                <button className="btn btn-sm btn-secondary" onClick={() => setShowAddStepMenu('klog_read')}>📜 Klog</button>
-                <button className="btn btn-sm btn-secondary" onClick={() => setShowAddStepMenu('lua_log_read')}>📝 Lua Log</button>
-                <button className="btn btn-sm btn-secondary" onClick={() => setShowAddStepMenu('wait')}>⏱ Wait</button>
+              <div className="autoload-add-grid">
+                <button className="btn btn-secondary" onClick={() => setShowAddStepMenu(showAddStepMenu === 'download' ? null : 'download')}>⬇️ Download</button>
+                <button className="btn btn-secondary" onClick={() => setShowAddStepMenu(showAddStepMenu === 'extract' ? null : 'extract')}>📂 Extract</button>
+                <button className="btn btn-secondary" onClick={() => setShowAddStepMenu(showAddStepMenu === 'convert' ? null : 'convert')}>🔄 Convert</button>
+                <button className="btn btn-secondary" onClick={() => setShowAddStepMenu(showAddStepMenu === 'ftp_upload' ? null : 'ftp_upload')}>⬆️ FTP Upload</button>
+                <button className="btn btn-secondary" onClick={() => setShowAddStepMenu(showAddStepMenu === 'wol' ? null : 'wol')}>📡 Wake</button>
+                <button className="btn btn-secondary" onClick={() => setShowAddStepMenu(showAddStepMenu === 'check_port' ? null : 'check_port')}>🔌 Port Check</button>
+                <button className="btn btn-secondary" onClick={() => setShowAddStepMenu(showAddStepMenu === 'payload' ? null : 'payload')}>📦 Payload</button>
+                <button className="btn btn-secondary" onClick={() => setShowAddStepMenu(showAddStepMenu === 'input_script' ? null : 'input_script')}>▶️ Script</button>
+                <button className="btn btn-secondary" onClick={() => setShowAddStepMenu(showAddStepMenu === 'rp_session' ? null : 'rp_session')}>🕹️ RP session</button>
+                <button className="btn btn-secondary" onClick={() => setShowAddStepMenu(showAddStepMenu === 'klog_read' ? null : 'klog_read')}>📜 Klog</button>
+                <button className="btn btn-secondary" onClick={() => setShowAddStepMenu(showAddStepMenu === 'lua_log_read' ? null : 'lua_log_read')}>📝 Lua Log</button>
+                <button className="btn btn-secondary" onClick={() => setShowAddStepMenu(showAddStepMenu === 'wait' ? null : 'wait')}>⏱ Wait</button>
               </div>
 
               {showAddStepMenu === 'payload' && (
@@ -991,184 +990,190 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
                 </div>
               ) : (
                 <div className="flex-col gap-sm">
-                  {steps.map((step, index) => (
-                    <div key={index} className="flex items-center gap-sm p-sm flex-wrap" style={{ background: 'var(--panel2)', borderRadius: 6 }}>
-                      <span className="badge" style={{ background: 'var(--panel)', minWidth: 28, textAlign: 'center' }}>
-                        {index + 1}
-                      </span>
-                      <span style={{ fontSize: '1.2rem', width: 24, textAlign: 'center' }}>{getStepIcon(step.type)}</span>
-                      <div className="flex-1 flex items-center gap-sm flex-wrap" style={{ minWidth: 0 }}>
-                        {step.type === 'wait' && (
-                          <>
-                            <span className="text-sm text-muted">Wait</span>
-                            <input
-                              type="number"
-                              className="input"
-                              style={{ width: 80 }}
-                              value={getWaitDisplayValue(step.duration)}
-                              onChange={e => updateWaitStep(index, humanToMs(parseFloat(e.target.value) || 0, getWaitDisplayUnit(step.duration)))}
-                              min={0.1}
-                              step={0.5}
-                            />
-                            <span className="text-sm text-muted">{getWaitDisplayUnit(step.duration)}</span>
-                          </>
-                        )}
-                        {step.type === 'input_script' && (
-                          <>
-                            <span className="text-sm text-muted">Script:</span>
-                            <select
-                              className="select"
-                              style={{ flex: 1, minWidth: 160 }}
-                              value={step.scriptId || ''}
-                              onChange={e => patchStep(index, { scriptId: parseInt(e.target.value) || null })}
-                            >
-                              <option value="">— pick a script —</option>
-                              {inputScripts.map(s => (
-                                <option key={s.id} value={s.id}>{s.name}</option>
-                              ))}
-                            </select>
-                          </>
-                        )}
-                        {step.type === 'payload' && (
-                          <>
-                            <span className="text-sm text-muted">Payload:</span>
-                            <select
-                              className="select"
-                              style={{ flex: 1, minWidth: 160 }}
-                              value={step.payloadId || ''}
-                              onChange={e => {
-                                const v = e.target.value;
-                                if (v === '__name__') return;
-                                patchStep(index, { payloadId: v ? parseInt(v) : null, payloadName: v ? null : step.payloadName });
-                              }}
-                            >
-                              <option value="">— by id —</option>
-                              {(payloads || []).map(p => (
-                                <option key={p.id} value={p.id}>{p.filename || p.name}</option>
-                              ))}
-                            </select>
-                            <span className="text-xs text-muted">or by name:</span>
-                            <input
-                              className="input"
-                              style={{ width: 140 }}
-                              placeholder="e.g. p2jb.lua"
-                              value={step.payloadName || ''}
-                              onChange={e => patchStep(index, { payloadName: e.target.value, payloadId: null })}
-                            />
-                          </>
-                        )}
-                        {step.type === 'check_port' && (
-                          <>
-                            <span className="text-sm text-muted">Port:</span>
-                            <input
-                              type="number"
-                              className="input"
-                              style={{ width: 90 }}
-                              value={step.port || ''}
-                              onChange={e => patchStep(index, { port: parseInt(e.target.value) || 0 })}
-                              min={1}
-                              max={65535}
-                            />
-                            <span className="text-xs text-muted">retry steps</span>
-                            <input
-                              type="number"
-                              className="input"
-                              style={{ width: 60 }}
-                              value={step.retryFromStep ?? ''}
-                              onChange={e => patchStep(index, { retryFromStep: e.target.value === '' ? null : parseInt(e.target.value) })}
-                              placeholder="from"
-                            />
-                            <span className="text-xs text-muted">–</span>
-                            <input
-                              type="number"
-                              className="input"
-                              style={{ width: 60 }}
-                              value={step.retryToStep ?? ''}
-                              onChange={e => patchStep(index, { retryToStep: e.target.value === '' ? null : parseInt(e.target.value) })}
-                              placeholder="to"
-                            />
-                          </>
-                        )}
-                        {step.type === 'rp_session' && (
-                          <>
-                            <span className="text-sm text-muted">Action:</span>
-                            <select
-                              className="select"
-                              style={{ width: 120 }}
-                              value={step.action || 'start'}
-                              onChange={e => patchStep(index, { action: e.target.value })}
-                            >
-                              <option value="start">▶ Start</option>
-                              <option value="stop">⏹ Stop</option>
-                            </select>
-                          </>
-                        )}
-                        {step.type === 'download' && (
-                          <input
-                            className="input"
-                            style={{ flex: 1, minWidth: 160 }}
-                            placeholder="https://…"
-                            value={step.url || ''}
-                            onChange={e => patchStep(index, { url: e.target.value })}
-                          />
-                        )}
-                        {step.type === 'extract' && (
-                          <input
-                            className="input"
-                            style={{ flex: 1, minWidth: 160 }}
-                            placeholder="archive path on local-fs"
-                            value={step.local_path || ''}
-                            onChange={e => patchStep(index, { local_path: e.target.value })}
-                          />
-                        )}
-                        {step.type === 'convert' && (
-                          <input
-                            className="input"
-                            style={{ flex: 1, minWidth: 160 }}
-                            placeholder="source path"
-                            value={step.source_path || ''}
-                            onChange={e => patchStep(index, { source_path: e.target.value })}
-                          />
-                        )}
-                        {step.type === 'ftp_upload' && (
-                          <>
-                            <input
-                              className="input"
-                              style={{ flex: 1, minWidth: 140 }}
-                              placeholder="local file"
-                              value={step.local_path || ''}
-                              onChange={e => patchStep(index, { local_path: e.target.value })}
-                            />
-                            <span className="text-xs text-muted">→</span>
-                            <input
-                              className="input"
-                              style={{ flex: 1, minWidth: 140 }}
-                              placeholder="/data/homebrew"
-                              value={step.dest_path || ''}
-                              onChange={e => patchStep(index, { dest_path: e.target.value })}
-                            />
-                          </>
-                        )}
-                        {!['wait','input_script','payload','check_port','rp_session','download','extract','convert','ftp_upload'].includes(step.type) && (
-                          <span className="flex-1 text-sm truncate">{step.name}</span>
+                  {steps.map((step, index) => {
+                    const editable = ['wait','input_script','payload','check_port','rp_session','download','extract','convert','ftp_upload'].includes(step.type);
+                    return (
+                      <div key={index} className="step-card">
+                        <div className="step-card-head">
+                          <span className="badge" style={{ background: 'var(--panel)', minWidth: 28, textAlign: 'center' }}>
+                            {index + 1}
+                          </span>
+                          <span style={{ fontSize: '1.3rem' }}>{getStepIcon(step.type)}</span>
+                          <span className="step-title">{step.name || step.type}</span>
+                          <div className="step-actions">
+                            <button
+                              className="btn btn-sm btn-ghost"
+                              onClick={() => moveStep(index, -1)}
+                              disabled={index === 0}
+                              aria-label="Move up"
+                            >↑</button>
+                            <button
+                              className="btn btn-sm btn-ghost"
+                              onClick={() => moveStep(index, 1)}
+                              disabled={index === steps.length - 1}
+                              aria-label="Move down"
+                            >↓</button>
+                            <button
+                              className="btn btn-sm btn-danger"
+                              onClick={() => removeStep(index)}
+                              aria-label="Remove step"
+                            >✕</button>
+                          </div>
+                        </div>
+                        {editable && (
+                          <div className="step-card-body">
+                            {step.type === 'wait' && (
+                              <>
+                                <label className="field-label">Wait</label>
+                                <input
+                                  type="number"
+                                  className="input"
+                                  value={getWaitDisplayValue(step.duration)}
+                                  onChange={e => updateWaitStep(index, humanToMs(parseFloat(e.target.value) || 0, getWaitDisplayUnit(step.duration)))}
+                                  min={0.1}
+                                  step={0.5}
+                                />
+                                <span className="text-sm text-muted">{getWaitDisplayUnit(step.duration)}</span>
+                              </>
+                            )}
+                            {step.type === 'input_script' && (
+                              <>
+                                <label className="field-label">Input script</label>
+                                <select
+                                  className="select"
+                                  value={step.scriptId || ''}
+                                  onChange={e => patchStep(index, { scriptId: parseInt(e.target.value) || null })}
+                                >
+                                  <option value="">— pick a script —</option>
+                                  {inputScripts.map(s => (
+                                    <option key={s.id} value={s.id}>{s.name}</option>
+                                  ))}
+                                </select>
+                              </>
+                            )}
+                            {step.type === 'payload' && (
+                              <>
+                                <label className="field-label">Payload (by id)</label>
+                                <select
+                                  className="select"
+                                  value={step.payloadId || ''}
+                                  onChange={e => {
+                                    const v = e.target.value;
+                                    patchStep(index, { payloadId: v ? parseInt(v) : null, payloadName: v ? null : step.payloadName });
+                                  }}
+                                >
+                                  <option value="">— pick a payload —</option>
+                                  {(payloads || []).map(p => (
+                                    <option key={p.id} value={p.id}>{p.filename || p.name}</option>
+                                  ))}
+                                </select>
+                                <label className="field-label">…or by name</label>
+                                <input
+                                  className="input"
+                                  placeholder="e.g. p2jb.lua"
+                                  value={step.payloadName || ''}
+                                  onChange={e => patchStep(index, { payloadName: e.target.value, payloadId: null })}
+                                />
+                              </>
+                            )}
+                            {step.type === 'check_port' && (
+                              <>
+                                <label className="field-label">Port</label>
+                                <input
+                                  type="number"
+                                  className="input"
+                                  value={step.port || ''}
+                                  onChange={e => patchStep(index, { port: parseInt(e.target.value) || 0 })}
+                                  min={1}
+                                  max={65535}
+                                />
+                                <label className="field-label">Retry from step</label>
+                                <input
+                                  type="number"
+                                  className="input"
+                                  value={step.retryFromStep ?? ''}
+                                  onChange={e => patchStep(index, { retryFromStep: e.target.value === '' ? null : parseInt(e.target.value) })}
+                                  placeholder="optional"
+                                />
+                                <label className="field-label">Retry to step</label>
+                                <input
+                                  type="number"
+                                  className="input"
+                                  value={step.retryToStep ?? ''}
+                                  onChange={e => patchStep(index, { retryToStep: e.target.value === '' ? null : parseInt(e.target.value) })}
+                                  placeholder="optional"
+                                />
+                              </>
+                            )}
+                            {step.type === 'rp_session' && (
+                              <>
+                                <label className="field-label">Action</label>
+                                <select
+                                  className="select"
+                                  value={step.action || 'start'}
+                                  onChange={e => patchStep(index, { action: e.target.value })}
+                                >
+                                  <option value="start">▶ Start session</option>
+                                  <option value="stop">⏹ Stop session</option>
+                                </select>
+                              </>
+                            )}
+                            {step.type === 'download' && (
+                              <>
+                                <label className="field-label">URL</label>
+                                <input
+                                  className="input"
+                                  placeholder="https://…"
+                                  value={step.url || ''}
+                                  onChange={e => patchStep(index, { url: e.target.value })}
+                                />
+                              </>
+                            )}
+                            {step.type === 'extract' && (
+                              <>
+                                <label className="field-label">Archive path</label>
+                                <input
+                                  className="input"
+                                  placeholder="/data/mkpfs/archive.zip"
+                                  value={step.local_path || ''}
+                                  onChange={e => patchStep(index, { local_path: e.target.value })}
+                                />
+                              </>
+                            )}
+                            {step.type === 'convert' && (
+                              <>
+                                <label className="field-label">Source path</label>
+                                <input
+                                  className="input"
+                                  placeholder="/data/mkpfs/game.exfat"
+                                  value={step.source_path || ''}
+                                  onChange={e => patchStep(index, { source_path: e.target.value })}
+                                />
+                              </>
+                            )}
+                            {step.type === 'ftp_upload' && (
+                              <>
+                                <label className="field-label">Local file</label>
+                                <input
+                                  className="input"
+                                  placeholder="/data/mkpfs/file.ffpfsc"
+                                  value={step.local_path || ''}
+                                  onChange={e => patchStep(index, { local_path: e.target.value })}
+                                />
+                                <label className="field-label">PS5 destination</label>
+                                <input
+                                  className="input"
+                                  placeholder="/data/homebrew"
+                                  value={step.dest_path || ''}
+                                  onChange={e => patchStep(index, { dest_path: e.target.value })}
+                                />
+                              </>
+                            )}
+                          </div>
                         )}
                       </div>
-                      <button
-                        className="btn btn-sm btn-ghost"
-                        onClick={() => moveStep(index, -1)}
-                        disabled={index === 0}
-                      >↑</button>
-                      <button
-                        className="btn btn-sm btn-ghost"
-                        onClick={() => moveStep(index, 1)}
-                        disabled={index === steps.length - 1}
-                      >↓</button>
-                      <button
-                        className="btn btn-sm btn-danger"
-                        onClick={() => removeStep(index)}
-                      >✕</button>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
 
@@ -1176,8 +1181,9 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
                 className={`btn btn-block mt-md ${(!sequenceName || steps.length === 0 || (needsProfile && !selectedProfile)) ? 'btn-ghost' : 'btn-success'}`}
                 onClick={editSequence ? updateSequence : saveSequence}
                 disabled={!sequenceName || steps.length === 0 || (needsProfile && !selectedProfile)}
+                style={{ minHeight: 52, fontSize: '1rem', fontWeight: 600 }}
               >
-                {editSequence ? 'Update Sequence' : 'Save Sequence'}
+                {editSequence ? '💾 Update Sequence' : '💾 Save Sequence'}
               </button>
             </div>
           </div>
