@@ -269,6 +269,61 @@ router.post('/sessions/:sid/stop', async (req, res) => {
   }
 });
 
+// ─── Direct session control (used by ScriptRunner + autoload rp_session step)
+
+// Open (or reuse) the cached Remote Play session for an IP. Returns the
+// session id and current cached state without requiring the caller to know
+// anything about pyremoteplay.
+router.post('/quick-start', async (req, res) => {
+  try {
+    const { ip: rawIp, profile_id } = req.body || {};
+    let ip = rawIp;
+    if (!ip && profile_id) ip = loadProfileById(profile_id)?.ip_address;
+    if (!ip) return res.status(400).json({ success: false, error: 'ip or profile_id required' });
+    const sid = await ensureSessionForIp(ip);
+    res.json({ success: true, session_id: sid, ip, cached: true });
+  } catch (err) {
+    res.status(err.status || 502).json({ success: false, error: err.message });
+  }
+});
+
+// Tear down a cached session for an IP, freeing the PS5-side state. Quiet
+// no-op if no session was cached.
+router.post('/quick-stop', async (req, res) => {
+  try {
+    const { ip: rawIp, profile_id } = req.body || {};
+    let ip = rawIp;
+    if (!ip && profile_id) ip = loadProfileById(profile_id)?.ip_address;
+    if (!ip) return res.status(400).json({ success: false, error: 'ip or profile_id required' });
+    const cached = ipToSession.get(ip);
+    if (!cached) return res.json({ success: true, stopped: false, ip });
+    try { await sidecar('POST', `/sessions/${encodeURIComponent(cached.sid)}/stop`, {}, { timeout: 8000 }); } catch (_) {}
+    ipToSession.delete(ip);
+    res.json({ success: true, stopped: true, ip, session_id: cached.sid });
+  } catch (err) {
+    res.status(err.status || 502).json({ success: false, error: err.message });
+  }
+});
+
+// Report whether a cached RP session exists for an IP and its current state.
+router.get('/quick-status', async (req, res) => {
+  try {
+    const { ip } = req.query || {};
+    if (!ip) return res.status(400).json({ success: false, error: 'ip required' });
+    const cached = ipToSession.get(ip);
+    if (!cached) return res.json({ success: true, active: false, ip });
+    try {
+      const s = await sidecar('GET', `/sessions/${encodeURIComponent(cached.sid)}`, undefined, { timeout: 4000 });
+      return res.json({ success: true, active: s.state === 'connected', ip, session_id: cached.sid, state: s.state });
+    } catch (_) {
+      ipToSession.delete(ip);
+      return res.json({ success: true, active: false, ip });
+    }
+  } catch (err) {
+    res.status(err.status || 502).json({ success: false, error: err.message });
+  }
+});
+
 // ─── Script runner ------------------------------------------------------------
 
 // Send one or more button/stick events as a quick-tap. Automatically starts a

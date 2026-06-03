@@ -96,11 +96,28 @@ async def oauth_exchange(req: OAuthExchange):
         log.exception("oauth exchange failed")
         raise HTTPException(400, f"OAuth exchange failed: {e}")
     if not user:
-        raise HTTPException(400, "PSN did not return user account")
-    # pyremoteplay returns: {"online_id":..., "account_id":..., "country":..., "language":...}
+        raise HTTPException(400, "PSN did not return user account or the redirect URL/code already expired - run the OAuth flow again")
+    # pyremoteplay's _format_account_info() always sets "user_id" (the PSN
+    # account id) plus "user_rpid" and "credentials". The PSN-supplied fields
+    # vary, but commonly include "online_id" / "onlineId".
+    account_id = (
+        user.get("user_id")
+        or user.get("account_id")
+        or user.get("accountId")
+    )
+    online_id = (
+        user.get("online_id")
+        or user.get("onlineId")
+        or user.get("name")
+        or ""
+    )
+    if not account_id:
+        raise HTTPException(400, f"PSN response missing user_id; raw keys: {list(user.keys())}")
     return {
-        "account_id": user.get("account_id"),
-        "online_id": user.get("online_id") or user.get("npLanguage") or "",
+        "account_id": str(account_id),
+        "online_id": str(online_id),
+        "user_rpid": user.get("user_rpid"),
+        "credentials": user.get("credentials"),
         "raw": user,
     }
 
