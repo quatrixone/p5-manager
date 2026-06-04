@@ -199,9 +199,12 @@ async function execCheckPort(step, ctx) {
 
 async function execWol(step, ctx) {
   if (!ctx.profile) throw new Error('wol needs a profile');
-  await apiFetch('POST', '/ps5control/wake', {
-    ip: ctx.profile.ip_address,
-    credential: ctx.profile.credential || undefined,
+  // New wake endpoint sends both DDP WAKEUP and DDP LAUNCH (using the stored
+  // PSN account_id), so the PS5 wakes *and* logs the user in - bypassing the
+  // "Press PS button" prompt that otherwise blocks Remote Play after a cold
+  // boot from rest mode.
+  await apiFetch('POST', '/remoteplay/wake', {
+    profile_id: ctx.profile.id,
   });
 }
 

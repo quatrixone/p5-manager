@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 
 const API = '/api';
 
@@ -22,7 +22,48 @@ const AVAILABLE_COMMANDS = [
   { cmd: 'L3', desc: 'L3 stick press' },
   { cmd: 'R3', desc: 'R3 stick press' },
   { cmd: 'wait', desc: 'Wait X ms (e.g. wait 1000)' },
+  { cmd: 'text', desc: 'Type text on PS5 on-screen keyboard (e.g. text Revenge)' },
 ];
+
+// Note: append "Nx" / "xN" / "*N" to any button line to repeat it N times.
+//   e.g. `left 10x`  -> presses left 10 times
+//   e.g. `cross 5x 120` -> 5 taps, each 120 ms long
+//
+// `text <string>` simulates typing on the PS5 software keyboard by walking
+// the d-pad and tapping cross for each letter (a-z, space).
+
+const OSK_KEY_COORDS = (() => {
+  const map = {};
+  const rows = ['qwertyuiop', 'asdfghjkl', 'zxcvbnm'];
+  rows.forEach((row, r) => {
+    for (let c = 0; c < row.length; c++) map[row[c]] = [c, r];
+  });
+  map[' '] = [3, 3];
+  return map;
+})();
+
+function buildOskInputs(text) {
+  const events = [];
+  let curCol = 0, curRow = 0;
+  for (let i = 0; i < 4; i++) events.push({ button: 'up' });
+  for (let i = 0; i < 10; i++) events.push({ button: 'left' });
+  events.push({ button: 'down' });
+  for (const ch0 of String(text)) {
+    const ch = ch0.toLowerCase();
+    const coords = OSK_KEY_COORDS[ch];
+    if (!coords) continue;
+    const [tc, tr] = coords;
+    const dr = tr - curRow;
+    const dc = tc - curCol;
+    if (dr > 0) for (let i = 0; i < dr; i++) events.push({ button: 'down' });
+    else if (dr < 0) for (let i = 0; i < -dr; i++) events.push({ button: 'up' });
+    if (dc > 0) for (let i = 0; i < dc; i++) events.push({ button: 'right' });
+    else if (dc < 0) for (let i = 0; i < -dc; i++) events.push({ button: 'left' });
+    events.push({ button: 'cross', commit: true });
+    curCol = tc; curRow = tr;
+  }
+  return events;
+}
 
 function ScriptRunner({ ip, onSendInput, scripts, onScriptsChange }) {
   const [scriptName, setScriptName] = useState('');
@@ -33,9 +74,16 @@ function ScriptRunner({ ip, onSendInput, scripts, onScriptsChange }) {
   const [stopRequested, setStopRequested] = useState(false);
   const [sessionState, setSessionState] = useState('idle'); // idle | connecting | connected | stopping
   const [sessionId, setSessionId] = useState('');
+  // Mirror the latest state into a ref so the polling closure always reads
+  // the truth without re-creating the interval on every render.
+  const sessionStateRef = useRef('idle');
+  useEffect(() => { sessionStateRef.current = sessionState; }, [sessionState]);
 
-  // Poll the cached RP session status for this IP every 4s so users see when
-  // a session is open (vs. starting on first input).
+  // Poll the cached RP session status for this IP every 4 s. Single source
+  // of truth: the sidecar. If the sidecar says a session exists for this IP
+  // (regardless of who opened it - this component, RemotePlay tab, Autoload,
+  // etc.) we adopt it and show "connected". When the sidecar reports no
+  // active session and we're not mid-transition we drop back to "idle".
   useEffect(() => {
     if (!ip) return;
     let cancelled = false;
@@ -43,13 +91,17 @@ function ScriptRunner({ ip, onSendInput, scripts, onScriptsChange }) {
       try {
         const r = await fetch(`${API}/remoteplay/quick-status?ip=${encodeURIComponent(ip)}`).then(r => r.json());
         if (cancelled) return;
+        const cur = sessionStateRef.current;
         if (r.success && r.active) {
-          setSessionState('connected');
-          setSessionId(r.session_id || '');
-        } else if (sessionState === 'connected' || sessionState === 'connecting') {
-          // Don't clobber a "connecting" state we just initiated.
-          if (sessionState !== 'connecting') setSessionState('idle');
+          if (cur !== 'connected') setSessionState('connected');
+          if (r.session_id) setSessionId(r.session_id);
+          return;
         }
+        // Inactive - only flip to idle when we're not actively starting or
+        // stopping the session ourselves.
+        if (cur === 'connecting' || cur === 'stopping') return;
+        if (cur !== 'idle') setSessionState('idle');
+        if (sessionId) setSessionId('');
       } catch (_) {}
     };
     tick();
@@ -122,21 +174,41 @@ function ScriptRunner({ ip, onSendInput, scripts, onScriptsChange }) {
     }
   };
 
+  const parseRepeatToken = (tok) => {
+    if (!tok) return null;
+    const m = /^(?:x(\d+)|(\d+)x|\*(\d+))$/i.exec(tok);
+    if (!m) return null;
+    const n = parseInt(m[1] || m[2] || m[3], 10);
+    return Number.isFinite(n) && n > 0 ? Math.min(n, 1000) : null;
+  };
+
   const parseLine = (line) => {
     line = line.trim();
-    if (!line || line.startsWith('//')) return null;
+    if (!line || line.startsWith('//') || line.startsWith('#')) return null;
 
     const parts = line.split(/\s+/);
     const cmd = parts[0].toLowerCase();
-    const params = parts.slice(1).join(' ');
 
-    if (AVAILABLE_COMMANDS.find(c => c.cmd === cmd)) {
-      return { cmd, params };
+    if (cmd === 'wait' || cmd === 'sleep') {
+      const ms = parseInt(parts[1]) || 1000;
+      return { cmd: 'wait', params: ms };
     }
 
-    if (cmd === 'wait') {
-      const ms = parseInt(params) || 1000;
-      return { cmd: 'wait', params: ms };
+    if (cmd === 'text' || cmd === 'type') {
+      return { cmd: 'text', text: line.replace(/^\S+\s+/, '') };
+    }
+
+    if (AVAILABLE_COMMANDS.find(c => c.cmd === cmd)) {
+      // Extract optional repeat token (10x / x10 / *10) and remaining
+      // params (typically a duration in ms).
+      let count = 1;
+      const rest = [];
+      for (let i = 1; i < parts.length; i++) {
+        const rep = parseRepeatToken(parts[i]);
+        if (rep != null) { count = rep; continue; }
+        rest.push(parts[i]);
+      }
+      return { cmd, params: rest.join(' '), count };
     }
 
     return null;
@@ -183,9 +255,29 @@ function ScriptRunner({ ip, onSendInput, scripts, onScriptsChange }) {
         continue;
       }
 
-      const success = await sendCommand(parsed.cmd, parsed.params);
-      if (!success && parsed.cmd !== 'wait') {
-        addOutput(`Line ${lineNum}: Command failed, continuing...`, 'warning');
+      if (parsed.cmd === 'text') {
+        addOutput(`⌨ Type "${parsed.text}"`, 'info');
+        const inputs = buildOskInputs(parsed.text || '');
+        for (const ev of inputs) {
+          if (stopRequested) break;
+          await sendCommand(ev.button);
+          await new Promise(r => setTimeout(r, ev.commit ? 140 : 90));
+        }
+        continue;
+      }
+
+      const reps = Math.max(1, parsed.count || 1);
+      if (reps > 1) addOutput(`↻ ${parsed.cmd} ×${reps}`, 'info');
+      for (let r = 0; r < reps; r++) {
+        if (stopRequested) break;
+        const success = await sendCommand(parsed.cmd, parsed.params);
+        if (!success) {
+          addOutput(`Line ${lineNum}: Command failed, continuing...`, 'warning');
+        }
+        // Short pause so each press is registered separately by PS5 menus.
+        if (reps > 1 && r < reps - 1) {
+          await new Promise(resolve => setTimeout(resolve, 120));
+        }
       }
 
       await new Promise(resolve => setTimeout(resolve, 100));
@@ -297,25 +389,29 @@ function ScriptRunner({ ip, onSendInput, scripts, onScriptsChange }) {
       </div>
 
       {/* Saved Scripts */}
-      {scripts && scripts.length > 0 && (
-        <div style={{ background: '#16213e', padding: '1rem', borderRadius: 12 }}>
-          <h3 style={{ fontSize: '0.9rem', fontWeight: 500, marginBottom: '0.75rem', color: '#27ae60' }}>
-            Saved Scripts ({scripts.length})
-          </h3>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', maxHeight: 200, overflowY: 'auto' }}>
+      <div style={{ background: '#16213e', padding: '1rem', borderRadius: 12 }}>
+        <h3 style={{ fontSize: '0.9rem', fontWeight: 500, marginBottom: '0.75rem', color: '#27ae60' }}>
+          Saved Scripts ({scripts?.length || 0})
+        </h3>
+        {!scripts || scripts.length === 0 ? (
+          <div style={{ padding: '0.75rem', background: '#0f3460', borderRadius: 6, color: '#aaa', fontSize: '0.85rem' }}>
+            No saved scripts yet. Use the editor below to create one and press <b>💾 Save</b>.
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', maxHeight: 240, overflowY: 'auto' }}>
             {scripts.map(s => (
-              <div key={s.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.5rem', background: '#0f3460', borderRadius: 6 }}>
-                <span style={{ flex: 1, cursor: 'pointer', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} onClick={() => loadScript(s)}>{s.name}</span>
+              <div key={s.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.5rem', background: editingId === s.id ? '#234' : '#0f3460', borderRadius: 6, flexWrap: 'wrap', gap: '0.4rem' }}>
+                <span style={{ flex: 1, cursor: 'pointer', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }} onClick={() => loadScript(s)} title={s.name}>{s.name}</span>
                 <div style={{ display: 'flex', gap: '0.25rem' }}>
-                  <button onClick={() => runScript(s.script)} disabled={isRunning} style={{ padding: '0.3rem 0.5rem', background: '#27ae60', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: '0.75rem' }}>▶</button>
-                  <button onClick={() => loadScript(s)} disabled={isRunning} style={{ padding: '0.3rem 0.5rem', background: '#3498db', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: '0.75rem' }}>✏️</button>
-                  <button onClick={() => deleteScript(s.id)} style={{ padding: '0.3rem 0.5rem', background: '#e74c3c', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: '0.75rem' }}>🗑</button>
+                  <button onClick={() => runScript(s.script)} disabled={isRunning} title="Run" style={{ padding: '0.35rem 0.6rem', background: '#27ae60', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: '0.8rem', minHeight: 32 }}>▶</button>
+                  <button onClick={() => loadScript(s)} disabled={isRunning} title="Edit" style={{ padding: '0.35rem 0.6rem', background: '#3498db', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: '0.8rem', minHeight: 32 }}>✏️</button>
+                  <button onClick={() => deleteScript(s.id)} title="Delete" style={{ padding: '0.35rem 0.6rem', background: '#e74c3c', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: '0.8rem', minHeight: 32 }}>🗑</button>
                 </div>
               </div>
             ))}
           </div>
-        </div>
-      )}
+        )}
+      </div>
 
       {/* Command Reference */}
       <div style={{ background: '#16213e', padding: '1rem', borderRadius: 12 }}>
@@ -416,12 +512,18 @@ function ScriptRunner({ ip, onSendInput, scripts, onScriptsChange }) {
           onChange={e => setScript(e.target.value)}
           disabled={isRunning}
           placeholder={`// Enter commands, one per line:
-// Example:
+// Examples:
+//   left              - single tap
+//   left 120          - hold for 120 ms
+//   left 10x          - tap 10 times (also: x10 or *10)
+//   left 10x 120      - 10 taps, each 120 ms
+//   wait 500          - sleep 500 ms
+//   lstick 0.5 0 200  - flick left stick right for 200 ms
+//   text Revenge      - type on PS5 software keyboard (a-z + space)
 left
-right
 wait 500
-x
-cross
+text revenge
+cross 120
 circle`}
           style={{
             width: '100%',
