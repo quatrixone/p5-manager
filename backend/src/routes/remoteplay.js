@@ -178,21 +178,26 @@ router.get('/discover', async (req, res) => {
 
 router.post('/register', async (req, res) => {
   try {
-    const { ip, pin, profile_id, account_id } = req.body || {};
+    const { ip, pin, profile_id, account_id, online_id } = req.body || {};
     if (!ip || !pin) return res.status(400).json({ success: false, error: 'ip and pin required' });
 
     let acctId = account_id;
+    let onlineId = online_id;
     let pidInt = profile_id ? parseInt(profile_id) : null;
-    if (!acctId && pidInt) {
+    if ((!acctId || !onlineId) && pidInt) {
       const db = getDatabase();
-      const stmt = db.prepare('SELECT psn_account_id FROM profiles WHERE id = ?');
+      const stmt = db.prepare('SELECT psn_account_id, psn_online_id FROM profiles WHERE id = ?');
       stmt.bind([pidInt]);
-      if (stmt.step()) acctId = stmt.getAsObject().psn_account_id;
+      if (stmt.step()) {
+        const row = stmt.getAsObject();
+        if (!acctId) acctId = row.psn_account_id;
+        if (!onlineId) onlineId = row.psn_online_id;
+      }
       stmt.free();
     }
     if (!acctId) return res.status(400).json({ success: false, error: 'PSN account_id required (run OAuth first)' });
 
-    const data = await sidecar('POST', '/register', { ip, account_id: acctId, pin }, { timeout: 60000 });
+    const data = await sidecar('POST', '/register', { ip, account_id: acctId, pin, online_id: onlineId || null }, { timeout: 60000 });
 
     if (pidInt && data.profile) {
       const db = getDatabase();
