@@ -12,48 +12,63 @@ tab.
 - Automatic port detection (LUA → 9026, ELF → 9021)
 - Bundled **Default Payloads** auto-downloaded on first run
   (klogsrv, p2jb, common community ELFs); restorable from the UI
+- Check & update against newer GitHub releases per payload
 
-**PS5 Control (unified tab)**
-- Wake on LAN over native UDP (no chiaki-cli binary)
-- Credential capture from chiaki-ng / ps5-wake clients
-- LAN discovery + per-IP status (FAYT discovery via the chiaki sidecar)
-- Legacy native UDP PIN pair (kept for compatibility)
-- **Remote Play** via embedded Python sidecar (`pyremoteplay`):
-  PSN OAuth wizard → PIN pair → input-only session → on-screen
-  DualSense controller (face buttons, dpad, triggers, sticks, options/share/PS/touchpad)
-- **Input Scripts**: small DSL (`x`, `circle`, `wait 500`, `lstick 0.5 0 200`…)
-  saved per-PS5 and replayed through the Remote Play session
+**Remote Play (PS5 Control tab)**
+- **One-click Wake**: WoL + DDP LAUNCH + full RP session in a single
+  button press. PSN account is logged in remotely so the "Press PS button"
+  picker is skipped automatically on a fresh wake
+- **Warm session cache**: stopping a session parks the live RP protocol
+  in the background for 3 minutes – the next Start for the same PS5
+  resumes the *same* session in O(ms) and never fights the firmware
+  "Another Remote Play session" lock
+- **Standby from the browser** that reliably puts the console to rest
+  (drives the underlying RP control packet and waits for the PS5 to
+  acknowledge the transition before tearing down)
+- **PSN OAuth → PIN pair wizard** for new consoles
+- **On-screen DualSense**: face buttons, dpad, triggers, sticks,
+  options / share / PS / touchpad
+- **Input Scripts**: tiny DSL (`x`, `circle`, `wait 500`,
+  `lstick 0.5 0 200`, `type "Revenge"` …) saved per-PS5 and replayed
+  through the live session – great for "launch game X" recipes
+- LAN discovery + per-IP status via native DDP
 
 **Logs**
 - LUA Log Server (UDP 8080) for `setlogserver.lua` style payloads
-- Kernel Log Server (TCP 3232) for `klogsrv` payloads
+- Kernel Log Server (TCP 3232) for `klogsrv` payloads – stdout from any
+  ELF sent to the PS5 streams straight to the browser
 
 **File Ops**
-- File browser over local mounts + SMB shares
-- HTTP/Torrent **Downloader** (queued, pausable)
-- **MicroMount** workflow: extract archives, convert PKG → PFS,
-  push to PS5 via FTP — all queued
+- File browser over local mounts, SMB shares and the PS5's own FTP
+- HTTP/Torrent **Downloader** with per-job progress, pause/resume,
+  retry and removal
+- **MicroMount** workflow: extract archives, convert PKG / dump → PFS,
+  push to PS5 via FTP — all queued, all stoppable. Works directly on
+  files (and folders) already sitting on the PS5 FTP
 - Resilient FTP upload with TCP keep-alive, NOOP heartbeat and
-  auto-resume / retry (PS5 won't sleep mid-upload anymore)
+  auto-resume so the console stays awake for the entire transfer
+- Multi-source MicroMount: stack any number of SMB shares + FTP
+  endpoints alongside the local filesystem
 
 **Queue**
 - Single tab listing every background job (downloads, extracts,
-  converts, FTP uploads) with per-job progress bars,
-  pause/resume/cancel and global Start/Pause controls
+  converts, FTP uploads) with per-job progress bars and **per-job**
+  start / pause / resume / cancel controls
 - Nothing starts automatically — you press Start
 
 **Autoload Builder**
 - Drag-style step editor with: wait, Wake on LAN, port check,
   send payload, download file, extract, convert, FTP upload,
-  **input script via Remote Play**
+  **Remote Play session start / stop**, **input script via Remote Play**
 - Built-in templates including a one-click **p2jb jailbreak**
-  (WoL → wait → Lua port check → send `p2jb.lua` → wait 55m → ELF
-  port check)
+  (WoL → wait → Lua port check → send `p2jb.lua` → wait 55 min →
+  ELF port check) and a **full-game launch** template
+  (RP session → input script → boot wait → ELF port check)
+- Steps remain editable after applying a template
 - Profile is optional for sequences that don't touch the PS5
 
-**Multiple PS5 profiles** with auto-default for first profile, plus
-persistent storage that survives container rebuilds and a full
-backup/restore ZIP from Settings.
+**Multiple PS5 profiles** with auto-default, persistent storage that
+survives container rebuilds, and a full backup/restore ZIP from Settings.
 
 ## Requirements
 
@@ -109,12 +124,15 @@ python server.py
 2. **Fetch / upload payloads** in the Payloads tab. Click ✨ Defaults if you
    want the bundled community payloads.
 3. **PS5 Control tab**:
-   - Wake the console with Wake on LAN
-   - Pair Remote Play (PSN OAuth → 8-digit PIN shown on the PS5)
-   - Start a session and drive it from the virtual controller, or save
-     and replay input scripts
-4. **Autoload tab** — build a sequence or load the **p2jb jailbreak** template
-   and hit Run.
+   - Pair Remote Play once (PSN OAuth → 8-digit PIN shown on the PS5).
+     Pairing state survives container rebuilds.
+   - Hit **Wake** – it does WoL, dismisses the account picker, opens the
+     RP session and you're ready to send inputs.
+   - When you're done, **Disconnect** soft-stops into the warm cache so
+     re-opening the session a few minutes later is instant; **Force reset**
+     fully releases the console for someone else.
+4. **Autoload tab** — build a sequence or load the **p2jb jailbreak** or
+   **full-game launch** templates and hit Run.
 5. **Queue tab** for every other long-running job (downloads, extracts, FTP).
 6. **Logs tab** for kernel + LUA log output.
 7. **Settings → Backup** to download/restore a full state ZIP (profiles,
@@ -157,7 +175,10 @@ Backup & restore the whole thing as a ZIP from **Settings → Backup**.
   spawn for 7z / unrar / mkpfs / smbclient
 - **Frontend:** React 18 + Vite, PWA with offline service worker
 - **Chiaki sidecar:** Python 3.11 + FastAPI + `pyremoteplay` (PSN OAuth,
-  registration, Remote Play session, DualSense input emulation)
+  registration, Remote Play session, DualSense input emulation) with
+  runtime patches that fix the upstream `Session.standby` /
+  `async_standby` / `wait` timeout predicates so standby and post-stop
+  reconnect behave deterministically
 - **Database:** SQLite (sql.js) persisted on a Docker volume
 
 ## Platform
