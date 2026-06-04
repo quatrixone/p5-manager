@@ -22,6 +22,7 @@ event loop for its tasks and gracefully tear down sessions on shutdown.
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import os
 import secrets
@@ -41,12 +42,14 @@ try:
         get_login_url,
         async_get_user_account,
     )
+    from pyremoteplay.profile import Profiles  # type: ignore
     PYREMOTEPLAY_OK = True
     PYREMOTEPLAY_ERR: Optional[str] = None
 except Exception as e:  # noqa: BLE001
     PYREMOTEPLAY_OK = False
     PYREMOTEPLAY_ERR = str(e)
     RPDevice = None  # type: ignore
+    Profiles = None  # type: ignore
 
 LOG_LEVEL = os.environ.get("CHIAKI_SIDECAR_LOG", "info").upper()
 logging.basicConfig(level=LOG_LEVEL, format="[chiaki] %(asctime)s %(levelname)s %(message)s")
@@ -151,30 +154,100 @@ class RegisterReq(BaseModel):
     ip: str
     account_id: str
     pin: str
+    online_id: Optional[str] = None
+
+
+def _profile_name(online_id: Optional[str], account_id: str) -> str:
+    """Return a safe non-empty user name for the in-memory Profiles map."""
+    name = (online_id or "").strip()
+    if name:
+        return name
+    # Fall back to a deterministic placeholder derived from the account id so
+    # the same PSN account always maps to the same slot.
+    return f"psn-{account_id[:8]}"
+
+
+def _to_user_rpid(account_id: str) -> str:
+    """Return the base64 PSN id that pyremoteplay's register handshake expects.
+
+    PSN's OAuth returns user_id as a decimal string (e.g. "2547189..."), but
+    the Remote Play registration handshake on the PS5 wants the same value
+    base64-encoded as 8 little-endian bytes. If the caller already passes the
+    base64 form we keep it untouched.
+    """
+    aid = (account_id or "").strip()
+    if not aid:
+        return aid
+    if aid.isdigit():
+        try:
+            return base64.b64encode(int(aid).to_bytes(8, "little")).decode()
+        except Exception:  # noqa: BLE001
+            return aid
+    return aid
+
+
+def _build_profiles(name: str, account_id: str, hosts: Optional[Dict[str, Any]] = None) -> "Profiles":
+    """Create an in-memory Profiles map with a single user entry.
+
+    pyremoteplay's RPDevice.register / create_session both resolve the user by
+    PSN online_id against a Profiles dict (normally loaded from disk). We don't
+    persist profiles to disk in the sidecar, so we hand-build a Profiles each
+    call from the data we already have. The stored "id" must be the base64
+    user_rpid - that's what gets sent to the PS5 during the handshake.
+    """
+    profiles = Profiles()
+    profiles[name] = {"id": _to_user_rpid(account_id), "hosts": hosts or {}}
+    return profiles
 
 
 @app.post("/register")
 async def register(req: RegisterReq):
     if not PYREMOTEPLAY_OK:
         raise HTTPException(503, f"pyremoteplay unavailable: {PYREMOTEPLAY_ERR}")
-    if len(req.pin.strip()) < 8:
-        raise HTTPException(400, "PIN must be the 8-digit code shown on the PS5")
+    pin = req.pin.strip().replace("-", "").replace(" ", "")
+    if len(pin) < 8 or not pin.isdigit():
+        raise HTTPException(400, "PIN must be the 8-digit code shown on the PS5 (Settings → System → Remote Play → Link Device)")
+    if not req.account_id:
+        raise HTTPException(400, "account_id required - run OAuth first")
+
     device = RPDevice(req.ip)
     try:
         await device.async_get_status()
     except Exception as e:  # noqa: BLE001
         raise HTTPException(502, f"PS5 not reachable at {req.ip}: {e}")
+    if not device.status:
+        raise HTTPException(502, f"PS5 at {req.ip} returned no status (powered off?)")
+
+    name = _profile_name(req.online_id, req.account_id)
+    profiles = _build_profiles(name, req.account_id)
+
     try:
-        # pyremoteplay's register expects: account_id (b64), pin, save=False
-        user = device.register(req.account_id, req.pin, save=False)
+        # Use the loop's executor so the blocking register call doesn't stall
+        # the FastAPI event loop. Pass our hand-built profiles so the username
+        # lookup succeeds.
+        loop = asyncio.get_running_loop()
+        user_profile = await loop.run_in_executor(
+            None,
+            lambda: device.register(name, pin, save=False, profiles=profiles),
+        )
     except Exception as e:  # noqa: BLE001
         log.exception("register failed")
         raise HTTPException(400, f"Register failed: {e}")
-    if not user:
-        raise HTTPException(400, "Register returned no profile - wrong PIN or PS5 not in Add Device mode")
-    # The returned profile is keyed by online_id and contains "hosts" with the
-    # registration credentials we need to keep.
-    return {"ok": True, "profile": user}
+    if not user_profile:
+        raise HTTPException(
+            400,
+            "Register returned no profile - check that the PIN is correct and the PS5 is on the 'Link Device' screen (Settings → System → Remote Play → Link Device)",
+        )
+
+    # user_profile is a UserProfile (UserDict). Serialise to a plain dict the
+    # Node backend can persist and hand back to /sessions/start.
+    return {
+        "ok": True,
+        "profile": {
+            "name": user_profile.name,
+            "data": dict(user_profile.data),
+        },
+    }
 
 
 # ─── Session lifecycle ────────────────────────────────────────────────────────
@@ -188,6 +261,38 @@ def _new_session_id() -> str:
     return secrets.token_hex(8)
 
 
+async def _try_connect_with_retry(device, name: str, profiles, max_attempts: int = 3):
+    """Try device.connect() up to max_attempts, recreating the session each
+    time. Handles the common "Another Remote Play session is connected" race
+    that happens after a previously failed/half-open session - PS5 holds the
+    RP slot for several seconds before letting us back in."""
+    last_err = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            device.create_session(name, profiles=profiles, resolution="360p", fps=30, receiver=None)
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+            log.warning("create_session attempt %d failed: %s", attempt, e)
+            await asyncio.sleep(2 * attempt)
+            continue
+        try:
+            ok = await device.connect()
+            if ok:
+                return
+            sess_err = getattr(device.session, "error", "connect returned False")
+            last_err = RuntimeError(str(sess_err))
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+        log.warning("connect attempt %d failed: %s", attempt, last_err)
+        try:
+            await device.disconnect()
+        except Exception:
+            pass
+        # If PS5 still has the previous slot, give it a bit more time each retry
+        await asyncio.sleep(3 * attempt)
+    raise last_err or RuntimeError("Session connect failed after retries")
+
+
 @app.post("/sessions/start")
 async def session_start(req: StartSessionReq):
     if not PYREMOTEPLAY_OK:
@@ -197,24 +302,53 @@ async def session_start(req: StartSessionReq):
         await device.async_get_status()
     except Exception as e:  # noqa: BLE001
         raise HTTPException(502, f"PS5 not reachable: {e}")
+    if not device.status:
+        raise HTTPException(502, "PS5 returned no status - is it powered on?")
+
+    # The Node backend gives us back the wrapped {name,data} profile we
+    # returned from /register. Rebuild a Profiles dict for create_session.
+    up = req.user_profile or {}
+    name = up.get("name")
+    data = up.get("data") if isinstance(up.get("data"), dict) else None
+    if not name or not data or not data.get("id"):
+        raise HTTPException(400, "user_profile missing name/data/id - re-pair the PS5")
+    if not data.get("hosts"):
+        raise HTTPException(400, "user_profile has no registered hosts - re-pair the PS5")
+    # data["id"] is already user_rpid (base64) because it came back from a
+    # successful /register call - put it straight into Profiles without
+    # touching it.
+    profiles = Profiles()
+    profiles[name] = {"id": data["id"], "hosts": data.get("hosts") or {}}
+
+    # Always send the chiaki wakeup packet before connecting. It both wakes a
+    # standby console and re-arms the RP control service on an already-awake
+    # one (the PS5 closes TCP 9295 to extra clients until it sees a wakeup
+    # from a registered controller). Failure here is non-fatal - we'll let
+    # the connect attempt report the real reason.
     try:
-        # Create session without video/audio decoders - input only.
-        device.create_session(req.user_profile, resolution="360p", fps=30, receiver=None)
+        device.wakeup(name, profiles=profiles)
+        # Small grace period for PS5 to open up its RP control port.
+        await asyncio.sleep(4.0)
+        # Refresh status after wakeup so RPDevice has the latest host-id, etc.
+        try:
+            await device.async_get_status()
+        except Exception:
+            pass
     except Exception as e:  # noqa: BLE001
-        log.exception("create_session failed")
-        raise HTTPException(400, f"create_session failed: {e}")
+        log.warning("wakeup failed (continuing): %s", e)
+
     try:
-        # device.connect() spawns an asyncio task; we await its readiness
-        ok = await device.connect()
-        if not ok:
-            raise RuntimeError(getattr(device.session, "error", "connect returned False"))
+        await _try_connect_with_retry(device, name, profiles, max_attempts=3)
     except Exception as e:  # noqa: BLE001
         log.exception("session connect failed")
         try:
             await device.disconnect()
         except Exception:
             pass
-        raise HTTPException(502, f"Session connect failed: {e}")
+        msg = str(e)
+        if "Another Remote Play session" in msg:
+            msg += " - close any active Remote Play / Chiaki client and try again in ~30s"
+        raise HTTPException(502, f"Session connect failed: {msg}")
 
     sid = _new_session_id()
     SESSIONS[sid] = {
