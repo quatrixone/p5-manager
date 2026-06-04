@@ -476,7 +476,6 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
             </div>
             <button
               className="btn btn-success"
-              style={{ minHeight: 44 }}
               onClick={() => { resetForm(); setActiveView('create'); }}
             >
               + New sequence
@@ -491,16 +490,25 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
               </div>
               <div className="comp-card-body flex-col gap-sm">
                 {templates.map(tpl => (
-                  <div key={tpl.id} className="flex-col gap-sm p-sm"
-                    style={{ background: 'var(--panel2)', borderRadius: 8 }}>
-                    <div style={{ minWidth: 0 }}>
+                  <div
+                    key={tpl.id}
+                    className="flex items-center gap-sm p-sm flex-wrap"
+                    style={{ background: 'var(--panel2)', borderRadius: 8 }}
+                  >
+                    <div style={{ minWidth: 0, flex: 1 }}>
                       <div className="font-medium" style={{ wordBreak: 'break-word' }}>{tpl.name}</div>
                       <div className="text-xs text-muted" style={{ wordBreak: 'break-word' }}>{tpl.description}</div>
                       <div className="text-xs text-muted mt-xs">
                         {tpl.steps.map(s => getStepIcon(s.type)).join(' ')} ({tpl.steps.length} steps)
                       </div>
                     </div>
-                    <button className="btn btn-primary" style={{ minHeight: 44 }} onClick={() => loadTemplate(tpl)}>Use this template</button>
+                    <button
+                      className="btn btn-primary btn-sm"
+                      onClick={() => loadTemplate(tpl)}
+                      style={{ flexShrink: 0 }}
+                    >
+                      Use template
+                    </button>
                   </div>
                 ))}
               </div>
@@ -534,9 +542,9 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
                       )}
                     </div>
                     <div className="flex gap-sm flex-wrap" style={{ marginTop: 'var(--space-xs)' }}>
-                      <button className="btn btn-primary" style={{ flex: '1 1 100px', minHeight: 44 }} onClick={() => runSequence(seq.id)}>▶ Run</button>
-                      <button className="btn btn-secondary" style={{ flex: '0 1 auto', minHeight: 44, minWidth: 48 }} onClick={() => editSequenceLoad(seq)} aria-label="Edit">✏️ Edit</button>
-                      <button className="btn btn-danger" style={{ flex: '0 1 auto', minHeight: 44, minWidth: 48 }} onClick={() => deleteSequence(seq.id)} aria-label="Delete">🗑</button>
+                      <button className="btn btn-primary" style={{ flex: '1 1 100px' }} onClick={() => runSequence(seq.id)}>▶ Run</button>
+                      <button className="btn btn-secondary" onClick={() => editSequenceLoad(seq)} aria-label="Edit">✏️ Edit</button>
+                      <button className="btn btn-danger" onClick={() => deleteSequence(seq.id)} aria-label="Delete">🗑</button>
                     </div>
                   </div>
                 </div>
@@ -550,7 +558,7 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
         <>
           <div className="flex justify-between items-center gap-sm flex-wrap">
             <h2 className="font-bold" style={{ fontSize: '1.25rem', wordBreak: 'break-word' }}>{editSequence ? 'Edit Sequence' : 'New Sequence'}</h2>
-            <button className="btn btn-ghost" onClick={resetForm} style={{ minHeight: 44 }}>← Back to list</button>
+            <button className="btn btn-ghost" onClick={resetForm}>← Back to list</button>
           </div>
 
           <div className="comp-card">

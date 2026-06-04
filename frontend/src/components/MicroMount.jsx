@@ -4,16 +4,16 @@ import FileBrowser, { ExtractLogPanel } from './FileBrowser';
 const API = '/api';
 
 const C = {
-  bg: '#1a1a2e',
-  panel: '#16213e',
-  panel2: '#0f3460',
-  accent: '#e94560',
-  blue: '#3498db',
-  green: '#27ae60',
-  red: '#c0392b',
+  bg: 'var(--bg)',
+  panel: 'var(--bg-elev)',
+  panel2: 'var(--bg-elev-2)',
+  accent: 'var(--accent)',
+  blue: 'var(--blue)',
+  green: 'var(--accent)',
+  red: 'var(--red)',
   text: '#fff',
   muted: '#aaa',
-  border: '#0f3460',
+  border: 'var(--bg-elev-2)',
 };
 
 const styles = {
@@ -34,16 +34,33 @@ const styles = {
     fontSize: '0.8rem', fontWeight: 500, minHeight: 'auto',
     whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '100%',
   }),
-  pill: (color) => ({
-    padding: '0.2rem 0.55rem', background: color, color: C.text,
-    borderRadius: 999, fontSize: '0.7rem', fontWeight: 600,
-  }),
+  pill: (color) => {
+    // Map the raw color to a soft, readable tinted-badge palette so light
+    // accents (mint, blue, magenta) don't print as light-on-light text.
+    const tint = (bg, fg, border) => ({ bg, fg, border });
+    const map = {
+      'var(--accent)': tint('var(--accent-dim)', 'var(--accent)', 'rgba(124,255,179,0.28)'),
+      'var(--red)':    tint('var(--red-dim)',    'var(--red)',    'rgba(255,93,122,0.28)'),
+      'var(--blue)':   tint('var(--blue-dim)',   'var(--blue)',   'rgba(125,223,245,0.28)'),
+      'var(--amber)':  tint('var(--amber-dim)',  'var(--amber)',  'rgba(255,184,107,0.28)'),
+      'var(--magenta)': tint('rgba(196,144,255,0.16)', 'var(--magenta)', 'rgba(196,144,255,0.28)'),
+    };
+    const t = map[color] || tint('rgba(255,255,255,0.06)', '#cfd2dc', 'var(--border)');
+    return {
+      display: 'inline-block', padding: '0.18rem 0.55rem',
+      background: t.bg, color: t.fg, border: `1px solid ${t.border}`,
+      borderRadius: 999, fontSize: '0.7rem', fontWeight: 600, lineHeight: 1.4,
+      whiteSpace: 'nowrap',
+    };
+  },
   card: { padding: '0.75rem', background: C.panel2, borderRadius: 8, marginBottom: '0.5rem' },
   tab: (active) => ({
-    padding: '0.5rem 1rem',
-    background: active ? C.accent : C.panel2,
-    color: C.text, border: 'none', borderRadius: 6, cursor: 'pointer',
-    fontSize: '0.85rem', fontWeight: 500, textTransform: 'capitalize',
+    padding: '0.4rem 0.85rem',
+    background: active ? 'var(--accent-dim)' : C.panel2,
+    color: active ? 'var(--accent)' : C.text,
+    border: `1px solid ${active ? 'rgba(124,255,179,0.28)' : 'transparent'}`,
+    borderRadius: 8, cursor: 'pointer',
+    fontSize: '0.82rem', fontWeight: 500, textTransform: 'capitalize',
   }),
 };
 
@@ -216,7 +233,7 @@ function ScanPathsSection({ config, setConfig, onSave }) {
         {paths.map((p, idx) => (
           <div key={idx} style={{ ...styles.row, ...styles.card, marginBottom: 0, justifyContent: 'space-between' }}>
             <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flex: 1, minWidth: 0 }}>
-              <span style={styles.pill(isSmbPath(p) ? '#8e44ad' : C.blue)}>{isSmbPath(p) ? 'SMB' : 'PS5'}</span>
+              <span style={styles.pill(isSmbPath(p) ? 'var(--magenta)' : C.blue)}>{isSmbPath(p) ? 'SMB' : 'PS5'}</span>
               <code style={{ color: C.text, fontSize: '0.85rem', wordBreak: 'break-all' }}>{p}</code>
             </div>
             <button style={styles.btn(C.red)} onClick={() => removePath(idx)}>Remove</button>
@@ -471,7 +488,7 @@ function SmbSourcesSection({ profiles, ftp, refreshSources }) {
             <div style={{ ...styles.row, justifyContent: 'space-between', flexWrap: 'wrap' }}>
               <div style={{ flex: 1, minWidth: 220 }}>
                 <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', marginBottom: '0.25rem' }}>
-                  <span style={styles.pill(s.type === 'smb' ? '#8e44ad' : C.blue)}>{s.type.toUpperCase()}</span>
+                  <span style={styles.pill(s.type === 'smb' ? 'var(--magenta)' : C.blue)}>{s.type.toUpperCase()}</span>
                   <strong>{s.name}</strong>
                 </div>
                 <div style={{ fontSize: '0.8rem', color: C.muted, wordBreak: 'break-all' }}>
@@ -701,7 +718,7 @@ export function ExtractQueuePanel({ onView }) {
     if (s === 'failed') return C.red;
     if (s === 'cancelled') return '#7f8c8d';
     if (s === 'running' || s === 'starting') return C.blue;
-    return '#8e44ad';
+    return 'var(--magenta)';
   };
 
   const Row = ({ item, idx }) => (
@@ -785,7 +802,7 @@ function QueuePanel({ state, onRemove, onMove, onRetry, onView }) {
     if (s === 'failed') return C.red;
     if (s === 'cancelled') return '#7f8c8d';
     if (s === 'running' || s === 'starting') return C.blue;
-    return '#8e44ad';
+    return 'var(--magenta)';
   };
 
   const Row = ({ item, idx }) => (
@@ -1511,7 +1528,7 @@ function FtpUploadQueuePanel() {
   const queued = items.filter(i => i.status === 'queued');
   const running = items.filter(i => i.status === 'running' || i.status === 'starting');
   const finished = items.filter(i => ['completed', 'failed', 'cancelled'].includes(i.status));
-  const statusColor = (s) => s === 'completed' ? C.green : s === 'failed' ? C.red : s === 'running' || s === 'starting' ? C.blue : '#8e44ad';
+  const statusColor = (s) => s === 'completed' ? C.green : s === 'failed' ? C.red : s === 'running' || s === 'starting' ? C.blue : 'var(--magenta)';
 
   return (
     <section style={styles.section}>

@@ -5,17 +5,17 @@ import { ExtractQueuePanel } from './MicroMount';
 const API = '/api';
 
 const C = {
-  bg: '#1a1a2e',
-  panel: '#16213e',
-  panel2: '#0f3460',
-  accent: '#e94560',
-  blue: '#3498db',
-  green: '#27ae60',
-  red: '#c0392b',
-  amber: '#f39c12',
+  bg: 'var(--bg)',
+  panel: 'var(--bg-elev)',
+  panel2: 'var(--bg-elev-2)',
+  accent: 'var(--accent)',
+  blue: 'var(--blue)',
+  green: 'var(--accent)',
+  red: 'var(--red)',
+  amber: 'var(--amber)',
   text: '#fff',
   muted: '#aaa',
-  border: '#0f3460',
+  border: 'var(--bg-elev-2)',
 };
 
 const styles = {
@@ -45,7 +45,7 @@ const styles = {
 const fmtMB = (b) => (b / (1024 * 1024)).toFixed(b >= 1024 * 1024 * 1024 ? 2 : 1) + ' MB';
 
 const STATUS_COLOR = {
-  queued: '#8e44ad',
+  queued: 'var(--magenta)',
   running: C.blue,
   completed: C.green,
   failed: C.red,

@@ -35,7 +35,7 @@ function ProfileManager({ profiles, onCreate, onUpdate, onDelete, onSetDefault }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-      <section style={{ background: '#16213e', padding: '1rem', borderRadius: 12 }}>
+      <section style={{ background: 'var(--bg-elev)', padding: '1rem', borderRadius: 12 }}>
         <h2 style={{ marginBottom: '1rem', fontSize: '1rem', fontWeight: 500 }}>
           {editingId ? 'Edit Profile' : 'Add New Profile'}
         </h2>
@@ -48,7 +48,7 @@ function ProfileManager({ profiles, onCreate, onUpdate, onDelete, onSetDefault }
               value={name}
               onChange={e => setName(e.target.value)}
               required
-              style={{ padding: '0.75rem', borderRadius: 6, border: '1px solid #0f3460', background: '#1a1a2e', color: '#fff', fontSize: '1rem' }}
+              style={{ padding: '0.75rem', borderRadius: 6, border: '1px solid var(--bg-elev-2)', background: 'var(--bg)', color: '#fff', fontSize: '1rem' }}
             />
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
@@ -59,7 +59,7 @@ function ProfileManager({ profiles, onCreate, onUpdate, onDelete, onSetDefault }
               value={ip}
               onChange={e => setIp(e.target.value)}
               required
-              style={{ padding: '0.75rem', borderRadius: 6, border: '1px solid #0f3460', background: '#1a1a2e', color: '#fff', fontSize: '1rem' }}
+              style={{ padding: '0.75rem', borderRadius: 6, border: '1px solid var(--bg-elev-2)', background: 'var(--bg)', color: '#fff', fontSize: '1rem' }}
             />
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
@@ -69,11 +69,11 @@ function ProfileManager({ profiles, onCreate, onUpdate, onDelete, onSetDefault }
               placeholder="AA:BB:CC:DD:EE:FF"
               value={mac}
               onChange={e => setMac(e.target.value)}
-              style={{ padding: '0.75rem', borderRadius: 6, border: '1px solid #0f3460', background: '#1a1a2e', color: '#fff', fontSize: '1rem' }}
+              style={{ padding: '0.75rem', borderRadius: 6, border: '1px solid var(--bg-elev-2)', background: 'var(--bg)', color: '#fff', fontSize: '1rem' }}
             />
           </div>
           <div style={{ display: 'flex', gap: '0.5rem' }}>
-            <button type="submit" style={{ padding: '0.75rem', background: editingId ? '#f39c12' : '#e94560', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 500, fontSize: '1rem', flex: 1, minHeight: 44 }}>
+            <button type="submit" style={{ padding: '0.75rem', background: editingId ? 'var(--amber)' : 'var(--accent)', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 500, fontSize: '1rem', flex: 1, minHeight: 44 }}>
               {editingId ? 'Update' : 'Add'}
             </button>
             {editingId && (
@@ -85,34 +85,34 @@ function ProfileManager({ profiles, onCreate, onUpdate, onDelete, onSetDefault }
         </form>
       </section>
 
-      <section style={{ background: '#16213e', padding: '1rem', borderRadius: 12 }}>
+      <section style={{ background: 'var(--bg-elev)', padding: '1rem', borderRadius: 12 }}>
         <h2 style={{ marginBottom: '1rem', fontSize: '1rem', fontWeight: 500 }}>Saved Profiles ({profiles.length})</h2>
         {profiles.length === 0 ? (
           <p style={{ color: '#888', textAlign: 'center', padding: '2rem' }}>No profiles saved. Add one above.</p>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
             {profiles.map(profile => (
-              <div key={profile.id} style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', padding: '0.75rem', background: profile.is_default ? '#1a5276' : '#0f3460', borderRadius: 8, border: profile.is_default ? '2px solid #27ae60' : 'none' }}>
+              <div key={profile.id} style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', padding: '0.75rem', background: profile.is_default ? '#1a5276' : 'var(--bg-elev-2)', borderRadius: 8, border: profile.is_default ? '2px solid var(--accent)' : 'none' }}>
                 <div>
                   <div style={{ fontWeight: 500, fontSize: '0.95rem', display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
                     {profile.name}
-                    {profile.is_default && <span style={{ fontSize: '0.7rem', background: '#27ae60', padding: '0.1rem 0.5rem', borderRadius: 4 }}>Default</span>}
+                    {profile.is_default && <span style={{ fontSize: '0.7rem', background: 'var(--accent)', padding: '0.1rem 0.5rem', borderRadius: 4 }}>Default</span>}
                   </div>
                   <div style={{ fontSize: '0.85rem', color: '#aaa' }}>
                     {profile.ip_address}
-                    {profile.mac_address && <span style={{ color: '#27ae60' }}> • {profile.mac_address}</span>}
+                    {profile.mac_address && <span style={{ color: 'var(--accent)' }}> • {profile.mac_address}</span>}
                   </div>
                 </div>
                 <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
                   {!profile.is_default && (
-                    <button onClick={() => onSetDefault(profile.id)} style={{ padding: '0.5rem 0.75rem', background: '#27ae60', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: '0.85rem', minHeight: 36 }}>
+                    <button onClick={() => onSetDefault(profile.id)} style={{ padding: '0.5rem 0.75rem', background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: '0.85rem', minHeight: 36 }}>
                       Set Default
                     </button>
                   )}
-                  <button onClick={() => startEdit(profile)} style={{ padding: '0.5rem 0.75rem', background: '#3498db', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: '0.85rem', minHeight: 36 }}>
+                  <button onClick={() => startEdit(profile)} style={{ padding: '0.5rem 0.75rem', background: 'var(--blue)', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: '0.85rem', minHeight: 36 }}>
                     Edit
                   </button>
-                  <button onClick={() => onDelete(profile.id)} style={{ padding: '0.5rem 0.75rem', background: '#c0392b', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: '0.85rem', minHeight: 36 }}>
+                  <button onClick={() => onDelete(profile.id)} style={{ padding: '0.5rem 0.75rem', background: 'var(--red)', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: '0.85rem', minHeight: 36 }}>
                     Delete
                   </button>
                 </div>

@@ -3,16 +3,16 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 const API = '/api';
 
 const C = {
-  bg: '#1a1a2e',
-  panel: '#16213e',
-  panel2: '#0f3460',
-  accent: '#e94560',
-  blue: '#3498db',
-  green: '#27ae60',
-  red: '#c0392b',
+  bg: 'var(--bg)',
+  panel: 'var(--bg-elev)',
+  panel2: 'var(--bg-elev-2)',
+  accent: 'var(--accent)',
+  blue: 'var(--blue)',
+  green: 'var(--accent)',
+  red: 'var(--red)',
   text: '#fff',
   muted: '#aaa',
-  border: '#0f3460',
+  border: 'var(--bg-elev-2)',
 };
 
 function fmtSize(n) {

@@ -25,7 +25,7 @@ function NetworkSender({ profiles, payloads, onSend, onCheckStatus }) {
 
   if (!defaultProfile) {
     return (
-      <div style={{ background: '#16213e', padding: '1.5rem', borderRadius: 12 }}>
+      <div style={{ background: 'var(--bg-elev)', padding: '1.5rem', borderRadius: 12 }}>
         <p style={{ color: '#888' }}>No profile found. Please create a profile first.</p>
       </div>
     );
@@ -33,18 +33,18 @@ function NetworkSender({ profiles, payloads, onSend, onCheckStatus }) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-      <section style={{ background: '#16213e', padding: '1rem', borderRadius: 12 }}>
+      <section style={{ background: 'var(--bg-elev)', padding: '1rem', borderRadius: 12 }}>
         <div style={{ marginBottom: '1rem' }}>
           <h2 style={{ fontSize: '1rem', marginBottom: '0.25rem' }}>Send Payload</h2>
           <div style={{ color: '#aaa', fontSize: '0.85rem' }}>
-            Using: <span style={{ color: '#27ae60' }}>{defaultProfile.name}</span> ({defaultProfile.ip_address})
+            Using: <span style={{ color: 'var(--accent)' }}>{defaultProfile.name}</span> ({defaultProfile.ip_address})
           </div>
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
           <select
             value={selectedPayload}
             onChange={e => setSelectedPayload(e.target.value)}
-            style={{ padding: '0.75rem', borderRadius: 6, background: '#1a1a2e', color: '#fff', border: '1px solid #0f3460', fontSize: '1rem' }}
+            style={{ padding: '0.75rem', borderRadius: 6, background: 'var(--bg)', color: '#fff', border: '1px solid var(--bg-elev-2)', fontSize: '1rem' }}
           >
             <option value="">Select payload...</option>
             {payloads.map(p => (
@@ -54,19 +54,19 @@ function NetworkSender({ profiles, payloads, onSend, onCheckStatus }) {
           <button
             onClick={handleSend}
             disabled={!selectedPayload}
-            style={{ padding: '0.75rem', background: !selectedPayload ? '#555' : '#e94560', color: '#fff', border: 'none', borderRadius: 6, cursor: !selectedPayload ? 'not-allowed' : 'pointer', fontWeight: 500, fontSize: '1rem', minHeight: 44 }}
+            style={{ padding: '0.75rem', background: !selectedPayload ? '#555' : 'var(--accent)', color: '#fff', border: 'none', borderRadius: 6, cursor: !selectedPayload ? 'not-allowed' : 'pointer', fontWeight: 500, fontSize: '1rem', minHeight: 44 }}
           >
             Send
           </button>
         </div>
       </section>
 
-      <section style={{ background: '#16213e', padding: '1rem', borderRadius: 12 }}>
+      <section style={{ background: 'var(--bg-elev)', padding: '1rem', borderRadius: 12 }}>
         <div style={{ marginBottom: '1rem' }}>
           <h2 style={{ fontSize: '1rem', marginBottom: '0.25rem' }}>
             PS5 Status
             {statusResult && (
-              <span style={{ marginLeft: '0.5rem', color: statusResult.reachable ? '#27ae60' : '#c0392b', fontSize: '0.9rem' }}>
+              <span style={{ marginLeft: '0.5rem', color: statusResult.reachable ? 'var(--accent)' : 'var(--red)', fontSize: '0.9rem' }}>
                 {statusResult.reachable ? '✓ Reachable' : '✗ Not reachable'}
               </span>
             )}
@@ -75,15 +75,15 @@ function NetworkSender({ profiles, payloads, onSend, onCheckStatus }) {
             {defaultProfile.ip_address}
           </div>
         </div>
-        <button onClick={handleCheckStatus} style={{ padding: '0.75rem 1rem', background: '#3498db', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 500, fontSize: '1rem', minHeight: 44, width: '100%' }}>
+        <button onClick={handleCheckStatus} style={{ padding: '0.75rem 1rem', background: 'var(--blue)', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 500, fontSize: '1rem', minHeight: 44, width: '100%' }}>
           Check Status
         </button>
         {statusResult !== null && (
           <div style={{ marginTop: '1rem', display: 'flex', gap: '0.5rem' }}>
-            <div style={{ padding: '0.75rem', borderRadius: 8, background: statusResult.lua ? '#27ae60' : '#c0392b', color: '#fff', flex: 1, textAlign: 'center', fontSize: '0.9rem' }}>
+            <div style={{ padding: '0.75rem', borderRadius: 8, background: statusResult.lua ? 'var(--accent)' : 'var(--red)', color: '#fff', flex: 1, textAlign: 'center', fontSize: '0.9rem' }}>
               LUA: {statusResult.lua ? 'OK' : 'NO'}
             </div>
-            <div style={{ padding: '0.75rem', borderRadius: 8, background: statusResult.elf ? '#27ae60' : '#c0392b', color: '#fff', flex: 1, textAlign: 'center', fontSize: '0.9rem' }}>
+            <div style={{ padding: '0.75rem', borderRadius: 8, background: statusResult.elf ? 'var(--accent)' : 'var(--red)', color: '#fff', flex: 1, textAlign: 'center', fontSize: '0.9rem' }}>
               ELF: {statusResult.elf ? 'OK' : 'NO'}
             </div>
           </div>

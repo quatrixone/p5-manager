@@ -5,7 +5,6 @@ import AutoloadBuilder from './components/AutoloadBuilder';
 import PS5Control from './components/PS5Control';
 import Settings from './components/Settings';
 import FileOps from './components/FileOps';
-import { useMediaQuery } from './hooks/useSSE';
 import './styles.css';
 
 const API = '/api';
@@ -20,7 +19,6 @@ const tabs = [
 ];
 
 function App() {
-  const isMobile = useMediaQuery('(max-width: 768px)');
   const [activeTab, setActiveTab] = useState(() => {
     const saved = localStorage.getItem('activeTab');
     // Dashboard and standalone remoteplay tabs were removed - migrate.
@@ -324,6 +322,56 @@ function App() {
     }
   };
 
+  const defaultProfile = profiles.find(p => p.is_default) || profiles[0];
+  const [defaultStatus, setDefaultStatus] = useState(null); // { reachable, openPort }
+
+  // Lightweight status poll for the topbar status pill. Mirrors PS5Control's
+  // own poll so the indicator always reflects the default console, no matter
+  // which tab the user is on.
+  useEffect(() => {
+    if (!defaultProfile) {
+      setDefaultStatus(null);
+      return;
+    }
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const res = await fetch(`${API}/ps5/status/${defaultProfile.ip_address}?port=${defaultProfile.port || 9021}`);
+        const data = await res.json();
+        if (!cancelled) setDefaultStatus(data);
+      } catch (_) {
+        if (!cancelled) setDefaultStatus({ reachable: false });
+      }
+    };
+    tick();
+    const id = setInterval(tick, 10000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [defaultProfile?.ip_address, defaultProfile?.port]);
+
+  const statusDot = (() => {
+    if (!defaultProfile) return 'offline';
+    if (!defaultStatus) return 'offline';
+    if (!defaultStatus.reachable) return 'offline';
+    if (defaultStatus.openPort === 9021 || defaultStatus.openPort === 9020) return 'online';
+    return 'standby';
+  })();
+
+  const sidebar = (
+    <aside className="app-sidebar">
+      <h6>Workspace</h6>
+      {tabs.map(tab => (
+        <button
+          key={tab.id}
+          className={`nav-item ${activeTab === tab.id ? 'active' : ''}`}
+          onClick={() => setActiveTab(tab.id)}
+        >
+          <span className="nav-item-icon">{tab.icon}</span>
+          <span>{tab.label}</span>
+        </button>
+      ))}
+    </aside>
+  );
+
   const mobileNav = (
     <nav className="bottom-nav">
       <div className="bottom-nav-inner">
@@ -341,72 +389,70 @@ function App() {
     </nav>
   );
 
-  const desktopTabs = (
-    <nav className="top-tabs desktop-only">
-      {tabs.map(tab => (
-        <button
-          key={tab.id}
-          className={`tab-btn ${activeTab === tab.id ? 'active' : ''}`}
-          onClick={() => setActiveTab(tab.id)}
-        >
-          {tab.icon} {tab.label}
-        </button>
-      ))}
-    </nav>
-  );
-
   return (
-    <div style={{ minHeight: '100vh', background: 'var(--bg)', color: 'var(--text)' }}>
-      <header style={{ background: 'var(--panel)', padding: '0.75rem 1rem', borderBottom: '1px solid var(--border)' }}>
-        <h1 style={{ fontSize: '1.25rem', fontWeight: 600, textAlign: 'center' }}>PS5WebPayload Manager</h1>
+    <>
+      <header className="app-topbar">
+        <div className="app-brand">
+          <span className="app-brand-mark">P5</span>
+          <span>Payload Manager</span>
+          <span className="app-brand-tag">/ ps5web</span>
+        </div>
+
+        {defaultProfile && (
+          <div className="app-status" title={defaultProfile.name}>
+            <span className={`dot ${statusDot}`} />
+            <span className="truncate">{defaultProfile.name}</span>
+            <span className="ip">{defaultProfile.ip_address}</span>
+          </div>
+        )}
       </header>
 
       {notification && (
-        <div style={{
-          position: 'fixed', top: 60, left: '50%', transform: 'translateX(-50%)', padding: '0.75rem 1.5rem', borderRadius: 8,
-          background: notification.type === 'error' ? 'var(--red)' : notification.type === 'success' ? 'var(--green)' : 'var(--blue)',
-          color: '#fff', zIndex: 1000, boxShadow: '0 4px 12px rgba(0,0,0,0.3)', maxWidth: '90vw', textAlign: 'center'
-        }}>
+        <div className={`app-toast ${notification.type || 'info'}`}>
           {notification.message}
         </div>
       )}
 
-      {isMobile ? mobileNav : desktopTabs}
+      <div className="app-shell">
+        {sidebar}
 
-      <main style={{ padding: '1rem', maxWidth: 1400, margin: '0 auto' }}>
-        {activeTab === 'payloads' && (
-          <PayloadList
-            payloads={payloads}
-            profiles={profiles}
-            onFetchUrl={fetchFromGitHubUrl}
-            onSend={sendPayload}
-            onDelete={deletePayload}
-            onUpdate={updatePayload}
-            onUpload={uploadPayload}
-            onRestoreDefaults={restoreDefaultPayloads}
-          />
-        )}
-        {activeTab === 'autoload' && (
-          <AutoloadBuilder profiles={profiles} payloads={payloads} onNotification={showNotification} />
-        )}
-        {activeTab === 'remote' && <PS5Control profiles={profiles} onNotification={showNotification} onProfilesChanged={fetchProfiles} />}
-        {activeTab === 'files' && (
-          <FileOps profiles={profiles} onNotification={showNotification} />
-        )}
-        {activeTab === 'settings' && (
-          <Settings
-            profiles={profiles}
-            onProfileCreate={createProfile}
-            onProfileUpdate={updateProfile}
-            onProfileDelete={deleteProfile}
-            onProfileSetDefault={setDefaultProfile}
-          />
-        )}
-        {activeTab === 'logs' && (
-          <LogViewer logs={logs} onRefresh={fetchLogs} profiles={profiles} />
-        )}
-      </main>
-    </div>
+        <main className="app-main">
+          {activeTab === 'payloads' && (
+            <PayloadList
+              payloads={payloads}
+              profiles={profiles}
+              onFetchUrl={fetchFromGitHubUrl}
+              onSend={sendPayload}
+              onDelete={deletePayload}
+              onUpdate={updatePayload}
+              onUpload={uploadPayload}
+              onRestoreDefaults={restoreDefaultPayloads}
+            />
+          )}
+          {activeTab === 'autoload' && (
+            <AutoloadBuilder profiles={profiles} payloads={payloads} onNotification={showNotification} />
+          )}
+          {activeTab === 'remote' && <PS5Control profiles={profiles} onNotification={showNotification} onProfilesChanged={fetchProfiles} />}
+          {activeTab === 'files' && (
+            <FileOps profiles={profiles} onNotification={showNotification} />
+          )}
+          {activeTab === 'settings' && (
+            <Settings
+              profiles={profiles}
+              onProfileCreate={createProfile}
+              onProfileUpdate={updateProfile}
+              onProfileDelete={deleteProfile}
+              onProfileSetDefault={setDefaultProfile}
+            />
+          )}
+          {activeTab === 'logs' && (
+            <LogViewer logs={logs} onRefresh={fetchLogs} profiles={profiles} />
+          )}
+        </main>
+      </div>
+
+      {mobileNav}
+    </>
   );
 }
 
