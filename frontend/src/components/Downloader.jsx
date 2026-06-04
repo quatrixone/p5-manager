@@ -192,42 +192,75 @@ export default function Downloader({ profiles = [], onNotification }) {
               />
             </div>
 
-            <div className="grid-2">
-              <div>
-                <label className="text-sm text-muted mb-sm" style={{ display: 'block' }}>Filename (optional)</label>
-                <input className="input" value={filename} onChange={e => setFilename(e.target.value)} placeholder="(auto)" />
-              </div>
-              <div>
-                <label className="text-sm text-muted mb-sm" style={{ display: 'block' }}>Destination</label>
-                <select className="select" value={destKind} onChange={e => setDestKind(e.target.value)}>
-                  <option value="local">💾 Local filesystem</option>
-                  <option value="smb">📂 SMB share</option>
-                </select>
-              </div>
+            <div>
+              <label className="text-sm text-muted mb-sm" style={{ display: 'block' }}>Filename (optional)</label>
+              <input className="input" value={filename} onChange={e => setFilename(e.target.value)} placeholder="(auto)" />
             </div>
 
-            {destKind === 'local' ? (
-              <div>
-                <label className="text-sm text-muted mb-sm" style={{ display: 'block' }}>Destination folder</label>
-                <input className="input" value={destPath} onChange={e => setDestPath(e.target.value)} placeholder="/mnt/sda1/downloads" />
-              </div>
-            ) : (
-              <div className="grid-2">
-                <div>
-                  <label className="text-sm text-muted mb-sm" style={{ display: 'block' }}>SMB source</label>
-                  <select className="select" value={smbSourceId} onChange={e => setSmbSourceId(e.target.value)}>
-                    <option value="">— pick source —</option>
-                    {smbSources.map(s => (
-                      <option key={s.id} value={s.id}>{s.name}</option>
-                    ))}
-                  </select>
+            {/* Destination block — visually grouped on the new theme to make
+                the local/SMB toggle and the path picker feel like one unit. */}
+            <div
+              style={{
+                background: 'var(--panel2)',
+                border: '1px solid var(--border)',
+                borderRadius: 10,
+                padding: 'var(--space-md)',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 'var(--space-sm)',
+              }}
+            >
+              <div className="flex items-center justify-between flex-wrap gap-sm">
+                <span className="text-sm font-medium">📍 Destination</span>
+                <div className="tabs" style={{ borderBottom: 'none' }}>
+                  <button
+                    type="button"
+                    className={`tab-item ${destKind === 'local' ? 'active' : ''}`}
+                    onClick={() => setDestKind('local')}
+                  >
+                    💾 Local
+                  </button>
+                  <button
+                    type="button"
+                    className={`tab-item ${destKind === 'smb' ? 'active' : ''}`}
+                    onClick={() => setDestKind('smb')}
+                  >
+                    📂 SMB
+                  </button>
                 </div>
-                <div>
-                  <label className="text-sm text-muted mb-sm" style={{ display: 'block' }}>Sub-folder</label>
-                  <input className="input" value={smbSubdir} onChange={e => setSmbSubdir(e.target.value)} placeholder="downloads" />
-                </div>
               </div>
-            )}
+
+              {destKind === 'local' ? (
+                <div>
+                  <label className="text-xs text-muted mb-sm" style={{ display: 'block' }}>Destination folder</label>
+                  <input
+                    className="input"
+                    value={destPath}
+                    onChange={e => setDestPath(e.target.value)}
+                    placeholder="/mnt/sda1/downloads"
+                  />
+                  <div className="text-xs text-muted mt-sm">
+                    Tip: scroll down and use ✓ Pick on any folder to autofill this path.
+                  </div>
+                </div>
+              ) : (
+                <div className="grid-2">
+                  <div>
+                    <label className="text-xs text-muted mb-sm" style={{ display: 'block' }}>SMB source</label>
+                    <select className="select" value={smbSourceId} onChange={e => setSmbSourceId(e.target.value)}>
+                      <option value="">— pick source —</option>
+                      {smbSources.map(s => (
+                        <option key={s.id} value={s.id}>{s.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-xs text-muted mb-sm" style={{ display: 'block' }}>Sub-folder</label>
+                    <input className="input" value={smbSubdir} onChange={e => setSmbSubdir(e.target.value)} placeholder="downloads" />
+                  </div>
+                </div>
+              )}
+            </div>
 
             <div className="flex items-center gap-md">
               <label className="flex items-center gap-sm" style={{ cursor: 'pointer' }}>

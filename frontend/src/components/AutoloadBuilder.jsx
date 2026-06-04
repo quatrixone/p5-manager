@@ -92,7 +92,7 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
   };
 
   const addWolStep = () => {
-    setSteps([...steps, { type: 'wol', name: 'Wake on LAN' }]);
+    setSteps([...steps, { type: 'wol', name: 'Wake on LAN', keep_session: true }]);
   };
 
   const addCheckPortStep = () => {
@@ -1124,6 +1124,23 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
                                   <option value="start">▶ Start session</option>
                                   <option value="stop">⏹ Stop session</option>
                                 </select>
+                              </>
+                            )}
+                            {step.type === 'wol' && (
+                              <>
+                                <label className="field-label" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                  <input
+                                    type="checkbox"
+                                    checked={!!step.keep_session}
+                                    onChange={e => patchStep(index, { keep_session: e.target.checked })}
+                                  />
+                                  <span>Keep PS5 awake (hold an RP session for the rest of the sequence)</span>
+                                </label>
+                                <div className="text-xs text-muted" style={{ marginTop: 4 }}>
+                                  Recommended when the next steps are long (FTP upload, big conversion).
+                                  Without this, PS5 may return to rest mode mid-task because FTP traffic
+                                  does not reset its power-saving timer.
+                                </div>
                               </>
                             )}
                             {step.type === 'download' && (

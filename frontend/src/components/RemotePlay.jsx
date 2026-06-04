@@ -102,19 +102,13 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
   const [pairBusy, setPairBusy] = useState(false);
 
   const [sessionId, setSessionId] = useState('');
-  const [sessionState, setSessionState] = useState('idle'); // idle | connecting | connected | reconnecting
-  const [reconnectAttempt, setReconnectAttempt] = useState(0);
-  const [autoReconnect, setAutoReconnect] = useState(true);
+  const [sessionState, setSessionState] = useState('idle'); // idle | connecting | connected
   const [stickThrottle, setStickThrottle] = useState({ left: 0, right: 0 });
   // Ref mirrors so the polling effect always sees the latest values without
   // having to re-subscribe (which would reset the interval timer).
   const sessionStateRef = useRef('idle');
-  const autoReconnectRef = useRef(true);
-  const reconnectAttemptRef = useRef(0);
   const userStoppedRef = useRef(false);
   useEffect(() => { sessionStateRef.current = sessionState; }, [sessionState]);
-  useEffect(() => { autoReconnectRef.current = autoReconnect; }, [autoReconnect]);
-  useEffect(() => { reconnectAttemptRef.current = reconnectAttempt; }, [reconnectAttempt]);
 
   useEffect(() => {
     if (!profileId && profiles.length) {
@@ -130,6 +124,20 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
   const accountLinked = !!profile?.psn_account_id;
   const paired = !!profile?.rp_user_profile;
   const liveSession = sessionState === 'connected';
+  // Setup steps (1 PSN link, 2 PIN pair) collapse once both are done so the
+  // common case (start session, control PS5) is one click away. The toggle
+  // is exposed on the header section so users can still re-link / re-pair.
+  //
+  // We track three modes:
+  //   - showSetup === null     → auto: collapse when setupComplete, expand otherwise
+  //   - showSetup === true     → user explicitly expanded (stays expanded)
+  //   - showSetup === false    → user explicitly collapsed (stays collapsed)
+  // This avoids the "first render flash" bug where profile data isn't loaded
+  // yet, setupComplete computes to false, and the panel stays open on
+  // mobile even after pairing data arrives.
+  const setupComplete = accountLinked && paired;
+  const [showSetup, setShowSetup] = useState(null);
+  const effectiveShowSetup = showSetup === null ? !setupComplete : showSetup;
 
   // --- OAuth ----------------------------------------------------------------
 
@@ -218,10 +226,10 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
 
   // --- Session --------------------------------------------------------------
 
-  const startSession = async ({ silent = false, reconnect = false } = {}) => {
+  const startSession = async () => {
     if (!profile) return false;
     userStoppedRef.current = false;
-    setSessionState(reconnect ? 'reconnecting' : 'connecting');
+    setSessionState('connecting');
     try {
       const r = await fetch(`${API}/sessions/start`, {
         method: 'POST',
@@ -231,12 +239,11 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
       if (!r.success) throw new Error(r.error);
       setSessionId(r.session_id);
       setSessionState('connected');
-      setReconnectAttempt(0);
-      if (!silent) onNotification?.(reconnect ? 'Remote Play session reconnected' : 'Remote Play session started', 'success');
+      onNotification?.('Remote Play session started', 'success');
       return true;
     } catch (e) {
       setSessionState('idle');
-      if (!silent) onNotification?.(`${reconnect ? 'Reconnect' : 'Start'} failed: ${e.message}`, 'error');
+      onNotification?.(`Start failed: ${e.message}`, 'error');
       return false;
     }
   };
@@ -245,8 +252,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
     // Always run a quick-stop on the IP - works even when sessionId is empty
     // (e.g. after a failed Start). Falls back to sessions/:id/stop if we do
     // have a fresh session_id.
-    userStoppedRef.current = true;     // Signal the watchdog to NOT auto-reconnect
-    setReconnectAttempt(0);
+    userStoppedRef.current = true;
     try {
       if (sessionId) {
         await fetch(`${API}/sessions/${encodeURIComponent(sessionId)}/stop`, { method: 'POST' });
@@ -282,11 +288,40 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
     }
   };
 
+  // Put PS5 into rest mode via Remote Play. Reuses an active session when
+  // available, otherwise opens a temporary one just to send the standby
+  // packet. Restart isn't supported - PS5 firmware doesn't expose a reboot
+  // command in the RP protocol.
+  const [standbyBusy, setStandbyBusy] = useState(false);
+  const standbyPs5 = async () => {
+    if (!profile?.ip_address) return;
+    if (!confirm(`Put ${profile.name} (${profile.ip_address}) into rest mode?`)) return;
+    setStandbyBusy(true);
+    try {
+      const r = await fetch(`${API}/standby`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ip: profile.ip_address, profile_id: profile.id }),
+      }).then(r => r.json());
+      if (!r.success) throw new Error(r.error);
+      // Standby disconnects our session as a side-effect; reflect it locally.
+      setSessionId('');
+      setSessionState('idle');
+      onNotification?.(
+        r.already_standby ? 'PS5 was already in standby' : 'Standby sent - PS5 is going to rest',
+        'success',
+      );
+    } catch (e) {
+      onNotification?.(`Standby failed: ${e.message}`, 'error');
+    } finally {
+      setStandbyBusy(false);
+    }
+  };
+
   const forceReset = async () => {
     if (!profile?.ip_address) return;
     if (!confirm('Force-reset will clear ALL Remote Play sessions for this PS5 on the sidecar. If the PS5 still refuses to connect afterwards, put it into Rest Mode and back on. Continue?')) return;
     userStoppedRef.current = true;
-    setReconnectAttempt(0);
     try {
       const r = await fetch(`${API}/quick-stop`, {
         method: 'POST',
@@ -304,55 +339,26 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
     setSessionState('idle');
   };
 
-  // ─── Watchdog / auto-reconnect ────────────────────────────────────────────
+  // ─── Session watchdog ─────────────────────────────────────────────────────
   //
-  // Once a session is connected we poll quick-status; if the sidecar reports
-  // the cached session is gone (PS5 dropped it, network blip, sidecar
-  // restart) and the user did NOT click Stop, we transition to "reconnecting"
-  // and retry startSession() with exponential backoff up to 5 attempts.
+  // We poll quick-status to keep the local UI in sync with the sidecar:
+  //  - if the sidecar reports an active session and we don't have one
+  //    locally, "adopt" it (Script Runner / Autoload / previous page load
+  //    started it), so the live-session UI shows up no matter who opened it.
+  //  - if the sidecar says no session and we thought we had one, drop
+  //    locally back to idle. We do NOT auto-reconnect on session loss -
+  //    the user is in charge of pressing Start again if they want to come
+  //    back.
   useEffect(() => {
     if (!profile?.ip_address) return undefined;
     let cancelled = false;
-    let reconnectTimer = null;
-
-    const tryReconnect = async () => {
-      if (cancelled) return;
-      const attempt = (reconnectAttemptRef.current || 0) + 1;
-      setReconnectAttempt(attempt);
-      if (attempt > 5) {
-        setSessionState('idle');
-        setReconnectAttempt(0);
-        onNotification?.('Auto-reconnect gave up after 5 attempts - press Start to try again', 'warning');
-        return;
-      }
-      // From attempt 2 onward, send wakeup packets before each connect try.
-      // The most common reason for the reconnect to fail is that the PS5 is
-      // still holding the previous (kicked) RP slot - extra wakeups encourage
-      // it to release.
-      if (attempt > 1) {
-        try {
-          await fetch(`${API}/wake`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ip: profile.ip_address, profile_id: profile.id }),
-          });
-        } catch (_) {}
-      }
-      const ok = await startSession({ silent: true, reconnect: true });
-      if (ok || cancelled) return;
-      // Exponential backoff: 3s, 6s, 12s, 24s, 48s (max ~93s total)
-      const delayMs = Math.min(48_000, 3_000 * 2 ** (attempt - 1));
-      reconnectTimer = setTimeout(tryReconnect, delayMs);
-    };
 
     const tick = async () => {
       if (cancelled) return;
       const state = sessionStateRef.current;
-      // Poll on every state except a reconnect in progress. That way we
-      // detect sessions opened from Script Runner / Autoload / a previous
-      // page load and "adopt" them - the live-session UI shows up no matter
-      // who started it.
-      if (state === 'reconnecting' || state === 'connecting') return;
+      // Don't tick during an in-flight Start; the request itself will set
+      // the final state.
+      if (state === 'connecting') return;
       try {
         const r = await fetch(`${API}/quick-status?ip=${encodeURIComponent(profile.ip_address)}`).then(r => r.json());
         if (cancelled) return;
@@ -360,11 +366,8 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
 
         const sidecarSid = r.session_id || '';
         if (r.active) {
-          // Session exists somewhere (we started it, or Script Runner /
-          // Autoload did). Sync local state so the live-session UI shows up.
           if (sessionStateRef.current !== 'connected') {
             setSessionState('connected');
-            setReconnectAttempt(0);
             userStoppedRef.current = false;
             if (state === 'idle') {
               onNotification?.('Adopted active Remote Play session', 'info');
@@ -375,33 +378,22 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
         }
 
         // r.active === false
-        if (state !== 'connected') {
-          // We weren't tracking a session and there's none - idle is correct.
-          if (sessionId) setSessionId('');
-          if (state !== 'idle') setSessionState('idle');
-          return;
+        if (state === 'connected' && !userStoppedRef.current) {
+          // Session went away on its own (network blip, PS5 dropped us, sidecar
+          // restart). Surface it once so the user knows why the UI flipped to
+          // idle, then leave it to them to hit Start.
+          onNotification?.('Remote Play session ended', 'info');
         }
-        // We thought we were connected but the sidecar says nope.
-        if (userStoppedRef.current || !autoReconnectRef.current) {
-          setSessionId('');
-          setSessionState('idle');
-          return;
-        }
-        onNotification?.('Session lost - auto-reconnecting…', 'info');
-        setSessionState('reconnecting');
-        setReconnectAttempt(0);
-        tryReconnect();
+        if (sessionId) setSessionId('');
+        if (state !== 'idle') setSessionState('idle');
       } catch (_) { /* network hiccup - try again next tick */ }
     };
 
-    // Fire once immediately so the UI reflects any in-progress session as
-    // soon as the user opens the tab, then keep polling every 6 s.
     tick();
     const id = setInterval(tick, 6000);
     return () => {
       cancelled = true;
       clearInterval(id);
-      if (reconnectTimer) clearTimeout(reconnectTimer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profile?.ip_address]);
@@ -452,14 +444,26 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
           ))}
         </select>
         {profile && (
-          <div className="text-xs text-muted">
-            PSN: {profile.psn_online_id || profile.psn_account_id || <em>not linked</em>}
-            {' · '}
-            RP: {paired ? <span style={{ color: 'var(--green)' }}>paired</span> : <em>not paired</em>}
+          <div className="flex items-center justify-between flex-wrap gap-sm">
+            <div className="text-xs text-muted">
+              PSN: {profile.psn_online_id || profile.psn_account_id || <em>not linked</em>}
+              {' · '}
+              RP: {paired ? <span style={{ color: 'var(--green)' }}>paired</span> : <em>not paired</em>}
+            </div>
+            {setupComplete && (
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={() => setShowSetup(effectiveShowSetup ? false : true)}
+              >
+                {effectiveShowSetup ? '▲ Hide setup' : '🔧 Manage PSN / pairing'}
+              </button>
+            )}
           </div>
         )}
       </Section>
 
+      {effectiveShowSetup && (<>
       <Section
         title={accountLinked ? '1 · PSN account ✓' : '1 · Link PSN account'}
         hint={accountLinked
@@ -520,33 +524,26 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
           )}
         </div>
       </Section>
+      </>)}
 
       <Section
-        title={
-          sessionState === 'reconnecting'
-            ? `🔄 Reconnecting (attempt ${reconnectAttempt}/5)`
-            : liveSession ? '🟢 Live session' : '3 · Start session'
-        }
+        title={liveSession ? '🟢 Live session' : '3 · Start session'}
         status={paired ? sessionState : 'pair first'}
         hint={
           !paired
             ? 'Pair the PS5 in step 2 first.'
-            : sessionState === 'reconnecting'
-              ? 'Session was lost - retrying with exponential backoff. Press Stop to cancel.'
-              : liveSession
-                ? null
-                : 'Start a control-only Remote Play session. PS5 will boot Remote Play but we ignore the video stream.'
+            : liveSession
+              ? null
+              : 'Start a control-only Remote Play session. PS5 will boot Remote Play but we ignore the video stream.'
         }
       >
         <div className="flex gap-sm flex-wrap">
           <button
             className="btn btn-primary"
-            disabled={!paired || sessionState === 'connecting' || sessionState === 'reconnecting' || liveSession}
+            disabled={!paired || sessionState === 'connecting' || liveSession}
             onClick={() => startSession()}
           >
-            {sessionState === 'connecting' ? '⏳ Starting…'
-              : sessionState === 'reconnecting' ? '🔄 Reconnecting…'
-              : '▶ Start session'}
+            {sessionState === 'connecting' ? '⏳ Starting…' : '▶ Start session'}
           </button>
           <button
             className="btn btn-danger"
@@ -565,6 +562,14 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
           </button>
           <button
             className="btn btn-ghost"
+            disabled={!paired || standbyBusy}
+            onClick={standbyPs5}
+            title="Puts the PS5 into rest mode via Remote Play. Restart isn't supported by the RP protocol."
+          >
+            {standbyBusy ? '⏳ Standby…' : '🌙 Standby'}
+          </button>
+          <button
+            className="btn btn-ghost"
             disabled={!paired}
             onClick={forceReset}
             title="Clears every cached Remote Play session on the sidecar. Use when the PS5 keeps reporting 'Another Remote Play session is connected'."
@@ -572,14 +577,6 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
             🧹 Force reset
           </button>
         </div>
-        <label className="flex items-center gap-xs text-sm text-muted" style={{ cursor: 'pointer' }}>
-          <input
-            type="checkbox"
-            checked={autoReconnect}
-            onChange={(e) => setAutoReconnect(e.target.checked)}
-          />
-          Auto-reconnect on session loss (up to 5 attempts with backoff)
-        </label>
       </Section>
 
       {liveSession && (

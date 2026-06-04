@@ -28,8 +28,22 @@ const PORT = process.env.PORT || 3001;
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
+// Suppress the most chatty polling endpoints from the access log - the UI
+// hits ps5/status, remoteplay/health and remoteplay/quick-status every few
+// seconds and they used to dominate the unified Logs view.
+const ACCESS_LOG_SILENCE = [
+  /^\/api\/ps5\/status\//,
+  /^\/api\/remoteplay\/health$/,
+  /^\/api\/remoteplay\/quick-status$/,
+  /^\/api\/kernellog\/status$/,
+  /^\/api\/logserver\/status$/,
+  /^\/api\/micromount\/ftp\/upload\/queue$/, // queue poll
+  /^\/api\/sequences$/,
+  /^\/api\/logs$/,
+];
 app.use((req, res, next) => {
-  console.log(`${new Date().toISOString()} ${req.method} ${req.path}`);
+  const silent = ACCESS_LOG_SILENCE.some(rx => rx.test(req.path));
+  if (!silent) console.log(`${new Date().toISOString()} ${req.method} ${req.path}`);
   next();
 });
 

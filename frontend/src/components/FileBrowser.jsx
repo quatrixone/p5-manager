@@ -65,18 +65,54 @@ export default function FileBrowser({
   const [extractPwd, setExtractPwd] = useState('');
   const [extractDeleteAfter, setExtractDeleteAfter] = useState(false);
 
+  // Upload-to-PS5 target. Used by the unified Upload action that handles
+  // files and folders coming from either the local FS or any configured
+  // remote source (SMB / external FTP). Seeded from the default profile.
+  const [uploadIp, setUploadIp] = useState('');
+  const [uploadDest, setUploadDest] = useState('/data/homebrew');
+  useEffect(() => {
+    if (!uploadIp && profiles.length) {
+      const def = profiles.find(p => p.is_default) || profiles[0];
+      if (def) setUploadIp(def.ip_address);
+    }
+  }, [profiles, uploadIp]);
+
   const [multiSelect, setMultiSelect] = useState(false);
   const [selected, setSelected] = useState(new Set());
   const [selectedFile, setSelectedFile] = useState(null);
+  // menuOpen carries both the file name and the viewport-anchored style for
+  // the floating ⋮ menu. We use position:fixed so the popover escapes the
+  // scrollable list container (which used to clip menus on the last rows).
   const [menuOpen, setMenuOpen] = useState(null);
+  const [menuStyle, setMenuStyle] = useState(null);
+
+  const openMenu = (e, fileName) => {
+    e.stopPropagation();
+    if (menuOpen === fileName) { setMenuOpen(null); setMenuStyle(null); return; }
+    // Anchor the menu's bottom edge right at the ⋮ button so it pops up
+    // hugging the trigger instead of floating high above the row.
+    const rect = e.currentTarget.getBoundingClientRect();
+    const vh = window.innerHeight;
+    const vw = window.innerWidth;
+    const right = Math.max(8, vw - rect.right);
+    setMenuStyle({ position: 'fixed', right, bottom: vh - rect.bottom + 2, top: 'auto' });
+    setMenuOpen(fileName);
+  };
 
   useEffect(() => {
     if (!menuOpen) return;
+    const close = () => { setMenuOpen(null); setMenuStyle(null); };
     const handler = (e) => {
-      if (!e.target.closest('.file-menu')) setMenuOpen(null);
+      if (!e.target.closest('.file-menu')) close();
     };
     document.addEventListener('click', handler);
-    return () => document.removeEventListener('click', handler);
+    window.addEventListener('scroll', close, true);
+    window.addEventListener('resize', close);
+    return () => {
+      document.removeEventListener('click', handler);
+      window.removeEventListener('scroll', close, true);
+      window.removeEventListener('resize', close);
+    };
   }, [menuOpen]);
 
   const [sortBy, setSortBy] = useState('name');
@@ -86,7 +122,9 @@ export default function FileBrowser({
 
   useEffect(() => {
     fetch(`${API}/micromount/sources`).then(r => r.json()).then(rows => {
-      setSmbSources((rows || []).filter(s => s.type === 'smb'));
+      // The "SMB" tab now lists every remote source (SMB + FTP). The backend
+      // /sources/:id/browse endpoint handles both transports transparently.
+      setSmbSources((rows || []).filter(s => s.type === 'smb' || s.type === 'ftp'));
     }).catch(() => {});
     fetch(`${API}/micromount/local/roots`).then(r => r.json()).then(d => {
       setLocalRoots(d.roots || []);
@@ -239,25 +277,68 @@ export default function FileBrowser({
     } catch (e) { onNotification?.(`Delete failed: ${e.message}`, 'error'); }
   };
 
-  const ftpUpload = async (entry) => {
-    if (!ftpIp) return;
-    const localPath = kind === 'local'
-      ? (path === '/' ? `/${entry.name}` : `${path.replace(/\/$/, '')}/${entry.name}`)
-      : null;
-    if (!localPath && kind !== 'local') {
-      onNotification?.('Upload only from local filesystem', 'error');
+  // Unified upload: handles files and folders from either local FS or a
+  // configured remote (SMB / external FTP) source. Always enqueues into the
+  // FTP upload queue - user starts/pauses jobs from the Queue tab.
+  const uploadEntry = async (entry) => {
+    if (kind === 'ftp') {
+      onNotification?.('Items already on PS5 FTP - no upload needed', 'info');
+      return;
+    }
+    if (!uploadIp) {
+      onNotification?.('Pick a target PS5 first', 'error');
+      return;
+    }
+    let body;
+    if (kind === 'local') {
+      const fullPath = path === '/' ? `/${entry.name}` : `${path.replace(/\/$/, '')}/${entry.name}`;
+      body = { ip: uploadIp, local_path: fullPath, dest_path: uploadDest };
+    } else if (kind === 'smb') {
+      if (!smbId) { onNotification?.('Pick a remote source first', 'error'); return; }
+      const sub = path ? `${path.replace(/\/+$/, '')}/${entry.name}` : entry.name;
+      body = {
+        ip: uploadIp,
+        dest_path: uploadDest,
+        source_id: Number(smbId),
+        source_path: sub,
+        is_dir: !!entry.isDir,
+      };
+    } else {
       return;
     }
     try {
-      // Always go through the queue; user controls Start/Pause from the Queue tab.
       const r = await fetch(`${API}/micromount/ftp/upload/queue`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ip: ftpIp, local_path: localPath }),
+        body: JSON.stringify(body),
       });
       const d = await r.json();
-      if (!r.ok) throw new Error(d.error);
-      onNotification?.(`Upload added to queue: ${entry.name}`, 'success');
+      if (!r.ok) throw new Error(d.error || 'upload queue failed');
+      const n = d.count || (d.items?.length ?? 1);
+      onNotification?.(
+        n > 1
+          ? `Queued ${n} files from ${entry.name} → ${uploadIp}${uploadDest}`
+          : `Queued upload: ${entry.name} → ${uploadIp}${uploadDest}`,
+        'success',
+      );
     } catch (e) { onNotification?.(`Upload failed: ${e.message}`, 'error'); }
+  };
+
+  const uploadSelected = async () => {
+    if (!uploadIp) { onNotification?.('Pick a target PS5 first', 'error'); return; }
+    const list = Array.from(selected);
+    if (list.length === 0) return;
+    let ok = 0, fail = 0;
+    for (const name of list) {
+      const f = files.find(x => x.name === name);
+      if (!f) { fail++; continue; }
+      try { await uploadEntry(f); ok++; }
+      catch (_) { fail++; }
+    }
+    onNotification?.(
+      fail > 0 ? `Queued ${ok}, ${fail} failed` : `Queued ${ok} item(s) → ${uploadIp}${uploadDest}`,
+      fail > 0 ? 'error' : 'success',
+    );
+    clearSelection();
   };
 
   const startExtract = async (filename) => {
@@ -352,13 +433,22 @@ export default function FileBrowser({
   };
 
   const pickConvert = (entry) => {
-    if (kind !== 'local') {
-      onNotification?.('Convert in-place only for local filesystem', 'info');
+    // Convert can run on local files/folders or PS5-FTP files/folders (the
+    // backend stages an FTP source to a local temp dir before mkpfs and
+    // pushes the result back automatically). SMB sources still need to be
+    // imported first.
+    if (kind === 'smb') {
+      onNotification?.('For SMB sources, import the file first; convert reads from local fs or PS5 FTP.', 'info');
       return;
     }
     const fullPath = path === '/' ? `/${entry.name}` : `${path.replace(/\/$/, '')}/${entry.name}`;
-    onPickConvert?.({ kind, path: fullPath, isDir: !!entry.isDir, name: entry.name });
-    onNotification?.(`Picked for convert: ${entry.name}`, 'success');
+    onPickConvert?.({ kind, ftpIp, path: fullPath, isDir: !!entry.isDir, name: entry.name });
+    onNotification?.(
+      kind === 'ftp' && entry.isDir
+        ? `Picked folder for convert: ${entry.name} (will stage from PS5 first)`
+        : `Picked for convert: ${entry.name}`,
+      'success',
+    );
   };
 
   const deleteSelected = async () => {
@@ -368,6 +458,39 @@ export default function FileBrowser({
       if (f) await deleteEntry(f);
     }
     clearSelection();
+  };
+
+  // Trigger a browser download via a hidden anchor. The backend streams the
+  // file (or a zip for folders) with proper Content-Disposition, so the
+  // browser shows the native "Save as" dialog.
+  const downloadEntry = (entry) => {
+    let url;
+    if (kind === 'local') {
+      const fullPath = path === '/' ? `/${entry.name}` : `${path.replace(/\/$/, '')}/${entry.name}`;
+      url = `${API}/micromount/local/download?path=${encodeURIComponent(fullPath)}`;
+    } else if (kind === 'smb') {
+      if (!smbId) { onNotification?.('Pick a remote source first', 'error'); return; }
+      const sub = path ? `${path.replace(/\/+$/, '')}/${entry.name}` : entry.name;
+      url = `${API}/micromount/sources/${smbId}/download?path=${encodeURIComponent(sub)}&isDir=${entry.isDir ? 1 : 0}`;
+    } else if (kind === 'ftp') {
+      if (!ftpIp) { onNotification?.('Pick a PS5 first', 'error'); return; }
+      const fullPath = path === '/' ? `/${entry.name}` : `${path.replace(/\/$/, '')}/${entry.name}`;
+      url = `${API}/micromount/ftp/download?ip=${encodeURIComponent(ftpIp)}&path=${encodeURIComponent(fullPath)}&isDir=${entry.isDir ? 1 : 0}`;
+    } else {
+      return;
+    }
+    const a = document.createElement('a');
+    a.href = url;
+    a.rel = 'noopener';
+    // Hint to the browser that this is a download, not a navigation. Some
+    // browsers ignore Content-Disposition on same-origin links without this
+    // attribute (especially when the URL has no path-based filename).
+    a.download = entry.isDir ? `${entry.name}.zip` : entry.name;
+    a.target = '_blank';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    onNotification?.(`Download started: ${entry.name}${entry.isDir ? ' (zip)' : ''}`, 'info');
   };
 
   const sortFiles = (a, b) => {
@@ -391,19 +514,25 @@ export default function FileBrowser({
     const isActive = selectedFile === f.name;
     const archiveFile = !f.isDir && isArchive(f.name);
 
-    const primaryAction = f.isDir ? (
-      <button className="btn btn-primary btn-sm" onClick={() => open(f)}>📂 Open</button>
-    ) : archiveFile && enableExtract ? (
-      <button className="btn btn-primary btn-sm" onClick={() => { setSelectedFile(f.name); setMenuOpen(null); }}>📦 Extract</button>
-    ) : !f.isDir && enableFtpUpload && kind === 'local' && ftpIp ? (
-      <button className="btn btn-primary btn-sm" onClick={() => ftpUpload(f)}>⬆ Upload</button>
-    ) : null;
+    const canUpload = (kind === 'local' || kind === 'smb') && enableFtpUpload && !!uploadIp;
+    const primaryAction = f.isDir ? null
+      : archiveFile && enableExtract ? (
+        <button className="btn btn-primary btn-sm" onClick={() => { setSelectedFile(f.name); setMenuOpen(null); }}>📦 Extract</button>
+      ) : canUpload ? (
+        <button className="btn btn-primary btn-sm" onClick={() => uploadEntry(f)}>⬆ Upload</button>
+      ) : null;
 
     const secondaryActions = [
       f.isDir && enablePickDir && kind !== 'ftp' && { label: '✓ Pick', action: () => pickDir(f) },
-      enablePickConvert && kind === 'local' && { label: '🔄 Convert', action: () => pickConvert(f) },
+      enablePickConvert && (kind === 'local' || kind === 'ftp') && { label: '🔄 Convert', action: () => pickConvert(f) },
       f.isDir && enableImportFolder && kind !== 'ftp' && { label: '📥 Import', action: () => importFolder(f.name) },
       !f.isDir && enableImportFile && kind !== 'ftp' && { label: '📥 Import', action: () => importFile(f.name) },
+      // Unified Upload to PS5 - available for files AND folders, on local
+      // and remote (SMB / external FTP) sources.
+      canUpload && f.isDir && { label: '⬆ Upload folder', action: () => uploadEntry(f) },
+      // Download to the user's machine only makes sense for remote sources -
+      // local files already live on the manager's filesystem.
+      kind !== 'local' && { label: f.isDir ? '⬇ Download (zip)' : '⬇ Download', action: () => downloadEntry(f) },
       enableDelete && { label: '🗑 Delete', action: () => deleteEntry(f), danger: true },
     ].filter(Boolean);
 
@@ -413,9 +542,10 @@ export default function FileBrowser({
         data-file={f.name}
         className={`file-card ${isSelected ? 'file-card-selected' : ''} ${isActive ? 'file-card-active' : ''}`}
         onClick={() => {
-          if (multiSelect) toggleSelect(f.name);
+          if (multiSelect) { toggleSelect(f.name); return; }
+          if (f.isDir) open(f);
         }}
-        style={{ position: 'relative' }}
+        style={{ position: 'relative', cursor: (multiSelect || f.isDir) ? 'pointer' : 'default' }}
       >
         <div className="file-card-content" style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-sm)', padding: 'var(--space-sm) var(--space-md)' }}>
           {multiSelect && (
@@ -441,21 +571,21 @@ export default function FileBrowser({
           )}
 
           {secondaryActions.length > 0 && (
-            <div style={{ position: 'relative', overflow: 'visible' }} onClick={(e) => e.stopPropagation()}>
+            <div onClick={(e) => e.stopPropagation()}>
               <button
                 className="btn btn-ghost btn-sm"
-                onClick={() => setMenuOpen(menuOpen === f.name ? null : f.name)}
+                onClick={(e) => openMenu(e, f.name)}
                 style={{ minWidth: 36 }}
               >
                 ⋮
               </button>
-              {menuOpen === f.name && (
-                <div className="file-menu">
+              {menuOpen === f.name && menuStyle && (
+                <div className="file-menu" style={menuStyle}>
                   {secondaryActions.map((action, i) => (
                     <button
                       key={i}
                       className={`file-menu-item ${action.danger ? 'text-danger' : ''}`}
-                      onClick={() => { action.action(); setMenuOpen(null); }}
+                      onClick={() => { action.action(); setMenuOpen(null); setMenuStyle(null); }}
                     >
                       {action.label}
                     </button>
@@ -489,15 +619,37 @@ export default function FileBrowser({
       <div className="comp-card-body flex-col gap-md">
         <div className="tabs">
           <button className={`tab-item ${kind === 'local' ? 'active' : ''}`} onClick={() => setKind('local')}>💾 Local</button>
-          <button className={`tab-item ${kind === 'smb' ? 'active' : ''}`} onClick={() => setKind('smb')}>📂 SMB</button>
+          <button className={`tab-item ${kind === 'smb' ? 'active' : ''}`} onClick={() => setKind('smb')}>📡 Remote</button>
           {enableFtp && <button className={`tab-item ${kind === 'ftp' ? 'active' : ''}`} onClick={() => setKind('ftp')}>🎮 PS5 FTP</button>}
         </div>
 
         {kind === 'smb' && (
           <select className="select" value={smbId} onChange={e => setSmbId(e.target.value)}>
-            <option value="">— pick SMB source —</option>
-            {smbSources.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+            <option value="">— pick remote source —</option>
+            {smbSources.map(s => (
+              <option key={s.id} value={s.id}>{s.type === 'ftp' ? '🌐 FTP' : '📂 SMB'} · {s.name}</option>
+            ))}
           </select>
+        )}
+
+        {/* Upload widget: picks PS5 + destination used by the per-file and
+            bulk Upload actions. Only shown when uploading is reachable
+            (local files or a selected remote SMB/FTP source) AND the
+            parent screen enabled uploads via enableFtpUpload. */}
+        {enableFtpUpload && (kind === 'local' || (kind === 'smb' && smbId)) && (
+          <div className="flex gap-sm flex-wrap items-end p-sm" style={{ background: 'var(--panel2)', borderRadius: 8 }}>
+            <div className="flex-1" style={{ minWidth: 160 }}>
+              <label className="text-xs text-muted mb-xs" style={{ display: 'block' }}>📤 Upload target PS5</label>
+              <select className="select" value={uploadIp} onChange={e => setUploadIp(e.target.value)}>
+                <option value="">— select —</option>
+                {profiles.map(p => <option key={p.id} value={p.ip_address}>{p.name} ({p.ip_address})</option>)}
+              </select>
+            </div>
+            <div className="flex-1" style={{ minWidth: 180 }}>
+              <label className="text-xs text-muted mb-xs" style={{ display: 'block' }}>Destination on PS5</label>
+              <input className="input" value={uploadDest} onChange={e => setUploadDest(e.target.value)} placeholder="/data/homebrew" />
+            </div>
+          </div>
         )}
 
         {kind === 'ftp' && (
@@ -616,6 +768,9 @@ export default function FileBrowser({
         {multiSelect && selected.size > 0 && (
           <div className="flex gap-sm items-center p-md" style={{ background: 'var(--accent)', borderRadius: 8, position: 'sticky', bottom: 0 }}>
             <span className="text-sm font-medium">{selected.size} selected</span>
+            {enableFtpUpload && ((kind === 'smb' && smbId) || kind === 'local') && uploadIp && (
+              <button className="btn btn-sm btn-success" onClick={uploadSelected}>⬆ Upload to PS5</button>
+            )}
             <button className="btn btn-sm btn-danger" onClick={deleteSelected}>🗑 Delete</button>
             <button className="btn btn-sm btn-ghost" onClick={clearSelection}>✕ Cancel</button>
           </div>

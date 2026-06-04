@@ -8,16 +8,30 @@ import fs from 'fs';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import AdmZip from 'adm-zip';
+import { createRequire } from 'module';
 import { getDatabase, saveDatabase, log } from '../db/sqlite.js';
+
+// archiver is CJS and doesn't expose a clean ESM default export in Node 20,
+// so we pull it in via createRequire to side-step the interop error.
+const require = createRequire(import.meta.url);
+const archiver = require('archiver');
 import { uploadDirToSmb as smbUploadDir } from '../lib/smb.js';
 
 const router = express.Router();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const projectRoot = path.resolve(__dirname, '../../..');
-const mkpfsWorkDir = path.join(projectRoot, 'data', 'mkpfs');
-const payloadsDir = path.join(projectRoot, 'data', 'payloads');
+// In Docker the Dockerfile copies backend/ contents directly to /app/ (the
+// `backend/` prefix is stripped), so __dirname='/app/src/routes' and ../../..
+// resolves to '/'. We therefore prefer the explicit DATA_DIR env (set to
+// /app/data in docker-compose) and only fall back to the dev-time relative
+// path when DATA_DIR isn't set.
+const dataDir = process.env.DATA_DIR
+  ? path.resolve(process.env.DATA_DIR)
+  : path.join(path.resolve(__dirname, '../../..'), 'data');
+const projectRoot = path.resolve(dataDir, '..');
+const mkpfsWorkDir = path.join(dataDir, 'mkpfs');
+const payloadsDir = path.join(dataDir, 'payloads');
 
 const MM_REPO = 'PSBrew/MicroMount';
 const RELEASE_KEY = 'micromount_release_state';
@@ -470,6 +484,219 @@ router.post('/ftp/upload', async (req, res) => {
   }
 });
 
+// ─── Download (browser → user's disk) ────────────────────────────────────
+//
+// File downloads stream the bytes straight through res so the user gets the
+// real progress bar and the server never buffers more than a few MB. Folder
+// downloads pipe an `archiver` zip stream - the zip is built on the fly so
+// even multi-gigabyte directories don't OOM the Node process.
+//
+// Endpoints intentionally accept the path via querystring (GET) so the user
+// can trigger a download with a plain <a href> or window.location and get a
+// proper "Save As" dialog. POST would force JSON/blob handling on the
+// frontend.
+
+function safeContentDispositionAttachment(filename) {
+  // RFC 5987 - encode non-ASCII via UTF-8 percent encoding so accents/emoji
+  // in filenames survive Content-Disposition headers.
+  const ascii = filename.replace(/[^\x20-\x7E]/g, '_').replace(/"/g, '');
+  const utf8 = encodeURIComponent(filename);
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${utf8}`;
+}
+
+router.get('/local/download', (req, res) => {
+  try {
+    const reqPath = String(req.query.path || '');
+    if (!reqPath) return res.status(400).json({ error: 'path required' });
+    const abs = path.resolve(reqPath);
+    if (!isLocalPathAllowed(abs)) return res.status(403).json({ error: `Path not allowed: ${abs}` });
+    if (!fs.existsSync(abs)) return res.status(404).json({ error: 'Path not found' });
+    const st = fs.statSync(abs);
+    if (st.isDirectory()) {
+      const zipName = `${path.basename(abs) || 'folder'}.zip`;
+      res.setHeader('Content-Type', 'application/zip');
+      res.setHeader('Content-Disposition', safeContentDispositionAttachment(zipName));
+      const archive = archiver('zip', { zlib: { level: 1 } }); // level 1 = fast, most game files don't compress anyway
+      archive.on('error', (err) => {
+        log('error', `zip error for ${abs}: ${err.message}`);
+        try { res.destroy(err); } catch (_) {}
+      });
+      archive.pipe(res);
+      archive.directory(abs, false);
+      archive.finalize();
+    } else {
+      res.setHeader('Content-Type', 'application/octet-stream');
+      res.setHeader('Content-Length', st.size);
+      res.setHeader('Content-Disposition', safeContentDispositionAttachment(path.basename(abs)));
+      const stream = fs.createReadStream(abs);
+      stream.on('error', (err) => { try { res.destroy(err); } catch (_) {} });
+      stream.pipe(res);
+    }
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/ftp/download', async (req, res) => {
+  try {
+    const ip = String(req.query.ip || '');
+    const reqPath = String(req.query.path || '');
+    const isDir = req.query.isDir === '1' || req.query.isDir === 'true';
+    if (!ip || !reqPath) return res.status(400).json({ error: 'ip and path required' });
+    const ftpOpts = loadFtp();
+    if (!isDir) {
+      const filename = path.posix.basename(reqPath);
+      res.setHeader('Content-Type', 'application/octet-stream');
+      res.setHeader('Content-Disposition', safeContentDispositionAttachment(filename));
+      await withFtp(ip, ftpOpts, async (client) => {
+        await client.downloadTo(res, reqPath);
+      });
+      return;
+    }
+    // Folder: walk the FTP tree and stream each file straight into the zip.
+    const zipName = `${path.posix.basename(reqPath.replace(/\/+$/, '')) || 'folder'}.zip`;
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', safeContentDispositionAttachment(zipName));
+    const archive = archiver('zip', { zlib: { level: 1 } });
+    archive.on('error', (err) => {
+      log('error', `ftp zip error for ${ip}:${reqPath}: ${err.message}`);
+      try { res.destroy(err); } catch (_) {}
+    });
+    archive.pipe(res);
+    await withFtp(ip, ftpOpts, async (client) => {
+      const walk = async (remoteDir, prefix) => {
+        const list = await client.list(remoteDir);
+        for (const entry of list) {
+          if (entry.name === '.' || entry.name === '..') continue;
+          const remote = `${remoteDir.replace(/\/+$/, '')}/${entry.name}`;
+          const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+          const isDirEntry = entry.type === 2 || entry.isDirectory === true;
+          if (isDirEntry) {
+            await walk(remote, rel);
+          } else {
+            const { Readable: NodeReadable } = await import('stream');
+            const { PassThrough } = await import('stream');
+            const pass = new PassThrough();
+            archive.append(pass, { name: rel });
+            // basic-ftp downloads into a writable - PassThrough acts as both.
+            await client.downloadTo(pass, remote);
+            pass.end();
+            // Tiny yield so archiver flushes between files.
+            await new Promise(r => setImmediate(r));
+            void NodeReadable;
+          }
+        }
+      };
+      await walk(reqPath.replace(/\/+$/, '') || '/', '');
+    });
+    await archive.finalize();
+  } catch (err) {
+    if (!res.headersSent) res.status(500).json({ error: err.message });
+    else { try { res.destroy(err); } catch (_) {} }
+  }
+});
+
+router.get('/sources/:id/download', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    const src = getSource(id);
+    if (!src) return res.status(404).json({ error: 'Source not found' });
+    const reqPath = String(req.query.path || '');
+    const isDir = req.query.isDir === '1' || req.query.isDir === 'true';
+    if (!reqPath) return res.status(400).json({ error: 'path required' });
+
+    if (src.type === 'ftp') {
+      if (!isDir) {
+        const filename = path.posix.basename(reqPath);
+        res.setHeader('Content-Type', 'application/octet-stream');
+        res.setHeader('Content-Disposition', safeContentDispositionAttachment(filename));
+        await withSourceFtp(src, async (client) => {
+          await client.downloadTo(res, reqPath);
+        });
+        return;
+      }
+      const zipName = `${path.posix.basename(reqPath.replace(/\/+$/, '')) || 'folder'}.zip`;
+      res.setHeader('Content-Type', 'application/zip');
+      res.setHeader('Content-Disposition', safeContentDispositionAttachment(zipName));
+      const archive = archiver('zip', { zlib: { level: 1 } });
+      archive.on('error', (err) => { try { res.destroy(err); } catch (_) {} });
+      archive.pipe(res);
+      await withSourceFtp(src, async (client) => {
+        const { PassThrough } = await import('stream');
+        const walk = async (remoteDir, prefix) => {
+          const list = await client.list(remoteDir);
+          for (const entry of list) {
+            if (entry.name === '.' || entry.name === '..') continue;
+            const remote = `${remoteDir.replace(/\/+$/, '')}/${entry.name}`;
+            const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+            const isDirEntry = entry.type === 2 || entry.isDirectory === true;
+            if (isDirEntry) await walk(remote, rel);
+            else {
+              const pass = new PassThrough();
+              archive.append(pass, { name: rel });
+              await client.downloadTo(pass, remote);
+              pass.end();
+              await new Promise(r => setImmediate(r));
+            }
+          }
+        };
+        await walk(reqPath.replace(/\/+$/, '') || '/', '');
+      });
+      await archive.finalize();
+      return;
+    }
+
+    if (src.type === 'smb') {
+      // smbclient -c 'get "remote" -' streams the file to stdout. For folders
+      // we stage to a temp dir via tar so we can zip the whole subtree.
+      const cleanPath = reqPath.replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '');
+      if (!isDir) {
+        const filename = path.posix.basename(cleanPath || 'file');
+        res.setHeader('Content-Type', 'application/octet-stream');
+        res.setHeader('Content-Disposition', safeContentDispositionAttachment(filename));
+        const args = [...buildSmbArgs(src), '-c', `get "${cleanPath}" -`];
+        const proc = spawn('smbclient', args);
+        proc.stdout.pipe(res);
+        proc.stderr.on('data', (d) => log('warn', `[smb-dl] ${d.toString().trim()}`));
+        proc.on('error', (err) => { try { res.destroy(err); } catch (_) {} });
+        proc.on('close', (code) => { if (code !== 0 && !res.headersSent) res.status(500).end(); });
+        return;
+      }
+      // Folder: stage locally then zip-stream.
+      const stageDir = fs.mkdtempSync(path.join(os.tmpdir(), 'smbdl-'));
+      try {
+        const lsArgs = [...buildSmbArgs(src), '-c', `prompt OFF; recurse ON; lcd "${stageDir}"; cd "${cleanPath}"; mget *`];
+        await new Promise((resolve, reject) => {
+          const proc = spawn('smbclient', lsArgs);
+          let err = '';
+          proc.stderr.on('data', (d) => { err += d.toString(); });
+          proc.on('close', (code) => code === 0 ? resolve() : reject(new Error(err.trim().split('\n').slice(-3).join(' ') || `smbclient exit ${code}`)));
+          proc.on('error', reject);
+        });
+        const zipName = `${path.posix.basename(cleanPath) || 'folder'}.zip`;
+        res.setHeader('Content-Type', 'application/zip');
+        res.setHeader('Content-Disposition', safeContentDispositionAttachment(zipName));
+        const archive = archiver('zip', { zlib: { level: 1 } });
+        archive.on('error', (err) => { try { res.destroy(err); } catch (_) {} });
+        archive.on('end', () => { try { fs.rmSync(stageDir, { recursive: true, force: true }); } catch (_) {} });
+        archive.pipe(res);
+        archive.directory(stageDir, false);
+        await archive.finalize();
+      } catch (e) {
+        try { fs.rmSync(stageDir, { recursive: true, force: true }); } catch (_) {}
+        if (!res.headersSent) res.status(500).json({ error: e.message });
+        else { try { res.destroy(e); } catch (_) {} }
+      }
+      return;
+    }
+
+    return res.status(400).json({ error: `Unsupported source type: ${src.type}` });
+  } catch (err) {
+    if (!res.headersSent) res.status(500).json({ error: err.message });
+    else { try { res.destroy(err); } catch (_) {} }
+  }
+});
+
 router.post('/local/delete', (req, res) => {
   try {
     const { path: target, isDir } = req.body || {};
@@ -530,27 +757,49 @@ router.get('/sources', (req, res) => {
     const stmt = db.prepare('SELECT * FROM micromount_sources ORDER BY created_at DESC');
     while (stmt.step()) rows.push(stmt.getAsObject());
     stmt.free();
-    rows.forEach(r => { if (r.smb_password) r.smb_password = '__set__'; });
+    rows.forEach(r => {
+      if (r.smb_password) r.smb_password = '__set__';
+      if (r.ftp_password) r.ftp_password = '__set__';
+    });
     res.json(rows);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
+const ALLOWED_SOURCE_TYPES = new Set(['local', 'smb', 'ftp']);
+
 router.post('/sources', (req, res) => {
   try {
-    const { name, type, path: srcPath, smb_host, smb_share, smb_username, smb_password, smb_domain } = req.body;
+    const {
+      name, type, path: srcPath,
+      smb_host, smb_share, smb_username, smb_password, smb_domain,
+      ftp_host, ftp_port, ftp_username, ftp_password,
+    } = req.body;
     if (!name || !type) return res.status(400).json({ error: 'name and type required' });
-    if (type !== 'local' && type !== 'smb') return res.status(400).json({ error: 'type must be local or smb' });
+    if (!ALLOWED_SOURCE_TYPES.has(type)) return res.status(400).json({ error: 'type must be local, smb or ftp' });
     if (type === 'smb' && (!smb_host || !smb_share)) {
       return res.status(400).json({ error: 'smb_host and smb_share required for smb type' });
+    }
+    if (type === 'ftp' && !ftp_host) {
+      return res.status(400).json({ error: 'ftp_host required for ftp type' });
     }
 
     const db = getDatabase();
     db.run(
-      `INSERT INTO micromount_sources (name, type, path, smb_host, smb_share, smb_username, smb_password, smb_domain)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [name, type, srcPath || '', smb_host || null, smb_share || null, smb_username || null, smb_password || null, smb_domain || null]
+      `INSERT INTO micromount_sources
+         (name, type, path,
+          smb_host, smb_share, smb_username, smb_password, smb_domain,
+          ftp_host, ftp_port, ftp_username, ftp_password)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        name, type, srcPath || '',
+        smb_host || null, smb_share || null, smb_username || null, smb_password || null, smb_domain || null,
+        ftp_host || null,
+        ftp_port != null && ftp_port !== '' ? parseInt(ftp_port) : null,
+        ftp_username || null,
+        ftp_password || null,
+      ]
     );
     saveDatabase();
     const id = db.exec('SELECT last_insert_rowid()')[0].values[0][0];
@@ -576,12 +825,32 @@ router.put('/sources/:id', (req, res) => {
     cur.free();
 
     const next = { ...existing, ...req.body };
+    // Preserve stored passwords when the frontend echoes back the "__set__"
+    // sentinel (i.e. the user did not retype the password).
     if (req.body.smb_password === '__set__') next.smb_password = existing.smb_password;
+    if (req.body.ftp_password === '__set__') next.ftp_password = existing.ftp_password;
     if (typeof next.enabled === 'boolean') next.enabled = next.enabled ? 1 : 0;
+    if (next.type && !ALLOWED_SOURCE_TYPES.has(next.type)) {
+      return res.status(400).json({ error: 'type must be local, smb or ftp' });
+    }
 
     db.run(
-      `UPDATE micromount_sources SET name=?, type=?, path=?, smb_host=?, smb_share=?, smb_username=?, smb_password=?, smb_domain=?, enabled=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`,
-      [next.name, next.type, next.path, next.smb_host, next.smb_share, next.smb_username, next.smb_password, next.smb_domain, next.enabled ? 1 : 0, id]
+      `UPDATE micromount_sources
+         SET name=?, type=?, path=?,
+             smb_host=?, smb_share=?, smb_username=?, smb_password=?, smb_domain=?,
+             ftp_host=?, ftp_port=?, ftp_username=?, ftp_password=?,
+             enabled=?, updated_at=CURRENT_TIMESTAMP
+       WHERE id=?`,
+      [
+        next.name, next.type, next.path,
+        next.smb_host, next.smb_share, next.smb_username, next.smb_password, next.smb_domain,
+        next.ftp_host || null,
+        next.ftp_port != null && next.ftp_port !== '' ? parseInt(next.ftp_port) : null,
+        next.ftp_username || null,
+        next.ftp_password || null,
+        next.enabled ? 1 : 0,
+        id,
+      ]
     );
     saveDatabase();
     res.json({ success: true });
@@ -676,6 +945,28 @@ function parseSmbList(output) {
   return files;
 }
 
+// Helper: connect to the FTP server defined by a source row using the
+// per-source credentials (NOT the global PS5 FTP creds). The source FTP can
+// be any external FTP (NAS, seedbox, another PS5, etc.).
+async function withSourceFtp(src, fn) {
+  const client = new FtpClient(15000);
+  client.ftp.verbose = false;
+  try {
+    await client.access({
+      host: src.ftp_host,
+      port: src.ftp_port || 21,
+      user: src.ftp_username || 'anonymous',
+      password: src.ftp_password || '',
+      secure: false,
+    });
+    try { client.ftp.socket.setKeepAlive(true, 15_000); } catch (_) {}
+    try { client.ftp.socket.setNoDelay(true); } catch (_) {}
+    return await fn(client);
+  } finally {
+    try { client.close(); } catch (_) {}
+  }
+}
+
 router.post('/sources/:id/browse', async (req, res) => {
   try {
     const id = parseInt(req.params.id);
@@ -689,8 +980,30 @@ router.post('/sources/:id/browse', async (req, res) => {
     let subPath = req.body && req.body.subPath;
     if (subPath === undefined || subPath === null) subPath = src.path || '';
     const cleanPath = subPath.replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '');
-    const cmd = cleanPath ? `cd "${cleanPath}"; ls` : 'ls';
 
+    if (src.type === 'ftp') {
+      try {
+        const list = await withSourceFtp(src, async (client) => {
+          const target = '/' + cleanPath;
+          try { await client.cd(target); }
+          catch (e) { throw new Error(`cd ${target}: ${e.message}`); }
+          return await client.list();
+        });
+        const files = list
+          .filter(f => f.name !== '.' && f.name !== '..')
+          .map(f => ({
+            name: f.name,
+            isDir: f.type === 2 || f.isDirectory === true,
+            size: typeof f.size === 'number' ? f.size : 0,
+            mtime: f.modifiedAt ? new Date(f.modifiedAt).getTime() : 0,
+          }));
+        return res.json({ success: true, type: 'ftp', path: cleanPath, files });
+      } catch (e) {
+        return res.status(400).json({ error: e.message });
+      }
+    }
+
+    const cmd = cleanPath ? `cd "${cleanPath}"; ls` : 'ls';
     const args = buildSmbArgs(src);
     args.push('-c', cmd);
 
@@ -714,24 +1027,62 @@ router.post('/sources/:id/sync', async (req, res) => {
     const id = parseInt(req.params.id);
     const src = getSource(id);
     if (!src) return res.status(404).json({ error: 'Source not found' });
-    if (src.type !== 'smb') return res.status(400).json({ error: 'Sync only available for smb sources' });
+    if (src.type !== 'smb' && src.type !== 'ftp') {
+      return res.status(400).json({ error: 'Sync only available for smb and ftp sources' });
+    }
 
-    const { ip, dest_path = '/data/homebrew', subPath = '' } = req.body;
+    const { ip, dest_path = '/data/homebrew', subPath = '', files: filesParam } = req.body;
     if (!ip) return res.status(400).json({ error: 'PS5 IP required' });
 
-    const ftp = loadFtp();
+    const ps5Ftp = loadFtp();
     const sharePath = subPath || src.path || '';
     const cleanShare = sharePath.replace(/\\/g, '/').replace(/^\/+/, '');
 
-    const lsArgs = buildSmbArgs(src);
-    lsArgs.push('-c', cleanShare ? `cd "${cleanShare}"; ls` : 'ls');
-    const { stdout, code: lsCode } = await runSmbClient(lsArgs);
-    const lsErr = smbClientError(stdout, lsCode);
-    if (lsErr) return res.status(400).json({ error: `${lsErr.message}: ${cleanShare || '/'}`, smb_status: lsErr.status });
-    const files = parseSmbList(stdout).filter(f => !f.isDir && /\.ffpfsc$/i.test(f.name));
+    // Either the caller passes an explicit `files: [name, ...]` list (used by
+    // the File Browser sync action) or we fall back to the "all .ffpfsc files
+    // in the share" behaviour for backward compatibility with bulk syncs.
+    const explicitFiles = Array.isArray(filesParam) ? filesParam.filter(Boolean) : null;
+    let files;
+    if (src.type === 'ftp') {
+      try {
+        const list = await withSourceFtp(src, async (client) => {
+          const target = '/' + cleanShare;
+          try { await client.cd(target); } catch (e) { throw new Error(`cd ${target}: ${e.message}`); }
+          return await client.list();
+        });
+        const mapped = list
+          .filter(f => f.name !== '.' && f.name !== '..')
+          .map(f => ({
+            name: f.name,
+            isDir: f.type === 2 || f.isDirectory === true,
+            size: typeof f.size === 'number' ? f.size : 0,
+          }));
+        files = explicitFiles
+          ? mapped.filter(f => !f.isDir && explicitFiles.includes(f.name))
+          : mapped.filter(f => !f.isDir && /\.ffpfsc$/i.test(f.name));
+      } catch (e) {
+        return res.status(400).json({ error: e.message });
+      }
+    } else {
+      const lsArgs = buildSmbArgs(src);
+      lsArgs.push('-c', cleanShare ? `cd "${cleanShare}"; ls` : 'ls');
+      const { stdout, code: lsCode } = await runSmbClient(lsArgs);
+      const lsErr = smbClientError(stdout, lsCode);
+      if (lsErr) return res.status(400).json({ error: `${lsErr.message}: ${cleanShare || '/'}`, smb_status: lsErr.status });
+      const parsed = parseSmbList(stdout);
+      files = explicitFiles
+        ? parsed.filter(f => !f.isDir && explicitFiles.includes(f.name))
+        : parsed.filter(f => !f.isDir && /\.ffpfsc$/i.test(f.name));
+    }
 
     if (files.length === 0) {
-      return res.json({ success: true, synced: [], message: 'No .ffpfsc files found' });
+      return res.json({
+        success: true,
+        synced: [],
+        message: explicitFiles
+          ? `No matching files found in ${cleanShare || '/'}`
+          : 'No .ffpfsc files found',
+      });
     }
 
     const tmpDir = fs.mkdtempSync(path.join(getDiskTmpRoot(), 'mm-sync-'));
@@ -741,20 +1092,27 @@ router.post('/sources/:id/sync', async (req, res) => {
     try {
       for (const f of files) {
         const localPath = path.join(tmpDir, f.name);
-        const getArgs = buildSmbArgs(src);
-        const remote = cleanShare ? `${cleanShare}/${f.name}` : f.name;
-        getArgs.push('-c', `get "${remote}" "${localPath}"`);
         try {
-          const { stdout: getOut, code: getCode } = await runSmbClient(getArgs);
-          const getErr = smbClientError(getOut, getCode);
-          if (getErr) throw new Error(getErr.message);
+          if (src.type === 'ftp') {
+            const remote = '/' + (cleanShare ? `${cleanShare}/${f.name}` : f.name);
+            await withSourceFtp(src, async (client) => {
+              await client.downloadTo(localPath, remote);
+            });
+          } else {
+            const getArgs = buildSmbArgs(src);
+            const remote = cleanShare ? `${cleanShare}/${f.name}` : f.name;
+            getArgs.push('-c', `get "${remote}" "${localPath}"`);
+            const { stdout: getOut, code: getCode } = await runSmbClient(getArgs);
+            const getErr = smbClientError(getOut, getCode);
+            if (getErr) throw new Error(getErr.message);
+          }
         } catch (e) {
           failed.push({ name: f.name, error: e.message });
           continue;
         }
 
         try {
-          await withFtp(ip, ftp, async (client) => {
+          await withFtp(ip, ps5Ftp, async (client) => {
             await ensureRemoteDir(client, dest_path);
             await client.cd(dest_path);
             await client.uploadFrom(localPath, f.name);
@@ -770,7 +1128,7 @@ router.post('/sources/:id/sync', async (req, res) => {
       try { fs.rmdirSync(tmpDir); } catch (_) {}
     }
 
-    log('info', `MicroMount sync ${src.name} -> ${ip}: ${synced.length} ok, ${failed.length} failed`);
+    log('info', `MicroMount sync ${src.name} (${src.type}) -> ${ip}: ${synced.length} ok, ${failed.length} failed`);
     res.json({ success: true, synced, failed, dest_path });
   } catch (err) {
     log('error', `MicroMount sync failed: ${err.message}`);
@@ -783,7 +1141,19 @@ router.post('/sources/:id/test', async (req, res) => {
     const id = parseInt(req.params.id);
     const src = getSource(id);
     if (!src) return res.status(404).json({ error: 'Source not found' });
-    if (src.type !== 'smb') return res.json({ success: true, type: 'local' });
+    if (src.type === 'local') return res.json({ success: true, type: 'local' });
+
+    if (src.type === 'ftp') {
+      try {
+        await withSourceFtp(src, async (client) => {
+          // PWD is a cheap reachable+auth-ok probe.
+          await client.pwd();
+        });
+        return res.json({ success: true, message: 'FTP connection OK' });
+      } catch (e) {
+        return res.status(400).json({ error: e.message });
+      }
+    }
 
     const args = buildSmbArgs(src);
     args.push('-c', 'ls');
@@ -1784,6 +2154,13 @@ router.post('/extract/queue/:id/move', (req, res) => {
     [extractQueue[idx - 1], extractQueue[idx]] = [extractQueue[idx], extractQueue[idx - 1]];
   } else if (dir === 'down' && idx < extractQueue.length - 1 && extractQueue[idx + 1].status === 'queued') {
     [extractQueue[idx], extractQueue[idx + 1]] = [extractQueue[idx + 1], extractQueue[idx]];
+  } else if (dir === 'top') {
+    // Splice the item out and reinsert just after any currently-running items,
+    // so per-task "Start" puts it next in line without disturbing in-flight work.
+    const [item] = extractQueue.splice(idx, 1);
+    const firstQueued = extractQueue.findIndex(q => q.status === 'queued');
+    const insertAt = firstQueued < 0 ? extractQueue.length : firstQueued;
+    extractQueue.splice(insertAt, 0, item);
   }
   res.json({ success: true });
 });
@@ -1923,11 +2300,39 @@ function validateConvertParams(params) {
   const {
     mode = 'pack-file',
     source_path,
+    source_ftp,
   } = params;
-  if (!source_path) return { error: 'source_path required' };
   if (!['pack-file', 'pack-folder'].includes(mode)) return { error: 'invalid mode' };
   ensureMkpfsDir();
 
+  // Source on PS5 FTP: stage to local mkpfs work dir before mkpfs runs.
+  // We can't run mkpfs over FTP directly because mkpfs seeks back to patch
+  // headers in the output file, which FTP doesn't support cleanly. Both
+  // pack-file (single file) and pack-folder (recursive download) are
+  // supported - pack-folder downloads the whole game directory tree first,
+  // which can be slow on big games (tens of GB).
+  if (source_ftp && (source_ftp.ip || source_ftp.path)) {
+    if (!source_ftp.ip) return { error: 'source_ftp.ip required' };
+    if (!source_ftp.path || !source_ftp.path.trim()) return { error: 'source_ftp.path required' };
+    const ftpPath = source_ftp.path.startsWith('/') ? source_ftp.path : '/' + source_ftp.path;
+    const remoteBase = path.posix.basename(ftpPath.replace(/\/+$/, ''));
+    if (!remoteBase) return { error: 'source_ftp.path missing filename' };
+    const baseName = params.output_name && params.output_name.trim()
+      ? params.output_name.trim()
+      : remoteBase.replace(/\.(exfat|ffpkg|ffpfsc)$/i, '') + '.ffpfsc';
+    // The eventual local source path is filled in during execute when we
+    // have the job id; for now we return a placeholder so the queue display
+    // shows something sensible.
+    return {
+      src: `ftp://${source_ftp.ip}${ftpPath}`,
+      src_ftp: { ip: source_ftp.ip, path: ftpPath, name: remoteBase, is_dir: mode === 'pack-folder' },
+      out: path.join(mkpfsWorkDir, baseName),
+      baseName,
+      stat: null,
+    };
+  }
+
+  if (!source_path) return { error: 'source_path or source_ftp required' };
   const isAbsolute = source_path.startsWith('/');
   let src;
   if (isAbsolute) {
@@ -1950,12 +2355,21 @@ function validateConvertParams(params) {
 
 function buildConvertJob(params, validated) {
   const jobId = newJobId();
+  // When the source lives on PS5 FTP we default push targets to the same
+  // PS5 + same directory so the result lands next to the original. The user
+  // can still override push_ip / push_dest from the form.
+  const fromFtp = !!validated.src_ftp;
+  const defaultPushIp = fromFtp ? validated.src_ftp.ip : null;
+  const defaultPushDest = fromFtp
+    ? (path.posix.dirname(validated.src_ftp.path) || '/data/homebrew')
+    : '/data/homebrew';
   return {
     id: jobId,
     mode: params.mode || 'pack-file',
     status: 'running',
     command: '',
     source: validated.src,
+    source_ftp: validated.src_ftp || null,
     output: validated.out,
     log: '',
     progress: 0,
@@ -1964,12 +2378,99 @@ function buildConvertJob(params, validated) {
     exit_code: null,
     error: null,
     pid: null,
-    push_after: !!params.push_after,
-    push_ip: params.push_ip || null,
-    push_dest: params.push_dest || '/data/homebrew',
+    // FTP-sourced jobs imply auto-push (the staged copy alone is useless on
+    // the manager box), so flip push_after on by default in that case.
+    push_after: fromFtp ? (params.push_after !== false) : !!params.push_after,
+    push_ip: params.push_ip || defaultPushIp,
+    push_dest: params.push_dest || defaultPushDest,
     delete_source_after: !!params.delete_source_after,
     _params: params,
   };
+}
+
+// Walk a remote FTP directory tree and return the cumulative byte total.
+// Used so the progress bar during pack-folder staging can show real %.
+async function ftpFolderSize(client, remoteDir) {
+  let total = 0;
+  const entries = await client.list(remoteDir);
+  for (const e of entries) {
+    if (e.name === '.' || e.name === '..') continue;
+    const isDir = e.type === 2 || e.isDirectory === true;
+    const child = path.posix.join(remoteDir, e.name);
+    if (isDir) total += await ftpFolderSize(client, child);
+    else if (typeof e.size === 'number') total += e.size;
+  }
+  return total;
+}
+
+async function stageFromPs5Ftp(job) {
+  if (!job.source_ftp) return;
+  const ftp = loadFtp();
+  const stageDir = path.join(getDiskTmpRoot(), 'ftp-stage', job.id);
+  fs.mkdirSync(stageDir, { recursive: true });
+  const isDir = !!job.source_ftp.is_dir || job.mode === 'pack-folder';
+  const localSrc = path.join(stageDir, job.source_ftp.name);
+  appendLog(job, `[manager] Staging ${isDir ? 'folder' : 'file'} ${job.source_ftp.path} from ${job.source_ftp.ip} → ${localSrc}\n`);
+  job.status = 'staging';
+  let lastPct = -1;
+  await withFtp(job.source_ftp.ip, ftp, async (client) => {
+    // Resolve total size for progress reporting.
+    try {
+      if (isDir) {
+        appendLog(job, `[manager] Walking remote folder to compute total size…\n`);
+        const total = await ftpFolderSize(client, job.source_ftp.path);
+        if (Number.isFinite(total) && total > 0) {
+          job._stageTotal = total;
+          appendLog(job, `[manager] Remote folder size: ${(total / 1024 / 1024).toFixed(1)} MB\n`);
+        }
+      } else {
+        const size = await client.size(job.source_ftp.path);
+        if (Number.isFinite(size) && size > 0) job._stageTotal = size;
+      }
+    } catch (e) {
+      appendLog(job, `[manager] size probe warning: ${e.message} (progress %% may be inaccurate)\n`);
+    }
+    client.trackProgress(info => {
+      if (!job._stageTotal || !info.bytes) return;
+      const pct = Math.min(99, Math.floor((info.bytes / job._stageTotal) * 100));
+      if (pct !== lastPct) {
+        lastPct = pct;
+        job.progress = pct; // staging eats the 0..99 progress band
+      }
+    });
+    try {
+      if (isDir) {
+        // basic-ftp.downloadToDir mirrors the remote tree into localSrc.
+        fs.mkdirSync(localSrc, { recursive: true });
+        await client.downloadToDir(localSrc, job.source_ftp.path);
+      } else {
+        await client.downloadTo(localSrc, job.source_ftp.path);
+      }
+    } finally {
+      client.trackProgress();
+    }
+  });
+  job.source = localSrc;
+  job._ftpStagedPath = localSrc;
+  job._ftpStageDir = stageDir;
+  const localStat = fs.statSync(localSrc);
+  const sizeStr = localStat.isDirectory()
+    ? `directory ${localSrc}`
+    : `${localStat.size} bytes`;
+  appendLog(job, `[manager] Stage complete (${sizeStr}). Running mkpfs…\n`);
+  job.progress = 0; // reset for mkpfs phase
+}
+
+function cleanupFtpStage(job) {
+  if (!job._ftpStageDir) return;
+  try {
+    fs.rmSync(job._ftpStageDir, { recursive: true, force: true });
+    appendLog(job, `[manager] Cleaned up FTP stage dir ${job._ftpStageDir}\n`);
+  } catch (e) {
+    appendLog(job, `[manager] Failed to clean FTP stage dir: ${e.message}\n`);
+  }
+  job._ftpStageDir = null;
+  job._ftpStagedPath = null;
 }
 
 async function executeConvertJob(job) {
@@ -1985,6 +2486,22 @@ async function executeConvertJob(job) {
     signed: !!params.signed,
     require_game_files: !!params.require_game_files,
   };
+
+  // If source is on PS5 FTP, download it to a staging dir first. Errors here
+  // fail the job before mkpfs is even invoked.
+  if (job.source_ftp) {
+    try {
+      await stageFromPs5Ftp(job);
+    } catch (e) {
+      appendLog(job, `[manager] FTP stage failed: ${e.message}\n`);
+      job.status = 'failed';
+      job.error = `FTP stage failed: ${e.message}`;
+      job.finished_at = new Date().toISOString();
+      cleanupFtpStage(job);
+      return;
+    }
+  }
+
   // Always overwrite existing output - mkpfs may refuse to write over existing .ffpfsc.
   if (job.output && fs.existsSync(job.output)) {
     try {
@@ -2008,7 +2525,10 @@ async function executeConvertJob(job) {
     job.status = 'completed';
     log('info', `mm job ${job.id} completed (${job.mode}): ${path.basename(job.output)}`);
 
-    if (job.delete_source_after && fs.existsSync(job.source)) {
+    if (job.delete_source_after && job.source && fs.existsSync(job.source) && !job._ftpStagedPath) {
+      // Never delete an FTP-staged file from the "source" path: that's our
+      // own scratch copy. delete_source_after only applies to genuine local
+      // sources picked by the user.
       try {
         if (fs.statSync(job.source).isDirectory()) fs.rmSync(job.source, { recursive: true, force: true });
         else fs.unlinkSync(job.source);
@@ -2018,12 +2538,15 @@ async function executeConvertJob(job) {
       }
     }
     await runPushAfter(job);
+    cleanupFtpStage(job);
   } else if (job.status === 'cancelled') {
     log('info', `mm job ${job.id} cancelled`);
+    cleanupFtpStage(job);
   } else {
     job.status = 'failed';
     job.error = result.error || `exit ${result.code}`;
     log('error', `mm job ${job.id} failed (${job.mode}): exit ${result.code}`);
+    cleanupFtpStage(job);
   }
 }
 
@@ -2119,9 +2642,12 @@ router.post('/convert/queue', (req, res) => {
       params,
       mode: params.mode || 'pack-file',
       source: v.src,
+      source_ftp: v.src_ftp || null,
       output: v.out,
       output_name: path.basename(v.out),
-      source_name: path.basename(v.src),
+      source_name: v.src_ftp
+        ? `ftp://${v.src_ftp.ip}${v.src_ftp.path}`
+        : path.basename(v.src),
       status: 'queued',
       added_at: new Date().toISOString(),
       started_at: null,
@@ -2215,6 +2741,11 @@ router.post('/convert/queue/:id/move', (req, res) => {
     [convertQueue[idx - 1], convertQueue[idx]] = [convertQueue[idx], convertQueue[idx - 1]];
   } else if (dir === 'down' && idx < convertQueue.length - 1 && convertQueue[idx + 1].status === 'queued') {
     [convertQueue[idx], convertQueue[idx + 1]] = [convertQueue[idx + 1], convertQueue[idx]];
+  } else if (dir === 'top') {
+    const [item] = convertQueue.splice(idx, 1);
+    const firstQueued = convertQueue.findIndex(q => q.status === 'queued');
+    const insertAt = firstQueued < 0 ? convertQueue.length : firstQueued;
+    convertQueue.splice(insertAt, 0, item);
   }
   res.json({ success: true });
 });
@@ -2302,16 +2833,43 @@ function appendFtpJobLog(job, chunk) {
 }
 
 async function executeFtpUploadJob(job) {
-  const { ip, local_path, dest_path } = job;
+  const { ip, dest_path, file_name } = job;
   const ftp = loadFtp();
-  let total = 0;
+  let stagedPath = job.local_path || null;
+  let stagedTmpDir = null;
   try {
-    try { total = fs.statSync(local_path).size; } catch (_) {}
+    // Stage from remote source (SMB / external FTP) into a tmp file first when
+    // the queue item points at a remote origin. The actual PS5 push reuses the
+    // same uploadFileResilient code path as for local files.
+    if (job.source_kind === 'remote-smb' || job.source_kind === 'remote-ftp') {
+      const src = getSource(job.source_id);
+      if (!src) throw new Error(`Source ${job.source_id} no longer exists`);
+      stagedTmpDir = fs.mkdtempSync(path.join(getDiskTmpRoot(), 'mm-upl-'));
+      stagedPath = path.join(stagedTmpDir, file_name);
+      appendFtpJobLog(job, `[manager] Staging ${file_name} from ${src.name} (${src.type})\n`);
+      if (src.type === 'ftp') {
+        await withSourceFtp(src, async (client) => {
+          await client.downloadTo(stagedPath, job.source_remote_path);
+        });
+      } else if (src.type === 'smb') {
+        const relRemote = (job.source_remote_path || '').replace(/\\/g, '/').replace(/^\/+/, '');
+        const args = [...buildSmbArgs(src), '-c', `get "${relRemote}" "${stagedPath}"`];
+        const { stdout, code } = await runSmbClient(args);
+        const err = smbClientError(stdout, code);
+        if (err) throw new Error(`SMB stage: ${err.message}`);
+      } else {
+        throw new Error(`Unsupported remote source type: ${src.type}`);
+      }
+    }
+    if (!stagedPath) throw new Error('No source path resolved for upload');
+
+    let total = 0;
+    try { total = fs.statSync(stagedPath).size; } catch (_) {}
     job.bytes_total = total;
     job.bytes_transferred = 0;
     job.progress = 0;
-    appendFtpJobLog(job, `[manager] Uploading ${path.basename(local_path)} to ${ip}:${dest_path}\n`);
-    await uploadFileResilient(ip, ftp, local_path, dest_path, path.basename(local_path), {
+    appendFtpJobLog(job, `[manager] Uploading ${file_name} to ${ip}:${dest_path}\n`);
+    await uploadFileResilient(ip, ftp, stagedPath, dest_path, file_name, {
       onLog: (line) => appendFtpJobLog(job, line),
       onProgress: ({ bytes, total: t }) => {
         job.bytes_transferred = bytes;
@@ -2321,7 +2879,7 @@ async function executeFtpUploadJob(job) {
     job.progress = 100;
     job.status = 'completed';
     appendFtpJobLog(job, `[manager] Upload OK\n`);
-    log('info', `ftp-upload ${job.id} completed: ${path.basename(local_path)} -> ${ip}:${dest_path}`);
+    log('info', `ftp-upload ${job.id} completed: ${file_name} -> ${ip}:${dest_path}`);
   } catch (e) {
     job.status = 'failed';
     job.error = e.message;
@@ -2329,35 +2887,206 @@ async function executeFtpUploadJob(job) {
     log('error', `ftp-upload ${job.id} failed: ${e.message}`);
   } finally {
     job.finished_at = new Date().toISOString();
+    if (stagedTmpDir) {
+      try { if (stagedPath && fs.existsSync(stagedPath)) fs.unlinkSync(stagedPath); } catch (_) {}
+      try { fs.rmSync(stagedTmpDir, { recursive: true, force: true }); } catch (_) {}
+    }
   }
+}
+
+// Walk a local directory recursively and return all regular files with their
+// relative-to-root paths, used to expand folder uploads into individual queue
+// items that preserve sub-directory layout on the PS5 destination.
+function walkLocalDirFiles(absRoot) {
+  const out = [];
+  const walk = (cur, rel) => {
+    let entries;
+    try { entries = fs.readdirSync(cur, { withFileTypes: true }); } catch (_) { return; }
+    for (const e of entries) {
+      const full = path.join(cur, e.name);
+      const relPath = rel ? `${rel}/${e.name}` : e.name;
+      let s;
+      try { s = fs.statSync(full); } catch (_) { continue; }
+      if (s.isDirectory()) walk(full, relPath);
+      else if (s.isFile()) out.push({ absPath: full, relPath, size: s.size });
+    }
+  };
+  walk(absRoot, '');
+  return out;
+}
+
+async function walkSourceDirFiles(src, basePath) {
+  const out = [];
+  const cleanBase = String(basePath || '').replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '');
+  if (src.type === 'ftp') {
+    await withSourceFtp(src, async (client) => {
+      const walk = async (remoteDir, rel) => {
+        const list = await client.list(remoteDir);
+        for (const e of list) {
+          if (e.name === '.' || e.name === '..') continue;
+          const isDirEntry = e.type === 2 || e.isDirectory === true;
+          const remote = `${remoteDir.replace(/\/+$/, '')}/${e.name}`;
+          const relPath = rel ? `${rel}/${e.name}` : e.name;
+          if (isDirEntry) await walk(remote, relPath);
+          else out.push({ remotePath: remote, relPath, size: typeof e.size === 'number' ? e.size : 0 });
+        }
+      };
+      await walk('/' + cleanBase, '');
+    });
+    return out;
+  }
+  if (src.type === 'smb') {
+    // smbclient with `recurse ON; ls` dumps the whole tree.
+    const args = [...buildSmbArgs(src), '-c', `prompt OFF; recurse ON; cd "${cleanBase || '/'}"; ls`];
+    const { stdout, code } = await runSmbClient(args);
+    const err = smbClientError(stdout, code);
+    if (err) throw new Error(err.message);
+    // smbclient recursive ls output uses `\\subdir\\subdir\\` headers between
+    // groups of files. Parse those and rebuild relative paths.
+    const lines = stdout.split('\n');
+    let curDir = '';
+    for (const line of lines) {
+      const headerMatch = line.match(/^\s*\\(.*)\\?\s*$/);
+      if (headerMatch && !line.match(/^\s{2,}\S/)) {
+        curDir = headerMatch[1].replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '');
+        // strip the base prefix so relPath stays inside the requested folder
+        if (cleanBase && curDir.startsWith(cleanBase)) {
+          curDir = curDir.slice(cleanBase.length).replace(/^\/+/, '');
+        }
+        continue;
+      }
+      const m = line.match(/^\s{2}(.+?)\s{2,}([DAHRSN]*)\s+(\d+)\s+(.+)$/);
+      if (!m) continue;
+      const name = m[1].trim();
+      const attrs = m[2];
+      const size = parseInt(m[3]);
+      if (name === '.' || name === '..' || attrs.includes('D')) continue;
+      const relPath = curDir ? `${curDir}/${name}` : name;
+      const remotePath = (cleanBase ? `${cleanBase}/` : '') + relPath;
+      out.push({ remotePath, relPath, size });
+    }
+    return out;
+  }
+  throw new Error(`Unsupported source type for folder walk: ${src.type}`);
 }
 
 router.post('/ftp/upload/queue', async (req, res) => {
   try {
-    const { ip, local_path } = req.body || {};
-    if (!ip || !local_path) return res.status(400).json({ error: 'ip and local_path required' });
-    const absPath = path.resolve(local_path);
-    if (!isLocalPathAllowed(absPath)) return res.status(403).json({ error: 'Path not allowed' });
-    if (!fs.existsSync(absPath) || !fs.statSync(absPath).isFile()) return res.status(400).json({ error: 'Source file not found' });
+    const { ip, local_path, dest_path, source_id, source_path, is_dir } = req.body || {};
+    if (!ip) return res.status(400).json({ error: 'ip required' });
 
-    const destPath = loadConfig().target_directory || '/data/homebrew';
-    const item = {
-      id: newFtpJobId(),
-      ip,
-      local_path: absPath,
-      dest_path: destPath,
-      file_name: path.basename(absPath),
-      status: 'queued',
-      added_at: new Date().toISOString(),
-      started_at: null,
-      finished_at: null,
-      job_id: null,
-      error: null,
+    const destBase = (typeof dest_path === 'string' && dest_path.trim())
+      ? dest_path.trim().replace(/\/+$/, '') || '/'
+      : (loadConfig().target_directory || '/data/homebrew');
+
+    const addedItems = [];
+    const enqueueOne = (partial) => {
+      const item = {
+        id: newFtpJobId(),
+        ip,
+        dest_path: partial.dest_path,
+        file_name: partial.file_name,
+        local_path: partial.local_path || null,
+        source_kind: partial.source_kind || 'local',
+        source_id: partial.source_id || null,
+        source_remote_path: partial.source_remote_path || null,
+        size: partial.size || 0,
+        status: 'queued',
+        added_at: new Date().toISOString(),
+        started_at: null,
+        finished_at: null,
+        job_id: null,
+        error: null,
+      };
+      ftpUploadQueue.push(item);
+      addedItems.push(item);
     };
-    ftpUploadQueue.push(item);
-    log('info', `ftp-upload queue add: ${item.file_name} -> ${ip}:${destPath}`);
+
+    // ── A) Local origin (file or folder) ────────────────────────────────
+    if (local_path) {
+      const absPath = path.resolve(local_path);
+      if (!isLocalPathAllowed(absPath)) return res.status(403).json({ error: 'Path not allowed' });
+      if (!fs.existsSync(absPath)) return res.status(400).json({ error: 'Source path not found' });
+      const stat = fs.statSync(absPath);
+      if (stat.isFile()) {
+        enqueueOne({
+          local_path: absPath,
+          dest_path: destBase,
+          file_name: path.basename(absPath),
+          size: stat.size,
+        });
+      } else if (stat.isDirectory()) {
+        const baseName = path.basename(absPath) || 'folder';
+        const files = walkLocalDirFiles(absPath);
+        if (files.length === 0) return res.status(400).json({ error: 'Folder is empty' });
+        for (const f of files) {
+          const subDir = path.posix.dirname(f.relPath);
+          const target = subDir === '.' || subDir === ''
+            ? `${destBase}/${baseName}`
+            : `${destBase}/${baseName}/${subDir}`;
+          enqueueOne({
+            local_path: f.absPath,
+            dest_path: target,
+            file_name: path.posix.basename(f.relPath),
+            size: f.size,
+          });
+        }
+      } else {
+        return res.status(400).json({ error: 'Source is neither a file nor a directory' });
+      }
+    }
+
+    // ── B) Remote origin (SMB / external FTP) ───────────────────────────
+    if (source_id) {
+      const src = getSource(source_id);
+      if (!src) return res.status(404).json({ error: 'Source not found' });
+      if (src.type !== 'smb' && src.type !== 'ftp') {
+        return res.status(400).json({ error: 'Upload only available for smb and ftp sources' });
+      }
+      const remotePath = String(source_path || '').replace(/\\/g, '/');
+      if (!remotePath) return res.status(400).json({ error: 'source_path required' });
+      const sourceKind = src.type === 'ftp' ? 'remote-ftp' : 'remote-smb';
+      if (!is_dir) {
+        const fileName = path.posix.basename(remotePath);
+        enqueueOne({
+          source_kind: sourceKind,
+          source_id: src.id,
+          source_remote_path: remotePath,
+          dest_path: destBase,
+          file_name: fileName,
+        });
+      } else {
+        const baseName = path.posix.basename(remotePath.replace(/\/+$/, '')) || 'folder';
+        let files;
+        try { files = await walkSourceDirFiles(src, remotePath); }
+        catch (e) { return res.status(400).json({ error: e.message }); }
+        if (files.length === 0) return res.status(400).json({ error: 'Folder is empty' });
+        for (const f of files) {
+          const subDir = path.posix.dirname(f.relPath);
+          const target = subDir === '.' || subDir === ''
+            ? `${destBase}/${baseName}`
+            : `${destBase}/${baseName}/${subDir}`;
+          // The walker returns a relPath rooted at the requested folder, so
+          // we rebuild the absolute remote path from the original base.
+          const remoteFile = (remotePath.replace(/\/+$/, '') || '/') + '/' + f.relPath;
+          enqueueOne({
+            source_kind: sourceKind,
+            source_id: src.id,
+            source_remote_path: remoteFile.replace(/\/+/g, '/'),
+            dest_path: target,
+            file_name: path.posix.basename(f.relPath),
+            size: f.size,
+          });
+        }
+      }
+    }
+
+    if (addedItems.length === 0) {
+      return res.status(400).json({ error: 'Provide local_path or source_id+source_path' });
+    }
+    log('info', `ftp-upload queue add: ${addedItems.length} item(s) -> ${ip}:${destBase}`);
     setTimeout(ftpUploadWorkerTick, 50);
-    res.json({ success: true, item });
+    res.json({ success: true, items: addedItems, count: addedItems.length, item: addedItems[0] });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -2412,6 +3141,42 @@ router.post('/ftp/upload/queue/resume', (req, res) => {
   ftpUploadPaused = false;
   setTimeout(ftpUploadWorkerTick, 50);
   res.json({ success: true, paused: false });
+});
+
+router.post('/ftp/upload/queue/:id/move', (req, res) => {
+  const id = req.params.id;
+  const dir = req.body?.direction;
+  const idx = ftpUploadQueue.findIndex(q => q.id === id);
+  if (idx < 0) return res.status(404).json({ error: 'Item not found' });
+  if (ftpUploadQueue[idx].status !== 'queued') return res.status(400).json({ error: 'Only queued items can be moved' });
+  if (dir === 'up' && idx > 0 && ftpUploadQueue[idx - 1].status === 'queued') {
+    [ftpUploadQueue[idx - 1], ftpUploadQueue[idx]] = [ftpUploadQueue[idx], ftpUploadQueue[idx - 1]];
+  } else if (dir === 'down' && idx < ftpUploadQueue.length - 1 && ftpUploadQueue[idx + 1].status === 'queued') {
+    [ftpUploadQueue[idx], ftpUploadQueue[idx + 1]] = [ftpUploadQueue[idx + 1], ftpUploadQueue[idx]];
+  } else if (dir === 'top') {
+    const [item] = ftpUploadQueue.splice(idx, 1);
+    const firstQueued = ftpUploadQueue.findIndex(q => q.status === 'queued');
+    const insertAt = firstQueued < 0 ? ftpUploadQueue.length : firstQueued;
+    ftpUploadQueue.splice(insertAt, 0, item);
+  }
+  res.json({ success: true });
+});
+
+router.post('/ftp/upload/queue/:id/retry', (req, res) => {
+  const id = req.params.id;
+  const item = ftpUploadQueue.find(q => q.id === id);
+  if (!item) return res.status(404).json({ error: 'Item not found' });
+  if (!['failed', 'cancelled'].includes(item.status)) {
+    return res.status(400).json({ error: `Cannot retry item in status ${item.status}` });
+  }
+  item.status = 'queued';
+  item.error = null;
+  item.progress = 0;
+  item.bytes_sent = 0;
+  item.started_at = null;
+  item.finished_at = null;
+  setTimeout(ftpUploadWorkerTick, 50);
+  res.json({ success: true });
 });
 
 router.get('/ftp/upload/:id', (req, res) => {

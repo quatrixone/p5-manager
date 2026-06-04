@@ -8,6 +8,7 @@ const API = '/api';
 function PS5Control({ profiles, onNotification, onProfilesChanged }) {
   const [status, setStatus] = useState(null);
   const [waking, setWaking] = useState(false);
+  const [standbyBusy, setStandbyBusy] = useState(false);
   const [scripts, setScripts] = useState([]);
   const [notification, setNotification] = useState(null);
 
@@ -52,24 +53,28 @@ function PS5Control({ profiles, onNotification, onProfilesChanged }) {
     }
   };
 
-  // Wake button now talks to the Remote Play sidecar so it sends both the
-  // DDP WAKEUP and the DDP LAUNCH packet (sha256 of the PSN account id as
-  // user-credential). The LAUNCH packet logs the account in remotely so the
-  // PS5 skips the "Press PS button" account picker after a cold wake.
+  // "Wake" now does the *full* start-session flow (quick-start), not just
+  // the bare DDP WAKEUP packet. Sending a packet without opening an RP
+  // session leaves the PS5 sitting on the "Press PS button" account picker
+  // and the next Start session inevitably fights a half-cocked RP service
+  // (60-90 s of "Connection refused"). quick-start handles the whole
+  // wake → DDP LAUNCH → connect → ready sequence, transparently uses the
+  // sidecar warm cache when available, and leaves us with a usable
+  // session - which is what the user actually wants when they hit Wake.
   const handleWake = async () => {
     if (!defaultProfile) return;
     setWaking(true);
     try {
-      const res = await fetch(`${API}/remoteplay/wake`, {
+      const res = await fetch(`${API}/remoteplay/quick-start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ profile_id: defaultProfile.id }),
       });
       const data = await res.json();
       if (data.success) {
-        const extra = data.ddp_launch_sent ? ' + DDP LAUNCH' : '';
-        showToast(`Wake packets sent${extra}`, 'success');
-        setTimeout(fetchStatus, 3000);
+        const tag = data.resumed ? ' (resumed from cache)' : '';
+        showToast(`Remote Play session started${tag}`, 'success');
+        setTimeout(fetchStatus, 1500);
       } else {
         showToast('Wake failed: ' + (data.error || 'Unknown error'), 'error');
       }
@@ -77,6 +82,33 @@ function PS5Control({ profiles, onNotification, onProfilesChanged }) {
       showToast('Wake error: ' + err.message, 'error');
     }
     setWaking(false);
+  };
+
+  // Put the PS5 into rest mode via the Remote Play sidecar. Uses an existing
+  // live RP session when one exists, otherwise spins up a temporary session
+  // just to send the standby control packet (see /api/remoteplay/standby).
+  const handleStandby = async () => {
+    if (!defaultProfile) return;
+    if (!window.confirm(`Put ${defaultProfile.name} into standby?`)) return;
+    setStandbyBusy(true);
+    try {
+      const res = await fetch(`${API}/remoteplay/standby`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ profile_id: defaultProfile.id }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        if (data.already_standby) showToast('PS5 already in standby', 'info');
+        else showToast(`Standby sent (${data.via || 'ok'})`, 'success');
+        setTimeout(fetchStatus, 4000);
+      } else {
+        showToast('Standby failed: ' + (data.error || 'Unknown error'), 'error');
+      }
+    } catch (err) {
+      showToast('Standby error: ' + err.message, 'error');
+    }
+    setStandbyBusy(false);
   };
 
   const getStatusBadge = () => {
@@ -130,11 +162,11 @@ function PS5Control({ profiles, onNotification, onProfilesChanged }) {
       </div>
 
       <div className="grid-2 mb-md">
-        <button className="btn btn-primary" onClick={handleWake} disabled={waking}>
+        <button className="btn btn-primary" onClick={handleWake} disabled={waking || standbyBusy}>
           {waking ? '⏳' : '📡'} Wake PS5
         </button>
-        <button className="btn btn-secondary" onClick={fetchStatus}>
-          🔍 Check Status
+        <button className="btn btn-secondary" onClick={handleStandby} disabled={standbyBusy || waking}>
+          {standbyBusy ? '⏳' : '🌙'} Standby
         </button>
       </div>
 

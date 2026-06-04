@@ -53,7 +53,8 @@ router.get('/status/:ip', async (req, res) => {
     const { ip } = req.params;
     const ports = [9021, 9020, 8080, 6970]; // Common ports for payloads (elf/lua)
 
-    log('info', `Checking PS5 status at ${ip}`);
+    // Status check is polled every few seconds from the UI - logging every
+    // probe spammed the unified Logs view, so it's intentionally silent now.
 
     const net = await import('net');
 
