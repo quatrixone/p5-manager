@@ -121,7 +121,10 @@ function App() {
   };
 
   const sendPayload = async (payloadId) => {
-    const profile = profiles[0];
+    // Always honour the user-chosen default profile; profiles[0] would send
+    // to whichever PS5 happens to be first in the list (often a PS4 in mixed
+    // households).
+    const profile = profiles.find(p => p.is_default) || profiles[0];
     if (!profile) {
       showNotification('Please create a profile first', 'error');
       return;
