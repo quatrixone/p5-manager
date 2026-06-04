@@ -175,6 +175,14 @@ export async function initDatabase() {
     )
   `);
 
+  // FTP source columns (added when the source registry was extended to
+  // support FTP origins alongside SMB). Wrapped in try/catch so older
+  // databases pick them up via ALTER without re-creating the table.
+  try { db.run(`ALTER TABLE micromount_sources ADD COLUMN ftp_host TEXT`); } catch (_) {}
+  try { db.run(`ALTER TABLE micromount_sources ADD COLUMN ftp_port INTEGER`); } catch (_) {}
+  try { db.run(`ALTER TABLE micromount_sources ADD COLUMN ftp_username TEXT`); } catch (_) {}
+  try { db.run(`ALTER TABLE micromount_sources ADD COLUMN ftp_password TEXT`); } catch (_) {}
+
   saveDatabase();
   return db;
 }

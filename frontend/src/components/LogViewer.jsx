@@ -117,42 +117,82 @@ function LogViewer({ logs: systemLogs, onRefresh, profiles }) {
     }
   };
 
+  // Kernel log flow (correct topology for ps5-payload-dev/klogsrv):
+  //   1. Send klogsrv-ps5.elf to PS5:9021 via the managed payload so its
+  //      /dev/klog → TCP listener spins up on PS5:3232.
+  //   2. Wait a moment for the ELF to start.
+  //   3. Connect to PS5:3232 from the manager as a TCP client. Lines stream
+  //      back and the /kernellog/status poll picks them up for the UI.
+  //
+  // Previously this called /kernellog/start (manager TCP server) which never
+  // received anything because klogsrv is the server, not the client - that's
+  // why no output showed up after pressing Start.
   const handleConnectKernel = async () => {
     try {
-      const res = await fetch(`${API}/kernellog/start`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ port: 3232 })
-      });
-      const data = await res.json();
-      if (!data.success) throw new Error(data.error || 'Failed to start kernel log server');
-
       const profileIp = getProfileIp();
-      if (!profileIp) return;
+      if (!profileIp) {
+        console.error('No PS5 profile selected');
+        return;
+      }
 
-      const klogsrvRes = await fetch('https://github.com/ps5-payload-dev/klogsrv/releases/download/v0.8/klogsrv-ps5.elf');
-      if (!klogsrvRes.ok) throw new Error('Failed to download klogsrv-ps5.elf');
-      const klogsrvBuffer = await klogsrvRes.arrayBuffer();
-      const klogsrvBase64 = btoa(String.fromCharCode(...new Uint8Array(klogsrvBuffer)));
-      await fetch(`${API}/payloads/send-raw`, {
+      // Locate the managed klogsrv-ps5.elf payload (auto-downloaded by the
+      // backend on boot) and push it via the standard send endpoint.
+      const payloadsRes = await fetch(`${API}/payloads`);
+      const payloads = await payloadsRes.json();
+      const klogPayload = payloads.find(p =>
+        (p.name || '').toLowerCase().includes('klogsrv') ||
+        (p.filename || '').toLowerCase().includes('klogsrv'),
+      );
+      if (!klogPayload) {
+        throw new Error('klogsrv payload not found - check Payloads tab');
+      }
+
+      const sendRes = await fetch(`${API}/payloads/send/${klogPayload.id}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ip: profileIp, port: 9021, name: 'klogsrv-ps5.elf', data: klogsrvBase64 })
+        body: JSON.stringify({ ip: profileIp }),
       });
+      const sendData = await sendRes.json();
+      if (!sendData.success) throw new Error(sendData.error || 'send failed');
       setPayloadsSent(prev => ({ ...prev, kernel: true }));
+
+      // Backend /connect now retries up to 6× with 1.5 s backoff, so we don't
+      // need a long pre-wait. A small pause avoids burning the first retry on
+      // a guaranteed "klogsrv still binding" miss.
+      await new Promise(r => setTimeout(r, 800));
+
+      const connRes = await fetch(`${API}/kernellog/connect`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ip: profileIp, port: 3232 }),
+      });
+      const connData = await connRes.json();
+      if (!connData.success) throw new Error(connData.error || 'connect failed');
       fetchKernelStatus();
     } catch (err) {
-      console.error('Failed to start kernel log server:', err);
+      console.error('Failed to start kernel log:', err);
+      // Reset payloadsSent so the user can retry Start. We don't alert when
+      // the connection rejection is just a "still booting" race - the retry
+      // logic on the backend already handles those.
+      setPayloadsSent(prev => ({ ...prev, kernel: false }));
+      alert(`Kernel log start failed: ${err.message}`);
     }
   };
 
   const handleDisconnectKernel = async () => {
     try {
-      await fetch(`${API}/kernellog/stop`, { method: 'POST' });
-      setPayloadsSent(prev => ({ ...prev, kernel: false }));
-      fetchKernelStatus();
+      // Disconnect the TCP client to PS5:3232. We also stop the legacy local
+      // server in case it was left running by an older session. Either call
+      // succeeding is enough - we don't fail the UX if one returns an error.
+      await fetch(`${API}/kernellog/disconnect`, { method: 'POST' }).catch(() => {});
+      await fetch(`${API}/kernellog/stop`, { method: 'POST' }).catch(() => {});
     } catch (err) {
       console.error('Failed to stop kernel server:', err);
+    } finally {
+      // Always reset local state so the user can press Start again even when
+      // the backend connect failed and the server thinks nothing is running.
+      setPayloadsSent(prev => ({ ...prev, kernel: false }));
+      fetchKernelStatus();
     }
   };
 
@@ -276,7 +316,7 @@ function LogViewer({ logs: systemLogs, onRefresh, profiles }) {
               <button
                 className="btn btn-sm btn-danger"
                 onClick={handleDisconnectKernel}
-                disabled={!kernelServerStatus.running}
+                disabled={!kernelServerStatus.running && !payloadsSent.kernel}
               >
                 ⏹ Stop
               </button>

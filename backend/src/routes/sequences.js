@@ -206,6 +206,28 @@ async function execWol(step, ctx) {
   await apiFetch('POST', '/remoteplay/wake', {
     profile_id: ctx.profile.id,
   });
+
+  // Optional: keep the PS5 awake for the rest of the sequence by holding an
+  // RP session open. Without this, PS5 returns to rest mode mid-FTP-upload
+  // because the FTP server payload doesn't count as user activity for the
+  // console's power-saving timer. A live Remote Play session does.
+  if (step.keep_session) {
+    try {
+      // Give DDP LAUNCH a moment to finish logging in before RP knocks.
+      await sleep(step.keep_session_delay_ms || 3000);
+      const r = await apiFetch('POST', '/remoteplay/quick-start', {
+        ip: ctx.profile.ip_address,
+      });
+      if (r?.session_id) {
+        ctx.openedSessions.push({ ip: ctx.profile.ip_address, session_id: r.session_id });
+        runLog(ctx.run, `  · opened keep-awake RP session ${r.session_id.slice(0, 8)} for ${ctx.profile.ip_address}`);
+      }
+    } catch (e) {
+      // Don't fail the whole sequence just because we couldn't keep PS5
+      // awake - DDP wake alone is often enough for short runs.
+      runLog(ctx.run, `  · keep_session failed: ${e.message} (sequence will continue without RP session)`);
+    }
+  }
 }
 
 function findPayloadIdByName(name) {
@@ -384,47 +406,69 @@ async function executeSequence(run, sequence, profile, steps) {
   run.total = steps.length;
   runLog(run, `Sequence "${sequence.name}" starting (${steps.length} steps)`);
 
+  // Per-run context shared across step executors. We use it to remember
+  // background resources (e.g. RP sessions opened by wol/keep_session) so
+  // we can clean them up after the run regardless of success/failure.
+  const ctx = {
+    profile,
+    run,
+    openedSessions: [], // [{ ip, session_id }] - closed in the finally block
+  };
+
   const maxRetriesPerCheck = 3;
   const retryCount = new Map();
   let i = 0;
-  while (i < steps.length) {
-    if (run.cancelled) {
-      run.status = 'cancelled';
-      runLog(run, `Cancelled at step ${i + 1}`);
-      break;
-    }
-    const step = steps[i];
-    run.current_step = i;
-    runLog(run, `Step ${i + 1}/${steps.length}: ${step.name || step.type}`);
+  try {
+    while (i < steps.length) {
+      if (run.cancelled) {
+        run.status = 'cancelled';
+        runLog(run, `Cancelled at step ${i + 1}`);
+        break;
+      }
+      const step = steps[i];
+      run.current_step = i;
+      runLog(run, `Step ${i + 1}/${steps.length}: ${step.name || step.type}`);
 
-    const exec = STEP_EXEC[step.type];
-    if (!exec) {
-      runLog(run, `  ! unknown step type: ${step.type} (skipping)`);
-      i++;
-      continue;
-    }
-    try {
-      await exec(step, { profile });
-      runLog(run, `  ✓ ok`);
-      i++;
-    } catch (e) {
-      if (e.retry && typeof e.retry.from === 'number') {
-        const rc = (retryCount.get(i) || 0) + 1;
-        retryCount.set(i, rc);
-        if (rc > maxRetriesPerCheck) {
-          runLog(run, `  ✗ failed after ${rc - 1} retries: ${e.message}`);
-          run.status = 'failed';
-          run.error = e.message;
-          break;
-        }
-        runLog(run, `  ↻ check failed (${e.message}); rerunning steps ${e.retry.from + 1}-${e.retry.to + 1} (attempt ${rc})`);
-        i = Math.max(0, e.retry.from);
+      const exec = STEP_EXEC[step.type];
+      if (!exec) {
+        runLog(run, `  ! unknown step type: ${step.type} (skipping)`);
+        i++;
         continue;
       }
-      runLog(run, `  ✗ failed: ${e.message}`);
-      run.status = 'failed';
-      run.error = e.message;
-      break;
+      try {
+        await exec(step, ctx);
+        runLog(run, `  ✓ ok`);
+        i++;
+      } catch (e) {
+        if (e.retry && typeof e.retry.from === 'number') {
+          const rc = (retryCount.get(i) || 0) + 1;
+          retryCount.set(i, rc);
+          if (rc > maxRetriesPerCheck) {
+            runLog(run, `  ✗ failed after ${rc - 1} retries: ${e.message}`);
+            run.status = 'failed';
+            run.error = e.message;
+            break;
+          }
+          runLog(run, `  ↻ check failed (${e.message}); rerunning steps ${e.retry.from + 1}-${e.retry.to + 1} (attempt ${rc})`);
+          i = Math.max(0, e.retry.from);
+          continue;
+        }
+        runLog(run, `  ✗ failed: ${e.message}`);
+        run.status = 'failed';
+        run.error = e.message;
+        break;
+      }
+    }
+  } finally {
+    // Close any RP sessions we opened to keep PS5 awake. Errors here are
+    // swallowed: cleanup must not mask the main outcome.
+    for (const s of ctx.openedSessions) {
+      try {
+        await apiFetch('POST', '/remoteplay/quick-stop', { ip: s.ip });
+        runLog(run, `  · closed keep-awake RP session for ${s.ip}`);
+      } catch (e) {
+        runLog(run, `  · failed to close keep-awake session for ${s.ip}: ${e.message}`);
+      }
     }
   }
 
@@ -532,8 +576,10 @@ const DEFAULT_TEMPLATES = [
   {
     id: 'tpl-download-extract-upload',
     name: 'Download → extract → upload to PS5',
-    description: 'Download a file, extract it locally, then upload result to PS5 via FTP.',
+    description: 'Download a file, extract it locally, then upload result to PS5 via FTP. Wakes PS5 and holds a Remote Play session so it stays awake through the upload.',
     steps: [
+      { type: 'wol', keep_session: true, name: 'Wake PS5 (keep awake)' },
+      { type: 'wait', duration: 6000, name: 'Wait 6 seconds' },
       { type: 'download', url: 'https://example.com/archive.zip', dest_kind: 'local', dest_path: '/data/mkpfs', name: 'Download archive.zip' },
       { type: 'extract', source: 'local-fs', local_path: '/data/mkpfs/archive.zip', dest_kind: 'local-fs', dest_local_path: '/data/mkpfs', name: 'Extract archive.zip' },
       { type: 'ftp_upload', local_path: '/data/mkpfs/file.ffpfsc', dest_path: '/data/homebrew', name: 'Upload to PS5 FTP' },
@@ -543,10 +589,10 @@ const DEFAULT_TEMPLATES = [
   {
     id: 'tpl-full-pipeline',
     name: 'Full game pipeline',
-    description: 'Wake PS5, download, extract, convert to .ffpfsc, upload via FTP.',
+    description: 'Wake PS5 (holding an RP session so it stays awake), download, extract, convert to .ffpfsc, upload via FTP.',
     steps: [
-      { type: 'wol', name: 'Wake on LAN' },
-      { type: 'wait', duration: 8000, name: 'Wait 8 seconds' },
+      { type: 'wol', keep_session: true, name: 'Wake PS5 (keep awake)' },
+      { type: 'wait', duration: 6000, name: 'Wait 6 seconds' },
       { type: 'download', url: 'https://example.com/game.rar', dest_kind: 'local', dest_path: '/data/mkpfs', name: 'Download game.rar' },
       { type: 'extract', source: 'local-fs', local_path: '/data/mkpfs/game.rar', dest_kind: 'local-fs', dest_local_path: '/data/mkpfs', name: 'Extract game.rar' },
       { type: 'convert', mode: 'pack-file', source_path: '/data/mkpfs/game.exfat', name: 'Convert to .ffpfsc' },

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import Modal from './UI/Modal';
 import Badge from './UI/Badge';
+import RemoteSourcesSection from './RemoteSourcesSection';
 
 const API = '/api';
 
@@ -299,8 +300,8 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
   );
 
   const renderConfig = () => (
-    <div>
-      <h2 className="font-bold mb-md" style={{ fontSize: '1.25rem' }}>Configuration</h2>
+    <div className="flex-col gap-md">
+      <h2 className="font-bold" style={{ fontSize: '1.25rem' }}>Configuration</h2>
 
       <div className="comp-card">
         <div className="comp-card-body">
@@ -321,6 +322,8 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
           {message && <div className="mt-sm text-sm" style={{ color: message.includes('Failed') ? 'var(--red)' : 'var(--green)' }}>{message}</div>}
         </div>
       </div>
+
+      <RemoteSourcesSection profiles={profiles} />
     </div>
   );
 

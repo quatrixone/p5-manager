@@ -105,12 +105,22 @@ async function ensureSessionForIp(ip, opts = {}) {
   // The sidecar uses account_id (decimal) to compute the DDP LAUNCH
   // credential, which it fires after wakeup to dismiss the PS5 "Press PS
   // button" account-picker that appears after waking from rest mode.
+  //
+  // Timeout budget (must match sidecar /sessions/start worst case):
+  //   pre-wait for PS5 session lock release : up to 60 s
+  //   gentle quiet retries (2 × 45 s)       : up to 90 s
+  //   actual connect + auth                 : up to 15 s
+  //   safety margin                         :    15 s
+  //   ──────────────────────────────────────────────────
+  //   total                                 :   180 s
   const data = await sidecar('POST', '/sessions/start',
     { ip, user_profile: userProfile, account_id: accountId },
-    { timeout: 45000 });
+    { timeout: 180000 });
   ipToSession.set(ip, { sid: data.session_id, started: Date.now() });
-  log('info', `Started Remote Play session ${data.session_id} for ${ip}`);
-  return { session_id: data.session_id, ip, cached: false, state: data.state };
+  // `resumed:true` means the sidecar handed us a warm-cached session that
+  // was never actually disconnected on the PS5 side - reconnect was O(ms).
+  log('info', `${data.resumed ? 'Resumed' : 'Started'} Remote Play session ${data.session_id} for ${ip}`);
+  return { session_id: data.session_id, ip, cached: false, state: data.state, resumed: !!data.resumed };
 }
 
 // Map ScriptRunner.jsx commands → sidecar (pyremoteplay) button names.
@@ -314,12 +324,47 @@ router.post('/wake', async (req, res) => {
     if (profile.rp_user_profile) {
       try { userProfile = JSON.parse(profile.rp_user_profile); } catch (_) {}
     }
+    // /wake is intentionally fast: it sends UDP wakeup + DDP LAUNCH packets
+    // synchronously and then kicks off a background "warm cache an RP
+    // session" task on the sidecar (returns `warming: true` when active).
+    // The sync part stays well under 5 s; we keep a 20 s ceiling so a deep-
+    // standby PS5 with packet loss still has time to respond.
     const data = await sidecar('POST', '/wake', {
       ip,
       account_id: profile.psn_account_id,
       online_id: profile.psn_online_id || null,
       user_profile: userProfile,
-    }, { timeout: 8000 });
+    }, { timeout: 20000 });
+    res.json({ success: true, ...data });
+  } catch (err) {
+    res.status(err.status || 502).json({ success: false, error: err.message });
+  }
+});
+
+// Put the PS5 into rest mode via Remote Play. Uses an existing live session if
+// the sidecar still has one for the target IP, otherwise spins up a temporary
+// session, sends the standby packet, and tears it down.
+router.post('/standby', async (req, res) => {
+  try {
+    const { ip: rawIp, profile_id } = req.body || {};
+    let ip = rawIp;
+    let profile = null;
+    if (profile_id) profile = loadProfileById(profile_id);
+    if (!ip && profile) ip = profile.ip_address;
+    if (!ip) return res.status(400).json({ success: false, error: 'ip or profile_id required' });
+    if (!profile) profile = loadProfileByIp(ip);
+    if (!profile?.psn_account_id) return res.status(400).json({ success: false, error: 'PS5 must be PSN-linked first' });
+    if (!profile?.rp_user_profile) return res.status(400).json({ success: false, error: 'PS5 must be paired (Remote Play tab) first' });
+
+    let userProfile = null;
+    try { userProfile = JSON.parse(profile.rp_user_profile); } catch (_) {}
+
+    const data = await sidecar('POST', '/standby', {
+      ip,
+      account_id: profile.psn_account_id,
+      online_id: profile.psn_online_id || null,
+      user_profile: userProfile,
+    }, { timeout: 45000 });
     res.json({ success: true, ...data });
   } catch (err) {
     res.status(err.status || 502).json({ success: false, error: err.message });
@@ -411,7 +456,9 @@ router.get('/sessions/:sid', async (req, res) => {
 
 router.post('/sessions/:sid/stop', async (req, res) => {
   try {
-    const data = await sidecar('POST', `/sessions/${encodeURIComponent(req.params.sid)}/stop`, {}, { timeout: 10000 });
+    // Sidecar waits up to ~12 s for the PS5 to ack the disconnect, so give
+    // the HTTP call enough headroom to deliver the result.
+    const data = await sidecar('POST', `/sessions/${encodeURIComponent(req.params.sid)}/stop`, {}, { timeout: 20000 });
     // Evict the cache so the next quick-input/script call starts fresh.
     for (const [ip, v] of ipToSession.entries()) {
       if (v.sid === req.params.sid) ipToSession.delete(ip);
@@ -455,7 +502,7 @@ router.post('/quick-stop', async (req, res) => {
     let cachedStopped = false;
     const cached = ipToSession.get(ip);
     if (cached) {
-      try { await sidecar('POST', `/sessions/${encodeURIComponent(cached.sid)}/stop`, {}, { timeout: 8000 }); } catch (_) {}
+      try { await sidecar('POST', `/sessions/${encodeURIComponent(cached.sid)}/stop`, {}, { timeout: 20000 }); } catch (_) {}
       ipToSession.delete(ip);
       cachedStopped = true;
     }
@@ -652,7 +699,7 @@ router.post('/run-script', async (req, res) => {
     }
 
     if (!keep_session) {
-      try { await sidecar('POST', `/sessions/${encodeURIComponent(sid)}/stop`, {}, { timeout: 5000 }); } catch (_) {}
+      try { await sidecar('POST', `/sessions/${encodeURIComponent(sid)}/stop`, {}, { timeout: 20000 }); } catch (_) {}
       ipToSession.delete(ip);
     }
 

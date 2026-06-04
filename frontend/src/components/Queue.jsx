@@ -50,16 +50,29 @@ function itemSubtitle(item) {
   return '';
 }
 
-function QueueItem({ item, onRemove, onRetry, onMove, onStart }) {
+function QueueItem({ item, queuePaused, onRemove, onRetry, onMove, onStart, onPause, onResume }) {
   const meta = TYPE_META[item.type] || { icon: '📋', label: item.type };
   const statusMeta = STATUS_META[item.status] || { color: 'var(--muted)', label: item.status };
   const progress = Math.max(0, Math.min(100, Number(item.progress || 0)));
   const isActive = ['running', 'starting', 'pushing'].includes(item.status);
   const isDone = ['completed', 'failed', 'cancelled'].includes(item.status);
-  const canRemove = item.status !== 'completed' || true; // allow remove anytime
-  const canMove = item.status === 'queued';
+  const isQueued = item.status === 'queued';
+  const canMove = isQueued;
   const canRetry = item.status === 'failed' || item.status === 'cancelled';
-  const canStartNow = item.type === 'download' && item.status === 'queued';
+
+  // We expose Start / Pause / Resume per-task even though the actual work
+  // happens in a per-type worker. From the user's point of view:
+  //   - Start (queued item): kick the worker so this one begins.
+  //   - Pause (running or queued): freeze processing of this queue type.
+  //   - Resume (queue type paused): unfreeze.
+  //   - Stop: cancel-and-remove this item.
+  const showStart = isQueued && queuePaused;
+  const showResume = queuePaused && (isActive || isQueued);
+  const showPause = !queuePaused && (isActive || isQueued);
+
+  // Effective per-task label: a queued item under a paused queue is also "paused".
+  const effectiveLabel = (isQueued || isActive) && queuePaused ? 'Paused' : statusMeta.label;
+  const effectiveColor = (isQueued || isActive) && queuePaused ? '#7f8c8d' : statusMeta.color;
 
   return (
     <div className="queue-item" style={{
@@ -67,7 +80,7 @@ function QueueItem({ item, onRemove, onRetry, onMove, onStart }) {
       borderRadius: 10,
       padding: 'var(--space-sm) var(--space-md)',
       marginBottom: 'var(--space-xs)',
-      borderLeft: `3px solid ${statusMeta.color}`,
+      borderLeft: `3px solid ${effectiveColor}`,
     }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-sm)' }}>
         <span style={{ fontSize: '1.25rem' }} title={meta.label}>{meta.icon}</span>
@@ -77,7 +90,7 @@ function QueueItem({ item, onRemove, onRetry, onMove, onStart }) {
             {itemTitle(item)}
           </div>
           <div className="text-xs text-muted truncate">
-            <span style={{ color: statusMeta.color, fontWeight: 500 }}>{statusMeta.label}</span>
+            <span style={{ color: effectiveColor, fontWeight: 500 }}>{effectiveLabel}</span>
             {itemSubtitle(item) && <> · {itemSubtitle(item)}</>}
             {item.error && <span style={{ color: 'var(--red)' }}> · {item.error}</span>}
           </div>
@@ -90,8 +103,14 @@ function QueueItem({ item, onRemove, onRetry, onMove, onStart }) {
               <button className="btn btn-ghost btn-sm" onClick={() => onMove(item.type, item.id, 'down')} title="Move down">↓</button>
             </>
           )}
-          {canStartNow && (
-            <button className="btn btn-primary btn-sm" onClick={() => onStart(item.type, item.id)} title="Start this download now">▶</button>
+          {showStart && (
+            <button className="btn btn-success btn-sm" onClick={() => onStart(item.type, item.id)} title="Start this task">▶</button>
+          )}
+          {showResume && !showStart && (
+            <button className="btn btn-success btn-sm" onClick={() => onResume(item.type)} title={`Resume ${meta.label.toLowerCase()} queue`}>▶</button>
+          )}
+          {showPause && (
+            <button className="btn btn-secondary btn-sm" onClick={() => onPause(item.type)} title={`Pause ${meta.label.toLowerCase()} queue`}>⏸</button>
           )}
           {canRetry && (
             <button className="btn btn-secondary btn-sm" onClick={() => onRetry(item.type, item.id)} title="Retry">↻</button>
@@ -107,7 +126,6 @@ function QueueItem({ item, onRemove, onRetry, onMove, onStart }) {
         </div>
       </div>
 
-      {/* progress bar shown for ALL tasks */}
       <div style={{ marginTop: 6 }}>
         <div style={{
           height: 6,
@@ -119,7 +137,7 @@ function QueueItem({ item, onRemove, onRetry, onMove, onStart }) {
           <div style={{
             width: isDone && progress === 0 ? '100%' : `${progress}%`,
             height: '100%',
-            background: isDone && item.status !== 'completed' ? 'var(--red)' : statusMeta.color,
+            background: isDone && item.status !== 'completed' ? 'var(--red)' : effectiveColor,
             transition: 'width 0.3s ease',
           }} />
         </div>
@@ -180,26 +198,38 @@ export default function Queue() {
   const convertItems = (data?.convert?.items || []).map(i => ({ ...i, type: 'convert' }));
   const uploadItems = (data?.upload?.items || []).map(i => ({ ...i, type: 'upload' }));
 
-  // The Queue tab exposes a single global Start/Pause so we treat all queues uniformly.
-  // If *any* of them is paused, the global state is "paused" (need a Start press).
-  const anyPaused = useMemo(() => {
+  // Pause state per queue type. The UI uses these to render the correct per-task
+  // start/pause/resume button on each item. There is no global pause anymore.
+  const pausedByType = useMemo(() => {
     const p = data?.paused || {};
-    return downloaderPaused || p.extract || p.convert || p.upload;
+    return {
+      download: !!downloaderPaused,
+      extract: !!p.extract,
+      convert: !!p.convert,
+      upload: !!p.upload,
+    };
   }, [data, downloaderPaused]);
 
-  const handleStartAll = async () => {
-    await Promise.all([
-      fetch(`${API}/downloader/queue/resume`, { method: 'POST' }),
-      fetch(`${API}/micromount/queue/resume-all`, { method: 'POST' }),
-    ]);
+  // The upload queue is mounted under /ftp/upload/... not /upload/..., so
+  // map types to their actual REST path. Everything else uses the type id
+  // directly.
+  const apiPathForType = (type) => (type === 'upload' ? 'ftp/upload' : type);
+
+  const handlePauseType = async (type) => {
+    if (type === 'download') {
+      await fetch(`${API}/downloader/queue/pause`, { method: 'POST' });
+    } else {
+      await fetch(`${API}/micromount/${apiPathForType(type)}/queue/pause`, { method: 'POST' });
+    }
     fetchQueue();
   };
 
-  const handlePauseAll = async () => {
-    await Promise.all([
-      fetch(`${API}/downloader/queue/pause`, { method: 'POST' }),
-      fetch(`${API}/micromount/queue/pause-all`, { method: 'POST' }),
-    ]);
+  const handleResumeType = async (type) => {
+    if (type === 'download') {
+      await fetch(`${API}/downloader/queue/resume`, { method: 'POST' });
+    } else {
+      await fetch(`${API}/micromount/${apiPathForType(type)}/queue/resume`, { method: 'POST' });
+    }
     fetchQueue();
   };
 
@@ -218,21 +248,21 @@ export default function Queue() {
     if (type === 'download') {
       await fetch(`${API}/downloader/${id}`, { method: 'DELETE' });
     } else {
-      await fetch(`${API}/micromount/${type}/queue/${id}`, { method: 'DELETE' });
+      await fetch(`${API}/micromount/${apiPathForType(type)}/queue/${id}`, { method: 'DELETE' });
     }
     fetchQueue();
   };
 
   const handleRetry = async (type, id) => {
     if (type !== 'download') {
-      await fetch(`${API}/micromount/${type}/queue/${id}/retry`, { method: 'POST' });
+      await fetch(`${API}/micromount/${apiPathForType(type)}/queue/${id}/retry`, { method: 'POST' });
     }
     fetchQueue();
   };
 
   const handleMove = async (type, id, direction) => {
     if (type !== 'download') {
-      await fetch(`${API}/micromount/${type}/queue/${id}/move`, {
+      await fetch(`${API}/micromount/${apiPathForType(type)}/queue/${id}/move`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ direction }),
@@ -241,12 +271,19 @@ export default function Queue() {
     fetchQueue();
   };
 
+  // Start a single queued task = move it to the head and unpause its queue
+  // type. The worker then picks it first.
   const handleStartItem = async (type, id) => {
-    if (type === 'download') {
-      // unpausing the downloader queue starts the queued items in order
-      await fetch(`${API}/downloader/queue/resume`, { method: 'POST' });
+    if (type !== 'download') {
+      try {
+        await fetch(`${API}/micromount/${apiPathForType(type)}/queue/${id}/move`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ direction: 'top' }),
+        });
+      } catch (_) { /* best-effort move; resume below is the actual trigger */ }
     }
-    fetchQueue();
+    await handleResumeType(type);
   };
 
   if (loading) return <div className="comp-card"><div className="comp-card-body">Loading...</div></div>;
@@ -282,6 +319,8 @@ export default function Queue() {
     : filter === 'convert' ? convertItems
     : uploadItems;
 
+  const anyPaused = pausedByType.download || pausedByType.extract || pausedByType.convert || pausedByType.upload;
+
   return (
     <div className="comp-card">
       <div className="comp-card-header" style={{ flexWrap: 'wrap', gap: 'var(--space-sm)' }}>
@@ -289,33 +328,19 @@ export default function Queue() {
           <span className="comp-card-title">📋 Queue</span>
           {totalActive > 0 && (
             <span className="badge" style={{ background: anyPaused ? '#7f8c8d' : 'var(--blue)' }}>
-              {anyPaused ? '⏸ paused' : '▶ running'} · {totalActive} active
+              {totalActive} active{anyPaused ? ' · some paused' : ''}
             </span>
           )}
         </div>
 
         <div style={{ display: 'flex', gap: 'var(--space-xs)', flexWrap: 'wrap' }}>
-          {anyPaused ? (
-            <button
-              className="btn btn-success"
-              onClick={handleStartAll}
-              disabled={totalActive === 0}
-              title={totalActive === 0 ? 'Nothing queued' : 'Start all queues'}
-            >
-              ▶ Start
-            </button>
-          ) : (
-            <button className="btn btn-secondary" onClick={handlePauseAll}>
-              ⏸ Pause
-            </button>
-          )}
           <button className="btn btn-ghost btn-sm" onClick={handleClearFinished}>🗑 Clear done</button>
         </div>
       </div>
 
       <div className="comp-card-body">
         <div className="text-xs text-muted mb-md">
-          Items added from Upload / Convert / Download / Extract are paused until you press <strong>Start</strong>.
+          Each task has its own ▶ Start / ⏸ Pause / ▶ Resume / ✕ Stop controls. Items added from Upload / Convert / Download / Extract sit idle until you press ▶ on them.
         </div>
 
         <div style={{ display: 'flex', gap: 'var(--space-xs)', marginBottom: 'var(--space-md)', flexWrap: 'wrap' }}>
@@ -349,10 +374,13 @@ export default function Queue() {
             <QueueItem
               key={`${item.type}-${item.id}`}
               item={item}
+              queuePaused={pausedByType[item.type]}
               onRemove={handleRemove}
               onRetry={handleRetry}
               onMove={handleMove}
               onStart={handleStartItem}
+              onPause={handlePauseType}
+              onResume={handleResumeType}
             />
           ))
         )}

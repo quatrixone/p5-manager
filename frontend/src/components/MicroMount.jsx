@@ -255,324 +255,6 @@ function ScanPathsSection({ config, setConfig, onSave }) {
   );
 }
 
-function SmbSourcesSection({ profiles, ftp, refreshSources }) {
-  const [sources, setSources] = useState([]);
-  const [editing, setEditing] = useState(null);
-  const [form, setForm] = useState(emptyForm());
-  const [browseFor, setBrowseFor] = useState(null);
-  const [browseFiles, setBrowseFiles] = useState([]);
-  const [browseSubPath, setBrowseSubPath] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [syncIp, setSyncIp] = useState('');
-  const [syncDest, setSyncDest] = useState('/data/homebrew');
-  const [message, setMessage] = useState(null);
-
-  function emptyForm() {
-    return { name: '', type: 'smb', path: '', smb_host: '', smb_share: '', smb_username: '', smb_password: '', smb_domain: '', enabled: true };
-  }
-
-  const load = useCallback(async () => {
-    try {
-      const r = await fetch(`${API}/micromount/sources`);
-      setSources(await r.json());
-    } catch (_) {}
-  }, []);
-
-  useEffect(() => { load(); }, [load]);
-  useEffect(() => {
-    if (!syncIp) {
-      const p = profiles.find(x => x.is_default) || profiles[0];
-      if (p) setSyncIp(p.ip_address);
-    }
-  }, [profiles]);
-
-  const showMsg = (text, type = 'info') => {
-    setMessage({ text, type });
-    setTimeout(() => setMessage(null), 4000);
-  };
-
-  const startNew = () => { setEditing('new'); setForm(emptyForm()); };
-  const startEdit = (s) => {
-    setEditing(s.id);
-    setForm({
-      name: s.name, type: s.type, path: s.path || '',
-      smb_host: s.smb_host || '', smb_share: s.smb_share || '',
-      smb_username: s.smb_username || '', smb_password: s.smb_password || '',
-      smb_domain: s.smb_domain || '', enabled: !!s.enabled,
-    });
-  };
-  const cancel = () => { setEditing(null); setForm(emptyForm()); };
-
-  const save = async () => {
-    if (!form.name) return showMsg('Name is required', 'error');
-    if (form.type === 'smb' && (!form.smb_host || !form.smb_share)) return showMsg('SMB host and share required', 'error');
-
-    try {
-      if (editing === 'new') {
-        const r = await fetch(`${API}/micromount/sources`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(form),
-        });
-        if (!r.ok) throw new Error((await r.json()).error);
-      } else {
-        const r = await fetch(`${API}/micromount/sources/${editing}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(form),
-        });
-        if (!r.ok) throw new Error((await r.json()).error);
-      }
-      showMsg('Saved', 'success');
-      cancel();
-      load();
-    } catch (e) {
-      showMsg(e.message, 'error');
-    }
-  };
-
-  const remove = async (id) => {
-    if (!confirm('Delete this source?')) return;
-    await fetch(`${API}/micromount/sources/${id}`, { method: 'DELETE' });
-    load();
-  };
-
-  const test = async (id) => {
-    setBusy(true);
-    try {
-      const r = await fetch(`${API}/micromount/sources/${id}/test`, { method: 'POST' });
-      const d = await r.json();
-      showMsg(d.success ? 'Connection OK' : (d.error || 'Failed'), d.success ? 'success' : 'error');
-    } catch (e) { showMsg(e.message, 'error'); }
-    setBusy(false);
-  };
-
-  const browse = async (src, subPath = '') => {
-    setBusy(true);
-    setBrowseFor(src);
-    try {
-      let r = await fetch(`${API}/micromount/sources/${src.id}/browse`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ subPath }),
-      });
-      let d = await r.json();
-      if (!d.success && subPath && d.smb_status === 'NT_STATUS_OBJECT_NAME_NOT_FOUND') {
-        showMsg(`${d.error}. Falling back to share root.`, 'error');
-        r = await fetch(`${API}/micromount/sources/${src.id}/browse`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ subPath: '' }),
-        });
-        d = await r.json();
-        subPath = '';
-      }
-      setBrowseSubPath(subPath);
-      if (d.success) setBrowseFiles(d.files || []);
-      else { setBrowseFiles([]); showMsg(d.error || 'Browse failed', 'error'); }
-    } catch (e) { showMsg(e.message, 'error'); setBrowseFiles([]); }
-    setBusy(false);
-  };
-
-  const sync = async (src) => {
-    if (!syncIp) return showMsg('Select PS5 IP', 'error');
-    setBusy(true);
-    try {
-      const r = await fetch(`${API}/micromount/sources/${src.id}/sync`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ip: syncIp, dest_path: syncDest, subPath: browseFor?.id === src.id ? browseSubPath : (src.path || '') }),
-      });
-      const d = await r.json();
-      if (d.success) {
-        const okCount = (d.synced || []).length;
-        const failCount = (d.failed || []).length;
-        showMsg(`Synced ${okCount} files${failCount ? `, ${failCount} failed` : ''}`, failCount ? 'error' : 'success');
-      } else showMsg(d.error || 'Sync failed', 'error');
-    } catch (e) { showMsg(e.message, 'error'); }
-    setBusy(false);
-  };
-
-  const enterDir = (name) => {
-    const next = browseSubPath ? `${browseSubPath}/${name}` : name;
-    browse(browseFor, next);
-  };
-  const goUp = () => {
-    const parts = browseSubPath.split('/').filter(Boolean);
-    parts.pop();
-    browse(browseFor, parts.join('/'));
-  };
-
-  return (
-    <section style={styles.section}>
-      <div style={{ ...styles.row, justifyContent: 'space-between', marginBottom: '0.75rem' }}>
-        <div style={styles.h}>SMB sources</div>
-        {!editing && <button style={styles.btn(C.green)} onClick={startNew}>+ Add source</button>}
-      </div>
-
-      <p style={{ color: C.muted, fontSize: '0.8rem', marginBottom: '0.75rem' }}>
-        Browse a Samba share for <code>.ffpfsc</code> images and push them to the PS5 over FTP.
-        MicroMount on the PS5 will then auto-mount them from <code>{syncDest || '/data/homebrew'}</code>.
-      </p>
-
-      {editing && (
-        <div style={{ ...styles.card, marginBottom: '0.75rem' }}>
-          <div style={styles.h2}>{editing === 'new' ? 'New source' : `Edit source #${editing}`}</div>
-          <div style={styles.col}>
-            <div style={styles.grid2}>
-              <div>
-                <label style={styles.label}>Name</label>
-                <input style={styles.input} value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} />
-              </div>
-              <div>
-                <label style={styles.label}>Type</label>
-                <select style={styles.input} value={form.type} onChange={e => setForm({ ...form, type: e.target.value })}>
-                  <option value="smb">SMB / Samba</option>
-                  <option value="local">Local PS5 path (note only)</option>
-                </select>
-              </div>
-            </div>
-            {form.type === 'smb' ? (
-              <>
-                <div style={styles.grid2}>
-                  <div>
-                    <label style={styles.label}>Host / IP</label>
-                    <input style={styles.input} value={form.smb_host} onChange={e => setForm({ ...form, smb_host: e.target.value })} placeholder="192.168.1.10" />
-                  </div>
-                  <div>
-                    <label style={styles.label}>Share</label>
-                    <input style={styles.input} value={form.smb_share} onChange={e => setForm({ ...form, smb_share: e.target.value })} placeholder="games" />
-                  </div>
-                  <div>
-                    <label style={styles.label}>Sub-path (optional)</label>
-                    <input style={styles.input} value={form.path} onChange={e => setForm({ ...form, path: e.target.value })} placeholder="ps5/ffpfsc" />
-                  </div>
-                  <div>
-                    <label style={styles.label}>Domain (optional)</label>
-                    <input style={styles.input} value={form.smb_domain} onChange={e => setForm({ ...form, smb_domain: e.target.value })} />
-                  </div>
-                  <div>
-                    <label style={styles.label}>Username</label>
-                    <input style={styles.input} value={form.smb_username} onChange={e => setForm({ ...form, smb_username: e.target.value })} placeholder="(blank = anonymous)" />
-                  </div>
-                  <div>
-                    <label style={styles.label}>Password</label>
-                    <input type="password" style={styles.input}
-                      value={form.smb_password === '__set__' ? '' : form.smb_password}
-                      onChange={e => setForm({ ...form, smb_password: e.target.value })}
-                      placeholder={form.smb_password === '__set__' ? '(saved)' : ''} />
-                  </div>
-                </div>
-              </>
-            ) : (
-              <div>
-                <label style={styles.label}>PS5 path</label>
-                <input style={styles.input} value={form.path} onChange={e => setForm({ ...form, path: e.target.value })} placeholder="/mnt/usb0/homebrew" />
-              </div>
-            )}
-            <div style={styles.row}>
-              <button style={styles.btn(C.green)} onClick={save}>Save</button>
-              <button style={styles.btn('#666')} onClick={cancel}>Cancel</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {sources.length === 0 && !editing && (
-        <div style={{ color: C.muted, fontSize: '0.85rem' }}>No sources yet.</div>
-      )}
-
-      <div style={styles.col}>
-        {sources.map(s => (
-          <div key={s.id} style={styles.card}>
-            <div style={{ ...styles.row, justifyContent: 'space-between', flexWrap: 'wrap' }}>
-              <div style={{ flex: 1, minWidth: 220 }}>
-                <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', marginBottom: '0.25rem' }}>
-                  <span style={styles.pill(s.type === 'smb' ? 'var(--magenta)' : C.blue)}>{s.type.toUpperCase()}</span>
-                  <strong>{s.name}</strong>
-                </div>
-                <div style={{ fontSize: '0.8rem', color: C.muted, wordBreak: 'break-all' }}>
-                  {s.type === 'smb' ? (
-                    <>
-                      <code>smb://{s.smb_host}/{s.smb_share}{s.path ? `/${s.path}` : ''}</code>
-                      {s.smb_username && <> • user: <code>{s.smb_username}</code></>}
-                    </>
-                  ) : <code>{s.path}</code>}
-                </div>
-              </div>
-              <div style={{ ...styles.row, gap: '0.4rem' }}>
-                {s.type === 'smb' && <button style={styles.btn(C.blue, busy)} disabled={busy} onClick={() => test(s.id)}>Test</button>}
-                {s.type === 'smb' && <button style={styles.btn('#34495e', busy)} disabled={busy} onClick={() => browse(s, s.path || '')}>Browse</button>}
-                {s.type === 'smb' && <button style={styles.btn(C.green, busy)} disabled={busy} onClick={() => sync(s)}>Sync → PS5</button>}
-                <button style={styles.btn('#7f8c8d')} onClick={() => startEdit(s)}>Edit</button>
-                <button style={styles.btn(C.red)} onClick={() => remove(s.id)}>Delete</button>
-              </div>
-            </div>
-
-            {browseFor?.id === s.id && (
-              <div style={{ marginTop: '0.75rem', padding: '0.75rem', background: C.bg, borderRadius: 6 }}>
-                <div style={{ ...styles.row, justifyContent: 'space-between', marginBottom: '0.5rem' }}>
-                  <div style={{ fontSize: '0.8rem', color: C.muted }}>
-                    Path: <code>/{browseSubPath}</code>
-                  </div>
-                  <div style={styles.row}>
-                    {browseSubPath && <button style={styles.btn('#7f8c8d', busy)} disabled={busy} onClick={goUp}>↑ Up</button>}
-                    {browseSubPath && <button style={styles.btn('#7f8c8d', busy)} disabled={busy} onClick={() => browse(s, '')}>⌂ Root</button>}
-                    <button style={styles.btn('#7f8c8d', busy)} disabled={busy} onClick={() => browse(s, browseSubPath)}>Refresh</button>
-                    <button style={styles.btn('#666')} onClick={() => { setBrowseFor(null); setBrowseFiles([]); }}>Close</button>
-                  </div>
-                </div>
-                {browseFiles.length === 0 ? (
-                  <div style={{ color: C.muted, fontSize: '0.85rem' }}>{busy ? 'Loading…' : 'No items.'}</div>
-                ) : (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', maxHeight: 320, overflowY: 'auto' }}>
-                    {browseFiles.map((f, idx) => (
-                      <div key={idx} style={{ ...styles.row, padding: '0.4rem 0.6rem', background: C.panel2, borderRadius: 4, justifyContent: 'space-between' }}>
-                        <div style={{ fontSize: '0.85rem', flex: 1, minWidth: 0, wordBreak: 'break-all' }}>
-                          {f.isDir ? '📁 ' : '📄 '}{f.name}
-                          {!f.isDir && <span style={{ color: C.muted, marginLeft: 8 }}>{(f.size / (1024 * 1024)).toFixed(1)} MB</span>}
-                        </div>
-                        {f.isDir && <button style={styles.btn(C.blue, busy)} disabled={busy} onClick={() => enterDir(f.name)}>Open</button>}
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        ))}
-      </div>
-
-      <div style={{ ...styles.card, marginTop: '0.75rem' }}>
-        <div style={styles.h2}>Sync target</div>
-        <div style={styles.grid2}>
-          <div>
-            <label style={styles.label}>PS5</label>
-            <select style={styles.input} value={syncIp} onChange={e => setSyncIp(e.target.value)}>
-              <option value="">— select profile —</option>
-              {profiles.map(p => <option key={p.id} value={p.ip_address}>{p.name} ({p.ip_address})</option>)}
-            </select>
-          </div>
-          <div>
-            <label style={styles.label}>Destination on PS5</label>
-            <input style={styles.input} value={syncDest} onChange={e => setSyncDest(e.target.value)} />
-          </div>
-        </div>
-      </div>
-
-      {message && (
-        <div style={{
-          marginTop: '0.75rem', padding: '0.6rem 0.9rem', borderRadius: 6,
-          background: message.type === 'error' ? C.red : C.green,
-          color: C.text, fontSize: '0.85rem',
-        }}>
-          {message.text}
-        </div>
-      )}
-    </section>
-  );
-}
-
 function ReleaseSection({ onNotification }) {
   const [status, setStatus] = useState(null);
   const [checking, setChecking] = useState(false);
@@ -722,70 +404,74 @@ export function ExtractQueuePanel({ onView }) {
   };
 
   const Row = ({ item, idx }) => (
-    <div style={{ ...styles.row, ...styles.card, marginBottom: 0, justifyContent: 'space-between', flexWrap: 'wrap' }}>
-      <div style={{ fontSize: '0.8rem', flex: 1, minWidth: 0, wordBreak: 'break-all' }}>
-        <span style={{ color: C.muted, marginRight: 6 }}>{idx != null ? `#${idx + 1}` : ''}</span>
-        <strong>{item.archive}</strong> <span style={{ color: C.muted }}>[{item.archive_type}]</span>
-        <div style={{ color: C.muted, fontSize: '0.7rem' }}>
+    <div className="list-item" style={{ flexWrap: 'wrap' }}>
+      <div className="list-item-content">
+        <div className="list-item-title" style={{ fontSize: '0.85rem', wordBreak: 'break-all' }}>
+          {idx != null && <span className="text-muted" style={{ marginRight: 6 }}>#{idx + 1}</span>}
+          {item.archive} <span className="text-muted">[{item.archive_type}]</span>
+        </div>
+        <div className="list-item-subtitle text-xs" style={{ wordBreak: 'break-all' }}>
           {item.source}{item.dest && <> → {item.dest}</>}
           {item.added_at && <> · added {new Date(item.added_at).toLocaleTimeString()}</>}
           {item.finished_at && <> · finished {new Date(item.finished_at).toLocaleTimeString()}</>}
         </div>
-        {item.error && <div style={{ color: C.red, fontSize: '0.7rem' }}>Error: {item.error}</div>}
+        {item.error && <div className="text-xs" style={{ color: 'var(--red)' }}>Error: {item.error}</div>}
       </div>
       <span style={styles.pill(statusColor(item.status))}>{item.status}</span>
-      <div style={styles.row}>
+      <div className="list-item-actions">
         {item.status === 'queued' && (
           <>
-            <button style={styles.btn('#7f8c8d')} onClick={async () => { await fetch(`${API}/micromount/extract/queue/${item.id}/move`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ direction: 'up' }) }); refresh(); }}>↑</button>
-            <button style={styles.btn('#7f8c8d')} onClick={async () => { await fetch(`${API}/micromount/extract/queue/${item.id}/move`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ direction: 'down' }) }); refresh(); }}>↓</button>
-            <button style={styles.btn(C.red)} onClick={() => del(item.id)}>Remove</button>
+            <button className="btn btn-ghost btn-sm" onClick={async () => { await fetch(`${API}/micromount/extract/queue/${item.id}/move`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ direction: 'up' }) }); refresh(); }}>↑</button>
+            <button className="btn btn-ghost btn-sm" onClick={async () => { await fetch(`${API}/micromount/extract/queue/${item.id}/move`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ direction: 'down' }) }); refresh(); }}>↓</button>
+            <button className="btn btn-danger btn-sm" onClick={() => del(item.id)}>Remove</button>
           </>
         )}
-        {item.job_id && <button style={styles.btn(C.blue)} onClick={() => onView?.(item.job_id)}>View log</button>}
+        {item.job_id && <button className="btn btn-secondary btn-sm" onClick={() => onView?.(item.job_id)}>View log</button>}
         {(item.status === 'failed' || item.status === 'cancelled') && (
-          <button style={styles.btn(C.green)} onClick={async () => { const r = await fetch(`${API}/micromount/extract/queue/${item.id}/retry`, { method: 'POST' }); if (!r.ok) alert((await r.json()).error); refresh(); }}>Retry</button>
+          <button className="btn btn-success btn-sm" onClick={async () => { const r = await fetch(`${API}/micromount/extract/queue/${item.id}/retry`, { method: 'POST' }); if (!r.ok) alert((await r.json()).error); refresh(); }}>Retry</button>
         )}
         {(item.status === 'completed' || item.status === 'failed' || item.status === 'cancelled') && (
-          <button style={styles.btn(C.red)} onClick={() => del(item.id)}>Remove</button>
+          <button className="btn btn-danger btn-sm" onClick={() => del(item.id)}>Remove</button>
         )}
       </div>
     </div>
   );
 
   return (
-    <section style={styles.section}>
-      <div style={{ ...styles.row, justifyContent: 'space-between', marginBottom: '0.5rem' }}>
-        <div style={styles.h}>
-          Extract queue
-          <span style={{ ...styles.pill(state.paused ? '#7f8c8d' : C.green), marginLeft: '0.5rem' }}>
+    <div className="comp-card">
+      <div className="comp-card-header" style={{ flexWrap: 'wrap', gap: 'var(--space-sm)' }}>
+        <div className="flex items-center gap-sm flex-wrap">
+          <span className="comp-card-title">📦 Extract queue</span>
+          <span style={styles.pill(state.paused ? '#7f8c8d' : C.green)}>
             {state.paused ? 'paused' : 'running'}
           </span>
-          <span style={{ color: C.muted, fontSize: '0.75rem', marginLeft: '0.5rem', fontWeight: 400 }}>
-            {running.length} running · {queued.length} queued · {finished.length} done · control Start/Pause from the Queue tab
+          <span className="text-xs text-muted">
+            {running.length} running · {queued.length} queued · {finished.length} done · control from Queue tab
           </span>
         </div>
       </div>
 
-      {running.length > 0 && (
-        <div style={{ marginBottom: '0.6rem' }}>
-          <div style={{ ...styles.h2, color: C.blue }}>Running</div>
-          <div style={styles.col}>{running.map(i => <Row key={i.id} item={i} />)}</div>
-        </div>
-      )}
-      {queued.length > 0 && (
-        <div style={{ marginBottom: '0.6rem' }}>
-          <div style={styles.h2}>Queued ({queued.length})</div>
-          <div style={styles.col}>{queued.map((i, idx) => <Row key={i.id} item={i} idx={idx} />)}</div>
-        </div>
-      )}
-      {finished.length > 0 && (
-        <div>
-          <div style={{ ...styles.h2, color: C.muted }}>Finished ({finished.length})</div>
-          <div style={styles.col}>{finished.slice(-10).reverse().map(i => <Row key={i.id} item={i} />)}</div>
-        </div>
-      )}
-    </section>
+      <div className="comp-card-body flex-col gap-md">
+        {running.length > 0 && (
+          <div>
+            <div className="text-sm mb-sm" style={{ color: 'var(--blue)', fontWeight: 500 }}>Running</div>
+            <div className="flex-col" style={{ gap: 4 }}>{running.map(i => <Row key={i.id} item={i} />)}</div>
+          </div>
+        )}
+        {queued.length > 0 && (
+          <div>
+            <div className="text-sm mb-sm" style={{ fontWeight: 500 }}>Queued ({queued.length})</div>
+            <div className="flex-col" style={{ gap: 4 }}>{queued.map((i, idx) => <Row key={i.id} item={i} idx={idx} />)}</div>
+          </div>
+        )}
+        {finished.length > 0 && (
+          <div>
+            <div className="text-sm mb-sm text-muted" style={{ fontWeight: 500 }}>Finished ({finished.length})</div>
+            <div className="flex-col" style={{ gap: 4 }}>{finished.slice(-10).reverse().map(i => <Row key={i.id} item={i} />)}</div>
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -901,6 +587,10 @@ function ConvertSection({ profiles, onNotification }) {
 
   const [mode, setMode] = useState('pack-file');
   const [selected, setSelected] = useState('');
+  // When source lives on PS5 FTP, we keep ip+path here and present them as
+  // ftp://ip/path in the Source field. The backend stages the file locally,
+  // runs mkpfs, then pushes the .ffpfsc back next to the original.
+  const [sourceFtp, setSourceFtp] = useState(null); // { ip, path, name } | null
   const [outputName, setOutputName] = useState('');
   const [compress, setCompress] = useState(true);
   const [verify, setVerify] = useState(true);
@@ -910,7 +600,11 @@ function ConvertSection({ profiles, onNotification }) {
   const [skipExecComp, setSkipExecComp] = useState(false);
   const [signed, setSigned] = useState(false);
   const [requireGameFiles, setRequireGameFiles] = useState(false);
-  const [pushAfter, setPushAfter] = useState(false);
+  // Auto-push the resulting .ffpfsc to PS5 FTP as soon as mkpfs finishes.
+  // mkpfs writes a structured binary file (it seeks back to patch headers),
+  // so true streaming-into-FTP isn't possible - but chaining convert →
+  // upload is what the user usually wants, so default the toggle ON.
+  const [pushAfter, setPushAfter] = useState(true);
   const [pushIp, setPushIp] = useState('');
   const [pushDest, setPushDest] = useState('/data/homebrew');
   const [deleteSource, setDeleteSource] = useState(false);
@@ -1160,7 +854,7 @@ function ConvertSection({ profiles, onNotification }) {
   }, [folderImportJob?.id, folderImportJob?.status]);
 
   const startConvert = async () => {
-    if (!selected) return onNotification?.('Pick a source first', 'error');
+    if (!selected && !sourceFtp) return onNotification?.('Pick a source first', 'error');
     setRunning(true);
     try {
       const r = await fetch(`${API}/micromount/convert/queue`, {
@@ -1172,6 +866,7 @@ function ConvertSection({ profiles, onNotification }) {
       if (!r.ok) throw new Error(d.error);
       onNotification?.(`Queued: ${d.item.source_name} → ${d.item.output_name}`, 'success');
       setSelected('');
+      setSourceFtp(null);
       setOutputName('');
     } catch (e) {
       setRunning(false);
@@ -1198,7 +893,9 @@ function ConvertSection({ profiles, onNotification }) {
 
   const buildConvertParams = () => ({
     mode,
-    source_path: selected,
+    // Either local source_path OR PS5-FTP source_ftp - never both.
+    source_path: sourceFtp ? undefined : selected,
+    source_ftp: sourceFtp ? { ip: sourceFtp.ip, path: sourceFtp.path } : undefined,
     output_name: outputName || undefined,
     compress, verify, version,
     compression_level: compressionLevel || undefined,
@@ -1207,13 +904,13 @@ function ConvertSection({ profiles, onNotification }) {
     signed,
     require_game_files: requireGameFiles,
     push_after: pushAfter,
-    push_ip: pushIp,
-    push_dest: pushDest,
+    push_ip: pushIp || undefined,
+    push_dest: pushDest || undefined,
     delete_source_after: deleteSource,
   });
 
   const addToQueue = async () => {
-    if (!selected) return onNotification?.('Pick a source first', 'error');
+    if (!selected && !sourceFtp) return onNotification?.('Pick a source first', 'error');
     try {
       const r = await fetch(`${API}/micromount/convert/queue`, {
         method: 'POST',
@@ -1224,6 +921,7 @@ function ConvertSection({ profiles, onNotification }) {
       if (!r.ok) throw new Error(d.error);
       onNotification?.(`Queued: ${d.item.source_name} → ${d.item.output_name}`, 'success');
       setSelected('');
+      setSourceFtp(null);
       setOutputName('');
       refreshQueue();
     } catch (e) { onNotification?.(`Add to queue failed: ${e.message}`, 'error'); }
@@ -1313,10 +1011,26 @@ function ConvertSection({ profiles, onNotification }) {
       <FileBrowser
         profiles={profiles}
         onNotification={onNotification}
-        enableExtract enableDelete enablePickConvert
+        enableExtract enableDelete enablePickConvert enableFtp
         onExtractStarted={(j) => setExtractJob(j)}
         onImported={() => refresh()}
-        onPickConvert={({ path: abs, isDir, name }) => {
+        onPickConvert={({ kind, ftpIp, path: abs, isDir, name }) => {
+          if (kind === 'ftp') {
+            // FTP source: supports pack-file (single file) AND pack-folder
+            // (recursive stage of the whole game directory). Backend handles
+            // both via stageFromPs5Ftp and pushes the result back.
+            setMode(isDir ? 'pack-folder' : 'pack-file');
+            setSourceFtp({ ip: ftpIp, path: abs, name, is_dir: isDir });
+            setSelected(`ftp://${ftpIp}${abs}${isDir ? '/' : ''}`);
+            if (isDir) {
+              const safe = name.replace(/[^A-Za-z0-9_.\-]/g, '_');
+              setOutputName(safe + '.ffpfsc');
+            } else {
+              setOutputName(name.replace(/\.(exfat|ffpkg|ffpfsc)$/i, '') + '.ffpfsc');
+            }
+            return;
+          }
+          setSourceFtp(null);
           setSelected(abs);
           if (isDir) {
             const safe = name.replace(/[^A-Za-z0-9_.\-]/g, '_');
@@ -1328,7 +1042,7 @@ function ConvertSection({ profiles, onNotification }) {
           }
         }}
         title="Pick file or folder to convert"
-        description="Pick a file or folder — output .ffpfsc is written next to the source. Works on local filesystem (incl. SMB-mounted). Use FTP / File browser tab for SMB shares."
+        description="Pick a file from the local filesystem, an SMB share (after importing) or PS5 FTP. When picked from PS5 FTP the manager downloads it, runs mkpfs, then uploads .ffpfsc back next to the original (pack-file only)."
       />
 
       <ExtractLogPanel job={extractJob} />
@@ -1357,14 +1071,29 @@ function ConvertSection({ profiles, onNotification }) {
           <div>
             <label style={styles.label}>
               {mode === 'pack-file' ? 'Source file' : 'Source folder'}
-              {scanRoot
+              {sourceFtp ? (
+                <span style={{ color: 'var(--blue)', fontWeight: 500 }}> · PS5 FTP (will stage locally before mkpfs)</span>
+              ) : scanRoot
                 ? <span style={{ color: C.muted, fontWeight: 400 }}> · absolute path or relative to work dir</span>
                 : <span style={{ color: C.muted, fontWeight: 400 }}> · relative to work dir</span>}
             </label>
-            <input style={styles.input} value={selected} onChange={e => setSelected(e.target.value)}
+            <input
+              style={styles.input}
+              value={selected}
+              onChange={e => { setSelected(e.target.value); setSourceFtp(null); }}
               placeholder={scanRoot
                 ? (mode === 'pack-file' ? '/mnt/sda1/.../GAME1234.exfat' : '/mnt/sda1/.../GAME1234/')
-                : (mode === 'pack-file' ? 'GAME1234.exfat' : 'GAME1234/')} />
+                : (mode === 'pack-file' ? 'GAME1234.exfat' : 'GAME1234/')}
+            />
+            {sourceFtp && (
+              <button
+                type="button"
+                style={{ ...styles.btn('var(--bg-elev-2)', false), marginTop: 6 }}
+                onClick={() => { setSourceFtp(null); setSelected(''); }}
+              >
+                ↺ Clear FTP source (pick local instead)
+              </button>
+            )}
           </div>
           <div>
             <label style={styles.label}>Output filename</label>
@@ -1411,7 +1140,7 @@ function ConvertSection({ profiles, onNotification }) {
 
           <div style={{ ...styles.card, background: C.bg, marginBottom: 0 }}>
             <label style={{ ...styles.row, fontSize: '0.85rem', marginBottom: '0.5rem' }}>
-              <input type="checkbox" checked={pushAfter} onChange={e => setPushAfter(e.target.checked)} /> Push to PS5 via FTP after conversion
+              <input type="checkbox" checked={pushAfter} onChange={e => setPushAfter(e.target.checked)} /> Auto-upload .ffpfsc to PS5 FTP when conversion finishes
             </label>
             {pushAfter && (
               <div style={styles.grid2}>
@@ -1726,7 +1455,6 @@ export default function MicroMount({ profiles, onNotification }) {
           />
           <ReleaseSection onNotification={onNotification} />
           <ScanPathsSection config={config} setConfig={setConfig} onSave={saveConfig} />
-          <SmbSourcesSection profiles={profiles} ftp={ftp} />
         </>
       )}
       {activeTab === 'convert' && (

@@ -6,6 +6,7 @@ import fetch from 'node-fetch';
 import AdmZip from 'adm-zip';
 import { getDatabase, saveDatabase, log } from '../db/sqlite.js';
 import { ensureDefaultPayloads, ESSENTIAL_PAYLOADS } from '../lib/defaultPayloads.js';
+import { pushKernelLogEntry } from './kernelLogServer.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -370,25 +371,68 @@ router.post('/send/:id', async (req, res) => {
 
     const net = await import('net');
     const client = new net.Socket();
+    const tag = payload.name;
+
+    // Push the ELF, half-close so elfldr sees EOF and starts executing, then
+    // keep the read side open: PS5 elfldr inherits stdin/stdout/stderr from
+    // the same socket, so any printf/dprintf the payload performs streams
+    // back here and we forward it into the kernel-log buffer with the
+    // payload name as tag. The HTTP response returns as soon as the write
+    // succeeds - output capture continues in the background.
+    let writeOk = false;
+    let leftover = '';
+    let totalBytes = 0;
+
+    client.on('data', (chunk) => {
+      totalBytes += chunk.length;
+      const text = leftover + chunk.toString('utf8');
+      const lines = text.split(/\r?\n/);
+      leftover = lines.pop() || '';
+      for (const line of lines) {
+        if (line.trim()) pushKernelLogEntry(line, ip, tag);
+      }
+    });
+
+    client.on('close', () => {
+      if (leftover.trim()) pushKernelLogEntry(leftover, ip, tag);
+      if (totalBytes > 0) log('info', `Payload ${payload.name} produced ${totalBytes} B of output`);
+    });
+
+    client.on('error', (err) => {
+      if (err.code === 'EPIPE' || err.code === 'ECONNRESET') return; // normal at exit
+      log('warn', `Payload ${payload.name} socket error: ${err.message}`);
+    });
+
+    // Hard cap so long-running payloads (klogsrv etc.) don't keep this socket
+    // around forever - klogsrv has its own port-3232 channel anyway.
+    client.setTimeout(60_000, () => {
+      try { client.destroy(); } catch (_) {}
+    });
 
     await new Promise((resolve, reject) => {
       client.connect(targetPort, ip, () => {
         client.write(fileData, (err) => {
-          if (err) reject(err);
-          else resolve();
+          if (err) return reject(err);
+          writeOk = true;
+          // Half-close the write side: PS5 elfldr reads until EOF before
+          // executing the ELF, so this is required to actually launch the
+          // payload. The socket stays open for reads.
+          client.end();
+          resolve();
         });
       });
-
-      client.on('error', reject);
-      client.setTimeout(10000);
+      // Reject on early connect errors only; post-write errors are handled
+      // by the listener above and shouldn't fail the HTTP response.
+      const earlyError = (err) => { if (!writeOk) reject(err); };
+      client.once('error', earlyError);
     });
-
-    client.end();
-    client.destroy();
 
     log('info', `Payload ${payload.name} sent successfully`);
 
-    res.json({ success: true, message: `Sent to ${ip}:${targetPort}` });
+    res.json({
+      success: true,
+      message: `Sent to ${ip}:${targetPort} - output streaming to Logs`,
+    });
   } catch (error) {
     log('error', `Send failed: ${error.message}`);
     res.status(500).json({ error: error.message });
@@ -418,22 +462,41 @@ router.put('/:id/update', async (req, res) => {
 
     let url = payload.source_url;
     let newVersion = null;
+    let resolvedFilename = payload.filename || path.basename(payload.filepath || '');
 
-    // Check for releases-based URL to compare versions
+    // Releases URL: swap the stored tag with the latest release's tag in the
+    // download URL so we actually fetch the new asset. We try to match the
+    // original filename to an asset in the new release first; if that fails
+    // we fall back to a literal tag swap and finally to the raw stored URL.
     const releasesMatch = payload.source_url.match(/github\.com\/([^\/]+)\/([^\/]+)\/releases(?:\/tag\/([^\/\?#]+)|\/download\/([^\/\?#]+))\/([^\s?#]+)/i);
     if (releasesMatch) {
-      const [, owner, repo] = releasesMatch;
+      const [, owner, repo, tagFromTag, tagFromDownload, assetNameInUrl] = releasesMatch;
+      const oldTag = tagFromDownload || tagFromTag;
       const apiUrl = `https://api.github.com/repos/${owner}/${repo}/releases/latest`;
       const response = await fetch(apiUrl, { headers: { 'Accept': 'application/vnd.github.v3+json' } });
       if (response.ok) {
         const release = await response.json();
         newVersion = release.tag_name || 'latest';
-        // Don't auto-update - user must click update button
-      }
-    }
 
-    if (newVersion && payload.version === newVersion) {
-      return res.json({ success: false, error: 'No newer version available', currentVersion: payload.version, newVersion: null });
+        if (newVersion && payload.version === newVersion) {
+          return res.json({ success: false, error: 'No newer version available', currentVersion: payload.version, newVersion: null });
+        }
+
+        // Prefer the asset whose name matches the existing filename, then any
+        // asset sharing the same extension, then any asset at all.
+        const assets = Array.isArray(release.assets) ? release.assets : [];
+        const ext = path.extname(resolvedFilename || assetNameInUrl).toLowerCase();
+        const byExactName = assets.find(a => a.name === resolvedFilename);
+        const byExt = ext ? assets.find(a => path.extname(a.name).toLowerCase() === ext) : null;
+        const chosen = byExactName || byExt || assets[0];
+        if (chosen) {
+          url = chosen.browser_download_url;
+          resolvedFilename = chosen.name;
+        } else if (oldTag) {
+          // No asset listed (private repo? rare). Try a literal tag swap.
+          url = url.replace(`/releases/download/${oldTag}/`, `/releases/download/${newVersion}/`);
+        }
+      }
     }
 
     // Convert blob URL to raw URL if needed
@@ -451,19 +514,67 @@ router.put('/:id/update', async (req, res) => {
       throw new Error(`Failed to fetch: ${response.status}`);
     }
 
-    const buffer = await response.arrayBuffer().then(ab => Buffer.from(ab));
+    let buffer = await response.arrayBuffer().then(ab => Buffer.from(ab));
 
-    // Ensure file is written to current payloadsDir
+    // If the chosen asset is a ZIP, mirror the POST /fetch-url behaviour and
+    // extract the matching .elf/.lua entry. Otherwise we'd happily overwrite
+    // the existing ELF with a zip blob and the PS5 loader would EPIPE us.
+    const isZip = url.toLowerCase().endsWith('.zip')
+      || resolvedFilename.toLowerCase().endsWith('.zip')
+      || (buffer.length >= 4 && buffer[0] === 0x50 && buffer[1] === 0x4B && buffer[2] === 0x03 && buffer[3] === 0x04);
+
+    if (isZip) {
+      const zip = new AdmZip(buffer);
+      const entries = zip.getEntries();
+      const oldExt = path.extname(payload.filename || '').toLowerCase() || '.elf';
+      const oldBase = path.basename(payload.filename || '', oldExt).toLowerCase();
+      const matchExtEntry = (ext) => entries.find(e => !e.isDirectory && path.extname(e.entryName).toLowerCase() === ext);
+      const matchBaseEntry = entries.find(e => {
+        if (e.isDirectory) return false;
+        const n = path.basename(e.entryName).toLowerCase();
+        return n === (payload.filename || '').toLowerCase() || n.startsWith(oldBase);
+      });
+      const elfOrLua = matchBaseEntry
+        || matchExtEntry(oldExt)
+        || matchExtEntry('.elf')
+        || matchExtEntry('.lua');
+      if (!elfOrLua) {
+        throw new Error('No .elf/.lua file found inside release ZIP');
+      }
+      buffer = elfOrLua.getData();
+      resolvedFilename = path.basename(elfOrLua.entryName);
+      log('info', `Update: extracted ${elfOrLua.entryName} from ZIP for ${payload.name}`);
+    }
+
+    // Sanity check: refuse to write a payload that clearly isn't a binary the
+    // PS5 loader can run. ELF starts with 7F 45 4C 46. Lua is text so we
+    // don't validate it.
+    const isElfExt = resolvedFilename.toLowerCase().endsWith('.elf');
+    if (isElfExt && !(buffer.length >= 4 && buffer[0] === 0x7F && buffer[1] === 0x45 && buffer[2] === 0x4C && buffer[3] === 0x46)) {
+      throw new Error('Downloaded file is not a valid ELF (missing magic bytes)');
+    }
+
+    // Ensure file is written to current payloadsDir. If the asset name changed
+    // across releases, move to the new filename and drop the old one.
     let filepath = payload.filepath;
-    if (!fs.existsSync(filepath) || !filepath.startsWith(payloadsDir)) {
-      filepath = path.join(payloadsDir, payload.filename || path.basename(filepath));
+    const desiredPath = path.join(payloadsDir, resolvedFilename);
+    if (filepath !== desiredPath) {
+      if (filepath && fs.existsSync(filepath) && filepath !== desiredPath) {
+        try { fs.unlinkSync(filepath); } catch (_) {}
+      }
+      filepath = desiredPath;
+    } else if (!fs.existsSync(filepath) || !filepath.startsWith(payloadsDir)) {
+      filepath = desiredPath;
     }
     fs.writeFileSync(filepath, buffer);
 
-    db.run('UPDATE payloads SET size = ?, version = COALESCE(?, version), updated_at = CURRENT_TIMESTAMP WHERE id = ?', [buffer.length, newVersion, parseInt(id)]);
+    db.run(
+      'UPDATE payloads SET filename = ?, filepath = ?, size = ?, source_url = ?, version = COALESCE(?, version), updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      [resolvedFilename, filepath, buffer.length, url, newVersion, parseInt(id)]
+    );
     saveDatabase();
 
-    log('info', `Updated payload: ${payload.name}`);
+    log('info', `Updated payload: ${payload.name}${newVersion ? ` -> ${newVersion}` : ''}`);
     res.json({ success: true, message: 'Payload updated', newVersion });
   } catch (error) {
     log('error', `Update failed: ${error.message}`);
