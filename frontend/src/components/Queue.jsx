@@ -10,7 +10,7 @@ const TYPE_META = {
 };
 
 const STATUS_META = {
-  queued: { color: '#8e44ad', label: 'Queued' },
+  queued: { color: 'var(--magenta)', label: 'Queued' },
   starting: { color: 'var(--blue)', label: 'Starting' },
   running: { color: 'var(--blue)', label: 'Running' },
   pushing: { color: 'var(--blue)', label: 'Pushing' },

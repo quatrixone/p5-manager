@@ -350,229 +350,211 @@ function ScriptRunner({ ip, onSendInput, scripts, onScriptsChange }) {
 
   const clearOutput = () => setOutput([]);
 
-  const sessionColor = sessionState === 'connected' ? '#27ae60'
-    : sessionState === 'connecting' ? '#f39c12'
-    : sessionState === 'stopping' ? '#e67e22' : '#7f8c8d';
+  const sessionVariant = sessionState === 'connected' ? 'success'
+    : sessionState === 'connecting' ? 'warning'
+    : sessionState === 'stopping' ? 'warning' : 'muted';
+
+  const outputColor = (type) => type === 'error' ? 'var(--red)'
+    : type === 'success' ? 'var(--accent)'
+    : type === 'warning' ? 'var(--amber)' : 'var(--text-soft)';
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+    <div className="flex-col gap-md">
       {/* Remote Play session control */}
-      <div style={{ background: '#16213e', padding: '0.75rem 1rem', borderRadius: 12, display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
-        <span style={{
-          display: 'inline-flex', alignItems: 'center', gap: '0.4rem',
-          background: '#0f3460', borderRadius: 999, padding: '0.25rem 0.75rem', fontSize: '0.8rem',
-        }}>
-          <span style={{ width: 8, height: 8, borderRadius: '50%', background: sessionColor }} />
-          RP session: <b style={{ color: sessionColor }}>{sessionState}</b>
-          {sessionId && <span style={{ color: '#888', fontFamily: 'monospace', fontSize: '0.7rem' }}>{sessionId.slice(0, 8)}</span>}
-        </span>
-        {sessionState !== 'connected' ? (
-          <button
-            onClick={startSession}
-            disabled={!ip || sessionState === 'connecting'}
-            style={{ padding: '0.4rem 0.8rem', background: '#27ae60', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: '0.8rem' }}
-          >
-            {sessionState === 'connecting' ? '⏳ Starting…' : '▶ Start session'}
-          </button>
-        ) : (
-          <button
-            onClick={stopSession}
-            disabled={sessionState === 'stopping'}
-            style={{ padding: '0.4rem 0.8rem', background: '#e74c3c', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: '0.8rem' }}
-          >
-            ⏹ Stop session
-          </button>
-        )}
-        <span style={{ color: '#888', fontSize: '0.75rem', flex: 1 }}>
-          Optional — the first input will auto-open a session too, but starting it explicitly avoids the first-command delay.
-        </span>
-      </div>
-
-      {/* Saved Scripts */}
-      <div style={{ background: '#16213e', padding: '1rem', borderRadius: 12 }}>
-        <h3 style={{ fontSize: '0.9rem', fontWeight: 500, marginBottom: '0.75rem', color: '#27ae60' }}>
-          Saved Scripts ({scripts?.length || 0})
-        </h3>
-        {!scripts || scripts.length === 0 ? (
-          <div style={{ padding: '0.75rem', background: '#0f3460', borderRadius: 6, color: '#aaa', fontSize: '0.85rem' }}>
-            No saved scripts yet. Use the editor below to create one and press <b>💾 Save</b>.
-          </div>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', maxHeight: 240, overflowY: 'auto' }}>
-            {scripts.map(s => (
-              <div key={s.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.5rem', background: editingId === s.id ? '#234' : '#0f3460', borderRadius: 6, flexWrap: 'wrap', gap: '0.4rem' }}>
-                <span style={{ flex: 1, cursor: 'pointer', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }} onClick={() => loadScript(s)} title={s.name}>{s.name}</span>
-                <div style={{ display: 'flex', gap: '0.25rem' }}>
-                  <button onClick={() => runScript(s.script)} disabled={isRunning} title="Run" style={{ padding: '0.35rem 0.6rem', background: '#27ae60', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: '0.8rem', minHeight: 32 }}>▶</button>
-                  <button onClick={() => loadScript(s)} disabled={isRunning} title="Edit" style={{ padding: '0.35rem 0.6rem', background: '#3498db', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: '0.8rem', minHeight: 32 }}>✏️</button>
-                  <button onClick={() => deleteScript(s.id)} title="Delete" style={{ padding: '0.35rem 0.6rem', background: '#e74c3c', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: '0.8rem', minHeight: 32 }}>🗑</button>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* Command Reference */}
-      <div style={{ background: '#16213e', padding: '1rem', borderRadius: 12 }}>
-        <h3 style={{ fontSize: '0.9rem', fontWeight: 500, marginBottom: '0.75rem', color: '#27ae60' }}>
-          Available Commands
-        </h3>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
-          {AVAILABLE_COMMANDS.map(({ cmd, desc }) => (
-            <button
-              key={cmd}
-              onClick={() => insertCommand(cmd)}
-              disabled={isRunning}
-              title={desc}
-              style={{
-                padding: '0.4rem 0.6rem',
-                background: isRunning ? '#333' : '#0f3460',
-                color: '#fff',
-                border: 'none',
-                borderRadius: 4,
-                cursor: isRunning ? 'not-allowed' : 'pointer',
-                fontSize: '0.75rem',
-                minHeight: 32
-              }}
-            >
-              {cmd}
-            </button>
-          ))}
-          <button
-            onClick={() => insertCommand('wait ')}
-            disabled={isRunning}
-            title="Wait X ms"
-            style={{
-              padding: '0.4rem 0.6rem',
-              background: isRunning ? '#333' : '#8e44ad',
-              color: '#fff',
-              border: 'none',
-              borderRadius: 4,
-              cursor: isRunning ? 'not-allowed' : 'pointer',
-              fontSize: '0.75rem',
-              minHeight: 32
-            }}
-          >
-            wait X
-          </button>
-        </div>
-      </div>
-
-      {/* Script Editor */}
-      <div style={{ background: '#16213e', padding: '1rem', borderRadius: 12 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
-          <h3 style={{ fontSize: '0.9rem', fontWeight: 500 }}>
-            {editingId ? `Editing: ${scriptName}` : 'New Script'}
-          </h3>
-          <div style={{ display: 'flex', gap: '0.5rem' }}>
-            <button
-              onClick={clearForm}
-              disabled={isRunning}
-              style={{ padding: '0.4rem 0.75rem', background: '#666', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: '0.8rem' }}
-            >
-              Clear
-            </button>
-            <button
-              onClick={saveScript}
-              disabled={isRunning || !scriptName.trim() || !script.trim()}
-              style={{ padding: '0.4rem 0.75rem', background: isRunning ? '#555' : '#27ae60', color: '#fff', border: 'none', borderRadius: 4, cursor: isRunning ? 'not-allowed' : 'pointer', fontSize: '0.8rem' }}
-            >
-              💾 Save
-            </button>
-            <button
-              onClick={() => runScript(script)}
-              disabled={isRunning || !script.trim()}
-              style={{ padding: '0.4rem 0.75rem', background: isRunning ? '#555' : '#e94560', color: '#fff', border: 'none', borderRadius: 4, cursor: isRunning ? 'not-allowed' : 'pointer', fontSize: '0.8rem' }}
-            >
-              {isRunning ? 'Running...' : '▶ Run'}
-            </button>
-            {isRunning && (
+      <div className="comp-card">
+        <div className="comp-card-body flex items-center gap-sm flex-wrap">
+          <span className={`badge badge-${sessionVariant}`}>
+            <span style={{
+              width: 6, height: 6, borderRadius: 999,
+              background: 'currentColor',
+              boxShadow: sessionState === 'connected' ? '0 0 0 4px var(--accent-dim)' : 'none',
+            }} />
+            RP session · {sessionState}
+          </span>
+          {sessionId && (
+            <span className="font-mono text-xs text-muted">{sessionId.slice(0, 12)}</span>
+          )}
+          <div style={{ marginLeft: 'auto', display: 'flex', gap: 'var(--space-sm)' }}>
+            {sessionState !== 'connected' ? (
               <button
-                onClick={stopScript}
-                style={{ padding: '0.4rem 0.75rem', background: '#e74c3c', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: '0.8rem' }}
+                className="btn btn-success btn-sm"
+                onClick={startSession}
+                disabled={!ip || sessionState === 'connecting'}
               >
-                ⏹ Stop
+                {sessionState === 'connecting' ? '⏳ Starting…' : '▶ Start session'}
+              </button>
+            ) : (
+              <button
+                className="btn btn-danger btn-sm"
+                onClick={stopSession}
+                disabled={sessionState === 'stopping'}
+              >
+                ⏹ Stop session
               </button>
             )}
           </div>
         </div>
-        <div style={{ marginBottom: '0.75rem' }}>
+      </div>
+
+      {/* Saved Scripts */}
+      <div className="comp-card">
+        <div className="comp-card-header">
+          <span className="comp-card-title">
+            <span>💾</span> Saved Scripts
+            <span className="badge badge-muted" style={{ marginLeft: 8 }}>{scripts?.length || 0}</span>
+          </span>
+        </div>
+        <div className="comp-card-body">
+          {!scripts || scripts.length === 0 ? (
+            <div className="text-sm text-muted">
+              No saved scripts yet. Use the editor below to create one and press <b>💾 Save</b>.
+            </div>
+          ) : (
+            <div className="flex-col" style={{ gap: 6, maxHeight: 260, overflowY: 'auto' }}>
+              {scripts.map(s => (
+                <div
+                  key={s.id}
+                  className={`list-item ${editingId === s.id ? 'file-card-selected' : ''}`}
+                  style={{ marginBottom: 0, padding: '10px 12px' }}
+                >
+                  <span
+                    className="flex-1 truncate"
+                    style={{ cursor: 'pointer', fontSize: '0.9rem' }}
+                    onClick={() => loadScript(s)}
+                    title={s.name}
+                  >
+                    {s.name}
+                  </span>
+                  <div className="list-item-actions">
+                    <button className="btn btn-success btn-sm btn-icon" onClick={() => runScript(s.script)} disabled={isRunning} title="Run">▶</button>
+                    <button className="btn btn-secondary btn-sm btn-icon" onClick={() => loadScript(s)} disabled={isRunning} title="Edit">✏️</button>
+                    <button className="btn btn-danger btn-sm btn-icon" onClick={() => deleteScript(s.id)} title="Delete">🗑</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Command Reference */}
+      <div className="comp-card">
+        <div className="comp-card-header">
+          <span className="comp-card-title">
+            <span>🎛️</span> Available Commands
+          </span>
+        </div>
+        <div className="comp-card-body">
+          <div className="flex flex-wrap" style={{ gap: 6 }}>
+            {AVAILABLE_COMMANDS.map(({ cmd, desc }) => (
+              <button
+                key={cmd}
+                onClick={() => insertCommand(cmd)}
+                disabled={isRunning}
+                title={desc}
+                className="btn btn-secondary btn-sm font-mono"
+                style={{ minHeight: 32, padding: '4px 10px' }}
+              >
+                {cmd}
+              </button>
+            ))}
+          </div>
+          <p className="text-xs text-muted mt-sm">
+            Append <code>10x</code>, <code>x10</code>, or <code>*10</code> to repeat. Use <code>text &lt;string&gt;</code> to type on the PS5 on-screen keyboard.
+          </p>
+        </div>
+      </div>
+
+      {/* Script Editor */}
+      <div className="comp-card">
+        <div className="comp-card-header">
+          <span className="comp-card-title">
+            <span>{editingId ? '✏️' : '＋'}</span>
+            {editingId ? `Editing: ${scriptName}` : 'New Script'}
+          </span>
+          <div className="flex gap-sm">
+            <button className="btn btn-ghost btn-sm" onClick={clearForm} disabled={isRunning}>Clear</button>
+            <button
+              className="btn btn-success btn-sm"
+              onClick={saveScript}
+              disabled={isRunning || !scriptName.trim() || !script.trim()}
+            >
+              💾 Save
+            </button>
+            <button
+              className="btn btn-primary btn-sm"
+              onClick={() => runScript(script)}
+              disabled={isRunning || !script.trim()}
+            >
+              {isRunning ? 'Running…' : '▶ Run'}
+            </button>
+            {isRunning && (
+              <button className="btn btn-danger btn-sm" onClick={stopScript}>⏹ Stop</button>
+            )}
+          </div>
+        </div>
+        <div className="comp-card-body flex-col gap-sm">
           <input
             type="text"
+            className="input"
             placeholder="Script name"
             value={scriptName}
             onChange={e => setScriptName(e.target.value)}
             disabled={isRunning}
-            style={{ width: '100%', padding: '0.75rem', borderRadius: 6, background: '#1a1a2e', color: '#fff', border: '1px solid #0f3460', fontSize: '1rem', marginBottom: '0.5rem' }}
           />
-        </div>
-        <textarea
-          value={script}
-          onChange={e => setScript(e.target.value)}
-          disabled={isRunning}
-          placeholder={`// Enter commands, one per line:
-// Examples:
-//   left              - single tap
-//   left 120          - hold for 120 ms
-//   left 10x          - tap 10 times (also: x10 or *10)
-//   left 10x 120      - 10 taps, each 120 ms
-//   wait 500          - sleep 500 ms
-//   lstick 0.5 0 200  - flick left stick right for 200 ms
-//   text Revenge      - type on PS5 software keyboard (a-z + space)
+          <textarea
+            className="input font-mono"
+            value={script}
+            onChange={e => setScript(e.target.value)}
+            disabled={isRunning}
+            spellCheck={false}
+            placeholder={`// Enter commands, one per line:
+//   left              tap once
+//   left 120          hold for 120 ms
+//   left 10x          tap 10 times (also: x10 or *10)
+//   left 10x 120      10 taps, each 120 ms
+//   wait 500          sleep 500 ms
+//   text Revenge      type on PS5 on-screen keyboard (a-z + space)
 left
 wait 500
 text revenge
 cross 120
 circle`}
-          style={{
-            width: '100%',
-            minHeight: 150,
-            padding: '0.75rem',
-            borderRadius: 8,
-            background: isRunning ? '#1a1a2e' : '#0a0a15',
-            color: '#fff',
-            border: '1px solid #0f3460',
-            fontSize: '0.85rem',
-            fontFamily: 'monospace',
-            resize: 'vertical',
-            lineHeight: 1.5
-          }}
-        />
-        <div style={{ fontSize: '0.75rem', color: '#888', marginTop: '0.5rem' }}>
-          Use <code style={{ background: '#0f3460', padding: '0.1rem 0.3rem', borderRadius: 3 }}>//</code> for comments, <code style={{ background: '#0f3460', padding: '0.1rem 0.3rem', borderRadius: 3 }}>wait X</code> for delay in milliseconds
+            style={{ minHeight: 180, padding: 12, lineHeight: 1.55, resize: 'vertical' }}
+          />
+          <div className="text-xs text-muted">
+            Use <code>//</code> for comments, <code>wait X</code> for a delay in milliseconds.
+          </div>
         </div>
       </div>
 
       {/* Output Console */}
-      <div style={{ background: '#0a0a15', padding: '1rem', borderRadius: 12 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
-          <h3 style={{ fontSize: '0.9rem', fontWeight: 500 }}>Output Console</h3>
-          <button
-            onClick={clearOutput}
-            style={{ padding: '0.3rem 0.6rem', background: '#333', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: '0.75rem' }}
-          >
-            Clear
-          </button>
+      <div className="comp-card">
+        <div className="comp-card-header">
+          <span className="comp-card-title">
+            <span>›_</span> Output Console
+          </span>
+          <button className="btn btn-ghost btn-sm" onClick={clearOutput}>Clear</button>
         </div>
-        <div style={{
-          minHeight: 100,
-          maxHeight: 200,
-          overflowY: 'auto',
-          fontFamily: 'monospace',
-          fontSize: '0.8rem',
-          lineHeight: 1.6,
-          padding: '0.5rem',
-          background: '#000',
-          borderRadius: 6,
-          border: '1px solid #333'
-        }}>
+        <div
+          className="font-mono"
+          style={{
+            minHeight: 120,
+            maxHeight: 240,
+            overflowY: 'auto',
+            padding: 14,
+            background: 'rgba(0,0,0,0.35)',
+            borderTop: '1px solid var(--border)',
+            fontSize: '0.78rem',
+            lineHeight: 1.65,
+          }}
+        >
           {output.length === 0 ? (
-            <span style={{ color: '#555' }}>Output will appear here...</span>
+            <span className="text-muted">Output will appear here…</span>
           ) : (
             output.map((o, i) => (
-              <div key={i} style={{ color: o.type === 'error' ? '#e74c3c' : o.type === 'success' ? '#27ae60' : o.type === 'warning' ? '#f39c12' : '#aaa' }}>
-                <span style={{ color: '#555', marginRight: '0.5rem' }}>[{o.time}]</span>
+              <div key={i} style={{ color: outputColor(o.type) }}>
+                <span style={{ color: 'var(--muted-2)', marginRight: 8 }}>[{o.time}]</span>
                 {o.msg}
               </div>
             ))

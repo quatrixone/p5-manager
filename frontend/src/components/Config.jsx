@@ -70,7 +70,7 @@ function Config() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-      <section style={{ background: '#16213e', padding: '1rem', borderRadius: 12 }}>
+      <section style={{ background: 'var(--bg-elev)', padding: '1rem', borderRadius: 12 }}>
         <h2 style={{ fontSize: '1rem', fontWeight: 500, marginBottom: '1rem' }}>Network</h2>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
           <div>
@@ -80,24 +80,24 @@ function Config() {
               value={defaultSubnet}
               onChange={e => setDefaultSubnet(e.target.value)}
               placeholder="10.0.2.0/24"
-              style={{ padding: '0.75rem', borderRadius: 6, background: '#1a1a2e', color: '#fff', border: '1px solid #0f3460', fontSize: '1rem', width: '100%', maxWidth: 200 }}
+              style={{ padding: '0.75rem', borderRadius: 6, background: 'var(--bg)', color: '#fff', border: '1px solid var(--bg-elev-2)', fontSize: '1rem', width: '100%', maxWidth: 200 }}
             />
           </div>
         </div>
       </section>
 
-      <section style={{ background: '#16213e', padding: '1rem', borderRadius: 12 }}>
+      <section style={{ background: 'var(--bg-elev)', padding: '1rem', borderRadius: 12 }}>
         <h2 style={{ fontSize: '1rem', fontWeight: 500, marginBottom: '1rem' }}>Default Payloads</h2>
         <p style={{ fontSize: '0.85rem', color: '#888', marginBottom: '1rem' }}>These URLs will be used when adding payloads from GitHub.</p>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginBottom: '1rem' }}>
           {payloadUrls.map((p, idx) => (
-            <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.5rem', background: '#0f3460', borderRadius: 6 }}>
+            <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.5rem', background: 'var(--bg-elev-2)', borderRadius: 6 }}>
               <div style={{ flex: 1 }}>
                 <div style={{ fontWeight: 500 }}>{p.name}</div>
                 <div style={{ fontSize: '0.75rem', color: '#888', wordBreak: 'breakAll' }}>{p.url}</div>
               </div>
-              <button onClick={() => removePayloadUrl(idx)} style={{ padding: '0.4rem 0.75rem', background: '#c0392b', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: '0.8rem', marginLeft: '0.5rem' }}>
+              <button onClick={() => removePayloadUrl(idx)} style={{ padding: '0.4rem 0.75rem', background: 'var(--red)', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: '0.8rem', marginLeft: '0.5rem' }}>
                 Remove
               </button>
             </div>
@@ -110,27 +110,27 @@ function Config() {
             placeholder="Name"
             value={newName}
             onChange={e => setNewName(e.target.value)}
-            style={{ padding: '0.5rem', borderRadius: 6, background: '#1a1a2e', color: '#fff', border: '1px solid #0f3460', fontSize: '0.85rem', width: 120 }}
+            style={{ padding: '0.5rem', borderRadius: 6, background: 'var(--bg)', color: '#fff', border: '1px solid var(--bg-elev-2)', fontSize: '0.85rem', width: 120 }}
           />
           <input
             type="text"
             placeholder="GitHub URL"
             value={newUrl}
             onChange={e => setNewUrl(e.target.value)}
-            style={{ padding: '0.5rem', borderRadius: 6, background: '#1a1a2e', color: '#fff', border: '1px solid #0f3460', fontSize: '0.85rem', flex: 1, minWidth: 200 }}
+            style={{ padding: '0.5rem', borderRadius: 6, background: 'var(--bg)', color: '#fff', border: '1px solid var(--bg-elev-2)', fontSize: '0.85rem', flex: 1, minWidth: 200 }}
           />
-          <button onClick={addPayloadUrl} style={{ padding: '0.5rem 1rem', background: '#27ae60', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: '0.85rem' }}>
+          <button onClick={addPayloadUrl} style={{ padding: '0.5rem 1rem', background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: '0.85rem' }}>
             Add
           </button>
         </div>
       </section>
 
-      <button onClick={saveSettings} disabled={loading} style={{ padding: '1rem', background: loading ? '#555' : '#3498db', color: '#fff', border: 'none', borderRadius: 6, cursor: loading ? 'not-allowed' : 'pointer', fontSize: '1rem', fontWeight: 500 }}>
+      <button onClick={saveSettings} disabled={loading} style={{ padding: '1rem', background: loading ? '#555' : 'var(--blue)', color: '#fff', border: 'none', borderRadius: 6, cursor: loading ? 'not-allowed' : 'pointer', fontSize: '1rem', fontWeight: 500 }}>
         {loading ? 'Saving...' : 'Save Settings'}
       </button>
 
       {message && (
-        <div style={{ padding: '0.75rem', background: message.includes('Failed') ? '#e74c3c' : '#27ae60', borderRadius: 6, color: '#fff', fontSize: '0.85rem' }}>
+        <div style={{ padding: '0.75rem', background: message.includes('Failed') ? 'var(--red)' : 'var(--accent)', borderRadius: 6, color: '#fff', fontSize: '0.85rem' }}>
           {message}
         </div>
       )}

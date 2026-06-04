@@ -88,13 +88,13 @@ function LogServer({ profiles }) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-      <section style={{ background: '#16213e', padding: '1rem', borderRadius: 12 }}>
+      <section style={{ background: 'var(--bg-elev)', padding: '1rem', borderRadius: 12 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.5rem' }}>
           <h2 style={{ fontSize: '1rem', fontWeight: 500 }}>PS5 Log Server</h2>
           <div style={{
             padding: '0.4rem 0.75rem',
             borderRadius: 6,
-            background: status.running ? '#27ae60' : '#c0392b',
+            background: status.running ? 'var(--accent)' : 'var(--red)',
             color: '#fff',
             fontWeight: 500,
             fontSize: '0.85rem'
@@ -109,7 +109,7 @@ function LogServer({ profiles }) {
               type="number"
               value={port}
               onChange={e => setPort(e.target.value)}
-              style={{ padding: '0.75rem', borderRadius: 6, border: '1px solid #0f3460', background: '#1a1a2e', color: '#fff', fontSize: '1rem', width: 100 }}
+              style={{ padding: '0.75rem', borderRadius: 6, border: '1px solid var(--bg-elev-2)', background: 'var(--bg)', color: '#fff', fontSize: '1rem', width: 100 }}
             />
             {profiles && profiles.length > 0 && (
               <div style={{ padding: '0.75rem', color: '#eee', fontSize: '0.9rem' }}>
@@ -123,7 +123,7 @@ function LogServer({ profiles }) {
               disabled={status.running}
               style={{
                 padding: '0.75rem',
-                background: status.running ? '#555' : '#27ae60',
+                background: status.running ? '#555' : 'var(--accent)',
                 color: '#fff',
                 border: 'none',
                 borderRadius: 6,
@@ -141,7 +141,7 @@ function LogServer({ profiles }) {
               disabled={!status.running}
               style={{
                 padding: '0.75rem',
-                background: !status.running ? '#555' : '#c0392b',
+                background: !status.running ? '#555' : 'var(--red)',
                 color: '#fff',
                 border: 'none',
                 borderRadius: 6,
@@ -158,16 +158,16 @@ function LogServer({ profiles }) {
         </div>
 
         <p style={{ marginTop: '0.75rem', fontSize: '0.8rem', color: '#888' }}>
-          Set your PS5 log server to: <code style={{ color: '#27ae60' }}>{getProfileIp() || 'PS5_IP'}:{port}</code>
+          Set your PS5 log server to: <code style={{ color: 'var(--accent)' }}>{getProfileIp() || 'PS5_IP'}:{port}</code>
         </p>
       </section>
 
-      <section style={{ background: '#16213e', padding: '1rem', borderRadius: 12 }}>
+      <section style={{ background: 'var(--bg-elev)', padding: '1rem', borderRadius: 12 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
           <h2 style={{ fontSize: '1rem', fontWeight: 500 }}>Output</h2>
           <button
             onClick={fetchStatus}
-            style={{ padding: '0.4rem 0.75rem', background: '#3498db', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: '0.85rem', minHeight: 32 }}
+            style={{ padding: '0.4rem 0.75rem', background: 'var(--blue)', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: '0.85rem', minHeight: 32 }}
           >
             Refresh
           </button>
@@ -179,7 +179,7 @@ function LogServer({ profiles }) {
           <div style={{
             maxHeight: 300,
             overflow: 'auto',
-            background: '#0f3460',
+            background: 'var(--bg-elev-2)',
             borderRadius: 8,
             padding: '0.75rem',
             fontFamily: 'monospace',
@@ -187,8 +187,8 @@ function LogServer({ profiles }) {
             color: '#eee'
           }}>
             {logs.map((log, index) => (
-              <div key={index} style={{ marginBottom: '0.5rem', paddingBottom: '0.5rem', borderBottom: '1px solid #16213e' }}>
-                <span style={{ color: '#27ae60' }}>[{log.timestamp?.split('T')[1]?.split('.')[0] || '00:00:00'}]</span>
+              <div key={index} style={{ marginBottom: '0.5rem', paddingBottom: '0.5rem', borderBottom: '1px solid var(--bg-elev)' }}>
+                <span style={{ color: 'var(--accent)' }}>[{log.timestamp?.split('T')[1]?.split('.')[0] || '00:00:00'}]</span>
                 <span style={{ color: '#888', marginLeft: '0.5rem' }}>from {log.ip}</span>
                 <div style={{ marginTop: '0.25rem', color: '#fff', wordBreak: 'break-word' }}>{log.message}</div>
               </div>
