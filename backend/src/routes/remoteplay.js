@@ -40,9 +40,11 @@ async function sidecar(method, urlPath, body, { timeout = 30000 } = {}) {
   }
 }
 
+const PROFILE_COLS = 'id, ip_address, rp_user_profile, psn_account_id, psn_online_id';
+
 function loadProfileByIp(ip) {
   const db = getDatabase();
-  const stmt = db.prepare('SELECT id, ip_address, rp_user_profile FROM profiles WHERE ip_address = ? LIMIT 1');
+  const stmt = db.prepare(`SELECT ${PROFILE_COLS} FROM profiles WHERE ip_address = ? LIMIT 1`);
   stmt.bind([ip]);
   let row = null;
   if (stmt.step()) row = stmt.getAsObject();
@@ -52,7 +54,7 @@ function loadProfileByIp(ip) {
 
 function loadProfileById(id) {
   const db = getDatabase();
-  const stmt = db.prepare('SELECT id, ip_address, rp_user_profile FROM profiles WHERE id = ? LIMIT 1');
+  const stmt = db.prepare(`SELECT ${PROFILE_COLS} FROM profiles WHERE id = ? LIMIT 1`);
   stmt.bind([parseInt(id)]);
   let row = null;
   if (stmt.step()) row = stmt.getAsObject();
@@ -60,27 +62,55 @@ function loadProfileById(id) {
   return row;
 }
 
-async function ensureSessionForIp(ip) {
-  const cached = ipToSession.get(ip);
-  if (cached && (Date.now() - cached.started) < SESSION_REUSE_MS) {
-    try {
-      const s = await sidecar('GET', `/sessions/${encodeURIComponent(cached.sid)}`, undefined, { timeout: 4000 });
-      if (s.state === 'connected') return cached.sid;
-    } catch (_) { /* fall through to recreate */ }
-    ipToSession.delete(ip);
-  }
-  const profile = loadProfileByIp(ip);
-  if (!profile?.rp_user_profile) {
-    throw new Error('No Remote Play credentials for this PS5 - pair first in the Remote Play tab');
-  }
-  let userProfile;
-  try { userProfile = JSON.parse(profile.rp_user_profile); }
-  catch (_) { throw new Error('Stored Remote Play profile is corrupt - re-pair the PS5'); }
+// Single shared entry-point for "give me a working Remote Play session for
+// this PS5". Used by every caller that needs one: ScriptRunner's manual
+// Start, Autoload's rp_session step, RemotePlay.jsx's Start button, and the
+// implicit auto-open inside quick-input / run-script. Keeping the logic in
+// one place means caching, credential lookup, error reporting, and the
+// wakeup-before-connect handshake all behave identically everywhere.
+async function ensureSessionForIp(ip, opts = {}) {
+  const { userProfile: explicitProfile = null, forceNew = false } = opts;
 
-  const data = await sidecar('POST', '/sessions/start', { ip, user_profile: userProfile }, { timeout: 30000 });
+  if (!forceNew) {
+    const cached = ipToSession.get(ip);
+    if (cached && (Date.now() - cached.started) < SESSION_REUSE_MS) {
+      try {
+        const s = await sidecar('GET', `/sessions/${encodeURIComponent(cached.sid)}`, undefined, { timeout: 5000 });
+        if (s.state === 'connected') return { session_id: cached.sid, ip, cached: true };
+      } catch (e) {
+        // Treat sidecar timeouts as transient - keep the cached entry. Only
+        // evict on a definitive "session gone" response.
+        if (!/timeout|ECONN/i.test(e.message || '')) ipToSession.delete(ip);
+        else return { session_id: cached.sid, ip, cached: true, transient: true };
+      }
+      if (forceNew) ipToSession.delete(ip);
+    } else if (cached) {
+      ipToSession.delete(ip);
+    }
+  }
+
+  // Need a fresh session - resolve the paired credentials.
+  let userProfile = explicitProfile;
+  let accountId = null;
+  if (!userProfile) {
+    const profile = loadProfileByIp(ip);
+    if (!profile?.rp_user_profile) {
+      throw new Error('No Remote Play credentials for this PS5 - pair first in the Remote Play tab');
+    }
+    try { userProfile = JSON.parse(profile.rp_user_profile); }
+    catch (_) { throw new Error('Stored Remote Play profile is corrupt - re-pair the PS5'); }
+    accountId = profile.psn_account_id || null;
+  }
+
+  // The sidecar uses account_id (decimal) to compute the DDP LAUNCH
+  // credential, which it fires after wakeup to dismiss the PS5 "Press PS
+  // button" account-picker that appears after waking from rest mode.
+  const data = await sidecar('POST', '/sessions/start',
+    { ip, user_profile: userProfile, account_id: accountId },
+    { timeout: 45000 });
   ipToSession.set(ip, { sid: data.session_id, started: Date.now() });
   log('info', `Started Remote Play session ${data.session_id} for ${ip}`);
-  return data.session_id;
+  return { session_id: data.session_id, ip, cached: false, state: data.state };
 }
 
 // Map ScriptRunner.jsx commands → sidecar (pyremoteplay) button names.
@@ -95,6 +125,76 @@ const BUTTON_ALIASES = {
   touchpad: 'touchpad',
 };
 
+// ─── PS5 on-screen keyboard emulation ────────────────────────────────────────
+//
+// PS5 native software keyboard ("OSK") layout we emulate. pyremoteplay has no
+// public API for the keyboard protocol so we type by walking the d-pad over
+// the visible keys. Layout matches the default QWERTY view; rows are anchored
+// to the same left column so deltas work cleanly.
+//
+//   row 0: q w e r t y u i o p
+//   row 1: a s d f g h j k l
+//   row 2: z x c v b n m
+//   row 3: <space bar - we pick col 3 as a safe centre target>
+//
+// Coordinates are (col, row). The lower-case letters are listed; uppercase is
+// folded to lower-case (PS5 search is case-insensitive).
+const OSK_KEY_COORDS = (() => {
+  const map = {};
+  const rows = ['qwertyuiop', 'asdfghjkl', 'zxcvbnm'];
+  rows.forEach((row, r) => {
+    for (let c = 0; c < row.length; c++) map[row[c]] = [c, r];
+  });
+  map[' '] = [3, 3]; // space bar
+  return map;
+})();
+
+function buildOskInputs(text) {
+  // Returns an array of low-level events (button taps + delays) so the runner
+  // can emit them one at a time and stay responsive to stopRequested.
+  const events = [];
+  let curCol = 0;
+  let curRow = 0;
+  // Snap-to-home: pretend the user already navigated to "q" by walking
+  // out of any text field and into the keyboard's top-left.
+  for (let i = 0; i < 4; i++) events.push({ button: 'up' });
+  for (let i = 0; i < 10; i++) events.push({ button: 'left' });
+  // Walk to first letter row (Q row). The reset above lands on the top-left
+  // (q) directly when the keyboard has no numbers row visible; otherwise
+  // it lands on the numbers row and one extra "down" gets us to Q.
+  events.push({ button: 'down', soft: true }); // safe nudge into Q row
+  // After the nudge we treat (0,0) as Q.
+  for (const ch0 of String(text)) {
+    const ch = ch0.toLowerCase();
+    const coords = OSK_KEY_COORDS[ch];
+    if (!coords) {
+      // Unsupported char (digit / punctuation / accented). Skip but record.
+      events.push({ note: `skip:${ch0}` });
+      continue;
+    }
+    const [tc, tr] = coords;
+    const dr = tr - curRow;
+    const dc = tc - curCol;
+    if (dr > 0) for (let i = 0; i < dr; i++) events.push({ button: 'down' });
+    else if (dr < 0) for (let i = 0; i < -dr; i++) events.push({ button: 'up' });
+    if (dc > 0) for (let i = 0; i < dc; i++) events.push({ button: 'right' });
+    else if (dc < 0) for (let i = 0; i < -dc; i++) events.push({ button: 'left' });
+    events.push({ button: 'cross', commit: true });
+    curCol = tc;
+    curRow = tr;
+  }
+  return events;
+}
+
+// Recognise a "10x" / "x10" / "*10" repeat token and return the count.
+function parseRepeatToken(tok) {
+  if (!tok) return null;
+  const m = /^(?:x(\d+)|(\d+)x|\*(\d+))$/i.exec(tok);
+  if (!m) return null;
+  const n = parseInt(m[1] || m[2] || m[3], 10);
+  return Number.isFinite(n) && n > 0 ? Math.min(n, 1000) : null;
+}
+
 function parseScriptLine(line) {
   const t = (line || '').trim();
   if (!t || t.startsWith('//') || t.startsWith('#')) return null;
@@ -104,10 +204,30 @@ function parseScriptLine(line) {
     const ms = parseInt(parts[1], 10);
     return { type: 'wait', ms: Number.isFinite(ms) && ms >= 0 ? ms : 1000 };
   }
+  // text <free-form string> — types the string on the PS5 on-screen keyboard
+  // by emulating d-pad navigation + cross taps. Everything after the first
+  // whitespace is the literal payload (so quotes are NOT required).
+  if (cmd === 'text' || cmd === 'type') {
+    const text = t.replace(/^\S+\s+/, '');
+    return { type: 'text', text };
+  }
   const btn = BUTTON_ALIASES[cmd];
   if (btn) {
-    const dur = parts[1] ? parseInt(parts[1], 10) : 80;
-    return { type: 'button', button: btn, duration: Number.isFinite(dur) ? dur : 80 };
+    // Accept the remaining args in any order:
+    //   left              -> 1x, 80ms
+    //   left 120          -> 1x, 120ms
+    //   left 10x          -> 10x, 80ms
+    //   left 10x 120      -> 10x, 120ms
+    //   left 120 10x      -> 10x, 120ms
+    let count = 1;
+    let dur = 80;
+    for (let i = 1; i < parts.length; i++) {
+      const rep = parseRepeatToken(parts[i]);
+      if (rep != null) { count = rep; continue; }
+      const n = parseInt(parts[i], 10);
+      if (Number.isFinite(n)) dur = n;
+    }
+    return { type: 'button', button: btn, duration: dur, count };
   }
   // stick: e.g. "lstick 0.5 -0.3 200" (x, y, duration ms)
   if (cmd === 'lstick' || cmd === 'rstick') {
@@ -174,6 +294,38 @@ router.get('/discover', async (req, res) => {
   }
 });
 
+// ─── Wake (no session) --------------------------------------------------------
+//
+// Send wakeup UDP packets to the PS5 without trying to open a session. Helps
+// recover the RP slot when something else kicked the previous session (e.g.
+// a physical DualSense booted our Remote Play stream off the console).
+router.post('/wake', async (req, res) => {
+  try {
+    const { ip: rawIp, profile_id } = req.body || {};
+    let ip = rawIp;
+    let profile = null;
+    if (profile_id) profile = loadProfileById(profile_id);
+    if (!ip && profile) ip = profile.ip_address;
+    if (!ip) return res.status(400).json({ success: false, error: 'ip or profile_id required' });
+    if (!profile) profile = loadProfileByIp(ip);
+    if (!profile?.psn_account_id) return res.status(400).json({ success: false, error: 'PS5 must be PSN-linked first (Remote Play tab)' });
+
+    let userProfile = null;
+    if (profile.rp_user_profile) {
+      try { userProfile = JSON.parse(profile.rp_user_profile); } catch (_) {}
+    }
+    const data = await sidecar('POST', '/wake', {
+      ip,
+      account_id: profile.psn_account_id,
+      online_id: profile.psn_online_id || null,
+      user_profile: userProfile,
+    }, { timeout: 8000 });
+    res.json({ success: true, ...data });
+  } catch (err) {
+    res.status(err.status || 502).json({ success: false, error: err.message });
+  }
+});
+
 // ─── Register (pair with PIN) -------------------------------------------------
 
 router.post('/register', async (req, res) => {
@@ -217,26 +369,22 @@ router.post('/register', async (req, res) => {
 
 // ─── Session lifecycle --------------------------------------------------------
 
+// Public Start endpoint. Used by RemotePlay.jsx's "Start session" button.
+// Delegates to the shared ensureSessionForIp() so behaviour is identical to
+// ScriptRunner's Start and the Autoload rp_session start step.
 router.post('/sessions/start', async (req, res) => {
   try {
-    const { ip, profile_id } = req.body || {};
-    if (!ip) return res.status(400).json({ success: false, error: 'ip required' });
+    const { ip: rawIp, profile_id } = req.body || {};
+    let ip = rawIp;
+    if (!ip && profile_id) ip = loadProfileById(profile_id)?.ip_address;
+    if (!ip) return res.status(400).json({ success: false, error: 'ip or profile_id required' });
 
-    let userProfile = req.body?.user_profile;
-    if (!userProfile && profile_id) {
-      const db = getDatabase();
-      const stmt = db.prepare('SELECT rp_user_profile FROM profiles WHERE id = ?');
-      stmt.bind([parseInt(profile_id)]);
-      if (stmt.step()) {
-        const raw = stmt.getAsObject().rp_user_profile;
-        if (raw) { try { userProfile = JSON.parse(raw); } catch (_) {} }
-      }
-      stmt.free();
-    }
-    if (!userProfile) return res.status(400).json({ success: false, error: 'No Remote Play profile - pair first' });
-
-    const data = await sidecar('POST', '/sessions/start', { ip, user_profile: userProfile }, { timeout: 30000 });
-    ipToSession.set(ip, { sid: data.session_id, started: Date.now() });
+    // Caller may force a brand-new session (e.g. after Force-reset) or supply
+    // a user_profile inline for diagnostics / tests.
+    const data = await ensureSessionForIp(ip, {
+      userProfile: req.body?.user_profile || null,
+      forceNew: !!req.body?.force_new,
+    });
     res.json({ success: true, ...data });
   } catch (err) {
     res.status(err.status || 502).json({ success: false, error: err.message });
@@ -279,14 +427,17 @@ router.post('/sessions/:sid/stop', async (req, res) => {
 // Open (or reuse) the cached Remote Play session for an IP. Returns the
 // session id and current cached state without requiring the caller to know
 // anything about pyremoteplay.
+// Alias of /sessions/start kept for backwards compatibility with ScriptRunner
+// and Autoload's rp_session step. Goes through the same ensureSessionForIp()
+// helper so callers can't accidentally diverge.
 router.post('/quick-start', async (req, res) => {
   try {
     const { ip: rawIp, profile_id } = req.body || {};
     let ip = rawIp;
     if (!ip && profile_id) ip = loadProfileById(profile_id)?.ip_address;
     if (!ip) return res.status(400).json({ success: false, error: 'ip or profile_id required' });
-    const sid = await ensureSessionForIp(ip);
-    res.json({ success: true, session_id: sid, ip, cached: true });
+    const data = await ensureSessionForIp(ip, { forceNew: !!req.body?.force_new });
+    res.json({ success: true, ...data });
   } catch (err) {
     res.status(err.status || 502).json({ success: false, error: err.message });
   }
@@ -296,15 +447,36 @@ router.post('/quick-start', async (req, res) => {
 // no-op if no session was cached.
 router.post('/quick-stop', async (req, res) => {
   try {
-    const { ip: rawIp, profile_id } = req.body || {};
+    const { ip: rawIp, profile_id, all } = req.body || {};
     let ip = rawIp;
     if (!ip && profile_id) ip = loadProfileById(profile_id)?.ip_address;
     if (!ip) return res.status(400).json({ success: false, error: 'ip or profile_id required' });
+
+    let cachedStopped = false;
     const cached = ipToSession.get(ip);
-    if (!cached) return res.json({ success: true, stopped: false, ip });
-    try { await sidecar('POST', `/sessions/${encodeURIComponent(cached.sid)}/stop`, {}, { timeout: 8000 }); } catch (_) {}
-    ipToSession.delete(ip);
-    res.json({ success: true, stopped: true, ip, session_id: cached.sid });
+    if (cached) {
+      try { await sidecar('POST', `/sessions/${encodeURIComponent(cached.sid)}/stop`, {}, { timeout: 8000 }); } catch (_) {}
+      ipToSession.delete(ip);
+      cachedStopped = true;
+    }
+
+    // If `all` was requested OR we had nothing cached, also ask the sidecar to
+    // tear down anything it knows about for this IP. Recovers from caches
+    // drifting after a sidecar restart.
+    let sidecarStopped = [];
+    if (all || !cachedStopped) {
+      try {
+        const r = await sidecar('POST', `/sessions/stop-all?ip=${encodeURIComponent(ip)}`, {}, { timeout: 8000 });
+        sidecarStopped = r?.stopped || [];
+      } catch (_) {}
+    }
+
+    res.json({
+      success: true,
+      ip,
+      stopped: cachedStopped,
+      cleared_sidecar_sessions: sidecarStopped,
+    });
   } catch (err) {
     res.status(err.status || 502).json({ success: false, error: err.message });
   }
@@ -318,11 +490,16 @@ router.get('/quick-status', async (req, res) => {
     const cached = ipToSession.get(ip);
     if (!cached) return res.json({ success: true, active: false, ip });
     try {
-      const s = await sidecar('GET', `/sessions/${encodeURIComponent(cached.sid)}`, undefined, { timeout: 4000 });
+      const s = await sidecar('GET', `/sessions/${encodeURIComponent(cached.sid)}`, undefined, { timeout: 10000 });
       return res.json({ success: true, active: s.state === 'connected', ip, session_id: cached.sid, state: s.state });
-    } catch (_) {
-      ipToSession.delete(ip);
-      return res.json({ success: true, active: false, ip });
+    } catch (e) {
+      // A timeout (sidecar busy with sessions/start retry loop) is NOT the
+      // same as "session lost". Only evict the cache if the sidecar
+      // explicitly reports the session is gone (4xx). Treat other errors as
+      // transient and keep the cached session.
+      const transient = /timeout|ECONN/i.test(e.message || '');
+      if (!transient) ipToSession.delete(ip);
+      return res.json({ success: true, active: !transient ? false : true, ip, session_id: cached.sid, transient });
     }
   } catch (err) {
     res.status(err.status || 502).json({ success: false, error: err.message });
@@ -342,7 +519,7 @@ router.post('/quick-input', async (req, res) => {
     if (!ip) return res.status(400).json({ success: false, error: 'ip or profile_id required' });
     if (!button && !stick) return res.status(400).json({ success: false, error: 'button or stick required' });
 
-    const sid = await ensureSessionForIp(ip);
+    const { session_id: sid } = await ensureSessionForIp(ip);
     const payload = button
       ? { button: BUTTON_ALIASES[button.toLowerCase()] || button.toLowerCase(), action, duration_ms }
       : { stick, x, y };
@@ -376,8 +553,10 @@ router.post('/run-script', async (req, res) => {
 
     const lines = String(actualScript).split('\n');
     let sid;
-    try { sid = await ensureSessionForIp(ip); }
-    catch (e) { return res.status(400).json({ success: false, error: e.message }); }
+    try {
+      const r = await ensureSessionForIp(ip);
+      sid = r.session_id;
+    } catch (e) { return res.status(400).json({ success: false, error: e.message }); }
 
     const events = [];
     const sendButton = async (button, duration) => {
@@ -392,7 +571,8 @@ router.post('/run-script', async (req, res) => {
         if (e.status === 404 || /session/i.test(e.message)) {
           ipToSession.delete(ip);
           try {
-            sid = await ensureSessionForIp(ip);
+            const r = await ensureSessionForIp(ip);
+            sid = r.session_id;
             await sidecar('POST', `/sessions/${encodeURIComponent(sid)}/input`, {
               button, action: 'tap', duration_ms: duration,
             }, { timeout: 5000 });
@@ -415,14 +595,43 @@ router.post('/run-script', async (req, res) => {
         events.push({ line: i + 1, type: 'error', msg: `unknown command: ${parsed.raw}` });
         continue;
       }
-      if (parsed.type === 'button') {
-        const err = await sendButton(parsed.button, parsed.duration);
+      if (parsed.type === 'text') {
+        const inputs = buildOskInputs(parsed.text || '');
+        let typed = 0;
+        let errLast = null;
+        for (const ev of inputs) {
+          if (ev.note) continue;
+          const dur = ev.commit ? 100 : 60;
+          const err = await sendButton(ev.button, dur);
+          if (err && err !== 'recovered') errLast = err;
+          // Spacing between key navigations (small) and after a commit (a bit
+          // longer so PS5 can render the inserted character).
+          await new Promise((r) => setTimeout(r, ev.commit ? 140 : 90));
+          if (ev.commit) typed++;
+        }
         events.push({
-          line: i + 1, type: 'button', button: parsed.button,
-          ...(err && err !== 'recovered' ? { error: err } : {}),
-          ...(err === 'recovered' ? { recovered: true } : {}),
+          line: i + 1, type: 'text', text: parsed.text, typed,
+          ...(errLast ? { error: errLast } : {}),
         });
-        await new Promise((r) => setTimeout(r, 60));
+        continue;
+      }
+      if (parsed.type === 'button') {
+        const reps = Math.max(1, parsed.count || 1);
+        let lastErr = null;
+        let recoveredAny = false;
+        for (let r = 0; r < reps; r++) {
+          const err = await sendButton(parsed.button, parsed.duration);
+          if (err === 'recovered') recoveredAny = true;
+          else if (err) lastErr = err;
+          // Spacing between repeats so PS5 menus register each press as a
+          // discrete event instead of a long hold.
+          await new Promise((rs) => setTimeout(rs, 60));
+        }
+        events.push({
+          line: i + 1, type: 'button', button: parsed.button, count: reps,
+          ...(lastErr ? { error: lastErr } : {}),
+          ...(recoveredAny ? { recovered: true } : {}),
+        });
         continue;
       }
       if (parsed.type === 'stick') {

@@ -7,11 +7,7 @@ const API = '/api';
 
 function PS5Control({ profiles, onNotification, onProfilesChanged }) {
   const [status, setStatus] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [showAdvanced, setShowAdvanced] = useState(false);
-  const [credential, setCredential] = useState('');
-  const [capturing, setCapturing] = useState(false);
-  const [captureStatus, setCaptureStatus] = useState(null);
+  const [waking, setWaking] = useState(false);
   const [scripts, setScripts] = useState([]);
   const [notification, setNotification] = useState(null);
 
@@ -36,18 +32,12 @@ function PS5Control({ profiles, onNotification, onProfilesChanged }) {
     }
   };
 
-  useEffect(() => {
-    if (defaultProfile) {
-      fetchStatus();
-      fetchCaptureStatus();
-    }
-  }, [defaultProfile]);
+  useEffect(() => { if (defaultProfile) fetchStatus(); }, [defaultProfile]);
+  useEffect(() => { fetchScripts(); }, []);
 
   useEffect(() => {
     if (!defaultProfile) return;
-    const interval = setInterval(() => {
-      fetchStatus();
-    }, 5000);
+    const interval = setInterval(fetchStatus, 5000);
     return () => clearInterval(interval);
   }, [defaultProfile]);
 
@@ -62,30 +52,23 @@ function PS5Control({ profiles, onNotification, onProfilesChanged }) {
     }
   };
 
-  const fetchCaptureStatus = async () => {
-    try {
-      const res = await fetch(`${API}/ps5control/capture-status`);
-      const data = await res.json();
-      setCaptureStatus(data);
-      if (data.credential && !capturing) setCredential(data.credential);
-    } catch (err) {
-      console.error('Failed to fetch capture status:', err);
-    }
-  };
-
+  // Wake button now talks to the Remote Play sidecar so it sends both the
+  // DDP WAKEUP and the DDP LAUNCH packet (sha256 of the PSN account id as
+  // user-credential). The LAUNCH packet logs the account in remotely so the
+  // PS5 skips the "Press PS button" account picker after a cold wake.
   const handleWake = async () => {
     if (!defaultProfile) return;
-    setLoading(true);
+    setWaking(true);
     try {
-      const credToUse = defaultProfile.credential || credential;
-      const res = await fetch(`${API}/ps5control/wake`, {
+      const res = await fetch(`${API}/remoteplay/wake`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ip: defaultProfile.ip_address, credential: credToUse })
+        body: JSON.stringify({ profile_id: defaultProfile.id }),
       });
       const data = await res.json();
       if (data.success) {
-        showToast('Wake on LAN sent!', 'success');
+        const extra = data.ddp_launch_sent ? ' + DDP LAUNCH' : '';
+        showToast(`Wake packets sent${extra}`, 'success');
         setTimeout(fetchStatus, 3000);
       } else {
         showToast('Wake failed: ' + (data.error || 'Unknown error'), 'error');
@@ -93,64 +76,7 @@ function PS5Control({ profiles, onNotification, onProfilesChanged }) {
     } catch (err) {
       showToast('Wake error: ' + err.message, 'error');
     }
-    setLoading(false);
-  };
-
-  const handleCaptureCredential = async () => {
-    if (!defaultProfile) return;
-    setCapturing(true);
-    try {
-      const res = await fetch(`${API}/ps5control/capture-credential`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ip: defaultProfile.ip_address })
-      });
-      const data = await res.json();
-      setCapturing(false);
-      if (data.success && data.credential) {
-        setCredential(data.credential);
-        showToast('Credential captured!', 'success');
-      } else {
-        showToast('Failed to capture: ' + (data.error || 'Unknown error'), 'error');
-      }
-    } catch (err) {
-      setCapturing(false);
-      showToast('Capture error: ' + err.message, 'error');
-    }
-  };
-
-  const handleStopCapture = async () => {
-    try {
-      const res = await fetch(`${API}/ps5control/capture-stop`, { method: 'POST' });
-      const data = await res.json();
-      if (data.credential) {
-        setCredential(data.credential);
-        showToast('Credential saved!', 'success');
-      } else {
-        showToast('No credential captured', 'info');
-      }
-    } catch (err) {
-      showToast('Stop error: ' + err.message, 'error');
-    }
-  };
-
-  const handleSaveCredential = async () => {
-    if (!defaultProfile || !captureStatus?.credential) return;
-    try {
-      await fetch(`${API}/profiles/${defaultProfile.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: defaultProfile.name,
-          ip_address: defaultProfile.ip_address,
-          mac_address: defaultProfile.mac_address,
-          credential: captureStatus.credential
-        })
-      });
-      showToast('Credential saved!', 'success');
-    } catch (err) {
-      showToast('Failed to save: ' + err.message, 'error');
-    }
+    setWaking(false);
   };
 
   const getStatusBadge = () => {
@@ -204,8 +130,8 @@ function PS5Control({ profiles, onNotification, onProfilesChanged }) {
       </div>
 
       <div className="grid-2 mb-md">
-        <button className="btn btn-primary" onClick={handleWake} disabled={loading}>
-          {loading ? '⏳' : '⏰'} Wake
+        <button className="btn btn-primary" onClick={handleWake} disabled={waking}>
+          {waking ? '⏳' : '📡'} Wake PS5
         </button>
         <button className="btn btn-secondary" onClick={fetchStatus}>
           🔍 Check Status
@@ -236,46 +162,6 @@ function PS5Control({ profiles, onNotification, onProfilesChanged }) {
           />
         </div>
       </div>
-
-      <button
-        className="btn btn-ghost btn-block mb-md"
-        onClick={() => setShowAdvanced(!showAdvanced)}
-      >
-        {showAdvanced ? '▲' : '▼'} Advanced (credential capture)
-      </button>
-
-      {showAdvanced && (
-        <div className="flex-col gap-md">
-          <div className="comp-card">
-            <div className="comp-card-header">
-              <span className="comp-card-title">🔑 Credential Capture</span>
-            </div>
-            <div className="comp-card-body">
-              <p className="text-sm text-muted mb-md">
-                Capture PS5 credential for Wake on LAN. Put PS5 in deep sleep first.
-              </p>
-              <div className="flex gap-sm flex-wrap">
-                <button
-                  className="btn btn-secondary"
-                  onClick={handleCaptureCredential}
-                  disabled={capturing || captureStatus?.active}
-                >
-                  {capturing || captureStatus?.active ? '⏳ Listening...' : '🎯 Capture'}
-                </button>
-                {(capturing || captureStatus?.active) && (
-                  <button className="btn btn-danger" onClick={handleStopCapture}>⏹ Stop</button>
-                )}
-                {captureStatus?.credential && (
-                  <button className="btn btn-success" onClick={handleSaveCredential}>💾 Save</button>
-                )}
-              </div>
-              {captureStatus?.credential && (
-                <div className="mt-sm text-xs text-muted">Saved: {captureStatus.credential}</div>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

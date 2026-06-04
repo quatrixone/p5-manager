@@ -397,26 +397,6 @@ function App() {
             onProfileUpdate={updateProfile}
             onProfileDelete={deleteProfile}
             onProfileSetDefault={setDefaultProfile}
-            onLaunch={(titleId) => {
-              const profile = profiles.find(p => p.is_default) || profiles[0];
-              if (profile) {
-                fetch(`${API}/ps5control/launch`, {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ ip: profile.ip_address, titleId })
-                }).then(() => showNotification(`Launched ${titleId}`, 'success'));
-              }
-            }}
-            onWake={() => {
-              const profile = profiles.find(p => p.is_default) || profiles[0];
-              if (profile?.mac_address) {
-                fetch(`${API}/ps5control/wol`, {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ mac: profile.mac_address, ip: profile.ip_address })
-                }).then(() => showNotification('Wake on LAN sent', 'success'));
-              }
-            }}
           />
         )}
         {activeTab === 'logs' && (

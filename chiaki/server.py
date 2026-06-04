@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import logging
 import os
 import secrets
@@ -43,6 +44,7 @@ try:
         async_get_user_account,
     )
     from pyremoteplay.profile import Profiles  # type: ignore
+    from pyremoteplay.ddp import launch as ddp_launch  # type: ignore
     PYREMOTEPLAY_OK = True
     PYREMOTEPLAY_ERR: Optional[str] = None
 except Exception as e:  # noqa: BLE001
@@ -50,6 +52,7 @@ except Exception as e:  # noqa: BLE001
     PYREMOTEPLAY_ERR = str(e)
     RPDevice = None  # type: ignore
     Profiles = None  # type: ignore
+    ddp_launch = None  # type: ignore
 
 LOG_LEVEL = os.environ.get("CHIAKI_SIDECAR_LOG", "info").upper()
 logging.basicConfig(level=LOG_LEVEL, format="[chiaki] %(asctime)s %(levelname)s %(message)s")
@@ -167,6 +170,38 @@ def _profile_name(online_id: Optional[str], account_id: str) -> str:
     return f"psn-{account_id[:8]}"
 
 
+def _to_user_credential(account_id: str) -> Optional[str]:
+    """Return the sha256-hex of a decimal PSN account id.
+
+    This is what the DDP LAUNCH packet (`user-credential` field) expects -
+    sending it dismisses the "Press PS button to log in" prompt that the PS5
+    shows after a remote wakeup and brings the console straight to the home
+    screen, so /sessions/start can proceed without manual intervention.
+    """
+    aid = (account_id or "").strip()
+    if not aid:
+        return None
+    try:
+        return hashlib.sha256(aid.encode("utf-8")).hexdigest()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _send_ddp_launch(host: str, account_id: str) -> bool:
+    """Best-effort DDP LAUNCH packet to log the user in remotely."""
+    if not ddp_launch:
+        return False
+    cred = _to_user_credential(account_id)
+    if not cred:
+        return False
+    try:
+        ddp_launch(host, cred, host_type="PS5")
+        return True
+    except Exception as e:  # noqa: BLE001
+        log.debug("ddp launch failed: %s", e)
+        return False
+
+
 def _to_user_rpid(account_id: str) -> str:
     """Return the base64 PSN id that pyremoteplay's register handshake expects.
 
@@ -255,42 +290,46 @@ async def register(req: RegisterReq):
 class StartSessionReq(BaseModel):
     ip: str
     user_profile: Dict[str, Any]  # the dict returned from /register
+    account_id: Optional[str] = None  # decimal PSN account id, for DDP launch
 
 
 def _new_session_id() -> str:
     return secrets.token_hex(8)
 
 
-async def _try_connect_with_retry(device, name: str, profiles, max_attempts: int = 3):
-    """Try device.connect() up to max_attempts, recreating the session each
-    time. Handles the common "Another Remote Play session is connected" race
-    that happens after a previously failed/half-open session - PS5 holds the
-    RP slot for several seconds before letting us back in."""
-    last_err = None
-    for attempt in range(1, max_attempts + 1):
-        try:
-            device.create_session(name, profiles=profiles, resolution="360p", fps=30, receiver=None)
-        except Exception as e:  # noqa: BLE001
-            last_err = e
-            log.warning("create_session attempt %d failed: %s", attempt, e)
-            await asyncio.sleep(2 * attempt)
-            continue
-        try:
-            ok = await device.connect()
-            if ok:
-                return
-            sess_err = getattr(device.session, "error", "connect returned False")
-            last_err = RuntimeError(str(sess_err))
-        except Exception as e:  # noqa: BLE001
-            last_err = e
-        log.warning("connect attempt %d failed: %s", attempt, last_err)
-        try:
-            await device.disconnect()
-        except Exception:
-            pass
-        # If PS5 still has the previous slot, give it a bit more time each retry
-        await asyncio.sleep(3 * attempt)
-    raise last_err or RuntimeError("Session connect failed after retries")
+async def _safe_disconnect(device) -> None:
+    """device.disconnect() in this pyremoteplay version is sometimes a plain
+    function returning None, sometimes a coroutine. Handle both."""
+    try:
+        result = device.disconnect()
+        if asyncio.iscoroutine(result):
+            await result
+    except Exception as e:  # noqa: BLE001
+        log.debug("disconnect error: %s", e)
+
+
+async def _try_connect_once(device, name: str, profiles) -> None:
+    """Single create_session + connect attempt. Raises on failure so the
+    caller can decide whether to back off and retry.
+
+    Why only one attempt server-side: the frontend already does its own
+    exponential-backoff reconnect (up to 5 tries), and stacking retries on
+    both sides keeps the sidecar event loop blocked for 30-60 s, starving
+    every other request and causing spurious 5 s timeouts on health/status.
+    """
+    try:
+        device.create_session(name, profiles=profiles, resolution="360p", fps=30, receiver=None)
+    except Exception as e:  # noqa: BLE001
+        raise RuntimeError(f"create_session failed: {e}") from e
+    try:
+        ok = await device.connect()
+    except Exception as e:  # noqa: BLE001
+        await _safe_disconnect(device)
+        raise RuntimeError(f"connect failed: {e}") from e
+    if not ok:
+        sess_err = getattr(device.session, "error", "connect returned False")
+        await _safe_disconnect(device)
+        raise RuntimeError(str(sess_err))
 
 
 @app.post("/sessions/start")
@@ -320,31 +359,75 @@ async def session_start(req: StartSessionReq):
     profiles = Profiles()
     profiles[name] = {"id": data["id"], "hosts": data.get("hosts") or {}}
 
-    # Always send the chiaki wakeup packet before connecting. It both wakes a
-    # standby console and re-arms the RP control service on an already-awake
-    # one (the PS5 closes TCP 9295 to extra clients until it sees a wakeup
-    # from a registered controller). Failure here is non-fatal - we'll let
-    # the connect attempt report the real reason.
+    # Decide how long we need to wait after the wakeup packet. The PS5
+    # behaves very differently depending on its current state:
+    #
+    #   - Already on (Ok)       -> RP service is already running, just send
+    #                              the wakeup to (re)arm the control port and
+    #                              wait ~1 s.
+    #   - Standby / Sleep       -> Console needs ~10-25 s to fully boot the
+    #                              RP service. Use async_wait_for_wakeup() to
+    #                              poll the status until is_on flips, then
+    #                              give the RP service ~3 s more to settle.
+    was_standby = not bool(getattr(device, "is_on", False))
+    # data["id"] is the base64 user_rpid - we need the *decimal* account_id to
+    # compute the DDP LAUNCH credential. Use the caller-supplied account_id
+    # when present; otherwise decode the user_rpid back to decimal (b64 -> 8
+    # little-endian bytes -> int).
+    aid = (req.account_id or "").strip()
+    if not aid and data.get("id"):
+        try:
+            aid = str(int.from_bytes(base64.b64decode(data["id"]), "little"))
+        except Exception:  # noqa: BLE001
+            aid = ""
+
     try:
         device.wakeup(name, profiles=profiles)
-        # Small grace period for PS5 to open up its RP control port.
-        await asyncio.sleep(4.0)
-        # Refresh status after wakeup so RPDevice has the latest host-id, etc.
+        if was_standby:
+            log.info("PS5 %s in standby - waiting for it to wake (up to 30 s)", req.ip)
+            woke = await device.async_wait_for_wakeup(timeout=30.0)
+            if not woke:
+                raise HTTPException(
+                    502,
+                    "PS5 didn't wake up within 30 s - power-cycle the console or wake it manually with the PS button, then retry.",
+                )
+            log.info("PS5 %s woke - waiting 2 s, then sending LAUNCH (login)", req.ip)
+            await asyncio.sleep(2.0)
+
+        # ALWAYS send the DDP LAUNCH packet (carries the user-credentials
+        # hash). On a fresh wake this dismisses the "Press PS button" account
+        # picker; on an already-on console it's harmless. Without this the
+        # PS5 leaves Remote Play locked behind a manual login.
+        if aid:
+            ok = _send_ddp_launch(req.ip, aid)
+            if ok:
+                log.info("DDP launch sent to %s", req.ip)
+                # Give PS5 a couple seconds to process the login and open the
+                # RP control port.
+                await asyncio.sleep(3.0 if was_standby else 1.5)
+            else:
+                log.warning("Could not send DDP launch (no credential or pyremoteplay missing)")
+
+        # Final re-arm wakeup so the RP control service is definitely armed.
+        try:
+            device.wakeup(name, profiles=profiles)
+        except Exception:  # noqa: BLE001
+            pass
+        await asyncio.sleep(1.0)
         try:
             await device.async_get_status()
         except Exception:
             pass
+    except HTTPException:
+        raise
     except Exception as e:  # noqa: BLE001
-        log.warning("wakeup failed (continuing): %s", e)
+        log.warning("wakeup sequence error (continuing): %s", e)
 
     try:
-        await _try_connect_with_retry(device, name, profiles, max_attempts=3)
+        await _try_connect_once(device, name, profiles)
     except Exception as e:  # noqa: BLE001
-        log.exception("session connect failed")
-        try:
-            await device.disconnect()
-        except Exception:
-            pass
+        log.warning("session connect failed: %s", e)
+        await _safe_disconnect(device)
         msg = str(e)
         if "Another Remote Play session" in msg:
             msg += " - close any active Remote Play / Chiaki client and try again in ~30s"
@@ -428,26 +511,93 @@ async def session_status(session_id: str):
     }
 
 
+class WakeReq(BaseModel):
+    ip: str
+    account_id: str
+    online_id: Optional[str] = None
+    user_profile: Optional[Dict[str, Any]] = None  # preferred - has registered hosts
+
+
+@app.post("/wake")
+async def wake(req: WakeReq):
+    """Send wakeup UDP packets to the PS5 without creating a session.
+
+    Used by the frontend between auto-reconnect attempts to encourage the
+    console to release a stale RP slot (e.g. after a session was kicked by a
+    physical controller picking up).
+    """
+    if not PYREMOTEPLAY_OK:
+        raise HTTPException(503, f"pyremoteplay unavailable: {PYREMOTEPLAY_ERR}")
+    device = RPDevice(req.ip)
+    try:
+        await device.async_get_status()
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(502, f"PS5 not reachable: {e}")
+
+    # Prefer the full paired profile so device.wakeup() can pull the right
+    # RegistKey out of hosts[mac]. Fall back to a freshly-built Profiles when
+    # the caller only passes account_id (mostly for manual recovery before
+    # pairing is wired up).
+    up = req.user_profile or {}
+    name = up.get("name") or _profile_name(req.online_id, req.account_id)
+    if up.get("data") and up["data"].get("hosts"):
+        data = up["data"]
+        profiles = Profiles()
+        profiles[name] = {"id": data["id"], "hosts": data.get("hosts") or {}}
+    else:
+        profiles = _build_profiles(name, req.account_id)
+
+    sent = 0
+    last_err = None
+    for _ in range(3):
+        try:
+            device.wakeup(name, profiles=profiles)
+            sent += 1
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+        await asyncio.sleep(0.4)
+
+    # Also fire a DDP LAUNCH so PS5 logs the account in. Without it, after a
+    # remote wakeup the console sits on the "Press PS button" prompt and
+    # Remote Play stays unreachable.
+    launched = _send_ddp_launch(req.ip, req.account_id)
+
+    if sent == 0:
+        raise HTTPException(502, f"wake failed: {last_err}")
+    return {"ok": True, "packets_sent": sent, "ddp_launch_sent": launched}
+
+
 @app.post("/sessions/{session_id}/stop")
 async def session_stop(session_id: str):
     s = SESSIONS.pop(session_id, None)
     if not s:
         raise HTTPException(404, "session not found")
-    device = s["device"]
-    try:
-        await device.disconnect()
-    except Exception as e:  # noqa: BLE001
-        log.warning("disconnect error: %s", e)
+    await _safe_disconnect(s["device"])
     return {"ok": True}
+
+
+@app.post("/sessions/stop-all")
+async def session_stop_all(ip: Optional[str] = None):
+    """Tear down every cached sidecar session, optionally filtered by IP.
+
+    Useful when the Node cache and the sidecar SESSIONS map drift out of sync,
+    or when a previous test run left a session lingering after a sidecar
+    restart killed the Python process without a proper teardown.
+    """
+    stopped = []
+    for sid, s in list(SESSIONS.items()):
+        if ip and s.get("ip") != ip:
+            continue
+        await _safe_disconnect(s["device"])
+        SESSIONS.pop(sid, None)
+        stopped.append(sid)
+    return {"ok": True, "stopped": stopped}
 
 
 @app.on_event("shutdown")
 async def _shutdown():
     for sid, s in list(SESSIONS.items()):
-        try:
-            await s["device"].disconnect()
-        except Exception:
-            pass
+        await _safe_disconnect(s["device"])
     SESSIONS.clear()
 
 
