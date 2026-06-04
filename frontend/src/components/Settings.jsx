@@ -10,12 +10,14 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
   const [restoreFile, setRestoreFile] = useState(null);
   const [showProfileModal, setShowProfileModal] = useState(false);
   const [editingProfile, setEditingProfile] = useState(null);
-  const [profileForm, setProfileForm] = useState({ name: '', ip: '', mac: '', credential: '' });
+  const [profileForm, setProfileForm] = useState({ name: '', ip: '', mac: '' });
   const [scanning, setScanning] = useState(false);
   const [discoveredDevices, setDiscoveredDevices] = useState([]);
   const [scanMode, setScanMode] = useState('local');
-  const [subnet, setSubnet] = useState('10.0.2.0/24');
-  const [defaultSubnet, setDefaultSubnet] = useState('10.0.2.0/24');
+  // Single source of truth for the subnet - same value drives both the
+  // "Default subnet" config field and the scan input, so saving in one place
+  // is reflected in the other.
+  const [defaultSubnet, setDefaultSubnet] = useState('10.0.0.0/24');
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
 
@@ -54,7 +56,11 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
     setScanning(true);
     setDiscoveredDevices([]);
     try {
-      const res = await fetch(`${API}/ps5control/scan?timeout=5`);
+      // Pass the saved default subnet so the backend can pick the right NIC
+      // for the directed broadcast (255.255.255.255 alone often lands on a
+      // docker bridge instead of the LAN).
+      const q = defaultSubnet ? `&subnet=${encodeURIComponent(defaultSubnet)}` : '';
+      const res = await fetch(`${API}/ps5control/scan?timeout=3${q}`);
       const data = await res.json();
       if (data.success) setDiscoveredDevices(data.devices);
     } catch (err) {
@@ -70,7 +76,7 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
       const res = await fetch(`${API}/ps5control/scan-subnet`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ subnet, timeout: 1, concurrency: 50 })
+        body: JSON.stringify({ subnet: defaultSubnet, timeout: 3 })
       });
       const data = await res.json();
       if (data.success) setDiscoveredDevices(data.devices);
@@ -98,26 +104,26 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
     } catch (err) {
       console.error('MAC lookup failed:', err);
     }
-    onProfileCreate(name, ip, mac, '');
+    onProfileCreate(name, ip, mac);
   };
 
   const openAddProfile = () => {
     setEditingProfile(null);
-    setProfileForm({ name: '', ip: '', mac: '', credential: '' });
+    setProfileForm({ name: '', ip: '', mac: '' });
     setShowProfileModal(true);
   };
 
   const openEditProfile = (profile) => {
     setEditingProfile(profile);
-    setProfileForm({ name: profile.name, ip: profile.ip_address, mac: profile.mac_address || '', credential: profile.credential || '' });
+    setProfileForm({ name: profile.name, ip: profile.ip_address, mac: profile.mac_address || '' });
     setShowProfileModal(true);
   };
 
   const handleSaveProfile = () => {
     if (editingProfile) {
-      onProfileUpdate(editingProfile.id, profileForm.name, profileForm.ip, profileForm.mac, profileForm.credential);
+      onProfileUpdate(editingProfile.id, profileForm.name, profileForm.ip, profileForm.mac);
     } else {
-      onProfileCreate(profileForm.name, profileForm.ip, profileForm.mac, profileForm.credential);
+      onProfileCreate(profileForm.name, profileForm.ip, profileForm.mac);
     }
     setShowProfileModal(false);
   };
@@ -198,14 +204,21 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
         </div>
       )}
 
-      <div className="flex gap-sm mb-sm">
-        <select className="select" value={scanMode} onChange={e => setScanMode(e.target.value)} style={{ maxWidth: 120 }}>
-          <option value="local">Local</option>
-          <option value="subnet">Subnet</option>
+      <div className="flex gap-sm mb-sm flex-wrap items-center">
+        <select className="select" value={scanMode} onChange={e => setScanMode(e.target.value)} style={{ maxWidth: 130 }}>
+          <option value="local">Broadcast</option>
+          <option value="subnet">Subnet sweep</option>
         </select>
-        {scanMode === 'subnet' && (
-          <input className="input" type="text" placeholder="10.0.2.0/24" value={subnet} onChange={e => setSubnet(e.target.value)} style={{ maxWidth: 150 }} />
-        )}
+        <input
+          className="input"
+          type="text"
+          placeholder="10.0.0.0/24"
+          value={defaultSubnet}
+          onChange={e => setDefaultSubnet(e.target.value)}
+          onBlur={saveConfigSettings}
+          style={{ maxWidth: 170 }}
+          title="Subnet used for scanning. Saved on blur."
+        />
         <button className="btn btn-secondary" onClick={handleScanClick} disabled={scanning}>
           {scanning ? '⏳ Scanning...' : '🔍 Scan'}
         </button>
@@ -352,10 +365,7 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
           <div>
             <label className="text-sm text-muted mb-sm" style={{ display: 'block' }}>MAC Address</label>
             <input className="input" type="text" placeholder="AA:BB:CC:DD:EE:FF" value={profileForm.mac} onChange={e => setProfileForm(p => ({ ...p, mac: e.target.value }))} />
-          </div>
-          <div>
-            <label className="text-sm text-muted mb-sm" style={{ display: 'block' }}>Credential</label>
-            <input className="input" type="text" placeholder="For Wake on LAN" value={profileForm.credential} onChange={e => setProfileForm(p => ({ ...p, credential: e.target.value }))} />
+            <div className="text-xs text-muted mt-sm">Pair the PS5 in PS5 Control to enable Wake on LAN - no credential field needed any more.</div>
           </div>
         </div>
       </Modal>

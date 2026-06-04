@@ -213,12 +213,12 @@ function App() {
     }
   };
 
-  const createProfile = async (name, ip, mac, credential) => {
+  const createProfile = async (name, ip, mac) => {
     try {
       await fetch(`${API}/profiles`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, ip_address: ip, mac_address: mac, credential })
+        body: JSON.stringify({ name, ip_address: ip, mac_address: mac })
       });
       showNotification('Profile created', 'success');
       fetchProfiles();
@@ -237,12 +237,12 @@ function App() {
     }
   };
 
-  const updateProfile = async (id, name, ip, mac, credential) => {
+  const updateProfile = async (id, name, ip, mac) => {
     try {
       await fetch(`${API}/profiles/${id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, ip_address: ip, mac_address: mac, credential })
+        body: JSON.stringify({ name, ip_address: ip, mac_address: mac })
       });
       showNotification('Profile updated', 'success');
       fetchProfiles();

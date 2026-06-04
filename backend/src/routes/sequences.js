@@ -438,7 +438,7 @@ router.post('/:id/run', async (req, res) => {
   try {
     const db = getDatabase();
     const stmt = db.prepare(`
-      SELECT s.*, p.name as profile_name, p.ip_address, p.port, p.mac_address, p.credential
+      SELECT s.*, p.name as profile_name, p.ip_address, p.port, p.mac_address
       FROM autoload_sequences s
       LEFT JOIN profiles p ON s.profile_id = p.id
       WHERE s.id = ?
@@ -458,7 +458,6 @@ router.post('/:id/run', async (req, res) => {
       ip_address: sequence.ip_address,
       port: sequence.port,
       mac_address: sequence.mac_address,
-      credential: sequence.credential,
     } : null;
 
     const runId = `r${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
