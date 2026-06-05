@@ -3,7 +3,9 @@ import { getDatabase, saveDatabase, log } from '../db/sqlite.js';
 
 const router = express.Router();
 
-const SIDECAR_URL = process.env.CHIAKI_SIDECAR_URL || 'http://127.0.0.1:9555';
+const SIDECAR_URL = process.env.PYREMOTEPLAY_SIDECAR_URL
+  || process.env.CHIAKI_SIDECAR_URL  // legacy env name, kept for older compose files
+  || 'http://127.0.0.1:9555';
 
 // Per-IP session cache so script runs can transparently reuse a single
 // Remote Play session across many quick-input calls. The session is verified

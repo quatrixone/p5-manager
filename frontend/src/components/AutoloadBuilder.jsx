@@ -22,7 +22,6 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
   const [klogPattern, setKlogPattern] = useState('');
   const [klogSuccessMode, setKlogSuccessMode] = useState(true);
   const [luaLogPattern, setLuaLogPattern] = useState('');
-  const [chiakiCommand, setChiakiCommand] = useState('');
   const [inputScripts, setInputScripts] = useState([]);
 
   // New step form state (download / extract / ftp_upload / convert)
@@ -133,15 +132,6 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
       scriptName: script.name,
       script: script.script,
       name: `Input: ${script.name}`
-    }]);
-  };
-
-  const addChiakiCommandStep = () => {
-    if (!chiakiCommand.trim()) return;
-    setSteps([...steps, {
-      type: 'chiaki_cmd',
-      command: chiakiCommand,
-      name: `Chiaki CLI: ${chiakiCommand}`
     }]);
   };
 
@@ -782,7 +772,7 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
                 <div className="p-md" style={{ background: 'var(--panel2)', borderRadius: 8 }}>
                   <label className="text-sm text-muted mb-sm" style={{ display: 'block' }}>Select Input Script</label>
                   <p className="text-xs text-muted mb-md">
-                    Plays back the script through Remote Play (chiaki sidecar). The profile must be paired in the Remote Play tab.
+                    Plays back the script through the Remote Play sidecar. The profile must be paired in the Remote Play tab.
                   </p>
                   {inputScripts.length === 0 ? (
                     <p className="text-sm text-muted">No input scripts saved. Create them in PS5 Remote.</p>

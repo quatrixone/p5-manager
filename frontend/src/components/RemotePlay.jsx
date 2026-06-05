@@ -611,7 +611,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
 
       {health?.success === false && (
         <div className="text-xs text-muted">
-          Sidecar error: {health.error}. Check the <code>chiaki</code> container logs.
+          Sidecar error: {health.error}. Check the <code>pyremoteplay</code> container logs.
         </div>
       )}
     </div>

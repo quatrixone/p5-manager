@@ -9,7 +9,9 @@ const router = Router();
 // /api/remoteplay/* (which uses the sidecar's DDP WAKEUP + DDP LAUNCH packets
 // driven by the stored PSN account id - no manual credential capture needed
 // any more).
-const SIDECAR_URL = process.env.CHIAKI_SIDECAR_URL || 'http://127.0.0.1:9555';
+const SIDECAR_URL = process.env.PYREMOTEPLAY_SIDECAR_URL
+  || process.env.CHIAKI_SIDECAR_URL
+  || 'http://127.0.0.1:9555';
 async function sidecarDiscover(ip) {
   const res = await fetch(`${SIDECAR_URL}/discover?ip=${encodeURIComponent(ip)}`, { method: 'GET' });
   const data = await res.json().catch(() => ({}));
@@ -143,7 +145,7 @@ router.post('/input', async (req, res) => {
     // Delegate to the Remote Play sidecar via the /api/remoteplay/quick-input
     // route, which transparently auto-starts (and caches) the RP session for
     // this IP using stored pair credentials. Keeps the legacy ScriptRunner UI
-    // working without it knowing about chiaki sessions.
+    // working without it knowing about pyremoteplay sessions.
     const r = await fetch(`http://127.0.0.1:${process.env.PORT || 3001}/api/remoteplay/quick-input`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
