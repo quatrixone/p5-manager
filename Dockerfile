@@ -23,7 +23,10 @@ COPY backend/package*.json ./
 RUN npm ci --only=production && npm cache clean --force
 
 COPY backend/ ./
-COPY --from=frontend-builder /app/dist ./dist
+# Vite outputs to ../backend/dist in the frontend-builder stage,
+# i.e. /app/backend/dist. Copy that into /app/dist so the production
+# server can serve `__dirname/../dist` (matches local dev layout).
+COPY --from=frontend-builder /app/backend/dist ./dist
 
 RUN mkdir -p /app/data/payloads
 
