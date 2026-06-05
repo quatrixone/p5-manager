@@ -51,7 +51,11 @@ export default defineConfig({
   root: '.',
   base: './',
   build: {
-    outDir: '../dist',
+    // Output as a sibling of backend/src/ so the production server
+    // (which serves `__dirname/../dist`) finds it the same way locally
+    // and inside the Docker image. The Dockerfile copies this directory
+    // into /app/dist for the runtime stage.
+    outDir: '../backend/dist',
     emptyOutDir: true
   },
   server: {
