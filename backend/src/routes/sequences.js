@@ -397,7 +397,6 @@ const STEP_EXEC = {
   // Stubs for older types kept for backwards compatibility (no-op for now)
   klog_read: async () => {},
   lua_log_read: async () => {},
-  chiaki_cmd: async () => {},
 };
 
 async function executeSequence(run, sequence, profile, steps) {

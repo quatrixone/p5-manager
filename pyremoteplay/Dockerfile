@@ -21,8 +21,8 @@ RUN pip install --no-cache-dir -r /app/requirements.txt \
 COPY server.py /app/server.py
 COPY pyremoteplay_patches.py /app/pyremoteplay_patches.py
 
-ENV CHIAKI_SIDECAR_HOST=0.0.0.0 \
-    CHIAKI_SIDECAR_PORT=9555
+ENV PYREMOTEPLAY_SIDECAR_HOST=0.0.0.0 \
+    PYREMOTEPLAY_SIDECAR_PORT=9555
 
 EXPOSE 9555
 

@@ -1,4 +1,4 @@
-"""Chiaki Remote Play sidecar.
+"""pyremoteplay Remote Play sidecar.
 
 Thin HTTP wrapper over pyremoteplay so the Node.js backend can drive PSN
 OAuth, console registration, session start/stop, and DualSense input emulation
@@ -36,9 +36,10 @@ import uvicorn
 
 # Configure logging early so the patches module (and pyremoteplay itself)
 # can use the same formatter from the very first import.
-LOG_LEVEL = os.environ.get("CHIAKI_SIDECAR_LOG", "info").upper()
-logging.basicConfig(level=LOG_LEVEL, format="[chiaki] %(asctime)s %(levelname)s %(message)s")
-log = logging.getLogger("chiaki")
+LOG_LEVEL = os.environ.get("PYREMOTEPLAY_SIDECAR_LOG",
+                           os.environ.get("CHIAKI_SIDECAR_LOG", "info")).upper()
+logging.basicConfig(level=LOG_LEVEL, format="[rp-sidecar] %(asctime)s %(levelname)s %(message)s")
+log = logging.getLogger("rp-sidecar")
 
 # pyremoteplay imports - kept lazy/optional so a broken install still lets
 # /health respond (useful for debugging the container itself).
@@ -66,7 +67,7 @@ except Exception as e:  # noqa: BLE001
     Profiles = None  # type: ignore
     ddp_launch = None  # type: ignore
 
-app = FastAPI(title="chiaki-sidecar", version="0.1.0")
+app = FastAPI(title="pyremoteplay-sidecar", version="0.2.0")
 
 # session_id -> { device: RPDevice, user: dict, created: ts, last_used: ts }
 SESSIONS: Dict[str, Dict[str, Any]] = {}
@@ -641,7 +642,7 @@ async def session_start(req: StartSessionReq):
         await _safe_disconnect(device)
         msg = str(last_err)
         if "Another Remote Play session" in msg:
-            msg += " - close any active Remote Play / Chiaki client and try again in ~30s"
+            msg += " - close any active Remote Play / Chiaki-ng client and try again in ~30s"
         raise HTTPException(502, f"Session connect failed: {msg}")
 
     sid = _new_session_id()
@@ -1089,9 +1090,11 @@ async def _shutdown():
 
 
 def main():
-    port = int(os.environ.get("CHIAKI_SIDECAR_PORT", "9555"))
-    host = os.environ.get("CHIAKI_SIDECAR_HOST", "127.0.0.1")
-    log.info("starting chiaki-sidecar on %s:%s (pyremoteplay=%s)", host, port, PYREMOTEPLAY_OK)
+    port = int(os.environ.get("PYREMOTEPLAY_SIDECAR_PORT",
+                              os.environ.get("CHIAKI_SIDECAR_PORT", "9555")))
+    host = os.environ.get("PYREMOTEPLAY_SIDECAR_HOST",
+                          os.environ.get("CHIAKI_SIDECAR_HOST", "127.0.0.1"))
+    log.info("starting pyremoteplay-sidecar on %s:%s (pyremoteplay=%s)", host, port, PYREMOTEPLAY_OK)
     uvicorn.run(app, host=host, port=port, log_level=LOG_LEVEL.lower())
 
 

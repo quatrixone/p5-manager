@@ -21,7 +21,7 @@ import logging
 import time
 from typing import Optional
 
-log = logging.getLogger("chiaki.patches")
+log = logging.getLogger("rp-sidecar.patches")
 
 _APPLIED = False
 

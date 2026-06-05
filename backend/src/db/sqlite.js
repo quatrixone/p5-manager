@@ -9,8 +9,12 @@ const __dirname = path.dirname(__filename);
 // dev: /path/to/backend/src/db/sqlite.js -> /path/to
 const isInDocker = __dirname.startsWith('/app');
 const projectRoot = isInDocker ? '/app' : path.resolve(__dirname, '../..');
-const dbPath = path.join(projectRoot, 'data', 'payloads.db');
+const dbPath = path.join(projectRoot, 'data', 'ps5webmanager.db');
 const dbDir = path.dirname(dbPath);
+// Legacy path. Existing installs have everything in data/payloads.db; we
+// auto-migrate it on first boot under the new name and leave a *.bak copy
+// of the original on disk in case the user needs to roll back.
+const legacyDbPath = path.join(projectRoot, 'data', 'payloads.db');
 
 let db = null;
 
@@ -19,6 +23,22 @@ export async function initDatabase() {
 
   if (!fs.existsSync(dbDir)) {
     fs.mkdirSync(dbDir, { recursive: true });
+  }
+
+  // One-shot migration: payloads.db -> ps5webmanager.db
+  if (!fs.existsSync(dbPath) && fs.existsSync(legacyDbPath)) {
+    try {
+      fs.renameSync(legacyDbPath, dbPath);
+      console.log(`[db] migrated ${legacyDbPath} -> ${dbPath}`);
+    } catch (e) {
+      console.error('[db] migration rename failed, falling back to copy:', e.message);
+      try {
+        fs.copyFileSync(legacyDbPath, dbPath);
+        console.log(`[db] migrated by copy ${legacyDbPath} -> ${dbPath}`);
+      } catch (e2) {
+        console.error('[db] copy fallback also failed:', e2.message);
+      }
+    }
   }
 
   const SQL = await initSqlJs();
@@ -70,7 +90,7 @@ export async function initDatabase() {
     // Column already exists
   }
 
-  // Remote Play (chiaki) identity. psn_account_id is the OAuth-derived ID,
+  // Remote Play (pyremoteplay) identity. psn_account_id is the OAuth-derived ID,
   // rp_user_profile holds the pyremoteplay profile dict with registration
   // credentials (kept as JSON text).
   try { db.run(`ALTER TABLE profiles ADD COLUMN psn_account_id TEXT`); } catch (e) {}

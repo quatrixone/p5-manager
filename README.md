@@ -70,6 +70,16 @@ tab.
 **Multiple PS5 profiles** with auto-default, persistent storage that
 survives container rebuilds, and a full backup/restore ZIP from Settings.
 
+**Mobile-friendly UI**
+- Responsive layout that works the same from a phone, tablet or
+  desktop browser — no separate app, no scroll-zoom dance
+- Touch-friendly hit targets, mobile keyboard hooks for input
+  scripts / text entry on the PS5, and an on-screen DualSense laid
+  out for thumb reach
+- Builders (Autoload, MicroMount, FileBrowser) collapse to single
+  columns on small screens; setup blocks that are already complete
+  stay hidden so the daily flow is one tap
+
 ## Requirements
 
 - PS5 console on the same LAN
@@ -91,10 +101,10 @@ The app will be available at `http://your-server:3001`.
 
 Two containers come up:
 
-| Service  | Image                       | Purpose                                                  |
-|----------|-----------------------------|----------------------------------------------------------|
-| `app`    | `ps5webpayload-manager-app` | Node/Express backend + bundled React frontend            |
-| `chiaki` | `chiaki-sidecar`            | Python FastAPI sidecar wrapping `pyremoteplay` for OAuth, pairing, input |
+| Service        | Image                       | Purpose                                                  |
+|----------------|-----------------------------|----------------------------------------------------------|
+| `app`          | `ps5webpayload-manager-app` | Node/Express backend + bundled React frontend            |
+| `pyremoteplay` | `pyremoteplay-sidecar`      | Python FastAPI sidecar wrapping `pyremoteplay` for OAuth, pairing, input |
 
 Both run in `network_mode: host` so PS5 discovery, Wake on LAN broadcasts and
 Remote Play UDP streams work without port forwarding.
@@ -109,11 +119,11 @@ cd ../backend && npm run dev          # backend on :3001
 cd ../frontend && npm run dev         # frontend on :3000
 ```
 
-For the Remote Play features you still need the `chiaki` Python sidecar
+For the Remote Play features you still need the `pyremoteplay` Python sidecar
 running on `127.0.0.1:9555`:
 
 ```bash
-cd chiaki
+cd pyremoteplay
 pip install -r requirements.txt
 python server.py
 ```
@@ -154,7 +164,7 @@ https://raw.githubusercontent.com/owner/repo/main/file.lua   # raw
 | Web UI + REST API        | 3001 | TCP   | Backend (also serves built frontend) |
 | LUA log server           | 8080 | UDP   | for `setlogserver.lua`               |
 | Kernel log server        | 3232 | TCP   | for `klogsrv*.elf`                   |
-| Chiaki sidecar           | 9555 | TCP   | bound to `127.0.0.1`                 |
+| pyremoteplay sidecar     | 9555 | TCP   | bound to `127.0.0.1`                 |
 | PS5 payload LUA          | 9026 | TCP   | on the PS5                           |
 | PS5 payload ELF          | 9021 | TCP   | on the PS5                           |
 
@@ -162,9 +172,13 @@ https://raw.githubusercontent.com/owner/repo/main/file.lua   # raw
 
 ```
 ./data/
-  payloads.db    # SQLite (profiles, payloads, sequences, scripts, settings)
-  payloads/      # uploaded/downloaded payload files
+  ps5webmanager.db   # SQLite (profiles, payloads, sequences, scripts, settings)
+  payloads/          # uploaded/downloaded payload files
 ```
+
+Existing installs from before 2026-06 had this file as `payloads.db`. The
+backend auto-renames it to `ps5webmanager.db` on first boot — no action
+needed.
 
 Backup & restore the whole thing as a ZIP from **Settings → Backup**.
 
@@ -174,7 +188,7 @@ Backup & restore the whole thing as a ZIP from **Settings → Backup**.
   WoL / pair, `sql.js` SQLite, `basic-ftp` for resilient FTP, `child_process`
   spawn for 7z / unrar / mkpfs / smbclient
 - **Frontend:** React 18 + Vite, PWA with offline service worker
-- **Chiaki sidecar:** Python 3.11 + FastAPI + `pyremoteplay` (PSN OAuth,
+- **pyremoteplay sidecar:** Python 3.11 + FastAPI + `pyremoteplay` (PSN OAuth,
   registration, Remote Play session, DualSense input emulation) with
   runtime patches that fix the upstream `Session.standby` /
   `async_standby` / `wait` timeout predicates so standby and post-stop
