@@ -181,13 +181,14 @@ https://raw.githubusercontent.com/owner/repo/main/file.lua   # raw
 
 ```
 ./data/
-  ps5webmanager.db   # SQLite (profiles, payloads, sequences, scripts, settings)
+  p5manager.db       # SQLite (profiles, payloads, sequences, scripts, settings)
   payloads/          # uploaded/downloaded payload files
 ```
 
-Existing installs from before 2026-06 had this file as `payloads.db`. The
-backend auto-renames it to `ps5webmanager.db` on first boot — no action
-needed.
+The DB has gone through three filenames as the project was renamed:
+`payloads.db` (pre-2026-06) → `ps5webmanager.db` → **`p5manager.db`**.
+The backend auto-renames any older file it finds on first boot — no
+action needed when upgrading.
 
 Backup & restore the whole thing as a ZIP from **Settings → Backup**.
 

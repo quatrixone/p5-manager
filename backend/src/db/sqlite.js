@@ -9,12 +9,16 @@ const __dirname = path.dirname(__filename);
 // dev: /path/to/backend/src/db/sqlite.js -> /path/to
 const isInDocker = __dirname.startsWith('/app');
 const projectRoot = isInDocker ? '/app' : path.resolve(__dirname, '../..');
-const dbPath = path.join(projectRoot, 'data', 'ps5webmanager.db');
+const dbPath = path.join(projectRoot, 'data', 'p5manager.db');
 const dbDir = path.dirname(dbPath);
-// Legacy path. Existing installs have everything in data/payloads.db; we
-// auto-migrate it on first boot under the new name and leave a *.bak copy
-// of the original on disk in case the user needs to roll back.
-const legacyDbPath = path.join(projectRoot, 'data', 'payloads.db');
+// Legacy paths, newest -> oldest. The DB has gone through three filenames:
+//   payloads.db        — original (pre-2026-06)
+//   ps5webmanager.db   — after the "PS5WebPayload Manager" rename
+//   p5manager.db       — current, after the P5 Manager rebrand
+// On first boot we look for any legacy file and rename it under the current
+// name. We stop at the first match (newest legacy wins) so we never clobber
+// a more recent migration with an older one.
+const LEGACY_DB_NAMES = ['ps5webmanager.db', 'payloads.db'];
 
 let db = null;
 
@@ -25,19 +29,24 @@ export async function initDatabase() {
     fs.mkdirSync(dbDir, { recursive: true });
   }
 
-  // One-shot migration: payloads.db -> ps5webmanager.db
-  if (!fs.existsSync(dbPath) && fs.existsSync(legacyDbPath)) {
-    try {
-      fs.renameSync(legacyDbPath, dbPath);
-      console.log(`[db] migrated ${legacyDbPath} -> ${dbPath}`);
-    } catch (e) {
-      console.error('[db] migration rename failed, falling back to copy:', e.message);
+  // One-shot migration to p5manager.db from any older filename.
+  if (!fs.existsSync(dbPath)) {
+    for (const legacyName of LEGACY_DB_NAMES) {
+      const legacyDbPath = path.join(dbDir, legacyName);
+      if (!fs.existsSync(legacyDbPath)) continue;
       try {
-        fs.copyFileSync(legacyDbPath, dbPath);
-        console.log(`[db] migrated by copy ${legacyDbPath} -> ${dbPath}`);
-      } catch (e2) {
-        console.error('[db] copy fallback also failed:', e2.message);
+        fs.renameSync(legacyDbPath, dbPath);
+        console.log(`[db] migrated ${legacyDbPath} -> ${dbPath}`);
+      } catch (e) {
+        console.error('[db] migration rename failed, falling back to copy:', e.message);
+        try {
+          fs.copyFileSync(legacyDbPath, dbPath);
+          console.log(`[db] migrated by copy ${legacyDbPath} -> ${dbPath}`);
+        } catch (e2) {
+          console.error('[db] copy fallback also failed:', e2.message);
+        }
       }
+      break;
     }
   }
 
