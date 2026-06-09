@@ -115,10 +115,11 @@ router.get('/local-roots', (req, res) => {
   // services.app.volumes — every entry here MUST be mounted from the host
   // into the container, otherwise the corresponding "quick tab" in the
   // FileBrowser will silently resolve to an empty in-container directory.
-  // /tmp is intentionally excluded: the container has its own ephemeral
-  // tmpfs there, and mounting host /tmp would break that isolation while
-  // giving the user nothing useful to browse.
-  const candidates = ['/mnt', '/home', '/data', '/media', '/srv'];
+  // /mnt covers all USB/SATA disks the host has mounted under it; /home
+  // and /data are the other two everyday user-data trees on DietPi-style
+  // hosts. Anything else (/tmp, /media, /srv) was either an isolation
+  // footgun or near-empty on a normal LAN box, so it's not exposed.
+  const candidates = ['/mnt', '/home', '/data'];
   const found = [];
   for (const r of candidates) {
     try {
