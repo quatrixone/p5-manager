@@ -111,7 +111,14 @@ router.get('/sources', (req, res) => {
 });
 
 router.get('/local-roots', (req, res) => {
-  const candidates = ['/mnt', '/home', '/data', '/tmp', '/media', '/srv'];
+  // Keep this list in sync with the bind mounts in docker-compose.yml ->
+  // services.app.volumes — every entry here MUST be mounted from the host
+  // into the container, otherwise the corresponding "quick tab" in the
+  // FileBrowser will silently resolve to an empty in-container directory.
+  // /tmp is intentionally excluded: the container has its own ephemeral
+  // tmpfs there, and mounting host /tmp would break that isolation while
+  // giving the user nothing useful to browse.
+  const candidates = ['/mnt', '/home', '/data', '/media', '/srv'];
   const found = [];
   for (const r of candidates) {
     try {
