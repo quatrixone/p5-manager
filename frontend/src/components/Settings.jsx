@@ -368,7 +368,7 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
           <div>
             <label className="text-sm text-muted mb-sm" style={{ display: 'block' }}>MAC Address</label>
             <input className="input" type="text" placeholder="AA:BB:CC:DD:EE:FF" value={profileForm.mac} onChange={e => setProfileForm(p => ({ ...p, mac: e.target.value }))} />
-            <div className="text-xs text-muted mt-sm">Pair the PS5 in PS5 Control to enable Wake on LAN - no credential field needed any more.</div>
+            <div className="text-xs text-muted mt-sm">Pair the PS5 in P5 Control to enable Wake on LAN - no credential field needed any more.</div>
           </div>
         </div>
       </Modal>

@@ -899,7 +899,7 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
                 <div className="p-md flex-col gap-sm" style={{ background: 'var(--panel2)', borderRadius: 8 }}>
                   <p className="text-sm text-muted">
                     Opens (or closes) a Remote Play session for the selected profile so subsequent
-                    input scripts execute against a warm session. Pair the PS5 in PS5 Control first.
+                    input scripts execute against a warm session. Pair the PS5 in P5 Control first.
                   </p>
                   <div className="flex gap-sm">
                     <button className="btn btn-success"

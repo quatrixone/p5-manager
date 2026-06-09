@@ -14,7 +14,7 @@ const tabs = [
   { id: 'payloads', label: 'Payloads', icon: '📦' },
   { id: 'autoload', label: 'Autoload', icon: '⚡' },
   { id: 'files', label: 'File Ops', icon: '📁' },
-  { id: 'remote', label: 'PS5 Control', icon: '🎮' },
+  { id: 'remote', label: 'P5 Control', icon: '🎮' },
   { id: 'logs', label: 'Logs', icon: '📋' },
   { id: 'settings', label: 'Settings', icon: '⚙️' }
 ];

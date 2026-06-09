@@ -20,7 +20,7 @@ tab.
   (klogsrv, p2jb, common community ELFs); restorable from the UI
 - Check & update against newer GitHub releases per payload
 
-**Remote Play (PS5 Control tab)**
+**Remote Play (P5 Control tab)**
 - **One-click Wake**: WoL + DDP LAUNCH + full RP session in a single
   button press. PSN account is logged in remotely so the "Press PS button"
   picker is skipped automatically on a fresh wake
@@ -142,7 +142,7 @@ python server.py
 1. **Add a PS5 Profile** in Settings (IP + MAC). The first profile is auto-default.
 2. **Fetch / upload payloads** in the Payloads tab. Click ✨ Defaults if you
    want the bundled community payloads.
-3. **PS5 Control tab**:
+3. **P5 Control tab**:
    - Pair Remote Play once (PSN OAuth → 8-digit PIN shown on the PS5).
      Pairing state survives container rebuilds.
    - Hit **Wake** – it does WoL, dismisses the account picker, opens the
