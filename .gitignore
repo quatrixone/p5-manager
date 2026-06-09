@@ -6,3 +6,7 @@ dist/
 __pycache__/
 .env
 .DS_Store
+
+# Backups produced by the built-in editor (see backend/src/routes/builtin.js)
+frontend/builtin/*.bak
+frontend/builtin/*.tmp-*

@@ -15,10 +15,11 @@ import ps5ControlRouter from './routes/ps5control.js';
 import sequencesRouter from './routes/sequences.js';
 import settingsRouter from './routes/settings.js';
 import inputScriptsRouter from './routes/inputScripts.js';
-import micromountRouter from './routes/micromount.js';
+import convertRouter from './routes/convert.js';
 import downloaderRouter from './routes/downloader.js';
 import eventsRouter from './routes/events.js';
 import remoteplayRouter from './routes/remoteplay.js';
+import builtinRouter from './routes/builtin.js';
 import { ensureDefaultPayloads } from './lib/defaultPayloads.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -37,7 +38,7 @@ const ACCESS_LOG_SILENCE = [
   /^\/api\/remoteplay\/quick-status$/,
   /^\/api\/kernellog\/status$/,
   /^\/api\/logserver\/status$/,
-  /^\/api\/micromount\/ftp\/upload\/queue$/, // queue poll
+  /^\/api\/convert\/ftp\/upload\/queue$/, // queue poll
   /^\/api\/sequences$/,
   /^\/api\/logs$/,
 ];
@@ -58,10 +59,17 @@ app.use('/api/ps5control', ps5ControlRouter);
 app.use('/api/sequences', sequencesRouter);
 app.use('/api/settings', settingsRouter);
 app.use('/api/input-scripts', inputScriptsRouter);
-app.use('/api/micromount', micromountRouter);
+// Mounted at /api/convert (was /api/micromount before the rename); kept as a
+// single big router covering FS browse, FTP upload queue, extract, convert
+// (pack/unpack via mkpfs) and the remote sources used by the file browser.
+app.use('/api/convert', convertRouter);
+// Backwards-compatibility alias so old browser tabs / scripts still work
+// against the previous URL prefix. Remove once everyone has refreshed.
+app.use('/api/micromount', convertRouter);
 app.use('/api/downloader', downloaderRouter);
 app.use('/api/events', eventsRouter);
 app.use('/api/remoteplay', remoteplayRouter);
+app.use('/api/builtin', builtinRouter);
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
@@ -93,5 +101,5 @@ ensureDefaultPayloads().then((s) => {
 });
 
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`PS5WebPayload Manager API running on port ${PORT}`);
+  console.log(`P5 Manager API running on port ${PORT}`);
 });

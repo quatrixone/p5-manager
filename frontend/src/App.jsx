@@ -5,6 +5,7 @@ import AutoloadBuilder from './components/AutoloadBuilder';
 import PS5Control from './components/PS5Control';
 import Settings from './components/Settings';
 import FileOps from './components/FileOps';
+import BuiltinEditor from './components/BuiltinEditor';
 import './styles.css';
 
 const API = '/api';
@@ -18,6 +19,12 @@ const tabs = [
   { id: 'settings', label: 'Settings', icon: '⚙️' }
 ];
 
+// Hidden route: the built-in editor lives at #builtin. It is intentionally
+// absent from `tabs` so it doesn't show up in the sidebar / bottom nav.
+// Settings → Config has a discreet "Edit built-ins" link to discover it.
+const BUILTIN_HASH = '#builtin';
+const readHashRoute = () => (typeof window !== 'undefined' && window.location.hash === BUILTIN_HASH);
+
 function App() {
   const [activeTab, setActiveTab] = useState(() => {
     const saved = localStorage.getItem('activeTab');
@@ -26,6 +33,21 @@ function App() {
     if (saved === 'remoteplay') return 'remote';
     return saved;
   });
+  const [showBuiltinEditor, setShowBuiltinEditor] = useState(readHashRoute);
+
+  // Sync state with hash changes (browser back/forward, manual edits).
+  useEffect(() => {
+    const onHash = () => setShowBuiltinEditor(readHashRoute());
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
+
+  const closeBuiltinEditor = () => {
+    if (window.location.hash === BUILTIN_HASH) {
+      history.replaceState(null, '', window.location.pathname + window.location.search);
+    }
+    setShowBuiltinEditor(false);
+  };
   const [payloads, setPayloads] = useState([]);
   const [profiles, setProfiles] = useState([]);
   const [logs, setLogs] = useState([]);
@@ -394,8 +416,7 @@ function App() {
       <header className="app-topbar">
         <div className="app-brand">
           <span className="app-brand-mark">P5</span>
-          <span>Payload Manager</span>
-          <span className="app-brand-tag">/ ps5web</span>
+          <span>Manager</span>
         </div>
 
         {defaultProfile && (
@@ -417,7 +438,10 @@ function App() {
         {sidebar}
 
         <main className="app-main">
-          {activeTab === 'payloads' && (
+          {showBuiltinEditor && (
+            <BuiltinEditor onClose={closeBuiltinEditor} onNotification={showNotification} />
+          )}
+          {!showBuiltinEditor && activeTab === 'payloads' && (
             <PayloadList
               payloads={payloads}
               profiles={profiles}
@@ -429,14 +453,16 @@ function App() {
               onRestoreDefaults={restoreDefaultPayloads}
             />
           )}
-          {activeTab === 'autoload' && (
+          {!showBuiltinEditor && activeTab === 'autoload' && (
             <AutoloadBuilder profiles={profiles} payloads={payloads} onNotification={showNotification} />
           )}
-          {activeTab === 'remote' && <PS5Control profiles={profiles} onNotification={showNotification} onProfilesChanged={fetchProfiles} />}
-          {activeTab === 'files' && (
+          {!showBuiltinEditor && activeTab === 'remote' && (
+            <PS5Control profiles={profiles} onNotification={showNotification} onProfilesChanged={fetchProfiles} />
+          )}
+          {!showBuiltinEditor && activeTab === 'files' && (
             <FileOps profiles={profiles} onNotification={showNotification} />
           )}
-          {activeTab === 'settings' && (
+          {!showBuiltinEditor && activeTab === 'settings' && (
             <Settings
               profiles={profiles}
               onProfileCreate={createProfile}
@@ -445,7 +471,7 @@ function App() {
               onProfileSetDefault={setDefaultProfile}
             />
           )}
-          {activeTab === 'logs' && (
+          {!showBuiltinEditor && activeTab === 'logs' && (
             <LogViewer logs={logs} onRefresh={fetchLogs} profiles={profiles} />
           )}
         </main>

@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from 'react';
 const API = '/api';
 
 // Standalone source manager used in Settings → Sources. Handles SMB, FTP and
-// (note-only) local PS5 paths. The backend `/api/micromount/sources*`
+// (note-only) local PS5 paths. The backend `/api/convert/sources*`
 // endpoints already cover all three types - this component is purely UI.
 function RemoteSourcesSection({ profiles = [] }) {
   const [sources, setSources] = useState([]);
@@ -26,7 +26,7 @@ function RemoteSourcesSection({ profiles = [] }) {
 
   const load = useCallback(async () => {
     try {
-      const r = await fetch(`${API}/micromount/sources`);
+      const r = await fetch(`${API}/convert/sources`);
       const rows = await r.json();
       // Remote Sources now only manages SMB and FTP. Older 'local' rows are
       // hidden from the UI but kept in the DB so existing autoloads keep
@@ -64,14 +64,14 @@ function RemoteSourcesSection({ profiles = [] }) {
 
     try {
       if (editing === 'new') {
-        const r = await fetch(`${API}/micromount/sources`, {
+        const r = await fetch(`${API}/convert/sources`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(form),
         });
         if (!r.ok) throw new Error((await r.json()).error);
       } else {
-        const r = await fetch(`${API}/micromount/sources/${editing}`, {
+        const r = await fetch(`${API}/convert/sources/${editing}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(form),
@@ -88,14 +88,14 @@ function RemoteSourcesSection({ profiles = [] }) {
 
   const remove = async (id) => {
     if (!confirm('Delete this source?')) return;
-    await fetch(`${API}/micromount/sources/${id}`, { method: 'DELETE' });
+    await fetch(`${API}/convert/sources/${id}`, { method: 'DELETE' });
     load();
   };
 
   const test = async (id) => {
     setBusy(true);
     try {
-      const r = await fetch(`${API}/micromount/sources/${id}/test`, { method: 'POST' });
+      const r = await fetch(`${API}/convert/sources/${id}/test`, { method: 'POST' });
       const d = await r.json();
       showMsg(d.success ? (d.message || 'Connection OK') : (d.error || 'Failed'), d.success ? 'success' : 'error');
     } catch (e) { showMsg(e.message, 'error'); }
@@ -106,7 +106,7 @@ function RemoteSourcesSection({ profiles = [] }) {
     setBusy(true);
     setBrowseFor(src);
     try {
-      let r = await fetch(`${API}/micromount/sources/${src.id}/browse`, {
+      let r = await fetch(`${API}/convert/sources/${src.id}/browse`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ subPath }),
@@ -114,7 +114,7 @@ function RemoteSourcesSection({ profiles = [] }) {
       let d = await r.json();
       if (!d.success && subPath && d.smb_status === 'NT_STATUS_OBJECT_NAME_NOT_FOUND') {
         showMsg(`${d.error}. Falling back to share root.`, 'error');
-        r = await fetch(`${API}/micromount/sources/${src.id}/browse`, {
+        r = await fetch(`${API}/convert/sources/${src.id}/browse`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ subPath: '' }),

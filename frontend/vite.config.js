@@ -9,9 +9,9 @@ export default defineConfig({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.ico'],
       manifest: {
-        name: 'PS5 Payload Manager',
-        short_name: 'PS5Mgr',
-        description: 'Web-based PS5 payload management',
+        name: 'P5 Manager',
+        short_name: 'P5 Manager',
+        description: 'P5 Manager — web-based PS5 payload, file ops and Remote Play control panel',
         theme_color: '#1a1a2e',
         background_color: '#1a1a2e',
         display: 'standalone',

@@ -1,8 +1,114 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <rect width="512" height="512" fill="#1a1a2e"/>
-  <rect x="40" y="100" width="432" height="312" rx="32" fill="#16213e" stroke="#e94560" stroke-width="8"/>
-  <circle cx="150" cy="200" r="50" fill="#e94560"/>
-  <circle cx="362" cy="200" r="50" fill="#3498db"/>
-  <rect x="120" y="300" width="272" height="32" rx="8" fill="#e94560"/>
-  <text x="256" y="430" text-anchor="middle" fill="#fff" font-size="56" font-weight="bold">PS5</text>
+  <!--
+    P5 Manager — app icon (512 × 512).
+    Matches the live UI theme (frontend/src/styles.css):
+      - deep ink background (#0a0b10) with a soft mint glow mesh
+      - mint #7cffb3 primary accent (PS5 power-LED green)
+      - cyan #7ddff5 secondary accent
+      - gradient mint→cyan on key strokes (mirrors the Primary button)
+    Visual DNA preserved from the old icon: two stick wells + touchpad bar
+    arranged like a controller, "P5" wordmark. Modernised with rounded
+    PWA-friendly corners, glassmorphism panel, halo glow.
+  -->
+  <defs>
+    <!-- Subtle radial deep-ink background gradient (centre slightly lifted) -->
+    <radialGradient id="bg" cx="50%" cy="38%" r="72%">
+      <stop offset="0%"   stop-color="#181b27" />
+      <stop offset="55%"  stop-color="#0d0e15" />
+      <stop offset="100%" stop-color="#06070b" />
+    </radialGradient>
+
+    <!-- Mint→cyan gradient (same stops as .btn-primary in styles.css) -->
+    <linearGradient id="mintCyan" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%"   stop-color="#7cffb3" />
+      <stop offset="100%" stop-color="#7ddff5" />
+    </linearGradient>
+
+    <!-- Soft mint halo behind the controller silhouette -->
+    <radialGradient id="halo" cx="50%" cy="55%" r="55%">
+      <stop offset="0%"   stop-color="#7cffb3" stop-opacity="0.32" />
+      <stop offset="45%"  stop-color="#7cffb3" stop-opacity="0.10" />
+      <stop offset="100%" stop-color="#7cffb3" stop-opacity="0" />
+    </radialGradient>
+
+    <!-- Grain-light filter for the stick caps (mimics the in-app knob shadow) -->
+    <filter id="capGlow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="6" result="b" />
+      <feMerge>
+        <feMergeNode in="b" />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Rounded-square background (iOS / Android maskable-friendly radius) -->
+  <rect width="512" height="512" rx="112" fill="url(#bg)" />
+
+  <!-- Soft mint halo bleeding through the panel -->
+  <ellipse cx="256" cy="282" rx="240" ry="170" fill="url(#halo)" />
+
+  <!-- Thin bright rim to lift the icon off any wallpaper -->
+  <rect x="2" y="2" width="508" height="508" rx="111"
+        fill="none" stroke="rgba(124,255,179,0.18)" stroke-width="2" />
+
+  <!--
+    Controller silhouette panel - rounded body suggesting a DualSense.
+    Stroked with the mint→cyan gradient at ~50% opacity so it reads as a
+    "glass" plate. The internal background fill is a faint white wash
+    matching the .card / .panel surface in the UI.
+  -->
+  <path d="M 96 222
+           Q 96 178 140 178
+           L 372 178
+           Q 416 178 416 222
+           L 416 336
+           Q 416 380 372 380
+           L 140 380
+           Q 96 380 96 336 Z"
+        fill="rgba(255,255,255,0.035)"
+        stroke="url(#mintCyan)" stroke-width="2.5" stroke-opacity="0.55" />
+
+  <!-- Touchpad bar (top-centre of the panel) -->
+  <rect x="218" y="206" width="76" height="22" rx="11"
+        fill="rgba(124,255,179,0.16)"
+        stroke="url(#mintCyan)" stroke-width="1.5" stroke-opacity="0.7" />
+
+  <!-- D-pad cross (top-left of panel) -->
+  <g transform="translate(140, 220)" fill="rgba(240,242,247,0.55)">
+    <rect x="14" y="0"  width="10" height="36" rx="2.5" />
+    <rect x="0"  y="13" width="36" height="10" rx="2.5" />
+  </g>
+
+  <!-- Face buttons diamond (top-right of panel) - mint/cyan/magenta/red dots -->
+  <g transform="translate(348, 220)">
+    <circle cx="18" cy="0"  r="5" fill="#7cffb3" fill-opacity="0.85" />
+    <circle cx="0"  cy="18" r="5" fill="#c490ff" fill-opacity="0.85" />
+    <circle cx="36" cy="18" r="5" fill="#ff5d7a" fill-opacity="0.85" />
+    <circle cx="18" cy="36" r="5" fill="#7ddff5" fill-opacity="0.85" />
+  </g>
+
+  <!--
+    Twin analog-stick wells - the headline element. Same gradient stroke
+    as the panel border so the icon reads as a coherent system at any size.
+    Caps use the two accent colours independently for a quick mint-vs-cyan
+    cue that doubles as the "left/right" identity from the AnalogStick
+    component.
+  -->
+  <!-- Left stick well -->
+  <circle cx="184" cy="306" r="44"
+          fill="rgba(255,255,255,0.04)"
+          stroke="url(#mintCyan)" stroke-width="3" stroke-opacity="0.85" />
+  <circle cx="184" cy="306" r="16" fill="#7cffb3" filter="url(#capGlow)" />
+
+  <!-- Right stick well -->
+  <circle cx="328" cy="306" r="44"
+          fill="rgba(255,255,255,0.04)"
+          stroke="url(#mintCyan)" stroke-width="3" stroke-opacity="0.85" />
+  <circle cx="328" cy="306" r="16" fill="#7ddff5" filter="url(#capGlow)" />
+
+  <!-- P5 wordmark (mint→cyan gradient fill) -->
+  <text x="256" y="448" text-anchor="middle"
+        font-family="Geist, -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif"
+        font-size="56" font-weight="800" letter-spacing="6"
+        fill="url(#mintCyan)">P5</text>
 </svg>

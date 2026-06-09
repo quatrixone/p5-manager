@@ -5,7 +5,7 @@ import { fileURLToPath } from 'url';
 import fetch from 'node-fetch';
 import AdmZip from 'adm-zip';
 import { getDatabase, saveDatabase, log } from '../db/sqlite.js';
-import { ensureDefaultPayloads, ESSENTIAL_PAYLOADS } from '../lib/defaultPayloads.js';
+import { ensureDefaultPayloads, getEssentialPayloads } from '../lib/defaultPayloads.js';
 import { pushKernelLogEntry } from './kernelLogServer.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -38,13 +38,19 @@ router.get('/', (req, res) => {
 });
 
 // List the essential built-in payloads that the manager auto-installs.
-router.get('/defaults', (req, res) => {
-  res.json(ESSENTIAL_PAYLOADS.map(p => ({
-    filename: p.filename,
-    url: p.url,
-    tag: p.tag,
-    description: p.description,
-  })));
+router.get('/defaults', async (req, res) => {
+  try {
+    const list = await getEssentialPayloads();
+    res.json(list.map(p => ({
+      filename: p.filename,
+      url: p.url,
+      tag: p.tag,
+      description: p.description,
+    })));
+  } catch (err) {
+    log('error', `Failed to load default payloads list: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Manually re-run the default-payload bootstrap. With ?force=1, re-download

@@ -3,72 +3,19 @@ import path from 'path';
 import fetch from 'node-fetch';
 import AdmZip from 'adm-zip';
 import { getDatabase, saveDatabase, log } from '../db/sqlite.js';
+import { loadBuiltin } from './builtinLoader.js';
 
 const dataDir = process.env.DATA_DIR || path.join(process.cwd(), 'data');
 const payloadsDir = path.join(dataDir, 'payloads');
 
-// Authoritative list of payloads that the manager keeps available out of the
-// box. These are auto-downloaded on first startup and appear in the Payloads
-// tab alongside whatever the user has added. They cover:
-//   * built-in templates (e.g. p2jb.lua used by the "p2jb jailbreak" template)
-//   * the Log viewer (klogsrv-ps5.elf and setlogserver.lua)
-//   * common community payloads
-//
-// Each entry can have:
-//   filename:    exact name the manager will store / look up by
-//   url:         direct download URL (.elf / .lua / .zip — zips are
-//                auto-extracted, keeping the first .elf/.lua found)
-//   description: shown only in logs
-//   tag:         marker used to identify what feature requires this payload
-export const ESSENTIAL_PAYLOADS = [
-  // --- Required by the Log viewer ----------------------------------------
-  {
-    filename: 'klogsrv-ps5.elf',
-    url: 'https://github.com/ps5-payload-dev/klogsrv/releases/download/v0.8/klogsrv-ps5.elf',
-    tag: 'log',
-    description: 'Kernel log server (used by Log viewer)',
-  },
-  {
-    filename: 'setlogserver.lua',
-    url: 'https://raw.githubusercontent.com/Gezine/Luac0re/main/payloads/setlogserver.lua',
-    tag: 'log',
-    description: 'Lua log redirector (used by Log viewer)',
-  },
-
-  // --- Required by built-in templates ------------------------------------
-  {
-    filename: 'p2jb.lua',
-    url: 'https://raw.githubusercontent.com/Gezine/Luac0re/main/payloads/p2jb.lua',
-    tag: 'template',
-    description: 'p2jb kernel exploit (used by the "p2jb jailbreak" template)',
-  },
-
-  // --- Pre-curated convenience payloads (existing defaults) --------------
-  {
-    filename: 'klogsrv.elf',
-    url: 'https://github.com/john-tornblom/ps5-payload-klogsrv/releases/latest/download/klogsrv.elf',
-    tag: 'community',
-    description: 'Payload Kernel Logger (klogsrv)',
-  },
-  {
-    filename: 'ps5-backpork.elf',
-    url: 'https://github.com/BestPig/BackPork/releases/download/0.1/ps5-backpork.elf',
-    tag: 'community',
-    description: 'BackPork ELF',
-  },
-  {
-    filename: 'kstuff.elf',
-    url: 'https://github.com/EchoStretch/kstuff-lite/releases/download/v1.06/kstuff.elf',
-    tag: 'community',
-    description: 'kstuff-lite',
-  },
-  {
-    filename: 'micromount.elf',
-    url: 'https://github.com/PSBrew/MicroMount/releases/latest/download/micromount.elf',
-    tag: 'community',
-    description: 'MicroMount ELF loader',
-  },
-];
+// Authoritative list lives in /frontend/builtin/payloads.js — single source
+// of truth so the user only edits one file to change what gets auto-fetched.
+// loadBuiltin() caches by mtime, so getEssentialPayloads() transparently
+// returns the freshly-edited list the next time it's called.
+export async function getEssentialPayloads() {
+  const mod = await loadBuiltin('payloads.js');
+  return Array.isArray(mod.ESSENTIAL_PAYLOADS) ? mod.ESSENTIAL_PAYLOADS : [];
+}
 
 function ensurePayloadsDir() {
   if (!fs.existsSync(payloadsDir)) {
@@ -176,7 +123,8 @@ export async function ensureDefaultPayloads({ force = false } = {}) {
   const summary = { added: [], skipped: [], failed: [] };
   ensurePayloadsDir();
 
-  for (const entry of ESSENTIAL_PAYLOADS) {
+  const list = await getEssentialPayloads();
+  for (const entry of list) {
     try {
       if (!force && payloadExists(entry.filename)) {
         summary.skipped.push(entry.filename);

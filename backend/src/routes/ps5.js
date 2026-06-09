@@ -4,6 +4,63 @@ import { log } from '../db/sqlite.js';
 
 const router = express.Router();
 
+// pyremoteplay sidecar URL (host-networked in compose). Used as a
+// fallback for the /status probe: TCP payload ports (lua/elf listeners
+// at 9021/9020/8080/6970) are only open while a payload is actually
+// running on the PS5. When the console is awake but idle, all four are
+// closed — the old probe then reported `reachable: false`, which made
+// the topbar pill flip to "offline" even though pyremoteplay's UDP
+// discovery could still see the PS5. We now consult the sidecar after a
+// failed TCP scan so the indicator reflects discoverability, not just
+// payload-listener presence.
+const SIDECAR_URL = process.env.PYREMOTEPLAY_SIDECAR_URL
+  || process.env.CHIAKI_SIDECAR_URL
+  || 'http://127.0.0.1:9555';
+
+// Per-IP discover cache. PS5 discovery uses UDP and typically takes
+// 100-500ms; the topbar polls every 10s, and PS5Control polls on its
+// own, so without caching we'd hit the sidecar twice every 10s per
+// open tab. 6s TTL keeps the topbar feeling live while still
+// collapsing duplicate calls.
+const DISCOVER_CACHE_TTL_MS = 6_000;
+const discoverCache = new Map(); // ip -> { ts, data }
+const discoverInFlight = new Map(); // ip -> Promise<data|null>
+
+async function probeDiscover(ip) {
+  const cached = discoverCache.get(ip);
+  if (cached && (Date.now() - cached.ts) < DISCOVER_CACHE_TTL_MS) {
+    return cached.data;
+  }
+  if (discoverInFlight.has(ip)) return discoverInFlight.get(ip);
+  const promise = (async () => {
+    const controller = new AbortController();
+    // 2s is enough for a PS5 on the same LAN (typical response <500ms)
+    // and keeps the worst-case "fully offline" probe at ~4s total
+    // (2s tcp scan + 2s discover) so the topbar's 10s poll never piles up.
+    const t = setTimeout(() => controller.abort(), 2000);
+    try {
+      const r = await fetch(`${SIDECAR_URL}/discover?ip=${encodeURIComponent(ip)}`, {
+        signal: controller.signal,
+      });
+      if (!r.ok) return null;
+      const data = await r.json().catch(() => null);
+      if (!data || typeof data !== 'object') return null;
+      // pyremoteplay reports status='Ok' (awake) or 'Standby' (rest);
+      // either counts as "the box is on the network", which is what we
+      // need to say "not offline".
+      discoverCache.set(ip, { ts: Date.now(), data });
+      return data;
+    } catch (_) {
+      return null;
+    } finally {
+      clearTimeout(t);
+      discoverInFlight.delete(ip);
+    }
+  })();
+  discoverInFlight.set(ip, promise);
+  return promise;
+}
+
 router.post('/send', async (req, res) => {
   try {
     const { ip, port, filepath } = req.body;
@@ -84,12 +141,29 @@ router.get('/status/:ip', async (req, res) => {
     // Check all ports in parallel
     const results = await Promise.all(ports.map(checkPort));
     const openPort = results.find(r => r.reachable);
-    const isReachable = !!openPort;
+
+    // Fallback: even if no payload listener is up, pyremoteplay's UDP
+    // discovery can still see the PS5 (awake or in standby). We only
+    // pay this probe when the TCP scan turned up nothing, so the fast
+    // path (payload running) is unchanged.
+    let discoverResult = null;
+    if (!openPort) {
+      discoverResult = await probeDiscover(ip);
+    }
+
+    const reachableViaPayload = !!openPort;
+    const reachableViaDiscover = !!(discoverResult && (discoverResult.status || discoverResult.status_code));
+    const isReachable = reachableViaPayload || reachableViaDiscover;
 
     res.json({
       ip,
       reachable: isReachable,
       openPort: openPort ? openPort.port : null,
+      via: reachableViaPayload ? 'payload' : (reachableViaDiscover ? 'discover' : null),
+      discover_status: discoverResult ? (discoverResult.status || null) : null,
+      host_name: discoverResult ? (discoverResult.host_name || null) : null,
+      host_type: discoverResult ? (discoverResult.host_type || null) : null,
+      running_app: discoverResult ? (discoverResult.running_app || null) : null,
       portsChecked: ports,
       timestamp: new Date().toISOString()
     });

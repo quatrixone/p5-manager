@@ -23,6 +23,7 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
   const [klogSuccessMode, setKlogSuccessMode] = useState(true);
   const [luaLogPattern, setLuaLogPattern] = useState('');
   const [inputScripts, setInputScripts] = useState([]);
+  const [builtinInputScripts, setBuiltinInputScripts] = useState([]);
 
   // New step form state (download / extract / ftp_upload / convert)
   const [dlUrl, setDlUrl] = useState('');
@@ -50,12 +51,30 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
 
   const fetchInputScripts = async () => {
     try {
-      const res = await fetch(`${API}/input-scripts`);
-      const data = await res.json();
-      setInputScripts(data);
+      const [userRes, builtinRes] = await Promise.all([
+        fetch(`${API}/input-scripts`),
+        fetch(`${API}/input-scripts/builtin`),
+      ]);
+      const userData = await userRes.json();
+      const builtinData = builtinRes.ok ? await builtinRes.json() : [];
+      setInputScripts(Array.isArray(userData) ? userData : []);
+      setBuiltinInputScripts(Array.isArray(builtinData) ? builtinData : []);
     } catch (err) {
       console.error('Failed to fetch input scripts:', err);
     }
+  };
+
+  // Lookup helper: built-in scripts have string ids like "builtin:restart",
+  // user scripts have integer ids. We compare loosely so a step with either
+  // form can be matched without juggling types at every call site.
+  const findInputScript = (id) => {
+    if (id == null) return null;
+    const key = String(id);
+    return (
+      builtinInputScripts.find(s => String(s.id) === key) ||
+      inputScripts.find(s => String(s.id) === key) ||
+      null
+    );
   };
 
   const fetchTemplates = async () => {
@@ -91,7 +110,11 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
   };
 
   const addWolStep = () => {
-    setSteps([...steps, { type: 'wol', name: 'Wake on LAN', keep_session: true }]);
+    // keep_session defaults OFF: pre-warm already parks the session in the
+    // warm cache, which holds the PS5 awake for the full TTL (180s) without
+    // promoting it to the live SESSIONS pool. The next input_script /
+    // rp_session step transparently resumes from the warm cache.
+    setSteps([...steps, { type: 'wol', name: 'Wake / Pre-warm', keep_session: false }]);
   };
 
   const addCheckPortStep = () => {
@@ -124,13 +147,17 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
   };
 
   const addInputScriptStep = (scriptId) => {
-    const script = inputScripts.find(s => s.id === scriptId);
+    const script = findInputScript(scriptId);
     if (!script) return;
+    // Embed the literal script content so the step keeps working even if the
+    // user later renames/removes the source script (built-ins are stable, but
+    // the backend prefers `step.script` over `scriptId` anyway).
     setSteps([...steps, {
       type: 'input_script',
       scriptId: script.id,
       scriptName: script.name,
       script: script.script,
+      builtin: typeof script.id === 'string' && script.id.startsWith('builtin:'),
       name: `Input: ${script.name}`
     }]);
   };
@@ -222,10 +249,11 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
     const merged = { ...current, ...patch };
 
     if (merged.type === 'input_script') {
-      const sc = inputScripts.find(s => s.id === merged.scriptId);
+      const sc = findInputScript(merged.scriptId);
       if (sc) {
         merged.scriptName = sc.name;
         merged.script = sc.script;
+        merged.builtin = typeof sc.id === 'string' && sc.id.startsWith('builtin:');
         merged.name = `Input: ${sc.name}`;
       }
     } else if (merged.type === 'payload') {
@@ -692,12 +720,20 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
 
               {showAddStepMenu === 'wol' && (
                 <div className="p-md" style={{ background: 'var(--panel2)', borderRadius: 8 }}>
-                  <p className="text-sm text-muted mb-md">Wake PS5 using profile's MAC address</p>
+                  <p className="text-sm text-muted mb-sm">
+                    Pre-warm Remote Play: wakes the PS5 from standby, logs the user in
+                    (dismisses the "Press PS button" picker) and parks the session in the
+                    sidecar's warm cache so the next input_script / rp_session step resumes
+                    in ~17 ms instead of re-running the full handshake.
+                  </p>
+                  <p className="text-xs text-muted mb-md">
+                    Falls back to plain DDP wake if pre-warm fails (e.g. no RP credentials saved).
+                  </p>
                   <button
                     className="btn btn-success"
                     onClick={() => { addWolStep(); setShowAddStepMenu(null); }}
                   >
-                    + Add Wake on LAN
+                    + Add Wake / Pre-warm
                   </button>
                 </div>
               )}
@@ -774,8 +810,37 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
                   <p className="text-xs text-muted mb-md">
                     Plays back the script through the Remote Play sidecar. The profile must be paired in the Remote Play tab.
                   </p>
+
+                  {builtinInputScripts.length > 0 && (
+                    <>
+                      <div className="text-xs text-muted mb-sm" style={{ textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                        🧩 Built-in
+                      </div>
+                      <div className="flex-col gap-sm mb-md">
+                        {builtinInputScripts.map(script => (
+                          <button
+                            key={script.id}
+                            className="btn btn-ghost text-left"
+                            onClick={() => { addInputScriptStep(script.id); setShowAddStepMenu(null); }}
+                          >
+                            <div className="font-medium">
+                              <span className="badge badge-info" style={{ marginRight: 8, fontSize: '0.65rem' }}>BUILT-IN</span>
+                              {script.name}
+                            </div>
+                            {script.description && (
+                              <div className="text-xs text-muted truncate">{script.description}</div>
+                            )}
+                          </button>
+                        ))}
+                      </div>
+                    </>
+                  )}
+
+                  <div className="text-xs text-muted mb-sm" style={{ textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                    💾 Saved
+                  </div>
                   {inputScripts.length === 0 ? (
-                    <p className="text-sm text-muted">No input scripts saved. Create them in PS5 Remote.</p>
+                    <p className="text-sm text-muted">No saved input scripts. Create them in PS5 Remote.</p>
                   ) : (
                     <div className="flex-col gap-sm">
                       {inputScripts.map(script => (
@@ -1039,13 +1104,31 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
                                 <label className="field-label">Input script</label>
                                 <select
                                   className="select"
-                                  value={step.scriptId || ''}
-                                  onChange={e => patchStep(index, { scriptId: parseInt(e.target.value) || null })}
+                                  value={step.scriptId != null ? String(step.scriptId) : ''}
+                                  onChange={e => {
+                                    const v = e.target.value;
+                                    if (!v) { patchStep(index, { scriptId: null }); return; }
+                                    // Keep built-in ids as strings; coerce numeric user-script ids to int
+                                    // so the value type matches the original /api/input-scripts payload.
+                                    const id = v.startsWith('builtin:') ? v : (parseInt(v) || null);
+                                    patchStep(index, { scriptId: id });
+                                  }}
                                 >
                                   <option value="">— pick a script —</option>
-                                  {inputScripts.map(s => (
-                                    <option key={s.id} value={s.id}>{s.name}</option>
-                                  ))}
+                                  {builtinInputScripts.length > 0 && (
+                                    <optgroup label="🧩 Built-in">
+                                      {builtinInputScripts.map(s => (
+                                        <option key={s.id} value={s.id}>{s.name}</option>
+                                      ))}
+                                    </optgroup>
+                                  )}
+                                  {inputScripts.length > 0 && (
+                                    <optgroup label="💾 Saved">
+                                      {inputScripts.map(s => (
+                                        <option key={s.id} value={s.id}>{s.name}</option>
+                                      ))}
+                                    </optgroup>
+                                  )}
                                 </select>
                               </>
                             )}
@@ -1124,12 +1207,13 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
                                     checked={!!step.keep_session}
                                     onChange={e => patchStep(index, { keep_session: e.target.checked })}
                                   />
-                                  <span>Keep PS5 awake (hold an RP session for the rest of the sequence)</span>
+                                  <span>Promote warm cache to a live RP session</span>
                                 </label>
                                 <div className="text-xs text-muted" style={{ marginTop: 4 }}>
-                                  Recommended when the next steps are long (FTP upload, big conversion).
-                                  Without this, PS5 may return to rest mode mid-task because FTP traffic
-                                  does not reset its power-saving timer.
+                                  Pre-warm already holds the PS5 awake via the sidecar warm cache, so
+                                  this is only needed if a downstream tool (e.g. another script poking
+                                  the sidecar directly) expects a session in the live SESSIONS pool
+                                  rather than PAUSED_SESSIONS. Leave off for most sequences.
                                 </div>
                               </>
                             )}

@@ -72,8 +72,50 @@ function ScriptRunner({ ip, onSendInput, scripts, onScriptsChange }) {
   const [output, setOutput] = useState([]);
   const [isRunning, setIsRunning] = useState(false);
   const [stopRequested, setStopRequested] = useState(false);
-  const [sessionState, setSessionState] = useState('idle'); // idle | connecting | connected | stopping
+  // sessionState transitions:
+  //   idle      → no RP session anywhere on the sidecar for this IP
+  //   warm      → sidecar holds a paused session that can be resumed in O(ms)
+  //   connecting → user clicked Start, handshake in progress
+  //   connected  → live session ready, button events will flow immediately
+  //   stopping   → user clicked Stop, waiting for sidecar to park the session
+  //
+  // `warm` is what the sidecar reports when /quick-stop was a soft-stop (the
+  // default for the Stop button) or when /prewarm was used. From the user's
+  // perspective the next Start click is basically free, so we surface this
+  // explicitly instead of lumping it under idle.
+  const [sessionState, setSessionState] = useState('idle');
   const [sessionId, setSessionId] = useState('');
+  // Last warm-cache snapshot from /quick-status. Lets the badge show
+  // "warm · 12s ago, 168s TTL" so it's obvious whether Start will be
+  // instant (warm) or whether the user is about to pay the cold-start
+  // cost (idle).
+  const [warmInfo, setWarmInfo] = useState(null); // { ageS, ttlS } | null
+  // PS5 power state (DDP). Lets us swap "Start session" for "PS5 offline"
+  // when there's nothing on the other end - the input button still works
+  // but at least the user knows why nothing's happening.
+  const [ps5Online, setPs5Online] = useState(null); // true | false | null=unknown
+  // Built-in scripts ship with the app (source: /frontend/builtin/inputScripts.js).
+  // Fetched once on mount via /api/input-scripts/builtin; rendered above the
+  // user-saved list in their own card so they can't be deleted/edited in place.
+  const [builtinScripts, setBuiltinScripts] = useState([]);
+
+  // Single combined "Scripts" card has two tabs: built-in (curated, read-only)
+  // and saved (user-created in this DB). We default to built-in because most
+  // first-time users have nothing saved yet — once a script is saved we don't
+  // auto-switch (would steal focus while typing in the editor).
+  const [scriptsTab, setScriptsTab] = useState('builtin');
+
+  // Command reference is collapsed by default — most users insert commands by
+  // typing or by forking a built-in. Toggle reveals the chip palette.
+  const [showCommands, setShowCommands] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`${API}/input-scripts/builtin`)
+      .then(r => r.ok ? r.json() : [])
+      .then(list => { if (!cancelled && Array.isArray(list)) setBuiltinScripts(list); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
   // Mirror the latest state into a ref so the polling closure always reads
   // the truth without re-creating the interval on every render.
   const sessionStateRef = useRef('idle');
@@ -83,20 +125,50 @@ function ScriptRunner({ ip, onSendInput, scripts, onScriptsChange }) {
   // of truth: the sidecar. If the sidecar says a session exists for this IP
   // (regardless of who opened it - this component, RemotePlay tab, Autoload,
   // etc.) we adopt it and show "connected". When the sidecar reports no
-  // active session and we're not mid-transition we drop back to "idle".
+  // active session and we're not mid-transition we drop back to "idle"
+  // (or "warm" if the sidecar still has the session in its PAUSED cache).
   useEffect(() => {
     if (!ip) return;
     let cancelled = false;
     const tick = async () => {
       try {
-        const r = await fetch(`${API}/remoteplay/quick-status?ip=${encodeURIComponent(ip)}`).then(r => r.json());
+        const [r, statusRes] = await Promise.all([
+          fetch(`${API}/remoteplay/quick-status?ip=${encodeURIComponent(ip)}`).then(r => r.json()),
+          // Use the same unified endpoint the top-right header badge uses
+          // (TCP port scan + pyremoteplay discover fallback). Earlier we
+          // called /remoteplay/discover directly and matched on
+          // `status === 'Standby'`, but the sidecar actually returns
+          // "Server Standby" / status_code=null, so the input-script
+          // badge wrongly displayed "PS5 offline" for any Standby console.
+          // /api/ps5/status normalises all of that into a single
+          // `reachable` boolean — one source of truth across the app.
+          fetch(`${API}/ps5/status/${encodeURIComponent(ip)}`)
+            .then(r => r.json()).catch(() => null),
+        ]);
         if (cancelled) return;
+        if (statusRes && typeof statusRes.reachable === 'boolean') {
+          setPs5Online(statusRes.reachable);
+        } else {
+          setPs5Online(null);
+        }
         const cur = sessionStateRef.current;
         if (r.success && r.active) {
           if (cur !== 'connected') setSessionState('connected');
           if (r.session_id) setSessionId(r.session_id);
+          setWarmInfo(null);
           return;
         }
+        if (r.success && r.warm) {
+          setWarmInfo({
+            ageS: Math.round(r.warm_age_s || 0),
+            ttlS: Math.round(r.warm_ttl_remaining_s || 0),
+          });
+          if (cur === 'connecting' || cur === 'stopping') return;
+          if (cur !== 'warm') setSessionState('warm');
+          if (sessionId) setSessionId('');
+          return;
+        }
+        setWarmInfo(null);
         // Inactive - only flip to idle when we're not actively starting or
         // stopping the session ourselves.
         if (cur === 'connecting' || cur === 'stopping') return;
@@ -326,6 +398,16 @@ function ScriptRunner({ ip, onSendInput, scripts, onScriptsChange }) {
     addOutput(`Loaded: ${scriptToLoad.name}`, 'info');
   };
 
+  // Fork a built-in into the editor as a new (unsaved) user copy. We strip
+  // the editing id so saveScript() does a POST (new row), not a PUT (which
+  // would 404 since builtin:* ids don't exist in the DB).
+  const forkBuiltin = (b) => {
+    setScriptName(`${b.name} (copy)`);
+    setScript(b.script);
+    setEditingId(null);
+    addOutput(`Forked built-in: ${b.name} — edit & save to keep your changes`, 'info');
+  };
+
   const deleteScript = async (id) => {
     if (!confirm('Delete this script?')) return;
     try {
@@ -350,9 +432,28 @@ function ScriptRunner({ ip, onSendInput, scripts, onScriptsChange }) {
 
   const clearOutput = () => setOutput([]);
 
+  // Variant drives the badge colour. `warm` is intentionally surfaced as
+  // success-tinted (almost-ready) so users learn it's basically the same
+  // as connected from a "will Start be instant?" perspective.
   const sessionVariant = sessionState === 'connected' ? 'success'
+    : sessionState === 'warm' ? 'info'
     : sessionState === 'connecting' ? 'warning'
     : sessionState === 'stopping' ? 'warning' : 'muted';
+
+  // One-line, human-friendly description of the session+console state.
+  // Goes right after the dot so the user gets the full picture at a glance.
+  const sessionLabel = (() => {
+    if (sessionState === 'connected') return 'connected';
+    if (sessionState === 'connecting') return 'connecting…';
+    if (sessionState === 'stopping') return 'stopping…';
+    if (sessionState === 'warm' && warmInfo) {
+      return `warm cache · resume ready (age ${warmInfo.ageS}s, TTL ${warmInfo.ttlS}s)`;
+    }
+    if (sessionState === 'warm') return 'warm cache · resume ready';
+    if (ps5Online === false) return 'idle · PS5 offline';
+    if (ps5Online === null) return 'idle';
+    return 'idle';
+  })();
 
   const outputColor = (type) => type === 'error' ? 'var(--red)'
     : type === 'success' ? 'var(--accent)'
@@ -369,8 +470,13 @@ function ScriptRunner({ ip, onSendInput, scripts, onScriptsChange }) {
               background: 'currentColor',
               boxShadow: sessionState === 'connected' ? '0 0 0 4px var(--accent-dim)' : 'none',
             }} />
-            RP session · {sessionState}
+            RP session · {sessionLabel}
           </span>
+          {ps5Online === false && (
+            <span className="badge badge-danger" title="DDP discover failed. The PS5 is off or out of network reach.">
+              ● PS5 offline
+            </span>
+          )}
           {sessionId && (
             <span className="font-mono text-xs text-muted">{sessionId.slice(0, 12)}</span>
           )}
@@ -380,14 +486,26 @@ function ScriptRunner({ ip, onSendInput, scripts, onScriptsChange }) {
                 className="btn btn-success btn-sm"
                 onClick={startSession}
                 disabled={!ip || sessionState === 'connecting'}
+                title={
+                  sessionState === 'warm'
+                    ? 'Resume from warm cache — should be ~instant.'
+                    : ps5Online === false
+                    ? 'PS5 appears offline — Start will try to wake it but may take a while.'
+                    : 'Open a Remote Play session for input scripts.'
+                }
               >
-                {sessionState === 'connecting' ? '⏳ Starting…' : '▶ Start session'}
+                {sessionState === 'connecting'
+                  ? '⏳ Starting…'
+                  : sessionState === 'warm'
+                  ? '⚡ Resume session'
+                  : '▶ Start session'}
               </button>
             ) : (
               <button
                 className="btn btn-danger btn-sm"
                 onClick={stopSession}
                 disabled={sessionState === 'stopping'}
+                title="Soft stop — session is parked in the sidecar warm cache so the next Start is instant."
               >
                 ⏹ Stop session
               </button>
@@ -396,73 +514,162 @@ function ScriptRunner({ ip, onSendInput, scripts, onScriptsChange }) {
         </div>
       </div>
 
-      {/* Saved Scripts */}
-      <div className="comp-card">
+      {/* Combined Scripts card with two tabs:
+            • Built-in — curated, read-only (source: /frontend/builtin/inputScripts.js)
+            • Saved   — user-created entries from the local DB
+          Tabs save vertical space on mobile (single header instead of two
+          stacked cards) and group the related "pick something to run" actions.
+          Compact mobile styling (badge/desc/hint hiding) inherited from
+          .builtin-scripts-compact. */}
+      <div className="comp-card builtin-scripts-compact">
         <div className="comp-card-header">
-          <span className="comp-card-title">
-            <span>💾</span> Saved Scripts
-            <span className="badge badge-muted" style={{ marginLeft: 8 }}>{scripts?.length || 0}</span>
-          </span>
+          <div className="tabs" style={{ flex: 1, marginRight: 8 }}>
+            <button
+              type="button"
+              className={`tab-item ${scriptsTab === 'builtin' ? 'active' : ''}`}
+              onClick={() => setScriptsTab('builtin')}
+            >
+              <span>🧩</span> Built-in
+              <span className="badge badge-muted" style={{ marginLeft: 6 }}>{builtinScripts.length}</span>
+            </button>
+            <button
+              type="button"
+              className={`tab-item ${scriptsTab === 'saved' ? 'active' : ''}`}
+              onClick={() => setScriptsTab('saved')}
+            >
+              <span>💾</span> Saved
+              <span className="badge badge-muted" style={{ marginLeft: 6 }}>{scripts?.length || 0}</span>
+            </button>
+          </div>
+          {scriptsTab === 'builtin' && (
+            <span className="text-xs text-muted builtin-edit-hint">
+              Edit in <code>frontend/builtin/inputScripts.js</code>
+            </span>
+          )}
         </div>
         <div className="comp-card-body">
-          {!scripts || scripts.length === 0 ? (
-            <div className="text-sm text-muted">
-              No saved scripts yet. Use the editor below to create one and press <b>💾 Save</b>.
-            </div>
-          ) : (
-            <div className="flex-col" style={{ gap: 6, maxHeight: 260, overflowY: 'auto' }}>
-              {scripts.map(s => (
-                <div
-                  key={s.id}
-                  className={`list-item ${editingId === s.id ? 'file-card-selected' : ''}`}
-                  style={{ marginBottom: 0, padding: '10px 12px' }}
-                >
-                  <span
-                    className="flex-1 truncate"
-                    style={{ cursor: 'pointer', fontSize: '0.9rem' }}
-                    onClick={() => loadScript(s)}
-                    title={s.name}
+          {scriptsTab === 'builtin' && (
+            builtinScripts.length === 0 ? (
+              <div className="text-sm text-muted">No built-in scripts available.</div>
+            ) : (
+              <div className="flex-col builtin-list" style={{ gap: 6, maxHeight: 260, overflowY: 'auto' }}>
+                {builtinScripts.map(b => (
+                  <div
+                    key={b.id}
+                    className="list-item"
+                    style={{ marginBottom: 0 }}
                   >
-                    {s.name}
-                  </span>
-                  <div className="list-item-actions">
-                    <button className="btn btn-success btn-sm btn-icon" onClick={() => runScript(s.script)} disabled={isRunning} title="Run">▶</button>
-                    <button className="btn btn-secondary btn-sm btn-icon" onClick={() => loadScript(s)} disabled={isRunning} title="Edit">✏️</button>
-                    <button className="btn btn-danger btn-sm btn-icon" onClick={() => deleteScript(s.id)} title="Delete">🗑</button>
+                    <div
+                      className="flex-1"
+                      style={{ cursor: 'pointer', minWidth: 0 }}
+                      onClick={() => forkBuiltin(b)}
+                      title={b.description || b.name}
+                    >
+                      <div className="truncate builtin-name">
+                        <span
+                          className="badge badge-info builtin-badge"
+                          style={{ marginRight: 8, fontSize: '0.65rem' }}
+                        >BUILT-IN</span>
+                        {b.name}
+                      </div>
+                      {b.description && (
+                        <div className="text-muted truncate builtin-desc" style={{ marginTop: 2 }}>
+                          {b.description}
+                        </div>
+                      )}
+                    </div>
+                    <div className="list-item-actions">
+                      <button
+                        className="btn btn-success btn-sm btn-icon"
+                        onClick={() => runScript(b.script)}
+                        disabled={isRunning}
+                        title="Run"
+                      >▶</button>
+                      <button
+                        className="btn btn-secondary btn-sm btn-icon"
+                        onClick={() => forkBuiltin(b)}
+                        disabled={isRunning}
+                        title="Use as template (fork into editor)"
+                      >📋</button>
+                    </div>
                   </div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            )
+          )}
+
+          {scriptsTab === 'saved' && (
+            !scripts || scripts.length === 0 ? (
+              <div className="text-sm text-muted">
+                No saved scripts yet. Use the editor below to create one and press <b>💾 Save</b>.
+              </div>
+            ) : (
+              <div className="flex-col" style={{ gap: 6, maxHeight: 260, overflowY: 'auto' }}>
+                {scripts.map(s => (
+                  <div
+                    key={s.id}
+                    className={`list-item ${editingId === s.id ? 'file-card-selected' : ''}`}
+                    style={{ marginBottom: 0, padding: '10px 12px' }}
+                  >
+                    <span
+                      className="flex-1 truncate"
+                      style={{ cursor: 'pointer', fontSize: '0.9rem' }}
+                      onClick={() => loadScript(s)}
+                      title={s.name}
+                    >
+                      {s.name}
+                    </span>
+                    <div className="list-item-actions">
+                      <button className="btn btn-success btn-sm btn-icon" onClick={() => runScript(s.script)} disabled={isRunning} title="Run">▶</button>
+                      <button className="btn btn-secondary btn-sm btn-icon" onClick={() => loadScript(s)} disabled={isRunning} title="Edit">✏️</button>
+                      <button className="btn btn-danger btn-sm btn-icon" onClick={() => deleteScript(s.id)} title="Delete">🗑</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )
           )}
         </div>
       </div>
 
-      {/* Command Reference */}
+      {/* Command Reference — collapsed by default; just a toggle link until
+          the user clicks. Cuts a full card+chip-grid worth of vertical noise
+          from the typical mobile viewport. */}
       <div className="comp-card">
-        <div className="comp-card-header">
-          <span className="comp-card-title">
-            <span>🎛️</span> Available Commands
-          </span>
+        <div className="comp-card-header" style={{ alignItems: 'center' }}>
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            onClick={() => setShowCommands(v => !v)}
+            style={{ padding: '4px 8px', minHeight: 0 }}
+            title={showCommands ? 'Hide commands reference' : 'Show commands reference'}
+          >
+            <span style={{ marginRight: 6 }}>{showCommands ? '▾' : '▸'}</span>
+            🎛️ Available Commands
+            <span className="badge badge-muted" style={{ marginLeft: 8 }}>{AVAILABLE_COMMANDS.length}</span>
+          </button>
         </div>
-        <div className="comp-card-body">
-          <div className="flex flex-wrap" style={{ gap: 6 }}>
-            {AVAILABLE_COMMANDS.map(({ cmd, desc }) => (
-              <button
-                key={cmd}
-                onClick={() => insertCommand(cmd)}
-                disabled={isRunning}
-                title={desc}
-                className="btn btn-secondary btn-sm font-mono"
-                style={{ minHeight: 32, padding: '4px 10px' }}
-              >
-                {cmd}
-              </button>
-            ))}
+        {showCommands && (
+          <div className="comp-card-body">
+            <div className="flex flex-wrap" style={{ gap: 6 }}>
+              {AVAILABLE_COMMANDS.map(({ cmd, desc }) => (
+                <button
+                  key={cmd}
+                  onClick={() => insertCommand(cmd)}
+                  disabled={isRunning}
+                  title={desc}
+                  className="btn btn-secondary btn-sm font-mono"
+                  style={{ minHeight: 32, padding: '4px 10px' }}
+                >
+                  {cmd}
+                </button>
+              ))}
+            </div>
+            <p className="text-xs text-muted mt-sm">
+              Append <code>10x</code>, <code>x10</code>, or <code>*10</code> to repeat. Use <code>text &lt;string&gt;</code> to type on the PS5 on-screen keyboard.
+            </p>
           </div>
-          <p className="text-xs text-muted mt-sm">
-            Append <code>10x</code>, <code>x10</code>, or <code>*10</code> to repeat. Use <code>text &lt;string&gt;</code> to type on the PS5 on-screen keyboard.
-          </p>
-        </div>
+        )}
       </div>
 
       {/* Script Editor */}

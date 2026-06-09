@@ -1,8 +1,23 @@
 import express from 'express';
 import net from 'net';
 import { getDatabase, saveDatabase, log } from '../db/sqlite.js';
+import { loadBuiltin } from '../lib/builtinLoader.js';
 
 const router = express.Router();
+
+// Built-in templates live in /frontend/builtin/templates.js so the user
+// only edits one place to change what shows up in the Autoload "Templates"
+// menu. loadBuiltin() caches by mtime so file edits via the built-in
+// editor are picked up on the very next request without a restart.
+async function getBuiltinTemplates() {
+  try {
+    const mod = await loadBuiltin('templates.js');
+    return Array.isArray(mod.DEFAULT_TEMPLATES) ? mod.DEFAULT_TEMPLATES : [];
+  } catch (err) {
+    log('error', `Failed to load built-in templates: ${err.message}`);
+    return [];
+  }
+}
 
 // Local API base used by sequence step execution. Keeps sequences decoupled
 // from internal module structures and re-uses validated/HTTP-tested code paths.
@@ -199,33 +214,60 @@ async function execCheckPort(step, ctx) {
 
 async function execWol(step, ctx) {
   if (!ctx.profile) throw new Error('wol needs a profile');
-  // New wake endpoint sends both DDP WAKEUP and DDP LAUNCH (using the stored
-  // PSN account_id), so the PS5 wakes *and* logs the user in - bypassing the
-  // "Press PS button" prompt that otherwise blocks Remote Play after a cold
-  // boot from rest mode.
-  await apiFetch('POST', '/remoteplay/wake', {
-    profile_id: ctx.profile.id,
-  });
+  // /prewarm establishes a full Remote Play handshake (which wakes the
+  // console from rest mode, logs the user in *and* dismisses the "Press
+  // PS button" account picker) and then parks the session in the sidecar's
+  // PAUSED_SESSIONS warm cache. From there:
+  //   - subsequent input_script / rp_session steps resume from warm cache
+  //     in O(ms) instead of redoing the 5-10 s handshake,
+  //   - the warm cache holds the PS5 awake just like a live session would,
+  //     so long FTP uploads / extracts don't let the PS5 fall back to rest,
+  //   - if no further RP step runs in this sequence the warm cache simply
+  //     ages out (180 s TTL) and the PS5 returns to standby naturally.
+  //
+  // The legacy `keep_session` flag predates /prewarm - back then we had to
+  // open a full live session to keep PS5 awake. The warm cache fills the
+  // same role now, so the flag becomes a no-op for new sequences. We keep
+  // honouring it for backwards compatibility with saved sequences that
+  // expect an explicit live session: in that case we promote the warm
+  // cache to a live session via /quick-start (which resumes from the warm
+  // entry created by /prewarm above - still O(ms), no second handshake).
+  try {
+    const r = await apiFetch('POST', '/remoteplay/prewarm', {
+      profile_id: ctx.profile.id,
+    });
+    if (r?.already_live) {
+      runLog(ctx.run, `  · PS5 ${ctx.profile.ip_address} already had a live session - reusing`);
+    } else if (r?.warm_cached) {
+      runLog(ctx.run, `  · pre-warmed RP session for ${ctx.profile.ip_address} (warm cache TTL ${r.warm_cache_ttl_s || 180}s)`);
+    } else if (r?.resumed) {
+      runLog(ctx.run, `  · resumed warm-cached RP session for ${ctx.profile.ip_address}`);
+    }
+  } catch (e) {
+    // Fall back to the bare DDP WAKEUP+LAUNCH path so callers without a
+    // paired Remote Play profile (or with a corrupted one) still get the
+    // PS5 woken up. The error is logged but doesn't fail the step - if
+    // the next step actually needs a session it'll raise on its own.
+    runLog(ctx.run, `  · prewarm failed: ${e.message} - falling back to DDP wake`);
+    try {
+      await apiFetch('POST', '/remoteplay/wake', { profile_id: ctx.profile.id });
+    } catch (e2) {
+      throw new Error(`wake failed: ${e2.message}`);
+    }
+  }
 
-  // Optional: keep the PS5 awake for the rest of the sequence by holding an
-  // RP session open. Without this, PS5 returns to rest mode mid-FTP-upload
-  // because the FTP server payload doesn't count as user activity for the
-  // console's power-saving timer. A live Remote Play session does.
   if (step.keep_session) {
     try {
-      // Give DDP LAUNCH a moment to finish logging in before RP knocks.
-      await sleep(step.keep_session_delay_ms || 3000);
+      await sleep(step.keep_session_delay_ms || 1000);
       const r = await apiFetch('POST', '/remoteplay/quick-start', {
         ip: ctx.profile.ip_address,
       });
       if (r?.session_id) {
         ctx.openedSessions.push({ ip: ctx.profile.ip_address, session_id: r.session_id });
-        runLog(ctx.run, `  · opened keep-awake RP session ${r.session_id.slice(0, 8)} for ${ctx.profile.ip_address}`);
+        runLog(ctx.run, `  · promoted warm cache to live keep-awake session ${r.session_id.slice(0, 8)}`);
       }
     } catch (e) {
-      // Don't fail the whole sequence just because we couldn't keep PS5
-      // awake - DDP wake alone is often enough for short runs.
-      runLog(ctx.run, `  · keep_session failed: ${e.message} (sequence will continue without RP session)`);
+      runLog(ctx.run, `  · keep_session promote failed: ${e.message} (warm cache still holds PS5 awake)`);
     }
   }
 }
@@ -309,11 +351,11 @@ async function execExtract(step) {
     smb_path: step.smb_path,
     filename: step.filename,
   };
-  await apiFetch('POST', '/micromount/extract/queue/resume').catch(() => {});
-  const r = await apiFetch('POST', '/micromount/extract/queue', body);
+  await apiFetch('POST', '/convert/extract/queue/resume').catch(() => {});
+  const r = await apiFetch('POST', '/convert/extract/queue', body);
   const itemId = r.item.id;
   await pollUntilTerminal(async () => {
-    const list = await apiFetch('GET', '/micromount/extract/queue');
+    const list = await apiFetch('GET', '/convert/extract/queue');
     const item = (list.items || []).find(i => i.id === itemId);
     if (!item) return { status: 'failed', error: 'item disappeared' };
     return { status: item.status, error: item.error };
@@ -324,7 +366,7 @@ async function execFtpUpload(step, ctx) {
   const ip = step.ip || ctx.profile?.ip_address;
   if (!ip) throw new Error('ftp_upload needs ip or profile');
   if (!step.local_path) throw new Error('ftp_upload needs local_path');
-  await apiFetch('POST', '/micromount/ftp/upload', {
+  await apiFetch('POST', '/convert/ftp/upload', {
     ip,
     local_path: step.local_path,
     dest_path: step.dest_path,
@@ -333,8 +375,8 @@ async function execFtpUpload(step, ctx) {
 
 async function execConvert(step) {
   if (!step.source_path) throw new Error('convert needs source_path');
-  await apiFetch('POST', '/micromount/convert/queue/resume').catch(() => {});
-  const r = await apiFetch('POST', '/micromount/convert/queue', {
+  await apiFetch('POST', '/convert/convert/queue/resume').catch(() => {});
+  const r = await apiFetch('POST', '/convert/convert/queue', {
     mode: step.mode || 'pack-file',
     source_path: step.source_path,
     output_name: step.output_name,
@@ -343,11 +385,53 @@ async function execConvert(step) {
   });
   const itemId = r.item.id;
   await pollUntilTerminal(async () => {
-    const list = await apiFetch('GET', '/micromount/convert/queue');
+    const list = await apiFetch('GET', '/convert/convert/queue');
     const item = (list.items || []).find(i => i.id === itemId);
     if (!item) return { status: 'failed', error: 'item disappeared' };
     return { status: item.status, error: item.error };
   });
+}
+
+// Probe Remote Play session state for the profile, log a one-line summary
+// and (on miss) make sure we have an active session before running buttons.
+//
+// `run-script` already calls ensureSessionForIp() internally as a safety
+// net, but doing the probe here gives us:
+//   - a clear log entry so users can see WHY a script step was instant
+//     (resumed from warm) vs slow (cold start),
+//   - a chance to surface "PS5 offline" *before* the input handshake spends
+//     60-90 s discovering the same thing the hard way.
+async function ensureSessionForStep(ctx, label) {
+  const ip = ctx.profile.ip_address;
+  let status = null;
+  try {
+    status = await apiFetch('GET', `/remoteplay/quick-status?ip=${encodeURIComponent(ip)}`);
+  } catch (_) { /* sidecar may be transient - the actual call will retry */ }
+
+  if (status?.active) {
+    runLog(ctx.run, `  · ${label}: reusing live RP session ${(status.session_id || '').slice(0, 8)}`);
+    return 'live';
+  }
+  if (status?.warm) {
+    const age = Math.round(status.warm_age_s || 0);
+    runLog(ctx.run, `  · ${label}: resuming from warm cache (age ${age}s, TTL ${Math.round(status.warm_ttl_remaining_s || 0)}s)`);
+    return 'warm';
+  }
+
+  // Cold path: fail fast if PS5 is unreachable so we don't burn the full
+  // 60 s post-disconnect lock waiting on a console that's truly offline.
+  try {
+    const ddp = await apiFetch('GET', `/remoteplay/discover?ip=${encodeURIComponent(ip)}`);
+    if (!ddp?.success) {
+      throw new Error(`PS5 ${ip} is offline / unreachable (DDP failed)`);
+    }
+    runLog(ctx.run, `  · ${label}: cold start (PS5 state=${ddp.status || 'unknown'})`);
+  } catch (e) {
+    // DDP failure is fatal here - bubble up so the sequence stops instead
+    // of looping through stale step retries.
+    throw new Error(`PS5 ${ip} not reachable: ${e.message}`);
+  }
+  return 'cold';
 }
 
 async function execInputScript(step, ctx) {
@@ -357,12 +441,18 @@ async function execInputScript(step, ctx) {
   const body = {
     ip: ctx.profile.ip_address,
     profile_id: ctx.profile.id,
-    keep_session: true,
+    keep_session: true, // leave session in warm cache for the next step
   };
   if (step.script) body.script = step.script;
   else if (step.scriptId) body.script_id = step.scriptId;
   else throw new Error('input_script step needs a script or scriptId');
+
+  await ensureSessionForStep(ctx, 'input_script');
+
   const r = await apiFetch('POST', '/remoteplay/run-script', body);
+  if (r?.session_id) {
+    runLog(ctx.run, `  · session ${r.session_id.slice(0, 8)} executed ${(r.events || []).length} input event(s)`);
+  }
   const failed = (r.events || []).filter((e) => e.type === 'error');
   if (failed.length) {
     throw new Error(`${failed.length} input(s) failed: ${failed.slice(0, 3).map((f) => f.msg || f.button).join(', ')}`);
@@ -375,9 +465,23 @@ async function execRpSession(step, ctx) {
   if (action === 'start') {
     // /quick-start ensures (and caches) a Remote Play session for this IP
     // using stored pair credentials. Subsequent input_script steps reuse it.
-    await apiFetch('POST', '/remoteplay/quick-start', { ip: ctx.profile.ip_address, profile_id: ctx.profile.id });
+    // Logs the path it took (live/warm/cold) so timing is debuggable.
+    const path = await ensureSessionForStep(ctx, 'rp_session start');
+    if (path === 'cold') {
+      // Surface DDP state up front and let the caller see what the first
+      // handshake will be fighting against.
+      runLog(ctx.run, '  · opening fresh RP session (first start after standby can take 60-120s)');
+    }
+    const r = await apiFetch('POST', '/remoteplay/quick-start', { ip: ctx.profile.ip_address, profile_id: ctx.profile.id });
+    if (r?.session_id) {
+      runLog(ctx.run, `  · RP session ${r.session_id.slice(0, 8)} ready (${r.resumed ? 'warm-resumed' : r.reused ? 'reused' : 'fresh'})`);
+    }
   } else if (action === 'stop') {
+    // Soft stop: sidecar parks the session in the warm cache so it can be
+    // resumed cheaply by anything that runs after this step (next sequence
+    // iteration, scheduled rerun, the user clicking Start in the UI...).
     await apiFetch('POST', '/remoteplay/quick-stop', { ip: ctx.profile.ip_address });
+    runLog(ctx.run, '  · soft-stopped RP session (parked in warm cache for next start)');
   } else {
     throw new Error(`rp_session: unknown action "${action}"`);
   }
@@ -559,79 +663,17 @@ router.post('/runs/:runId/cancel', (req, res) => {
 });
 
 // ---- Built-in templates: always available, no DB rows needed -----------------
+//
+// Source of truth: /frontend/builtin/templates.js (see top of this file).
 
-const DEFAULT_TEMPLATES = [
-  {
-    id: 'tpl-wake-and-send',
-    name: 'Wake & send payload',
-    description: 'Wake the PS5, wait for it, then send the default payload.',
-    steps: [
-      { type: 'wol', name: 'Wake on LAN' },
-      { type: 'wait', duration: 8000, name: 'Wait 8 seconds' },
-      { type: 'check_port', port: 9021, retryFromStep: 1, retryToStep: 2, name: 'Check port 9021 (retry 1-2 on fail)' },
-    ],
-    requiresProfile: true,
-  },
-  {
-    id: 'tpl-download-extract-upload',
-    name: 'Download → extract → upload to PS5',
-    description: 'Download a file, extract it locally, then upload result to PS5 via FTP. Wakes PS5 and holds a Remote Play session so it stays awake through the upload.',
-    steps: [
-      { type: 'wol', keep_session: true, name: 'Wake PS5 (keep awake)' },
-      { type: 'wait', duration: 6000, name: 'Wait 6 seconds' },
-      { type: 'download', url: 'https://example.com/archive.zip', dest_kind: 'local', dest_path: '/data/mkpfs', name: 'Download archive.zip' },
-      { type: 'extract', source: 'local-fs', local_path: '/data/mkpfs/archive.zip', dest_kind: 'local-fs', dest_local_path: '/data/mkpfs', name: 'Extract archive.zip' },
-      { type: 'ftp_upload', local_path: '/data/mkpfs/file.ffpfsc', dest_path: '/data/homebrew', name: 'Upload to PS5 FTP' },
-    ],
-    requiresProfile: true,
-  },
-  {
-    id: 'tpl-full-pipeline',
-    name: 'Full game pipeline',
-    description: 'Wake PS5 (holding an RP session so it stays awake), download, extract, convert to .ffpfsc, upload via FTP.',
-    steps: [
-      { type: 'wol', keep_session: true, name: 'Wake PS5 (keep awake)' },
-      { type: 'wait', duration: 6000, name: 'Wait 6 seconds' },
-      { type: 'download', url: 'https://example.com/game.rar', dest_kind: 'local', dest_path: '/data/mkpfs', name: 'Download game.rar' },
-      { type: 'extract', source: 'local-fs', local_path: '/data/mkpfs/game.rar', dest_kind: 'local-fs', dest_local_path: '/data/mkpfs', name: 'Extract game.rar' },
-      { type: 'convert', mode: 'pack-file', source_path: '/data/mkpfs/game.exfat', name: 'Convert to .ffpfsc' },
-      { type: 'ftp_upload', local_path: '/data/mkpfs/game.ffpfsc', dest_path: '/data/homebrew', name: 'Upload .ffpfsc to PS5' },
-    ],
-    requiresProfile: true,
-  },
-  {
-    id: 'tpl-full-game',
-    name: 'Full game (RP session → launch script → verify ELF)',
-    description: 'Start a Remote Play session, run an input script that launches the game, wait for it to boot, then succeed when the ELF port (9021) is open.',
-    steps: [
-      { type: 'rp_session', action: 'start', name: 'Start Remote Play session' },
-      { type: 'input_script', scriptId: null, scriptName: '(pick after loading template)', script: '// edit this step to pick your launch script', name: 'Run input: launch game' },
-      { type: 'wait', duration: 20000, name: 'Wait 20 seconds for game to boot' },
-      { type: 'check_port', port: 9021, retryFromStep: 3, retryToStep: 3, name: 'Verify ELF port 9021 (success)' },
-      { type: 'rp_session', action: 'stop', name: 'Stop Remote Play session' },
-    ],
-    requiresProfile: true,
-  },
-  {
-    id: 'tpl-p2jb-jailbreak',
-    name: 'p2jb jailbreak (wake → lua → wait 55min → verify ELF)',
-    description: 'Wake PS5, wait 15s, send p2jb.lua once the Lua port (9026) is up, wait 55 minutes, then succeed if the ELF port (9021) is reachable.',
-    steps: [
-      { type: 'wol', name: 'Wake on LAN' },
-      { type: 'wait', duration: 15000, name: 'Wait 15 seconds' },
-      // Block until Lua port 9026 is available; on failure, retry the wake + wait pair.
-      { type: 'check_port', port: 9026, retryFromStep: 1, retryToStep: 2, name: 'Check Lua port 9026 (retry wake on fail)' },
-      { type: 'payload', payloadName: 'p2jb.lua', name: 'Send p2jb.lua' },
-      { type: 'wait', duration: 55 * 60 * 1000, name: 'Wait 55 minutes' },
-      // Final verification: ELF port 9021 must be open. No retry → fails the sequence if unreachable.
-      { type: 'check_port', port: 9021, retryFromStep: 6, retryToStep: 6, name: 'Verify ELF port 9021 (success)' },
-    ],
-    requiresProfile: true,
-  },
-];
-
-router.get('/templates/list', (req, res) => {
-  res.json(DEFAULT_TEMPLATES);
+router.get('/templates/list', async (req, res) => {
+  try {
+    const templates = await getBuiltinTemplates();
+    res.json(templates);
+  } catch (err) {
+    log('error', `templates/list failed: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 export default router;

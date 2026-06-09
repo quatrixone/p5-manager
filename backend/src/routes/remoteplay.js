@@ -10,8 +10,20 @@ const SIDECAR_URL = process.env.PYREMOTEPLAY_SIDECAR_URL
 // Per-IP session cache so script runs can transparently reuse a single
 // Remote Play session across many quick-input calls. The session is verified
 // on each ensure-call against the sidecar before being trusted.
-const ipToSession = new Map(); // ip -> { sid, started }
+//
+// We also track whether the cached session has video enabled - the sidecar
+// only attaches a video receiver when `enable_video=true` is passed at start,
+// so reusing a no-video session when the caller wants video gives them a
+// session whose /video.mjpeg endpoint returns 400. Tracking the bit lets us
+// force a fresh start in that case.
+const ipToSession = new Map(); // ip -> { sid, started, video }
 const SESSION_REUSE_MS = 5 * 60 * 1000;
+// Per-IP in-flight Start promise so two near-simultaneous callers
+// (UI double-click, autoload step + script runner, ...) collapse onto
+// the same sidecar request instead of racing. Mirrors the asyncio.Lock
+// on the sidecar side; defends against the case where both reach the
+// sidecar before its lock is acquired.
+const inFlightStarts = new Map(); // ip -> Promise<{session_id, ip, ...}>
 
 async function sidecar(method, urlPath, body, { timeout = 30000 } = {}) {
   const controller = new AbortController();
@@ -70,22 +82,67 @@ function loadProfileById(id) {
 // implicit auto-open inside quick-input / run-script. Keeping the logic in
 // one place means caching, credential lookup, error reporting, and the
 // wakeup-before-connect handshake all behave identically everywhere.
-async function ensureSessionForIp(ip, opts = {}) {
-  const { userProfile: explicitProfile = null, forceNew = false } = opts;
+// PS5 Remote Play stream knobs. Mirrors the whitelists on the sidecar;
+// we re-validate here so a bad request body doesn't make it all the way
+// to pyremoteplay before being rejected. We expose only 360p / 540p /
+// 720p — 1080p was removed because the MJPEG re-encode is too slow on a
+// Pi-class CPU. FPS is no longer user-configurable; the sidecar always
+// runs at its default (30 fps).
+const RP_RESOLUTIONS = new Set(['360p', '540p', '720p']);
+const RP_DEFAULT_RESOLUTION = '720p';
 
+function normalizeStreamParams({ resolution } = {}) {
+  const res = RP_RESOLUTIONS.has(resolution) ? resolution : RP_DEFAULT_RESOLUTION;
+  return { resolution: res };
+}
+
+async function ensureSessionForIp(ip, opts = {}) {
+  const {
+    userProfile: explicitProfile = null,
+    forceNew = false,
+    enableVideo = false,
+    resolution: rawResolution,
+  } = opts;
+  const { resolution } = normalizeStreamParams({ resolution: rawResolution });
+
+  // Coalesce concurrent callers onto the same in-flight Start. forceNew
+  // bypasses the cache (above) but it does NOT bypass dedupe - if a Start
+  // is already running we still want to wait for it instead of opening a
+  // second handshake.
+  //
+  // Reuse rule: an in-flight Start can satisfy any later caller whose
+  // media flag is a *subset* of the in-flight one. So an in-flight start
+  // with video=true serves an input-only call (extra decoder is harmless);
+  // the reverse forces a new handshake.
+  const inflight = inFlightStarts.get(ip);
+  if (inflight && (inflight._enableVideo || !enableVideo)) {
+    return inflight;
+  }
+
+  const work = (async () => {
   if (!forceNew) {
     const cached = ipToSession.get(ip);
-    if (cached && (Date.now() - cached.started) < SESSION_REUSE_MS) {
+    const cacheMatches = cached && (cached.video || !enableVideo);
+    if (cacheMatches && (Date.now() - cached.started) < SESSION_REUSE_MS) {
       try {
         const s = await sidecar('GET', `/sessions/${encodeURIComponent(cached.sid)}`, undefined, { timeout: 5000 });
-        if (s.state === 'connected') return { session_id: cached.sid, ip, cached: true };
+        if (s.state === 'connected') {
+          return {
+            session_id: cached.sid, ip, cached: true,
+            video: !!cached.video,
+            resolution: s.resolution || cached.resolution,
+          };
+        }
       } catch (e) {
         // Treat sidecar timeouts as transient - keep the cached entry. Only
         // evict on a definitive "session gone" response.
         if (!/timeout|ECONN/i.test(e.message || '')) ipToSession.delete(ip);
-        else return { session_id: cached.sid, ip, cached: true, transient: true };
+        else return {
+          session_id: cached.sid, ip, cached: true, transient: true,
+          video: !!cached.video,
+          resolution: cached.resolution,
+        };
       }
-      if (forceNew) ipToSession.delete(ip);
     } else if (cached) {
       ipToSession.delete(ip);
     }
@@ -116,13 +173,42 @@ async function ensureSessionForIp(ip, opts = {}) {
   //   ──────────────────────────────────────────────────
   //   total                                 :   180 s
   const data = await sidecar('POST', '/sessions/start',
-    { ip, user_profile: userProfile, account_id: accountId },
+    {
+      ip,
+      user_profile: userProfile,
+      account_id: accountId,
+      enable_video: enableVideo,
+      resolution,
+    },
     { timeout: 180000 });
-  ipToSession.set(ip, { sid: data.session_id, started: Date.now() });
+  ipToSession.set(ip, {
+    sid: data.session_id,
+    started: Date.now(),
+    video: !!data.video,
+    resolution: data.resolution || resolution,
+  });
   // `resumed:true` means the sidecar handed us a warm-cached session that
   // was never actually disconnected on the PS5 side - reconnect was O(ms).
-  log('info', `${data.resumed ? 'Resumed' : 'Started'} Remote Play session ${data.session_id} for ${ip}`);
-  return { session_id: data.session_id, ip, cached: false, state: data.state, resumed: !!data.resumed };
+  // `reused:true` means a sibling caller's Start completed first and we
+  // got handed its session_id back without firing a second handshake.
+  const mediaBits = data.video ? 'video' : '';
+  const streamTag = data.resolution ? ` @ ${data.resolution}` : '';
+  log('info', `${data.resumed ? 'Resumed' : data.reused ? 'Reused' : 'Started'} Remote Play session ${data.session_id} for ${ip}${mediaBits ? ` (with ${mediaBits})` : ''}${streamTag}`);
+  return { session_id: data.session_id, ip, cached: false, state: data.state,
+           resumed: !!data.resumed, reused: !!data.reused,
+           video: !!data.video,
+           resolution: data.resolution || resolution };
+  })();
+
+  // Tag the in-flight promise with its media mode so a concurrent caller
+  // asking for a superset skips the dedupe.
+  work._enableVideo = enableVideo;
+  inFlightStarts.set(ip, work);
+  try {
+    return await work;
+  } finally {
+    inFlightStarts.delete(ip);
+  }
 }
 
 // Map ScriptRunner.jsx commands → sidecar (pyremoteplay) button names.
@@ -427,14 +513,84 @@ router.post('/sessions/start', async (req, res) => {
     if (!ip) return res.status(400).json({ success: false, error: 'ip or profile_id required' });
 
     // Caller may force a brand-new session (e.g. after Force-reset) or supply
-    // a user_profile inline for diagnostics / tests.
+    // a user_profile inline for diagnostics / tests. `enable_video` opts in
+    // to the MJPEG live-preview receiver on the sidecar.
     const data = await ensureSessionForIp(ip, {
       userProfile: req.body?.user_profile || null,
       forceNew: !!req.body?.force_new,
+      enableVideo: !!req.body?.enable_video,
+      resolution: req.body?.resolution,
     });
     res.json({ success: true, ...data });
   } catch (err) {
     res.status(err.status || 502).json({ success: false, error: err.message });
+  }
+});
+
+// Proxy the MJPEG video preview from the sidecar to the browser. Plain
+// pass-through: we don't decode or re-encode anything, just pipe the
+// multipart/x-mixed-replace stream byte-for-byte. The browser renders it
+// with a vanilla <img src="..."> tag.
+//
+// We deliberately use Node's native `fetch` here (instead of the `sidecar()`
+// helper) because that helper buffers the full body before returning, which
+// would defeat streaming entirely.
+router.get('/sessions/:sid/video.mjpeg', async (req, res) => {
+  const sid = req.params.sid;
+  const fps = req.query.fps || '12';
+  const upstreamUrl = `${SIDECAR_URL}/sessions/${encodeURIComponent(sid)}/video.mjpeg?fps=${encodeURIComponent(fps)}`;
+
+  // Tie the upstream fetch lifecycle to the client connection - if the
+  // browser closes the <img> (page nav, toggle off), we abort the sidecar
+  // request so its generator gets GeneratorExit and stops encoding JPEGs.
+  const controller = new AbortController();
+  let aborted = false;
+  const onClose = () => {
+    if (!aborted) { aborted = true; controller.abort(); }
+  };
+  req.on('close', onClose);
+
+  let upstream;
+  try {
+    upstream = await fetch(upstreamUrl, { signal: controller.signal });
+  } catch (err) {
+    req.off('close', onClose);
+    if (err.name === 'AbortError') return; // client gone before headers
+    return res.status(502).json({ success: false, error: `sidecar unreachable: ${err.message}` });
+  }
+
+  if (!upstream.ok) {
+    req.off('close', onClose);
+    let detail = '';
+    try { detail = (await upstream.json())?.detail || ''; } catch (_) {}
+    return res.status(upstream.status).json({ success: false, error: detail || `sidecar ${upstream.status}` });
+  }
+
+  // Mirror the multipart content-type (including boundary) and disable any
+  // proxy buffering so frames hit the browser as soon as they arrive.
+  res.status(200);
+  res.setHeader('Content-Type', upstream.headers.get('content-type') || 'multipart/x-mixed-replace; boundary=rpframe');
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate, private');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('X-Accel-Buffering', 'no');
+
+  try {
+    const reader = upstream.body.getReader();
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (!res.write(Buffer.from(value))) {
+        // Back-pressure: pause until the socket drains, otherwise we leak
+        // memory when the client is slower than the PS5 frame rate.
+        await new Promise((r) => res.once('drain', r));
+      }
+    }
+  } catch (err) {
+    // Upstream aborted (session stopped, sidecar dropped) or client closed.
+    // Either way just end the response.
+  } finally {
+    req.off('close', onClose);
+    try { res.end(); } catch (_) {}
   }
 });
 
@@ -476,6 +632,54 @@ router.post('/sessions/:sid/stop', async (req, res) => {
 // Open (or reuse) the cached Remote Play session for an IP. Returns the
 // session id and current cached state without requiring the caller to know
 // anything about pyremoteplay.
+// Pre-warm: open a full Remote Play session, then immediately park it in
+// the sidecar's warm cache. Used by the "Wake PS5" buttons everywhere - the
+// user gets a console that is genuinely ready (RP auth handshake done, slot
+// claimed), and the *next* Start session resumes from warm cache in O(ms)
+// instead of fighting the PS5 post-disconnect lock.
+//
+// Resolves credentials the same way ensureSessionForIp() does, so the
+// caller only needs ip or profile_id.
+router.post('/prewarm', async (req, res) => {
+  try {
+    const { ip: rawIp, profile_id } = req.body || {};
+    let ip = rawIp;
+    let profile = null;
+    if (profile_id) profile = loadProfileById(profile_id);
+    if (!ip && profile) ip = profile.ip_address;
+    if (!ip) return res.status(400).json({ success: false, error: 'ip or profile_id required' });
+    if (!profile) profile = loadProfileByIp(ip);
+    if (!profile?.rp_user_profile) {
+      return res.status(400).json({ success: false, error: 'No Remote Play credentials for this PS5 - pair first in the Remote Play tab' });
+    }
+    let userProfile;
+    try { userProfile = JSON.parse(profile.rp_user_profile); }
+    catch (_) { return res.status(400).json({ success: false, error: 'Stored Remote Play profile is corrupt - re-pair the PS5' }); }
+
+    const prewarmStream = normalizeStreamParams({
+      resolution: req.body?.resolution,
+    });
+    const data = await sidecar('POST', '/sessions/prewarm', {
+      ip,
+      user_profile: userProfile,
+      account_id: profile.psn_account_id || null,
+      enable_video: !!req.body?.enable_video,
+      resolution: prewarmStream.resolution,
+    }, { timeout: 180000 });
+
+    // Drop the local cache - the session is now in the sidecar's warm
+    // cache, not the live SESSIONS pool, so a subsequent quick-input or
+    // /sessions/start needs to go through ensureSessionForIp() again
+    // (which will resume from warm cache for free).
+    ipToSession.delete(ip);
+    log('info', `Pre-warmed Remote Play session ${data.session_id} for ${ip}`
+      + (data.warm_cached ? ` (warm-cached ${data.warm_cache_ttl_s}s)` : ' (already live)'));
+    res.json({ success: true, ...data });
+  } catch (err) {
+    res.status(err.status || 502).json({ success: false, error: err.message });
+  }
+});
+
 // Alias of /sessions/start kept for backwards compatibility with ScriptRunner
 // and Autoload's rp_session step. Goes through the same ensureSessionForIp()
 // helper so callers can't accidentally diverge.
@@ -504,16 +708,28 @@ router.post('/quick-stop', async (req, res) => {
     let cachedStopped = false;
     const cached = ipToSession.get(ip);
     if (cached) {
+      // Soft stop (no force=true) - the sidecar parks the session in its
+      // PAUSED_SESSIONS warm cache so the next Start resumes instantly
+      // instead of fighting the PS5 post-disconnect session lock.
       try { await sidecar('POST', `/sessions/${encodeURIComponent(cached.sid)}/stop`, {}, { timeout: 20000 }); } catch (_) {}
       ipToSession.delete(ip);
       cachedStopped = true;
     }
 
-    // If `all` was requested OR we had nothing cached, also ask the sidecar to
-    // tear down anything it knows about for this IP. Recovers from caches
-    // drifting after a sidecar restart.
+    // /sessions/stop-all is a HARD reset: it tears down BOTH the live
+    // SESSIONS pool and the PAUSED_SESSIONS warm cache, and stamps
+    // RECENT_DISCONNECTS so the next Start sleeps out the 60s PS5 lock.
+    // That is exactly what we want for `force reset`, but it's the wrong
+    // thing to do on a normal Stop - it would wipe the warm cache we just
+    // populated via /sessions/:sid/stop a few lines up.
+    //
+    // So: only call stop-all when the caller explicitly asks for it via
+    // `all:true`. The previous "also call it when we had nothing cached"
+    // fallback turned out to be hostile to warm-cache reuse: a fresh
+    // /quick-stop call right after /sessions/:sid/stop (the Node cache
+    // gets cleared there too) would still trigger stop-all.
     let sidecarStopped = [];
-    if (all || !cachedStopped) {
+    if (all) {
       try {
         const r = await sidecar('POST', `/sessions/stop-all?ip=${encodeURIComponent(ip)}`, {}, { timeout: 8000 });
         sidecarStopped = r?.stopped || [];
@@ -531,25 +747,102 @@ router.post('/quick-stop', async (req, res) => {
   }
 });
 
-// Report whether a cached RP session exists for an IP and its current state.
+// Report the state of any Remote Play session resources we have for an IP.
+// The response covers three cases:
+//   - active live session  → { active: true, session_id, video }
+//   - warm-cached session  → { active: false, warm: true, warm_ttl_s, video }
+//   - nothing              → { active: false, warm: false }
+//
+// We always consult the sidecar (it's the source of truth, especially after
+// a Node restart that loses ipToSession). Local cache is only used as a
+// hint for the session_id when the sidecar confirms it's still alive.
 router.get('/quick-status', async (req, res) => {
   try {
     const { ip } = req.query || {};
     if (!ip) return res.status(400).json({ success: false, error: 'ip required' });
+
     const cached = ipToSession.get(ip);
-    if (!cached) return res.json({ success: true, active: false, ip });
-    try {
-      const s = await sidecar('GET', `/sessions/${encodeURIComponent(cached.sid)}`, undefined, { timeout: 10000 });
-      return res.json({ success: true, active: s.state === 'connected', ip, session_id: cached.sid, state: s.state });
-    } catch (e) {
-      // A timeout (sidecar busy with sessions/start retry loop) is NOT the
-      // same as "session lost". Only evict the cache if the sidecar
-      // explicitly reports the session is gone (4xx). Treat other errors as
-      // transient and keep the cached session.
-      const transient = /timeout|ECONN/i.test(e.message || '');
-      if (!transient) ipToSession.delete(ip);
-      return res.json({ success: true, active: !transient ? false : true, ip, session_id: cached.sid, transient });
+
+    // First check: if we have a local cached session_id, verify it against
+    // the sidecar directly. This is the cheap fast path.
+    if (cached) {
+      try {
+        const s = await sidecar('GET', `/sessions/${encodeURIComponent(cached.sid)}`, undefined, { timeout: 10000 });
+        if (s.state === 'connected') {
+          return res.json({
+            success: true,
+            active: true,
+            warm: false,
+            ip,
+            session_id: cached.sid,
+            state: s.state,
+            video: !!s.video,
+            resolution: s.resolution || cached.resolution || null,
+          });
+        }
+        // Session exists but isn't connected - drop the stale local cache
+        // and fall through to the sidecar-wide warm-status lookup below.
+        ipToSession.delete(ip);
+      } catch (e) {
+        // Treat sidecar timeouts as transient - keep the cached entry and
+        // tell the UI "we don't know yet, assume still active". Only evict
+        // on a definitive 4xx ("session not found").
+        const transient = /timeout|ECONN/i.test(e.message || '');
+        if (transient) {
+          return res.json({
+            success: true,
+            active: true,
+            warm: false,
+            ip,
+            session_id: cached.sid,
+            transient: true,
+            video: !!cached.video,
+            resolution: cached.resolution || null,
+          });
+        }
+        ipToSession.delete(ip);
+      }
     }
+
+    // No local session_id (or it was stale) - ask the sidecar what it knows
+    // about this IP. Covers warm cache (pre-warmed by Wake button) and
+    // sessions opened by other clients between Node restarts.
+    try {
+      const w = await sidecar('GET', `/warm-status?ip=${encodeURIComponent(ip)}`, undefined, { timeout: 5000 });
+      if (w.live) {
+        // Re-populate Node's cache so subsequent calls hit the fast path.
+        ipToSession.set(ip, {
+          sid: w.session_id,
+          started: Date.now(),
+          video: !!w.video,
+          resolution: w.resolution || null,
+        });
+        return res.json({
+          success: true,
+          active: true,
+          warm: false,
+          ip,
+          session_id: w.session_id,
+          video: !!w.video,
+          resolution: w.resolution || null,
+        });
+      }
+      if (w.warm) {
+        return res.json({
+          success: true,
+          active: false,
+          warm: true,
+          ip,
+          warm_session_id: w.session_id,
+          warm_age_s: w.age_s,
+          warm_ttl_remaining_s: w.ttl_remaining_s,
+          video: !!w.video,
+          resolution: w.resolution || null,
+        });
+      }
+    } catch (_) { /* sidecar transient - report as "nothing" */ }
+
+    return res.json({ success: true, active: false, warm: false, ip });
   } catch (err) {
     res.status(err.status || 502).json({ success: false, error: err.message });
   }

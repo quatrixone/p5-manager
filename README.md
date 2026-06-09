@@ -1,8 +1,14 @@
-# PS5WebPayload Manager
+# P5 Manager
+
+<p>
+  <img src="frontend/public/icon-192.svg" alt="P5 Manager icon" width="96" align="left" />
+</p>
 
 Web-based all-in-one PS5 jailbreak helper: payload delivery, log capture, file
 ops, autoload sequences, and Remote Play input control – all from one browser
 tab.
+
+<br clear="left" />
 
 ## Features
 
@@ -42,18 +48,21 @@ tab.
 - File browser over local mounts, SMB shares and the PS5's own FTP
 - HTTP/Torrent **Downloader** with per-job progress, pause/resume,
   retry and removal
-- **MicroMount** workflow: extract archives, convert PKG / dump → PFS,
-  push to PS5 via FTP — all queued, all stoppable. Works directly on
-  files (and folders) already sitting on the PS5 FTP
+- **Convert** workflow: extract archives, pack / unpack PFS via
+  `mkpfs`, push to PS5 via FTP — all queued, all stoppable. Works
+  directly on files (and folders) already sitting on the PS5 FTP
 - Resilient FTP upload with TCP keep-alive, NOOP heartbeat and
   auto-resume so the console stays awake for the entire transfer
-- Multi-source MicroMount: stack any number of SMB shares + FTP
+- Multi-source browser: stack any number of SMB shares + FTP
   endpoints alongside the local filesystem
 
-**Queue**
+**Tasks**
 - Single tab listing every background job (downloads, extracts,
   converts, FTP uploads) with per-job progress bars and **per-job**
   start / pause / resume / cancel controls
+- Queue state is persisted to disk so jobs survive `docker compose
+  restart` / image rebuilds — they come back paused, you press ▶
+  to continue
 - Nothing starts automatically — you press Start
 
 **Autoload Builder**
@@ -76,7 +85,7 @@ survives container rebuilds, and a full backup/restore ZIP from Settings.
 - Touch-friendly hit targets, mobile keyboard hooks for input
   scripts / text entry on the PS5, and an on-screen DualSense laid
   out for thumb reach
-- Builders (Autoload, MicroMount, FileBrowser) collapse to single
+- Builders (Autoload, Convert, FileBrowser) collapse to single
   columns on small screens; setup blocks that are already complete
   stay hidden so the daily flow is one tap
 
@@ -92,8 +101,8 @@ survives container rebuilds, and a full backup/restore ZIP from Settings.
 ### Docker Compose (recommended)
 
 ```bash
-git clone https://github.com/psdeviant/ps5webpayload-manager.git
-cd ps5webpayload-manager
+git clone https://github.com/psdeviant/p5-manager.git
+cd p5-manager
 docker compose up -d --build
 ```
 
@@ -101,10 +110,10 @@ The app will be available at `http://your-server:3001`.
 
 Two containers come up:
 
-| Service        | Image                       | Purpose                                                  |
-|----------------|-----------------------------|----------------------------------------------------------|
-| `app`          | `ps5webpayload-manager-app` | Node/Express backend + bundled React frontend            |
-| `pyremoteplay` | `pyremoteplay-sidecar`      | Python FastAPI sidecar wrapping `pyremoteplay` for OAuth, pairing, input |
+| Service        | Image                  | Purpose                                                                  |
+|----------------|------------------------|--------------------------------------------------------------------------|
+| `app`          | `p5-manager-app`       | Node/Express backend + bundled React frontend                            |
+| `pyremoteplay` | `pyremoteplay-sidecar` | Python FastAPI sidecar wrapping `pyremoteplay` for OAuth, pairing, input |
 
 Both run in `network_mode: host` so PS5 discovery, Wake on LAN broadcasts and
 Remote Play UDP streams work without port forwarding.
@@ -143,7 +152,7 @@ python server.py
      fully releases the console for someone else.
 4. **Autoload tab** — build a sequence or load the **p2jb jailbreak** or
    **full-game launch** templates and hit Run.
-5. **Queue tab** for every other long-running job (downloads, extracts, FTP).
+5. **Tasks tab** for every other long-running job (downloads, extracts, FTP).
 6. **Logs tab** for kernel + LUA log output.
 7. **Settings → Backup** to download/restore a full state ZIP (profiles,
    payloads, sequences, input scripts, settings).

@@ -45,7 +45,7 @@ export function smbClientError(out, code) {
 }
 
 export function getSmbSource(db, id) {
-  const stmt = db.prepare('SELECT * FROM micromount_sources WHERE id = ? AND type = ?');
+  const stmt = db.prepare('SELECT * FROM convert_sources WHERE id = ? AND type = ?');
   stmt.bind([id, 'smb']);
   let row = null;
   if (stmt.step()) row = stmt.getAsObject();
@@ -54,7 +54,7 @@ export function getSmbSource(db, id) {
 }
 
 export function listSmbSources(db) {
-  const stmt = db.prepare("SELECT id, name, type, path, smb_host, smb_share, smb_username, smb_domain, enabled FROM micromount_sources WHERE type = 'smb' ORDER BY name");
+  const stmt = db.prepare("SELECT id, name, type, path, smb_host, smb_share, smb_username, smb_domain, enabled FROM convert_sources WHERE type = 'smb' ORDER BY name");
   const rows = [];
   while (stmt.step()) rows.push(stmt.getAsObject());
   stmt.free();
