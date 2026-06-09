@@ -30,9 +30,20 @@ services:
       # ships a default copy at /app/builtin (see Dockerfile) so plain
       # `docker run` without compose keeps working.
       - ./frontend/builtin:/app/builtin
+      # Host filesystem exposed to the file browser. Each entry below must
+      # match the candidate list in backend/src/routes/downloader.js so every
+      # "quick tab" rendered in the FileBrowser actually resolves to a real
+      # directory — no dead chips. /mnt/sda1 + /mnt/sdb1 are mounted in
+      # addition to /mnt because Docker bind mounts don't propagate child
+      # mount points from the host by default; mounting them explicitly
+      # exposes the actual USB/SATA disks under their nested paths.
       - /mnt:/mnt
       - /mnt/sda1:/mnt/sda1
       - /mnt/sdb1:/mnt/sdb1
+      - /home:/home
+      - /data:/data
+      - /media:/media
+      - /srv:/srv
     environment:
       - NODE_ENV=production
       - PORT=3001
