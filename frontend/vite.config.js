@@ -11,7 +11,7 @@ export default defineConfig({
       manifest: {
         name: 'P5 Manager',
         short_name: 'P5 Manager',
-        description: 'P5 Manager — web-based PS5 payload, file ops and Remote Play control panel',
+        description: 'P5 Manager — web-based PS4 / PS5 payload, file ops and Remote Play control panel',
         theme_color: '#1a1a2e',
         background_color: '#1a1a2e',
         display: 'standalone',

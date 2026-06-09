@@ -4,9 +4,9 @@
   <img src="frontend/public/icon-192.svg" alt="P5 Manager icon" width="96" align="left" />
 </p>
 
-Web-based all-in-one PS5 jailbreak helper: payload delivery, log capture, file
-ops, autoload sequences, and Remote Play input control – all from one browser
-tab.
+Web-based all-in-one PS4 / PS5 jailbreak helper: payload delivery, log capture,
+file ops, autoload sequences, and Remote Play input control – all from one
+browser tab.
 
 <br clear="left" />
 
