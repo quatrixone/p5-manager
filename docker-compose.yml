@@ -17,8 +17,19 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    # Run as the host user that owns the repo (dietpi = 1000:1000). Keeps
+    # files written through the built-in editor — and any newly downloaded
+    # default payloads — owned by the host user instead of root, so you can
+    # edit/commit them normally without sudo.
+    user: "1000:1000"
     volumes:
       - ./data:/app/data
+      # Live mount of the editable built-ins folder. Saves from the hidden
+      # editor (#builtin) land in this directory on the host, so edits are
+      # tracked by git and survive `docker compose build`. The image still
+      # ships a default copy at /app/builtin (see Dockerfile) so plain
+      # `docker run` without compose keeps working.
+      - ./frontend/builtin:/app/builtin
       - /mnt:/mnt
       - /mnt/sda1:/mnt/sda1
       - /mnt/sdb1:/mnt/sdb1

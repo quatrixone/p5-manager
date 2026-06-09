@@ -1027,9 +1027,10 @@ textarea.input {
   border: 1px solid var(--border-strong);
   border-radius: 10px;
   min-width: 180px;
+  max-height: 70vh;
+  overflow-y: auto;
   z-index: 1000;
   box-shadow: var(--shadow-md);
-  overflow: hidden;
 }
 .file-menu-item {
   display: block;
@@ -1045,6 +1046,16 @@ textarea.input {
 }
 .file-menu-item:hover { background: var(--bg-elev-2); }
 .file-menu-item.text-danger { color: var(--red); }
+
+/* Shown when the action list ends up empty after context-filtering (e.g.
+   a placeholder folder in a kind where no operations apply). */
+.file-menu-empty {
+  padding: 10px 14px;
+  font-size: 0.78rem;
+  color: var(--muted);
+  font-style: italic;
+  text-align: center;
+}
 
 /* ---------- checkbox & multi-select ---------- */
 
@@ -1145,6 +1156,344 @@ pre, code {
 }
 pre { padding: 12px; overflow-x: auto; }
 
+/* ---------- FileOps shell (Browse / Convert / Download / Queue) ---------- */
+
+.fileops {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+.fileops-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-md);
+  padding: var(--space-md) var(--space-lg);
+  background: linear-gradient(180deg, var(--bg-elev) 0%, var(--bg-elev-2) 100%);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  flex-wrap: wrap;
+}
+.fileops-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  min-width: 0;
+}
+.fileops-title-icon {
+  font-size: 1.6rem;
+  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.35));
+}
+.fileops-title-text { min-width: 0; }
+.fileops-title-h {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: -0.01em;
+}
+.fileops-title-sub {
+  font-size: 0.78rem;
+  color: var(--muted);
+  margin-top: 2px;
+  max-width: 64ch;
+}
+.fileops-stats { flex-shrink: 0; }
+.fileops-stat-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 500;
+  cursor: default;
+  font-feature-settings: 'tnum';
+}
+.fileops-stat-pill.is-idle { opacity: 0.65; }
+.fileops-stat-pill.is-active {
+  background: var(--blue-dim);
+  color: var(--blue);
+  border-color: rgba(125, 223, 245, 0.32);
+  cursor: pointer;
+  transition: transform 120ms ease, background 120ms ease;
+}
+.fileops-stat-pill.is-active:hover { transform: translateY(-1px); background: rgba(125, 223, 245, 0.22); }
+.fileops-stat-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: fileops-pulse 1.6s ease-in-out infinite;
+}
+@keyframes fileops-pulse {
+  0%, 100% { opacity: 0.55; transform: scale(1); }
+  50%      { opacity: 1;    transform: scale(1.25); }
+}
+
+/* Indeterminate progress bar for silent jobs (mkpfs unpack, early-phase
+   downloads, etc) where we know work is happening but can't show a real %. */
+.queue-bar-indeterminate {
+  position: relative;
+  overflow: hidden;
+  width: 100%;
+  opacity: 0.85;
+  animation: queue-bar-indeterminate 1.4s ease-in-out infinite;
+  background-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.35) 50%,
+    transparent 100%
+  );
+  background-size: 50% 100%;
+  background-repeat: no-repeat;
+}
+@keyframes queue-bar-indeterminate {
+  0%   { background-position: -50% 0; }
+  100% { background-position: 150% 0; }
+}
+
+.queue-log {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+}
+
+/* ─── Remote Play input recorder ────────────────────────────────────────────
+   Record button + HUD pip + post-recording review modal. The button mirrors
+   the inline fullscreen toggle visually and lives on the same absolute
+   layer over the MJPEG video. The modal floats above both the inline
+   container and the position:fixed fullscreen mode (z-index 10000). */
+.rp-rec-btn {
+  transition: background 140ms ease, box-shadow 140ms ease, padding 140ms ease;
+}
+.rp-rec-btn:hover { background: rgba(220, 50, 50, 0.4); }
+.rp-rec-active {
+  animation: rp-rec-pulse 1.6s ease-in-out infinite;
+  box-shadow: 0 0 0 0 rgba(220, 50, 50, 0.6);
+}
+.rp-rec-dot {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: rgba(220, 50, 50, 0.85);
+  border: 2px solid rgba(255, 255, 255, 0.6);
+  box-sizing: border-box;
+}
+.rp-rec-dot-active {
+  background: #ff3030;
+  border-color: #fff;
+  animation: rp-rec-dot-blink 1.0s ease-in-out infinite;
+}
+@keyframes rp-rec-pulse {
+  0%   { box-shadow: 0 0 0 0   rgba(220, 50, 50, 0.55); }
+  70%  { box-shadow: 0 0 0 14px rgba(220, 50, 50, 0.00); }
+  100% { box-shadow: 0 0 0 0   rgba(220, 50, 50, 0.00); }
+}
+@keyframes rp-rec-dot-blink {
+  0%, 100% { opacity: 1.0; }
+  50%      { opacity: 0.35; }
+}
+
+.rp-rec-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(4, 6, 10, 0.55);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10000;
+  padding: 16px;
+}
+.rp-rec-modal {
+  width: min(640px, 100%);
+  max-height: min(90vh, 720px);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-elev, #14161b);
+  color: var(--text, #e6e9ef);
+  border: 1px solid var(--border, rgba(255,255,255,0.1));
+  border-radius: 14px;
+  box-shadow: 0 24px 60px rgba(0,0,0,0.55);
+  overflow: hidden;
+}
+.rp-rec-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border, rgba(255,255,255,0.1));
+  font-weight: 600;
+}
+.rp-rec-modal-body {
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow: auto;
+}
+.rp-rec-modal-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.rp-rec-modal-row > label { min-width: 88px; color: var(--muted); }
+.rp-rec-modal-row > .select,
+.rp-rec-modal-row > .input { flex: 1; }
+.rp-rec-modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border, rgba(255,255,255,0.1));
+}
+
+.fileops-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+.fileops-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 0.86rem;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+.fileops-tab:hover { color: var(--text); background: rgba(255, 255, 255, 0.04); }
+.fileops-tab.is-active {
+  color: var(--accent);
+  background: var(--accent-dim);
+  border-color: rgba(124, 255, 179, 0.32);
+}
+.fileops-tab-icon { font-size: 1rem; }
+.fileops-tab-label { letter-spacing: 0.01em; }
+.fileops-tab-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  background: var(--blue);
+  color: #0c1117;
+  border-radius: 999px;
+  font-size: 0.66rem;
+  font-weight: 700;
+  font-feature-settings: 'tnum';
+}
+.fileops-tab.is-active .fileops-tab-badge {
+  background: var(--accent);
+  color: #0c1117;
+}
+
+.fileops-body { display: flex; flex-direction: column; gap: var(--space-md); }
+
+/* Compact intro card on the Convert tab. */
+.convert-intro {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: var(--space-md);
+}
+.convert-intro-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+}
+.convert-intro-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text);
+}
+.convert-intro-hint {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.55;
+}
+.convert-intro-hint code {
+  padding: 1px 6px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 0.74rem;
+}
+
+/* Advanced-options disclosure on the Convert form. */
+.convert-advanced {
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0;
+}
+.convert-advanced > summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 10px 14px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--text);
+  user-select: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.convert-advanced > summary::-webkit-details-marker { display: none; }
+.convert-advanced > summary::after {
+  content: '▾';
+  margin-left: auto;
+  color: var(--muted);
+  transition: transform 160ms ease;
+}
+.convert-advanced[open] > summary::after { transform: rotate(180deg); }
+.convert-advanced-body {
+  padding: 0 14px 14px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+/* Destination block on the Downloader form. */
+.downloader-dest {
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: var(--space-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+@media (max-width: 720px) {
+  .fileops-header { padding: var(--space-sm) var(--space-md); }
+  .fileops-title-icon { font-size: 1.3rem; }
+  .fileops-title-h { font-size: 0.98rem; }
+  .fileops-title-sub { display: none; }
+  .fileops-tab { padding: 7px 10px; font-size: 0.8rem; }
+  .fileops-tab-label { display: none; }
+  .fileops-tab.is-active .fileops-tab-label { display: inline; }
+}
+
 /* ---------- subtle reveal animation ---------- */
 
 @media (prefers-reduced-motion: no-preference) {
@@ -1153,4 +1502,130 @@ pre { padding: 12px; overflow-x: auto; }
 @keyframes page-in {
   from { opacity: 0; transform: translateY(6px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+/* ---------- inline DualSense-style pad (no sticks, below video) ---------- */
+
+.rp-pad { display: flex; flex-direction: column; gap: var(--space-sm); }
+
+/* Shoulder strip — L2/L1 hugging the left, R1/R2 hugging the right. The
+   per-side flex containers keep the buttons side-by-side instead of stretching
+   them, so the shoulder pair stays visually tied like on the real pad. */
+.rp-pad-shoulders {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-sm);
+}
+.rp-pad-shoulders-side { display: flex; gap: 6px; }
+.rp-pad-shoulders-side-right { justify-content: flex-end; }
+.rp-pad-shoulders-side > button {
+  min-width: 56px;
+  height: 36px;
+  font-weight: 700;
+  font-size: 0.82rem;
+  padding: 0 10px;
+}
+
+/* Main row — D-pad on the left, face buttons on the right.
+   Each cluster is a 3x3 grid so the diamond shape (up, down, left, right /
+   triangle, square, circle, cross) lays out exactly like a controller.
+   `aspect-ratio: 1` + clamped width keeps the cluster square on any viewport. */
+.rp-pad-main {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-md);
+  align-items: center;
+  justify-items: center;
+}
+.rp-dpad, .rp-face {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-rows: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+  width: clamp(110px, 36vw, 160px);
+  aspect-ratio: 1;
+}
+.rp-dpad > div, .rp-face > div { display: block; }
+.rp-dpad > div > button, .rp-face > div > button {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  padding: 0;
+  font-weight: 700;
+  font-size: 1.1rem;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.rp-face > div > button { border-radius: 50%; font-size: 1.15rem; }
+
+.rp-dpad-up    { grid-area: 1 / 2 / 2 / 3; }
+.rp-dpad-left  { grid-area: 2 / 1 / 3 / 2; }
+.rp-dpad-right { grid-area: 2 / 3 / 3 / 4; }
+.rp-dpad-down  { grid-area: 3 / 2 / 4 / 3; }
+.rp-face-triangle { grid-area: 1 / 2 / 2 / 3; }
+.rp-face-square   { grid-area: 2 / 1 / 3 / 2; }
+.rp-face-circle   { grid-area: 2 / 3 / 3 / 4; }
+.rp-face-cross    { grid-area: 3 / 2 / 4 / 3; }
+
+/* Center row — system + stick-click buttons. Flex-wrap so it gracefully drops
+   to a second line on narrow viewports. */
+.rp-pad-center {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+}
+.rp-pad-center > button {
+  min-width: 60px;
+  height: 36px;
+  font-weight: 700;
+  font-size: 0.78rem;
+  padding: 0 10px;
+}
+
+@media (max-width: 480px) {
+  .rp-pad-shoulders-side > button { min-width: 0; height: 32px; font-size: 0.72rem; padding: 0 6px; flex: 1; }
+  .rp-pad-center > button { min-width: 48px; height: 32px; font-size: 0.72rem; padding: 0 6px; }
+  .rp-dpad > div > button, .rp-face > div > button { font-size: 0.95rem; }
+  .rp-controller-hint { font-size: 0.7rem; margin-top: 2px; }
+}
+
+/* ---------- compact scripts card (built-in + saved tabs) ---------- */
+
+.builtin-scripts-compact .comp-card-header { padding: 8px 10px; gap: 8px; }
+.builtin-scripts-compact .comp-card-body { padding: 10px 12px; }
+.builtin-scripts-compact .list-item { padding: 8px 10px !important; }
+.builtin-scripts-compact .builtin-name { font-size: 0.85rem; }
+.builtin-scripts-compact .builtin-desc { font-size: 0.72rem; }
+
+/* Slim down the shared .tab-item so the tabs fit comfortably inside a card
+   header (full .tab-item is sized for full-page navs). */
+.builtin-scripts-compact .tabs { padding: 3px; border-radius: 10px; }
+.builtin-scripts-compact .tab-item {
+  padding: 6px 10px;
+  min-height: 32px;
+  font-size: 0.82rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+@media (max-width: 768px) {
+  .builtin-scripts-compact .builtin-edit-hint { display: none; }
+  .builtin-scripts-compact .builtin-desc { display: none; }
+  .builtin-scripts-compact .builtin-badge { display: none; }
+  .builtin-scripts-compact .list-item { padding: 6px 8px !important; }
+  .builtin-scripts-compact .builtin-list { max-height: 220px !important; }
+  .builtin-scripts-compact .list-item-actions .btn { min-width: 34px; min-height: 34px; padding: 4px 6px; }
+  .builtin-scripts-compact .builtin-name { font-size: 0.82rem; }
+  .builtin-scripts-compact .tab-item { padding: 6px 8px; font-size: 0.78rem; }
+}
+
+/* ---------- PS5 Control: Input Scripts wrapper (avoid double-padded nested cards) ---------- */
+
+@media (max-width: 768px) {
+  .ps5control-scripts-wrap > .comp-card-body { padding: 8px; }
+  .ps5control-scripts-wrap > .comp-card-header { padding: 10px 12px; }
 }

@@ -24,13 +24,16 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import io
 import logging
 import os
 import secrets
+import threading
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 import uvicorn
 
@@ -58,6 +61,7 @@ try:
     )
     from pyremoteplay.profile import Profiles  # type: ignore
     from pyremoteplay.ddp import launch as ddp_launch  # type: ignore
+    from pyremoteplay.receiver import AVReceiver  # type: ignore
     PYREMOTEPLAY_OK = True
     PYREMOTEPLAY_ERR: Optional[str] = None
 except Exception as e:  # noqa: BLE001
@@ -66,6 +70,20 @@ except Exception as e:  # noqa: BLE001
     RPDevice = None  # type: ignore
     Profiles = None  # type: ignore
     ddp_launch = None  # type: ignore
+    AVReceiver = None  # type: ignore
+
+# Optional video stack. The MJPEG preview endpoint needs PyAV (which
+# pyremoteplay also needs for its AVReceiver to actually decode frames) plus
+# Pillow for the rgb24 -> JPEG step. We import them lazily so a sidecar
+# without these libs still serves input-only sessions.
+try:
+    import av  # type: ignore  # noqa: F401
+    from PIL import Image  # type: ignore  # noqa: F401
+    VIDEO_STACK_OK = True
+    VIDEO_STACK_ERR: Optional[str] = None
+except Exception as e:  # noqa: BLE001
+    VIDEO_STACK_OK = False
+    VIDEO_STACK_ERR = str(e)
 
 app = FastAPI(title="pyremoteplay-sidecar", version="0.2.0")
 
@@ -97,6 +115,134 @@ PS5_SESSION_LOCK_S = 60.0
 PAUSED_SESSIONS: Dict[str, Dict[str, Any]] = {}
 WARM_CACHE_TTL_S = 180.0
 
+# Per-IP asyncio.Lock to serialize /sessions/start. The PS5 firmware only
+# supports one Remote Play session at a time, and every failed handshake we
+# fire at it resets the session lock heartbeat - so two clients clicking
+# "Start" within a few seconds of each other actively keep the lock alive
+# and starve themselves. Serializing per IP means the second click just
+# waits for (and reuses) the first one's result.
+START_LOCKS: Dict[str, asyncio.Lock] = {}
+
+
+# ─── Video receiver ───────────────────────────────────────────────────────────
+#
+# pyremoteplay decodes incoming H.264/HEVC frames via its AVReceiver subclass.
+# For the optional live-preview endpoint we keep only the **latest** rgb24
+# VideoFrame in memory and lazily re-encode it as JPEG when a consumer asks.
+# This keeps memory bounded (one frame) and CPU cost ~zero when nobody is
+# watching the stream.
+#
+# Audio and the synced A/V (fragmented MP4) pipeline have been removed —
+# only video preview (MJPEG) remains.
+
+
+def _has_video(receiver) -> bool:
+    """True iff `receiver` is producing a video stream."""
+    if receiver is None:
+        return False
+    return bool(getattr(receiver, '_video_enabled', False))
+
+
+class MjpegReceiver(AVReceiver if AVReceiver is not None else object):
+    """Latest-frame-only video receiver for HTTP MJPEG streaming.
+
+    Each new H.264 frame replaces the previous one. The actual JPEG encode
+    is deferred until `get_latest_jpeg()` is called and cached against the
+    frame counter, so repeated polls without new frames cost ~nothing.
+
+    Audio is unconditionally short-circuited at handle_audio_data() so the
+    PCM decode pass never runs — the sidecar no longer exposes any audio
+    endpoint. When `enable_video=False`, video decode is skipped too
+    (input-only mode — used for warm-cache pre-warm calls so the receiver
+    burns ~0 CPU while parked).
+    """
+
+    def __init__(self, jpeg_quality: int = 70, enable_video: bool = True):
+        super().__init__()
+        self._video_enabled = bool(enable_video)
+        self._latest_frame = None  # av.VideoFrame
+        self._latest_jpeg: Optional[bytes] = None
+        self._frame_counter: int = 0
+        self._encoded_counter: int = -1
+        self._lock = threading.Lock()
+        self._jpeg_quality = max(1, min(95, jpeg_quality))
+        self._closed = False
+
+    # ─── Skip-decode short circuits ────────────────────────────────────
+    # pyremoteplay calls handle_*_data() before invoking decode_*_frame().
+    # Overriding here means we skip the (~30% CPU on a Pi) H.264 decode
+    # when video is disabled, and always skip the audio path entirely.
+    def handle_video_data(self, buf) -> None:  # type: ignore[override]
+        if not self._video_enabled or self._closed:
+            return
+        try:
+            super().handle_video_data(buf)
+        except Exception as e:  # noqa: BLE001
+            log.debug("video decode failed: %s", e)
+
+    def handle_audio_data(self, buf) -> None:  # type: ignore[override]
+        # Audio support was removed — drop every PCM packet at the
+        # earliest point so we never burn CPU on the AAC decode pass.
+        return
+
+    # ─── Decoded-frame handlers ────────────────────────────────────────
+    def handle_video(self, frame) -> None:  # type: ignore[override]
+        if self._closed or not self._video_enabled:
+            return
+        with self._lock:
+            self._latest_frame = frame
+            self._frame_counter += 1
+
+    def handle_audio(self, frame) -> None:  # type: ignore[override]
+        # Audio was removed. Should never be called since
+        # handle_audio_data() returns early, but kept defensive in case
+        # pyremoteplay's internals ever change the call order.
+        return
+
+    def close(self) -> None:
+        try:
+            super().close()
+        except Exception:  # noqa: BLE001
+            pass
+        with self._lock:
+            self._closed = True
+            self._latest_frame = None
+            self._latest_jpeg = None
+
+    @property
+    def frame_counter(self) -> int:
+        return self._frame_counter
+
+    def get_latest_jpeg(self) -> Optional[bytes]:
+        """Return JPEG-encoded bytes of the most recent frame (or None)."""
+        with self._lock:
+            if self._latest_frame is None:
+                return None
+            if self._encoded_counter == self._frame_counter and self._latest_jpeg is not None:
+                return self._latest_jpeg
+            frame = self._latest_frame
+            counter = self._frame_counter
+        # Encode outside the lock so handle_video can keep pushing frames.
+        try:
+            img = frame.to_image()  # PIL.Image
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=self._jpeg_quality, optimize=False)
+            jpeg = buf.getvalue()
+        except Exception as e:  # noqa: BLE001
+            log.debug("jpeg encode failed: %s", e)
+            return None
+        with self._lock:
+            # Only commit if we're still the freshest encode (another thread
+            # could have encoded a newer frame meanwhile).
+            if counter >= self._encoded_counter:
+                self._latest_jpeg = jpeg
+                self._encoded_counter = counter
+        return jpeg
+
+
+# Synced A/V (fragmented MP4 / MSE) receiver was removed - the sidecar
+# now only exposes the MJPEG video preview endpoint.
+
 
 @app.get("/health")
 async def health():
@@ -104,9 +250,18 @@ async def health():
         "ok": True,
         "pyremoteplay": PYREMOTEPLAY_OK,
         "pyremoteplay_error": PYREMOTEPLAY_ERR,
-        "sessions": list(SESSIONS.keys()),
+        "video_stack": VIDEO_STACK_OK,
+        "video_stack_error": VIDEO_STACK_ERR,
+        "sessions": [
+            {"sid": sid, "ip": s.get("ip"),
+             "video": _has_video(s.get("receiver")),
+             "resolution": s.get("resolution")}
+            for sid, s in SESSIONS.items()
+        ],
         "warm_cache": [
-            {"ip": ip, "sid": p["sid"], "age_s": round(time.monotonic() - p["paused_at"], 1)}
+            {"ip": ip, "sid": p["sid"], "age_s": round(time.monotonic() - p["paused_at"], 1),
+             "video": _has_video(p.get("receiver")),
+             "resolution": p.get("resolution")}
             for ip, p in PAUSED_SESSIONS.items()
         ],
     }
@@ -329,6 +484,34 @@ class StartSessionReq(BaseModel):
     ip: str
     user_profile: Dict[str, Any]  # the dict returned from /register
     account_id: Optional[str] = None  # decimal PSN account id, for DDP launch
+    # When true, attach a video receiver to the session so /sessions/{id}/video.mjpeg
+    # serves a live MJPEG stream. Default false to keep the input-only fast path
+    # (zero CPU for frame decoding, ~10 MB less RAM).
+    enable_video: Optional[bool] = False
+    # PS5 Remote Play stream resolution. Only 360p / 540p / 720p are
+    # accepted - 1080p was removed because the MJPEG re-encode pass at
+    # 1080p saturates a Pi-class CPU. 720p is the sweet spot.
+    resolution: Optional[str] = "720p"
+
+# Resolution allowlist for the stream knob above. Anything outside falls
+# back to the default - pyremoteplay raises a confusing AttributeError if
+# you pass an unrecognised enum value, so we coerce here. The PS5 itself
+# supports 1080p but the MJPEG re-encode pass at 1080p saturates a
+# Pi-class CPU; capping at 720p keeps preview smooth.
+_ALLOWED_RESOLUTIONS = ("360p", "540p", "720p")
+# Hard-coded FPS for the PS5 link. pyremoteplay's preset enum exposes
+# only 30 and 60 and the MJPEG re-encode pass is much happier at 30 on
+# a Pi-class CPU. With audio + synced removed there's no longer a user
+# knob to tune.
+_PS5_FPS = 30
+
+
+def _normalize_stream_params(resolution):
+    res = (resolution or "720p").lower().strip()
+    if res not in _ALLOWED_RESOLUTIONS:
+        log.warning("invalid resolution %r - falling back to 720p", resolution)
+        res = "720p"
+    return res
 
 
 def _new_session_id() -> str:
@@ -410,9 +593,18 @@ async def _prime_rp_control_port(device, ip: str, name: str, profiles, aid: str,
         log.warning("priming sequence error (continuing): %s", e)
 
 
-async def _try_connect_once(device, name: str, profiles) -> None:
+async def _try_connect_once(device, name: str, profiles, receiver=None,
+                            resolution: str = "720p") -> None:
     """Single create_session + connect attempt. Raises on failure so the
     caller can decide whether to back off and retry.
+
+    `receiver` is the pyremoteplay AVReceiver to attach to the session. Pass
+    None for input-only sessions (default - no video decode, lowest CPU).
+    Pass an MjpegReceiver to enable the /sessions/{id}/video.mjpeg endpoint.
+
+    `resolution` configures the PS5 stream itself - it maps onto
+    pyremoteplay's Resolution enum. FPS is hard-coded to _PS5_FPS (30)
+    since the FPS picker was removed alongside audio + synced support.
 
     Why only one attempt server-side: the frontend already does its own
     exponential-backoff reconnect (up to 5 tries), and stacking retries on
@@ -420,7 +612,7 @@ async def _try_connect_once(device, name: str, profiles) -> None:
     every other request and causing spurious 5 s timeouts on health/status.
     """
     try:
-        device.create_session(name, profiles=profiles, resolution="360p", fps=30, receiver=None)
+        device.create_session(name, profiles=profiles, resolution=resolution, fps=_PS5_FPS, receiver=receiver)
     except Exception as e:  # noqa: BLE001
         raise RuntimeError(f"create_session failed: {e}") from e
     try:
@@ -439,6 +631,64 @@ async def session_start(req: StartSessionReq):
     if not PYREMOTEPLAY_OK:
         raise HTTPException(503, f"pyremoteplay unavailable: {PYREMOTEPLAY_ERR}")
 
+    if req.enable_video and not VIDEO_STACK_OK:
+        raise HTTPException(
+            503,
+            f"Video preview requested but the media stack is missing: {VIDEO_STACK_ERR}. "
+            "Rebuild the pyremoteplay container (PyAV + Pillow are required).",
+        )
+
+    # Serialize starts per IP. Without this, a user double-clicking Start
+    # (or the UI re-firing Start during a slow connect) launches two parallel
+    # handshake retry loops against the same PS5; both then keep its session
+    # lock heartbeat alive on every failed TCP attempt and the console gets
+    # stuck refusing both connections for minutes. With the lock, the second
+    # caller waits and -- thanks to the existing-session check below -- just
+    # reuses the same session_id when the first one succeeds.
+    lock = START_LOCKS.setdefault(req.ip, asyncio.Lock())
+    async with lock:
+        # Existing-session fast-path: if a sibling request already brought
+        # a live session up for this IP while we were waiting on the lock,
+        # just return it. Cheaper than reconnecting and avoids triggering
+        # the PS5 "Another Remote Play session" lock against ourselves.
+        #
+        # Reuse rule (same logic as the warm-cache path below): we can hand
+        # back the cached session whenever it has *at least* what the caller
+        # wants. So a video-enabled live session satisfies an input-only
+        # caller (extra MJPEG decoder is harmless), but the reverse is not
+        # true - if the caller wants video and the live session has none we
+        # need a fresh start so /video.mjpeg actually has frames to send.
+        wants_video = bool(req.enable_video)
+        for sid, s in list(SESSIONS.items()):
+            if s.get("ip") != req.ip:
+                continue
+            rx = s.get("receiver")
+            has_video = _has_video(rx)
+            # Live session can satisfy any caller whose media flag is a
+            # subset of what it already decodes. Reverse direction (caller
+            # needs video that the live session is not producing) forces a
+            # fresh start since we can't retroactively attach a decoder.
+            if wants_video and not has_video:
+                continue
+            dev_sess = getattr(s.get("device"), "session", None)
+            if dev_sess is not None and not getattr(dev_sess, "is_stopped", True):
+                s["last_used"] = time.time()
+                log.info("session %s already live for %s (video=%s, wanted=%s, res=%s) - reusing",
+                         sid, req.ip, has_video, wants_video, s.get("resolution", "?"))
+                return {
+                    "session_id": sid,
+                    "state": "connected",
+                    "reused": True,
+                    "video": has_video,
+                    "resolution": s.get("resolution"),
+                }
+        return await _session_start_impl(req)
+
+
+async def _session_start_impl(req: StartSessionReq):
+    wants_video = bool(req.enable_video)
+    req_resolution = _normalize_stream_params(req.resolution)
+
     # ── Warm cache fast-path ────────────────────────────────────────────
     # If the user recently stopped a session for this IP and the protocol
     # streams are still alive, just resume it. PS5 never saw a disconnect
@@ -449,28 +699,67 @@ async def session_start(req: StartSessionReq):
         age = time.monotonic() - paused["paused_at"]
         paused_device = paused["device"]
         paused_sess = getattr(paused_device, "session", None)
+        paused_rx = paused.get("receiver")
+        paused_has_video = _has_video(paused_rx)
         alive = (
             paused_sess is not None
             and not getattr(paused_sess, "is_stopped", True)
             and age < WARM_CACHE_TTL_S
         )
-        if alive:
+        # Reuse rule: we can satisfy the caller as long as the warm cache
+        # has *at least* the media capability they want. So a warm cache
+        # with video happily serves an input-only caller (extra decoder
+        # is harmless); a warm input-only cache can NOT serve a video
+        # caller (no decoder attached → /video.mjpeg would 400). This
+        # keeps the warm-cache win across the common mode change (live
+        # video session → fast input-only script call).
+        can_reuse = alive and (paused_has_video or not wants_video)
+        if can_reuse:
             PAUSED_SESSIONS.pop(req.ip, None)
             sid = _new_session_id()
+            # Carry over the warm cache's resolution. We do NOT silently
+            # rebuild the session if the caller wanted a different
+            # resolution - that would defeat the warm-cache benefit. The
+            # response reports what the live session actually is so the
+            # UI can warn.
+            cached_res = paused.get("resolution")
             SESSIONS[sid] = {
                 "device": paused_device,
                 "user": req.user_profile,
                 "ip": req.ip,
+                "receiver": paused_rx,
+                "resolution": cached_res,
                 "created": time.time(),
                 "last_used": time.time(),
             }
-            log.info("session %s resumed from warm cache for %s (age %.1fs)",
-                     sid, req.ip, age)
-            return {"session_id": sid, "state": "connected", "resumed": True}
-        # Stale - drop it and fall through to a fresh connect.
-        log.info("warm cache stale for %s (age %.1fs, stopped=%s) - discarding",
-                 req.ip, age, getattr(paused_sess, "is_stopped", "?"))
+            notes = []
+            if paused_has_video != wants_video:
+                notes.append("video=%s wanted=%s" % (paused_has_video, wants_video))
+            if cached_res and cached_res != req_resolution:
+                notes.append("res=%s requested=%s" % (cached_res, req_resolution))
+            note = (" (" + "; ".join(notes) + ")") if notes else ""
+            log.info("session %s resumed from warm cache for %s (age %.1fs, video=%s)%s",
+                     sid, req.ip, age, paused_has_video, note)
+            return {
+                "session_id": sid,
+                "state": "connected",
+                "resumed": True,
+                "video": paused_has_video,
+                "resolution": cached_res,
+            }
+        # Stale or actually unsatisfiable (wanted video, warm has none).
+        log.info("warm cache stale/unsatisfiable for %s (age %.1fs, stopped=%s, video=%s vs want=%s) - discarding",
+                 req.ip, age, getattr(paused_sess, "is_stopped", "?"),
+                 paused_has_video, wants_video)
         PAUSED_SESSIONS.pop(req.ip, None)
+        # Close the receiver explicitly so the underlying av decoder frees its
+        # codec context promptly instead of waiting on GC.
+        try:
+            old_rx = paused.get("receiver")
+            if old_rx is not None:
+                old_rx.close()
+        except Exception:  # noqa: BLE001
+            pass
         try:
             await _safe_disconnect(paused_device)
         except Exception:  # noqa: BLE001
@@ -555,6 +844,12 @@ async def session_start(req: StartSessionReq):
     # Skipping this breaks every cold start.
     await _prime_rp_control_port(device, req.ip, name, profiles, aid, was_standby)
 
+    # Build the media receiver up-front if video was requested. It has to
+    # be passed to create_session() (we can't attach it later), and
+    # creating it before the retry loop means a retry doesn't churn
+    # through codec contexts.
+    receiver = MjpegReceiver(enable_video=wants_video) if wants_video else None
+
     # Connect with up to 2 fallback retries. We deliberately use **few** but
     # **long** retries here. Empirical PS5 behavior after a disconnect:
     #   - port 9295 oscillates between "Connection refused" (service cycling)
@@ -583,28 +878,45 @@ async def session_start(req: StartSessionReq):
             paused = PAUSED_SESSIONS.get(req.ip)
             if paused is not None:
                 paused_sess = getattr(paused["device"], "session", None)
+                paused_rx_mid = paused.get("receiver")
+                paused_has_video = _has_video(paused_rx_mid)
+                # Same "warm has at least what caller wants" rule as the
+                # top-of-function fast-path.
                 paused_alive = (
                     paused_sess is not None
                     and not getattr(paused_sess, "is_stopped", True)
                     and (time.monotonic() - paused["paused_at"]) < WARM_CACHE_TTL_S
+                    and (paused_has_video or not wants_video)
                 )
                 if paused_alive:
                     PAUSED_SESSIONS.pop(req.ip, None)
                     await _safe_disconnect(device)  # drop our half-baked one
+                    if receiver is not None:
+                        try: receiver.close()
+                        except Exception: pass  # noqa: BLE001
                     sid = _new_session_id()
                     SESSIONS[sid] = {
                         "device": paused["device"],
                         "user": req.user_profile,
                         "ip": req.ip,
+                        "receiver": paused_rx_mid,
+                        "resolution": paused.get("resolution"),
                         "created": time.time(),
                         "last_used": time.time(),
                     }
                     log.info("retry attempt %d: warm cache appeared for %s - resuming instead of opening new session",
                              attempt, req.ip)
-                    return {"session_id": sid, "state": "connected", "resumed": True}
+                    return {
+                        "session_id": sid,
+                        "state": "connected",
+                        "resumed": True,
+                        "video": paused_has_video,
+                        "resolution": paused.get("resolution"),
+                    }
 
         try:
-            await _try_connect_once(device, name, profiles)
+            await _try_connect_once(device, name, profiles, receiver=receiver,
+                                    resolution=req_resolution)
             last_err = None
             break
         except Exception as e:  # noqa: BLE001
@@ -639,6 +951,11 @@ async def session_start(req: StartSessionReq):
 
     if last_err is not None:
         log.warning("session connect failed: %s", last_err)
+        # If we built a receiver, dispose it - nothing succeeded so no one
+        # else holds a reference and we want to free its codec context.
+        if receiver is not None:
+            try: receiver.close()
+            except Exception: pass  # noqa: BLE001
         await _safe_disconnect(device)
         msg = str(last_err)
         if "Another Remote Play session" in msg:
@@ -650,11 +967,19 @@ async def session_start(req: StartSessionReq):
         "device": device,
         "user": req.user_profile,
         "ip": req.ip,
+        "receiver": receiver,
+        "resolution": req_resolution,
         "created": time.time(),
         "last_used": time.time(),
     }
-    log.info("session %s started -> %s", sid, req.ip)
-    return {"session_id": sid, "state": "connected"}
+    log.info("session %s started -> %s (video=%s, %s)",
+             sid, req.ip, wants_video, req_resolution)
+    return {
+        "session_id": sid,
+        "state": "connected",
+        "video": wants_video,
+        "resolution": req_resolution,
+    }
 
 
 class InputReq(BaseModel):
@@ -664,6 +989,21 @@ class InputReq(BaseModel):
     x: Optional[float] = None  # -1.0 .. 1.0
     y: Optional[float] = None
     duration_ms: Optional[int] = 80  # for "tap"
+    # PS2 Classics (and SNK fighting games on PS4 BC) ignore the DualShock
+    # touchpad CLICK and the DualSense Options button entirely. They listen
+    # for a touchpad FINGER landing on a specific zone of the surface:
+    #   * Select  → left  half of touchpad (X ≲ 960)
+    #   * Start   → right half           (X ≳ 960)
+    # The DS4 touchpad surface is 1920×942. Default click stays at center
+    # (960×471) for normal use; pass touch_x/touch_y in pixel space (0..1920,
+    # 0..942) to override. Sidecar forwards the coords to the patched
+    # `controller.touchpad_click(duration_ms, x, y)` which emits the full
+    # chiaki surface-down + click + surface-up sequence. See
+    # pyremoteplay_patches.py::_patch_controller_touchpad_click and
+    # altarofgaming.com/brook-universal-fighting-board-ps4-ps5-touchpad/
+    # for the PS5 BC behaviour these coordinates target.
+    touch_x: Optional[int] = None
+    touch_y: Optional[int] = None
 
 
 @app.post("/sessions/{session_id}/input")
@@ -679,7 +1019,41 @@ async def session_input(session_id: str, req: InputReq):
 
     try:
         if req.button:
-            if req.action == "press":
+            button_name = (req.button or "").lower()
+            is_touchpad = button_name == "touchpad"
+            has_touch_xy = req.touch_x is not None or req.touch_y is not None
+            if is_touchpad and has_touch_xy and req.action in (None, "tap", "press"):
+                # When the caller supplies explicit X/Y we want the
+                # **surface-only** tap (0xD0 finger-down → 0xC0 finger-up,
+                # no 0x80 0xB1 click button). PS2 Classics + a handful of
+                # PS5 DS4-BC titles map touchpad zones (Select ≈ left,
+                # Start ≈ right) to surface events only; emitting the
+                # click button alongside the surface event makes them
+                # ignore the input. See
+                # pyremoteplay_patches.py::touchpad_surface_tap for the
+                # exact byte layout and the chiaki-ng parity rationale.
+                #
+                # When no X/Y is supplied (plain `button=touchpad` from
+                # the UI) we still fall through the generic
+                # controller.button("touchpad") path below, which goes
+                # to touchpad_click and emits a real click button -
+                # that's the right behaviour for menu navigation /
+                # opening the OSK where the click matters.
+                touch_surface_tap = getattr(controller, "touchpad_surface_tap", None)
+                if touch_surface_tap is None:
+                    raise HTTPException(
+                        500,
+                        "touchpad_surface_tap patch not applied (sidecar restart required)",
+                    )
+                x_px = int(req.touch_x if req.touch_x is not None else 960)
+                y_px = int(req.touch_y if req.touch_y is not None else 471)
+                x_px = max(0, min(1919, x_px))
+                y_px = max(0, min(941, y_px))
+                dur_ms = max(40, int(req.duration_ms or 200))
+                # touchpad_surface_tap is synchronous (time.sleep inside)
+                # but cheap; to_thread keeps the HTTP loop responsive.
+                await asyncio.to_thread(touch_surface_tap, dur_ms, x_px, y_px)
+            elif req.action == "press":
                 controller.button(req.button, "press")
             elif req.action == "release":
                 controller.button(req.button, "release")
@@ -718,9 +1092,215 @@ async def session_status(session_id: str):
         "session_id": session_id,
         "ip": s["ip"],
         "state": state,
+        "video": _has_video(s.get("receiver")),
+        "resolution": s.get("resolution"),
         "created": s["created"],
         "last_used": s["last_used"],
     }
+
+
+# ─── Video preview (MJPEG over HTTP) ─────────────────────────────────────────
+#
+# Returns a multipart/x-mixed-replace stream so a plain <img src="..."> can
+# render it. We poll the receiver at `fps` Hz (default 12) which is well
+# under the actual frame rate from the PS5; the bottleneck on a Pi-class
+# device is the JPEG encode, not the network, so capping fps keeps CPU
+# usage predictable.
+#
+# The endpoint disconnects automatically when:
+#   - the session is gone (404 condition mid-stream),
+#   - the client closes the TCP connection (GeneratorExit),
+#   - the receiver is closed via session_stop().
+
+# ─── Pre-warm + warm-status (the "professional" wake flow) ───────────────────
+#
+# /sessions/prewarm:
+#   1) start (or reuse) a Remote Play session - normal handshake + auth,
+#   2) immediately park it in the PAUSED_SESSIONS warm cache,
+#   3) return.
+# Subsequent /sessions/start for the same IP then resume from warm cache in
+# O(ms) instead of fighting the PS5's 60 s post-disconnect lock. This is what
+# the UI's "Wake PS5" button drives, replacing the bare DDP WAKEUP packet
+# (which only got the console out of standby but left RP unreachable).
+
+@app.post("/sessions/prewarm")
+async def session_prewarm(req: StartSessionReq):
+    # Re-use the full /sessions/start machinery so per-IP locking,
+    # warm-cache resume, retry loop and (optional) video receiver setup
+    # all behave identically.
+    result = await session_start(req)
+    sid = result.get("session_id")
+
+    # If the call returned `reused`, an existing live session was handed
+    # back: someone is actively using it - do NOT yank it out from under
+    # them by moving it to PAUSED_SESSIONS.
+    if result.get("reused"):
+        return {
+            "ok": True,
+            "ip": req.ip,
+            "session_id": sid,
+            "warm_cached": False,
+            "already_live": True,
+            "video": result.get("video", False),
+            "resolution": result.get("resolution"),
+        }
+
+    s = SESSIONS.pop(sid, None) if sid else None
+    if s is None:
+        # Nothing to park - shouldn't happen on the happy path, but if it
+        # does we still report what /sessions/start told us.
+        return {
+            "ok": True,
+            "ip": req.ip,
+            "session_id": sid,
+            "warm_cached": False,
+            "video": result.get("video", False),
+            "resolution": result.get("resolution"),
+        }
+
+    ip = s.get("ip") or req.ip
+    device = s["device"]
+    # Evict any previous warm cache for this IP to avoid two parallel
+    # protocol streams holding the same PS5 slot.
+    prev = PAUSED_SESSIONS.pop(ip, None)
+    if prev is not None:
+        try:
+            old_rx = prev.get("receiver")
+            if old_rx is not None:
+                old_rx.close()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            await _safe_disconnect(prev["device"])
+        except Exception:  # noqa: BLE001
+            pass
+
+    PAUSED_SESSIONS[ip] = {
+        "sid": sid,
+        "device": device,
+        "user": s.get("user"),
+        "receiver": s.get("receiver"),
+        "resolution": s.get("resolution"),
+        "paused_at": time.monotonic(),
+    }
+    log.info("session %s PRE-WARMED for %s (TTL %ds, video=%s, %s)",
+             sid, ip, int(WARM_CACHE_TTL_S),
+             _has_video(s.get("receiver")),
+             s.get("resolution"))
+    return {
+        "ok": True,
+        "ip": ip,
+        "session_id": sid,
+        "warm_cached": True,
+        "warm_cache_ttl_s": int(WARM_CACHE_TTL_S),
+        "video": _has_video(s.get("receiver")),
+        "resolution": s.get("resolution"),
+        "resumed": result.get("resumed", False),
+    }
+
+
+@app.get("/warm-status")
+async def session_warm_status(ip: str):
+    """Report whether the sidecar holds a usable RP session for `ip`.
+
+    Returns the combined view of SESSIONS (live, in-use) and PAUSED_SESSIONS
+    (warm-cached, ready to resume). The Node backend folds this into its
+    /quick-status response so the UI keeps working across Node restarts -
+    the source of truth lives on the sidecar.
+    """
+    # Prefer reporting the LIVE session if there is one - that's what callers
+    # would actually want to adopt.
+    for sid, s in SESSIONS.items():
+        if s.get("ip") != ip:
+            continue
+        dev_sess = getattr(s.get("device"), "session", None)
+        if dev_sess is not None and not getattr(dev_sess, "is_stopped", True):
+            return {
+                "ip": ip,
+                "live": True,
+                "warm": False,
+                "session_id": sid,
+                "video": _has_video(s.get("receiver")),
+                "resolution": s.get("resolution"),
+            }
+    p = PAUSED_SESSIONS.get(ip)
+    if not p:
+        return {"ip": ip, "live": False, "warm": False}
+    age_s = time.monotonic() - p["paused_at"]
+    return {
+        "ip": ip,
+        "live": False,
+        "warm": True,
+        "session_id": p["sid"],
+        "age_s": round(age_s, 1),
+        "ttl_remaining_s": round(max(0.0, WARM_CACHE_TTL_S - age_s), 1),
+        "video": _has_video(p.get("receiver")),
+        "resolution": p.get("resolution"),
+    }
+
+
+@app.get("/sessions/{session_id}/video.mjpeg")
+async def session_video_mjpeg(session_id: str, fps: int = 12):
+    s = SESSIONS.get(session_id)
+    if not s:
+        raise HTTPException(404, "session not found")
+    receiver = s.get("receiver")
+    if not _has_video(receiver):
+        raise HTTPException(
+            400,
+            "session was not started with enable_video=true - stop and re-start the session with the video toggle on",
+        )
+
+    # Sanitize fps. 1-30 covers everything from low-bandwidth links to
+    # near-realtime; clamping prevents `?fps=9999` from spinning the loop.
+    interval = 1.0 / max(1, min(30, int(fps or 12)))
+    boundary = b"rpframe"
+
+    async def gen():
+        last_counter = -1
+        # Initial wait so the first <img> chunk goes out as soon as the
+        # decoder has at least one frame (otherwise the browser shows a
+        # broken-image icon for ~1s while we wait on the first sleep).
+        for _ in range(50):  # up to ~5 s
+            if receiver.frame_counter > 0:
+                break
+            await asyncio.sleep(0.1)
+        try:
+            while True:
+                # Bail out if the session was stopped (warm-cached or fully
+                # disconnected). Either way the receiver is no longer
+                # producing fresh frames.
+                if session_id not in SESSIONS:
+                    return
+                jpeg = receiver.get_latest_jpeg()
+                counter = receiver.frame_counter
+                if jpeg is not None and counter != last_counter:
+                    last_counter = counter
+                    header = (
+                        b"--" + boundary + b"\r\n"
+                        b"Content-Type: image/jpeg\r\n"
+                        b"Content-Length: " + str(len(jpeg)).encode() + b"\r\n\r\n"
+                    )
+                    yield header + jpeg + b"\r\n"
+                await asyncio.sleep(interval)
+        except (asyncio.CancelledError, GeneratorExit):
+            return
+
+    return StreamingResponse(
+        gen(),
+        media_type="multipart/x-mixed-replace; boundary=" + boundary.decode(),
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate, private",
+            "Pragma": "no-cache",
+            "X-Accel-Buffering": "no",  # nginx-style buffer off, harmless elsewhere
+        },
+    )
+
+
+# Audio (/audio.mp3) and synced A/V (/stream.mp4) endpoints have been
+# removed - only the MJPEG video preview remains.
+
+
 
 
 class WakeReq(BaseModel):
@@ -807,6 +1387,12 @@ async def session_stop(session_id: str, force: bool = False):
         prev = PAUSED_SESSIONS.pop(ip, None)
         if prev is not None:
             try:
+                prev_rx = prev.get("receiver")
+                if prev_rx is not None:
+                    prev_rx.close()
+            except Exception:  # noqa: BLE001
+                pass
+            try:
                 await _safe_disconnect(prev["device"])
             except Exception:  # noqa: BLE001
                 pass
@@ -814,10 +1400,14 @@ async def session_stop(session_id: str, force: bool = False):
             "sid": session_id,
             "device": device,
             "user": s.get("user"),
+            "receiver": s.get("receiver"),
+            "resolution": s.get("resolution"),
             "paused_at": time.monotonic(),
         }
-        log.info("session %s warm-cached for %s (TTL %ds)",
-                 session_id, ip, int(WARM_CACHE_TTL_S))
+        log.info("session %s warm-cached for %s (TTL %ds, video=%s, %s)",
+                 session_id, ip, int(WARM_CACHE_TTL_S),
+                 _has_video(s.get("receiver")),
+                 s.get("resolution"))
         return {"ok": True, "soft": True}
 
     # ─── Hard stop ────────────────────────────────────────────────────
@@ -835,6 +1425,14 @@ async def session_stop(session_id: str, force: bool = False):
                 await asyncio.sleep(0.1)
         except Exception as e:  # noqa: BLE001
             log.debug("graceful Session.stop failed: %s", e)
+    # Close the receiver so any active MJPEG stream returns and the av
+    # codec context is freed deterministically.
+    try:
+        rx = s.get("receiver")
+        if rx is not None:
+            rx.close()
+    except Exception:  # noqa: BLE001
+        pass
     await _safe_disconnect(device)
     if ip:
         RECENT_DISCONNECTS[ip] = time.monotonic()
@@ -1010,6 +1608,12 @@ async def session_stop_all(ip: Optional[str] = None):
     for sid, s in list(SESSIONS.items()):
         if ip and s.get("ip") != ip:
             continue
+        try:
+            rx = s.get("receiver")
+            if rx is not None:
+                rx.close()
+        except Exception:  # noqa: BLE001
+            pass
         await _safe_disconnect(s["device"])
         sip = s.get("ip")
         if sip:
@@ -1019,6 +1623,12 @@ async def session_stop_all(ip: Optional[str] = None):
     for pip, p in list(PAUSED_SESSIONS.items()):
         if ip and pip != ip:
             continue
+        try:
+            rx = p.get("receiver")
+            if rx is not None:
+                rx.close()
+        except Exception:  # noqa: BLE001
+            pass
         try:
             await _safe_disconnect(p["device"])
         except Exception:  # noqa: BLE001
@@ -1045,6 +1655,12 @@ async def _warm_cache_gc_task():
                 if now - p["paused_at"] < WARM_CACHE_TTL_S:
                     continue
                 PAUSED_SESSIONS.pop(ip, None)
+                try:
+                    rx = p.get("receiver")
+                    if rx is not None:
+                        rx.close()
+                except Exception:  # noqa: BLE001
+                    pass
                 device = p.get("device")
                 if device is not None:
                     try:
@@ -1079,9 +1695,21 @@ async def _startup():
 @app.on_event("shutdown")
 async def _shutdown():
     for sid, s in list(SESSIONS.items()):
+        try:
+            rx = s.get("receiver")
+            if rx is not None:
+                rx.close()
+        except Exception:  # noqa: BLE001
+            pass
         await _safe_disconnect(s["device"])
     SESSIONS.clear()
     for ip, p in list(PAUSED_SESSIONS.items()):
+        try:
+            rx = p.get("receiver")
+            if rx is not None:
+                rx.close()
+        except Exception:  # noqa: BLE001
+            pass
         try:
             await _safe_disconnect(p["device"])
         except Exception:  # noqa: BLE001

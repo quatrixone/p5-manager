@@ -60,9 +60,9 @@ function appendLog(job, chunk) {
   if (job.log.length > 200_000) job.log = job.log.slice(-200_000);
 }
 
-function publicJob(job) {
+function publicJob(job, { includeLog = true } = {}) {
   if (!job) return null;
-  const { controller, _torrent, _tmpDir, _plan, ...pub } = job;
+  const { controller, _torrent, _tmpDir, _plan, log: jobLog, ...pub } = job;
   // derive a percentage progress for consistent UI rendering across queues
   if (pub.bytes_total && pub.bytes_total > 0) {
     pub.progress = Math.min(100, Math.round((pub.bytes_downloaded / pub.bytes_total) * 100));
@@ -71,6 +71,12 @@ function publicJob(job) {
   } else {
     pub.progress = pub.progress != null ? pub.progress : 0;
   }
+  // Always advertise log size so the queue UI can decide whether to show the
+  // "Show log" toggle. Only inline the full log when explicitly requested
+  // (the per-job GET /api/downloader/:id endpoint) so the list response
+  // stays small even with many noisy jobs.
+  pub.log_size = jobLog ? jobLog.length : 0;
+  if (includeLog && jobLog) pub.log = jobLog;
   return pub;
 }
 
@@ -452,7 +458,7 @@ router.post('/queue/clear-finished', (req, res) => {
 });
 
 router.get('/', (req, res) => {
-  const list = jobOrder.slice().reverse().map(id => publicJob(jobs.get(id)));
+  const list = jobOrder.slice().reverse().map(id => publicJob(jobs.get(id), { includeLog: false }));
   res.json(list);
 });
 

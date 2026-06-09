@@ -1,7 +1,7 @@
 {
-  "name": "ps5-payload-manager-backend",
+  "name": "p5-manager-backend",
   "version": "1.0.0",
-  "description": "PS5 PayloadManager Web Backend",
+  "description": "P5 Manager — Node/Express backend",
   "main": "src/index.js",
   "type": "module",
   "scripts": {

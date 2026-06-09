@@ -5,3 +5,8 @@ pydantic==2.7.4
 aiohttp==3.9.5
 async-timeout==4.0.3
 pyee==8.2.2
+# Video decode/encode for the optional MJPEG live-preview endpoint
+# (/sessions/{sid}/video.mjpeg). PyAV bundles its own ffmpeg shared libs in the
+# binary wheel, Pillow is used for the H.264 -> JPEG re-encode step.
+av==11.0.0
+Pillow==10.4.0

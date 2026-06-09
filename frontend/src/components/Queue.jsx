@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 
 const API = '/api';
 
@@ -9,21 +9,48 @@ const TYPE_META = {
   upload: { icon: '⬆️', label: 'Upload' },
 };
 
+// Map a queue item to the per-job REST endpoint that returns its `.log`.
+// Returns null when the underlying job hasn't been created yet (item still
+// sitting in the queue), so the dropdown can render an explanatory placeholder
+// instead of hammering a 404.
+function logUrlForItem(item) {
+  if (item.type === 'download') return `${API}/downloader/${item.id}`;
+  if (item.type === 'upload') return `${API}/convert/ftp/upload/${item.id}`;
+  // convert + extract use a separate jobs map keyed by job_id, which only
+  // exists once the queue worker has picked the item up.
+  if (!item.job_id) return null;
+  if (item.type === 'convert') return `${API}/convert/convert/${item.job_id}`;
+  if (item.type === 'extract') return `${API}/convert/extract/${item.job_id}`;
+  return null;
+}
+
+function fmtBytes(b) {
+  if (b == null || isNaN(b)) return '';
+  const n = Number(b);
+  if (n < 1024) return `${n} B`;
+  const kb = n / 1024;
+  if (kb < 1024) return `${kb.toFixed(1)} KB`;
+  const mb = kb / 1024;
+  if (mb < 1024) return `${mb.toFixed(mb >= 100 ? 0 : mb >= 10 ? 1 : 2)} MB`;
+  return `${(mb / 1024).toFixed(2)} GB`;
+}
+
 const STATUS_META = {
   queued: { color: 'var(--magenta)', label: 'Queued' },
   starting: { color: 'var(--blue)', label: 'Starting' },
+  staging: { color: 'var(--blue)', label: 'Staging' },
   running: { color: 'var(--blue)', label: 'Running' },
   pushing: { color: 'var(--blue)', label: 'Pushing' },
+  unpacking: { color: 'var(--blue)', label: 'Unpacking' },
   completed: { color: 'var(--green)', label: 'Completed' },
   failed: { color: 'var(--red)', label: 'Failed' },
+  push_failed: { color: 'var(--amber, #ffb86b)', label: 'Push failed' },
   cancelled: { color: '#7f8c8d', label: 'Cancelled' },
 };
 
 function fmtMB(b) {
   if (!b && b !== 0) return '';
-  const mb = b / (1024 * 1024);
-  if (mb >= 1024) return `${(mb / 1024).toFixed(2)} GB`;
-  return `${mb.toFixed(mb >= 100 ? 0 : mb >= 10 ? 1 : 2)} MB`;
+  return fmtBytes(b);
 }
 
 function itemTitle(item) {
@@ -54,11 +81,58 @@ function QueueItem({ item, queuePaused, onRemove, onRetry, onMove, onStart, onPa
   const meta = TYPE_META[item.type] || { icon: '📋', label: item.type };
   const statusMeta = STATUS_META[item.status] || { color: 'var(--muted)', label: item.status };
   const progress = Math.max(0, Math.min(100, Number(item.progress || 0)));
-  const isActive = ['running', 'starting', 'pushing'].includes(item.status);
-  const isDone = ['completed', 'failed', 'cancelled'].includes(item.status);
+  const isActive = ['running', 'starting', 'staging', 'pushing', 'unpacking'].includes(item.status);
+  const isDone = ['completed', 'failed', 'cancelled', 'push_failed'].includes(item.status);
   const isQueued = item.status === 'queued';
   const canMove = isQueued;
-  const canRetry = item.status === 'failed' || item.status === 'cancelled';
+  // push_failed = mkpfs finished but auto-push to PS5 errored. Showing the
+  // retry button on it is exactly what the user asked for ("pri fail daj
+  // button retry") so they can rerun without rebuilding the .ffpfsc.
+  const canRetry = ['failed', 'cancelled', 'push_failed'].includes(item.status);
+
+  // ── Log dropdown state ─────────────────────────────────────────────────
+  // The log lives on a separate per-job endpoint (`logUrlForItem`). We only
+  // poll while the dropdown is expanded so we don't pull tens of KB per
+  // second on the queue list view that's already polling /queue/all.
+  const [logOpen, setLogOpen] = useState(false);
+  const [logText, setLogText] = useState('');
+  const [logErr, setLogErr] = useState(null);
+  const logRef = useRef(null);
+  const logUrl = logUrlForItem(item);
+  const hasLogEndpoint = !!logUrl;
+
+  useEffect(() => {
+    if (!logOpen) return;
+    let cancelled = false;
+    const tick = async () => {
+      if (!logUrl) { setLogText(''); setLogErr('Log will appear once this task starts running.'); return; }
+      try {
+        const r = await fetch(logUrl);
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const j = await r.json();
+        if (cancelled) return;
+        setLogText(j.log || '');
+        setLogErr(null);
+      } catch (e) {
+        if (!cancelled) setLogErr(e.message);
+      }
+    };
+    tick();
+    // While the job is active we want a snappy refresh; once it's done the
+    // log is final so we can back off (still poll once a few seconds in case
+    // mkpfs flushed a tail line after completion).
+    const intervalMs = isActive ? 1500 : 5000;
+    const h = setInterval(tick, intervalMs);
+    return () => { cancelled = true; clearInterval(h); };
+  }, [logOpen, logUrl, isActive]);
+
+  // Auto-scroll the log pane to the bottom whenever new content arrives so
+  // the most recent line is always visible without manual scrolling.
+  useEffect(() => {
+    if (logOpen && logRef.current) {
+      logRef.current.scrollTop = logRef.current.scrollHeight;
+    }
+  }, [logText, logOpen]);
 
   // We expose Start / Pause / Resume per-task even though the actual work
   // happens in a per-type worker. From the user's point of view:
@@ -73,6 +147,49 @@ function QueueItem({ item, queuePaused, onRemove, onRetry, onMove, onStart, onPa
   // Effective per-task label: a queued item under a paused queue is also "paused".
   const effectiveLabel = (isQueued || isActive) && queuePaused ? 'Paused' : statusMeta.label;
   const effectiveColor = (isQueued || isActive) && queuePaused ? '#7f8c8d' : statusMeta.color;
+
+  // For silent jobs (notably mkpfs unpack) the % is synthesised from io
+  // counters by the backend. We surface the live byte counts next to the
+  // progress label so the user gets a real "is this thing alive?" signal
+  // even when the percentage moves slowly.
+  //
+  // Convert/unpack jobs can be in one of these phases:
+  //   - smb-staging: smbclient downloading source → show bytes_written / bytes_total
+  //   - scanning:    mkpfs reading the .ffpfsc    → show bytes_read    / bytes_total
+  //   - extracting:  mkpfs writing files          → show bytes_written / bytes_total
+  // The frontend treats them uniformly: pick the most-relevant byte counter
+  // for the current phase and surface phase as a coloured tag.
+  const isUnpack = item.type === 'convert' && item.mode === 'unpack';
+  const phase = item.phase || item.unpack_phase || null;
+  const liveBytes = (
+    phase === 'smb-staging' && item.bytes_written != null ? item.bytes_written
+    : isUnpack && phase === 'scanning' && item.bytes_read != null ? item.bytes_read
+    : item.bytes_written != null && item.bytes_written > 0 ? item.bytes_written
+    : isUnpack && item.bytes_read != null ? item.bytes_read
+    : item.bytes_downloaded != null ? item.bytes_downloaded
+    : item.bytes_sent != null ? item.bytes_sent
+    : null
+  );
+  const liveBytesTotal = (
+    item.bytes_total != null && item.bytes_total > 0 ? item.bytes_total
+    : item.size != null ? item.size
+    : null
+  );
+  const phaseLabel =
+      phase === 'smb-staging' ? 'smb staging'
+    : phase === 'scanning'    ? 'scanning'
+    : phase === 'extracting'  ? 'extracting'
+    : null;
+  const bytesLabel = (liveBytes != null && liveBytes > 0)
+    ? (liveBytesTotal
+        ? `${fmtBytes(liveBytes)} / ${fmtBytes(liveBytesTotal)}`
+        : fmtBytes(liveBytes))
+    : '';
+
+  // Show an indeterminate animation when the task is clearly active but
+  // we don't yet have a useful percentage (first few seconds before the
+  // poller has a sample).
+  const indeterminate = isActive && progress < 1 && liveBytes != null && liveBytes > 0;
 
   return (
     <div className="queue-item" style={{
@@ -116,6 +233,14 @@ function QueueItem({ item, queuePaused, onRemove, onRetry, onMove, onStart, onPa
             <button className="btn btn-secondary btn-sm" onClick={() => onRetry(item.type, item.id)} title="Retry">↻</button>
           )}
           <button
+            className={`btn btn-sm ${logOpen ? 'btn-primary' : 'btn-ghost'}`}
+            onClick={() => setLogOpen(v => !v)}
+            title={logOpen ? 'Hide log' : 'Show log'}
+            aria-expanded={logOpen}
+          >
+            📜
+          </button>
+          <button
             className="btn btn-ghost btn-sm"
             onClick={() => onRemove(item.type, item.id, isActive)}
             title={isActive ? 'Cancel & remove' : 'Remove'}
@@ -134,18 +259,59 @@ function QueueItem({ item, queuePaused, onRemove, onRetry, onMove, onStart, onPa
           overflow: 'hidden',
           position: 'relative',
         }}>
-          <div style={{
-            width: isDone && progress === 0 ? '100%' : `${progress}%`,
-            height: '100%',
-            background: isDone && item.status !== 'completed' ? 'var(--red)' : effectiveColor,
-            transition: 'width 0.3s ease',
-          }} />
+          {indeterminate ? (
+            <div className="queue-bar-indeterminate" style={{
+              height: '100%',
+              background: effectiveColor,
+              borderRadius: 3,
+            }} />
+          ) : (
+            <div style={{
+              width: isDone && progress === 0 ? '100%' : `${progress}%`,
+              height: '100%',
+              background: isDone && item.status === 'failed' ? 'var(--red)'
+                : isDone && item.status === 'cancelled' ? '#7f8c8d'
+                : effectiveColor,
+              transition: 'width 0.3s ease',
+            }} />
+          )}
         </div>
-        <div className="text-xs text-muted" style={{ marginTop: 2, display: 'flex', justifyContent: 'space-between' }}>
-          <span>{progress}%</span>
+        <div className="text-xs text-muted" style={{ marginTop: 2, display: 'flex', justifyContent: 'space-between', gap: 'var(--space-sm)' }}>
+          <span>
+            {indeterminate ? 'working…' : `${progress}%`}
+            {phaseLabel && <> · <span style={{ color: 'var(--blue)' }}>{phaseLabel}</span></>}
+            {bytesLabel && ` · ${bytesLabel}`}
+          </span>
           {item.added_at && <span>added {new Date(item.added_at).toLocaleTimeString()}</span>}
         </div>
       </div>
+
+      {logOpen && (
+        <div style={{ marginTop: 'var(--space-xs)' }}>
+          <pre
+            ref={logRef}
+            className="queue-log"
+            style={{
+              maxHeight: 260,
+              overflow: 'auto',
+              margin: 0,
+              padding: 'var(--space-xs) var(--space-sm)',
+              background: 'var(--panel)',
+              border: '1px solid var(--border)',
+              borderRadius: 6,
+              fontSize: '0.72rem',
+              lineHeight: 1.35,
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-word',
+              color: 'var(--text-muted)',
+            }}
+          >
+            {logErr && !logText
+              ? <span style={{ color: 'var(--muted)' }}>{logErr}</span>
+              : (logText || (hasLogEndpoint ? 'Waiting for output…' : 'Log will appear once this task starts running.'))}
+          </pre>
+        </div>
+      )}
     </div>
   );
 }
@@ -160,7 +326,7 @@ export default function Queue() {
   const fetchQueue = async () => {
     try {
       const [queueRes, downloadRes, dlState] = await Promise.all([
-        fetch(`${API}/micromount/queue/all`),
+        fetch(`${API}/convert/queue/all`),
         fetch(`${API}/downloader`),
         fetch(`${API}/downloader/queue`),
       ]);
@@ -200,15 +366,21 @@ export default function Queue() {
 
   // Pause state per queue type. The UI uses these to render the correct per-task
   // start/pause/resume button on each item. There is no global pause anymore.
-  const pausedByType = useMemo(() => {
-    const p = data?.paused || {};
-    return {
-      download: !!downloaderPaused,
-      extract: !!p.extract,
-      convert: !!p.convert,
-      upload: !!p.upload,
-    };
-  }, [data, downloaderPaused]);
+  //
+  // Backend shape (see /api/convert/queue/all):
+  //   { extract: { paused, items }, convert: { paused, items }, upload: { paused, items }, all: [...] }
+  // The previous code read `data.paused.<type>` — `data.paused` doesn't
+  // exist, so every queue evaluated to `paused: false` even when the
+  // backend was paused. That hid the Resume buttons and left Pause as the
+  // only visible action — clicking it pinged /pause on an already-paused
+  // queue, leaving the user no escape. Reading from the right path
+  // restores the per-queue Start/Pause/Resume rotation.
+  const pausedByType = useMemo(() => ({
+    download: !!downloaderPaused,
+    extract: !!data?.extract?.paused,
+    convert: !!data?.convert?.paused,
+    upload: !!data?.upload?.paused,
+  }), [data, downloaderPaused]);
 
   // The upload queue is mounted under /ftp/upload/... not /upload/..., so
   // map types to their actual REST path. Everything else uses the type id
@@ -219,7 +391,7 @@ export default function Queue() {
     if (type === 'download') {
       await fetch(`${API}/downloader/queue/pause`, { method: 'POST' });
     } else {
-      await fetch(`${API}/micromount/${apiPathForType(type)}/queue/pause`, { method: 'POST' });
+      await fetch(`${API}/convert/${apiPathForType(type)}/queue/pause`, { method: 'POST' });
     }
     fetchQueue();
   };
@@ -228,14 +400,14 @@ export default function Queue() {
     if (type === 'download') {
       await fetch(`${API}/downloader/queue/resume`, { method: 'POST' });
     } else {
-      await fetch(`${API}/micromount/${apiPathForType(type)}/queue/resume`, { method: 'POST' });
+      await fetch(`${API}/convert/${apiPathForType(type)}/queue/resume`, { method: 'POST' });
     }
     fetchQueue();
   };
 
   const handleClearFinished = async () => {
     await Promise.all([
-      fetch(`${API}/micromount/queue/clear-finished`, { method: 'POST' }),
+      fetch(`${API}/convert/queue/clear-finished`, { method: 'POST' }),
       fetch(`${API}/downloader/queue/clear-finished`, { method: 'POST' }),
     ]);
     fetchQueue();
@@ -248,21 +420,21 @@ export default function Queue() {
     if (type === 'download') {
       await fetch(`${API}/downloader/${id}`, { method: 'DELETE' });
     } else {
-      await fetch(`${API}/micromount/${apiPathForType(type)}/queue/${id}`, { method: 'DELETE' });
+      await fetch(`${API}/convert/${apiPathForType(type)}/queue/${id}`, { method: 'DELETE' });
     }
     fetchQueue();
   };
 
   const handleRetry = async (type, id) => {
     if (type !== 'download') {
-      await fetch(`${API}/micromount/${apiPathForType(type)}/queue/${id}/retry`, { method: 'POST' });
+      await fetch(`${API}/convert/${apiPathForType(type)}/queue/${id}/retry`, { method: 'POST' });
     }
     fetchQueue();
   };
 
   const handleMove = async (type, id, direction) => {
     if (type !== 'download') {
-      await fetch(`${API}/micromount/${apiPathForType(type)}/queue/${id}/move`, {
+      await fetch(`${API}/convert/${apiPathForType(type)}/queue/${id}/move`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ direction }),
@@ -276,7 +448,7 @@ export default function Queue() {
   const handleStartItem = async (type, id) => {
     if (type !== 'download') {
       try {
-        await fetch(`${API}/micromount/${apiPathForType(type)}/queue/${id}/move`, {
+        await fetch(`${API}/convert/${apiPathForType(type)}/queue/${id}/move`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ direction: 'top' }),
@@ -294,14 +466,14 @@ export default function Queue() {
     ...uploadItems,
     ...downloads,
   ].sort((a, b) => {
-    const statusOrder = { running: 0, starting: 0, pushing: 0, queued: 1, completed: 2, failed: 3, cancelled: 4 };
+    const statusOrder = { running: 0, starting: 0, staging: 0, pushing: 0, unpacking: 0, queued: 1, completed: 2, failed: 3, push_failed: 3, cancelled: 4 };
     const aOrder = statusOrder[a.status] ?? 5;
     const bOrder = statusOrder[b.status] ?? 5;
     if (aOrder !== bOrder) return aOrder - bOrder;
     return new Date(b.added_at || b.started_at || 0) - new Date(a.added_at || a.started_at || 0);
   });
 
-  const activeCount = (arr) => arr.filter(i => ['queued', 'running', 'starting', 'pushing'].includes(i.status)).length;
+  const activeCount = (arr) => arr.filter(i => ['queued', 'running', 'starting', 'staging', 'pushing', 'unpacking'].includes(i.status)).length;
 
   const counts = {
     all: allItems.length,
@@ -325,7 +497,7 @@ export default function Queue() {
     <div className="comp-card">
       <div className="comp-card-header" style={{ flexWrap: 'wrap', gap: 'var(--space-sm)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-sm)' }}>
-          <span className="comp-card-title">📋 Queue</span>
+          <span className="comp-card-title">📋 Tasks</span>
           {totalActive > 0 && (
             <span className="badge" style={{ background: anyPaused ? '#7f8c8d' : 'var(--blue)' }}>
               {totalActive} active{anyPaused ? ' · some paused' : ''}
@@ -364,7 +536,7 @@ export default function Queue() {
         {filtered.length === 0 ? (
           <div className="empty-state">
             <div className="empty-state-icon">📋</div>
-            <div className="empty-state-title">Queue is empty</div>
+            <div className="empty-state-title">No active tasks</div>
             <div className="empty-state-text">
               Add tasks from the Files, Convert or Download tabs and start them here.
             </div>

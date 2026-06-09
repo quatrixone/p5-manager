@@ -178,8 +178,22 @@ export async function initDatabase() {
     )
   `);
 
+  // Source registry (SMB + FTP origins used by the file browser). Previously
+  // named `micromount_sources`; renamed to `convert_sources` to match the
+  // /api/convert URL surface. The migration below renames legacy tables so
+  // existing installs keep their saved sources.
+  try {
+    const stmt = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('micromount_sources','convert_sources')");
+    const present = new Set();
+    while (stmt.step()) present.add(stmt.getAsObject().name);
+    stmt.free();
+    if (present.has('micromount_sources') && !present.has('convert_sources')) {
+      db.run(`ALTER TABLE micromount_sources RENAME TO convert_sources`);
+    }
+  } catch (_) { /* best-effort; CREATE IF NOT EXISTS below handles fresh installs */ }
+
   db.run(`
-    CREATE TABLE IF NOT EXISTS micromount_sources (
+    CREATE TABLE IF NOT EXISTS convert_sources (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
       type TEXT NOT NULL DEFAULT 'local',
@@ -198,10 +212,10 @@ export async function initDatabase() {
   // FTP source columns (added when the source registry was extended to
   // support FTP origins alongside SMB). Wrapped in try/catch so older
   // databases pick them up via ALTER without re-creating the table.
-  try { db.run(`ALTER TABLE micromount_sources ADD COLUMN ftp_host TEXT`); } catch (_) {}
-  try { db.run(`ALTER TABLE micromount_sources ADD COLUMN ftp_port INTEGER`); } catch (_) {}
-  try { db.run(`ALTER TABLE micromount_sources ADD COLUMN ftp_username TEXT`); } catch (_) {}
-  try { db.run(`ALTER TABLE micromount_sources ADD COLUMN ftp_password TEXT`); } catch (_) {}
+  try { db.run(`ALTER TABLE convert_sources ADD COLUMN ftp_host TEXT`); } catch (_) {}
+  try { db.run(`ALTER TABLE convert_sources ADD COLUMN ftp_port INTEGER`); } catch (_) {}
+  try { db.run(`ALTER TABLE convert_sources ADD COLUMN ftp_username TEXT`); } catch (_) {}
+  try { db.run(`ALTER TABLE convert_sources ADD COLUMN ftp_password TEXT`); } catch (_) {}
 
   saveDatabase();
   return db;

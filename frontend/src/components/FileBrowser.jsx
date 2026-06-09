@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { createPortal } from 'react-dom';
 
 const API = '/api';
 
@@ -25,6 +26,7 @@ function fmtSize(n) {
 }
 
 const isArchive = (n) => /\.(rar|7z|zip|tar\.gz|tgz|tar|r\d{2}|part\d+\.rar)$/i.test(n);
+const isPfsImage = (n) => /\.(ffpfs|ffpfsc|pfs|dat|bin)$/i.test(n);
 
 export default function FileBrowser({
   profiles = [],
@@ -43,6 +45,10 @@ export default function FileBrowser({
   onImported,
   onPickDir,
   onPickConvert,
+  // Invoked when the user picks "Upload/Download/Convert queue" from the
+  // kebab menu. Parent decides how to navigate to the Queue view
+  // (e.g. by switching its sub-tab). Signature: (type: 'upload' | 'download' | 'convert')
+  onOpenQueue,
   jobKeyPrefix = 'mm.fb',
   title = 'File Browser',
   description,
@@ -89,13 +95,23 @@ export default function FileBrowser({
   const openMenu = (e, fileName) => {
     e.stopPropagation();
     if (menuOpen === fileName) { setMenuOpen(null); setMenuStyle(null); return; }
-    // Anchor the menu's bottom edge right at the ⋮ button so it pops up
-    // hugging the trigger instead of floating high above the row.
+    // Adaptive placement. Prior behaviour anchored the menu's BOTTOM to the
+    // button's BOTTOM, which made the menu pop upward — fine for rows at the
+    // bottom of the viewport, but invisible (clipped above viewport top) for
+    // rows in the middle/top. Now we prefer dropping DOWN from the button and
+    // only flip up when there's clearly more room above (e.g. last row in a
+    // long list). `position: fixed` is still used so the menu escapes the
+    // file list's `overflow: auto` scroll container.
     const rect = e.currentTarget.getBoundingClientRect();
     const vh = window.innerHeight;
     const vw = window.innerWidth;
     const right = Math.max(8, vw - rect.right);
-    setMenuStyle({ position: 'fixed', right, bottom: vh - rect.bottom + 2, top: 'auto' });
+    const spaceBelow = vh - rect.bottom;
+    const spaceAbove = rect.top;
+    const style = spaceBelow >= spaceAbove
+      ? { position: 'fixed', right, top: rect.bottom + 4, bottom: 'auto' }
+      : { position: 'fixed', right, bottom: vh - rect.top + 4, top: 'auto' };
+    setMenuStyle(style);
     setMenuOpen(fileName);
   };
 
@@ -121,15 +137,15 @@ export default function FileBrowser({
   const listRef = useRef(null);
 
   useEffect(() => {
-    fetch(`${API}/micromount/sources`).then(r => r.json()).then(rows => {
+    fetch(`${API}/convert/sources`).then(r => r.json()).then(rows => {
       // The "SMB" tab now lists every remote source (SMB + FTP). The backend
       // /sources/:id/browse endpoint handles both transports transparently.
       setSmbSources((rows || []).filter(s => s.type === 'smb' || s.type === 'ftp'));
     }).catch(() => {});
-    fetch(`${API}/micromount/local/roots`).then(r => r.json()).then(d => {
+    fetch(`${API}/convert/local/roots`).then(r => r.json()).then(d => {
       setLocalRoots(d.roots || []);
     }).catch(() => {});
-    fetch(`${API}/micromount/browser-prefs`).then(r => r.json()).then(d => {
+    fetch(`${API}/convert/browser-prefs`).then(r => r.json()).then(d => {
       setBrowserPrefs({ local: d.local || '', smb: d.smb || {} });
     }).catch(() => {});
   }, []);
@@ -148,19 +164,19 @@ export default function FileBrowser({
     try {
       let r;
       if (kind === 'local') {
-        r = await fetch(`${API}/micromount/local/browse`, {
+        r = await fetch(`${API}/convert/local/browse`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ path: p }),
         });
       } else if (kind === 'smb') {
         if (!smbId) { setLoading(false); setError('Select SMB source'); return; }
-        r = await fetch(`${API}/micromount/sources/${smbId}/browse`, {
+        r = await fetch(`${API}/convert/sources/${smbId}/browse`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ subPath: p }),
         });
       } else {
         if (!ftpIp) { setLoading(false); setError('Select PS5 IP'); return; }
-        r = await fetch(`${API}/micromount/ftp/browse`, {
+        r = await fetch(`${API}/convert/ftp/browse`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ ip: ftpIp, path: p }),
         });
@@ -202,7 +218,7 @@ export default function FileBrowser({
       if (kind === 'local') next.local = path;
       else if (kind === 'smb' && smbId) next.smb = { ...(next.smb || {}), [smbId]: path };
       else { onNotification?.('Default save not supported for FTP', 'info'); return; }
-      const r = await fetch(`${API}/micromount/browser-prefs`, {
+      const r = await fetch(`${API}/convert/browser-prefs`, {
         method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(next),
       });
       if (!r.ok) throw new Error((await r.json()).error);
@@ -254,19 +270,19 @@ export default function FileBrowser({
       if (kind === 'local') {
         const fullPath = path === '/' ? `/${entry.name}` : `${path.replace(/\/$/, '')}/${entry.name}`;
         body = { path: fullPath, isDir: entry.isDir };
-        r = await fetch(`${API}/micromount/local/delete`, {
+        r = await fetch(`${API}/convert/local/delete`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
         });
       } else if (kind === 'smb') {
         const sub = path ? `${path.replace(/\/+$/, '')}/${entry.name}` : entry.name;
         body = { path: sub, isDir: entry.isDir };
-        r = await fetch(`${API}/micromount/sources/${smbId}/delete`, {
+        r = await fetch(`${API}/convert/sources/${smbId}/delete`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
         });
       } else {
         const fullPath = path === '/' ? `/${entry.name}` : `${path.replace(/\/$/, '')}/${entry.name}`;
         body = { ip: ftpIp, path: fullPath, isDir: entry.isDir };
-        r = await fetch(`${API}/micromount/ftp/delete`, {
+        r = await fetch(`${API}/convert/ftp/delete`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
         });
       }
@@ -307,7 +323,7 @@ export default function FileBrowser({
       return;
     }
     try {
-      const r = await fetch(`${API}/micromount/ftp/upload/queue`, {
+      const r = await fetch(`${API}/convert/ftp/upload/queue`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       });
@@ -363,7 +379,7 @@ export default function FileBrowser({
         };
       }
       // Always go through the queue; user controls Start/Pause from the Queue tab.
-      const r = await fetch(`${API}/micromount/extract/queue`, {
+      const r = await fetch(`${API}/convert/extract/queue`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
       });
       const d = await r.json();
@@ -378,12 +394,12 @@ export default function FileBrowser({
       let r;
       if (kind === 'local') {
         const fullPath = path === '/' ? `/${filename}` : `${path.replace(/\/$/, '')}/${filename}`;
-        r = await fetch(`${API}/micromount/local/import-file`, {
+        r = await fetch(`${API}/convert/local/import-file`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ local_path: fullPath }),
         });
       } else {
-        r = await fetch(`${API}/micromount/sources/${smbId}/import-file`, {
+        r = await fetch(`${API}/convert/sources/${smbId}/import-file`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ smb_path: path, filename }),
         });
@@ -401,12 +417,12 @@ export default function FileBrowser({
       let r;
       if (kind === 'local') {
         const fullPath = path === '/' ? `/${folderName}` : `${path.replace(/\/$/, '')}/${folderName}`;
-        r = await fetch(`${API}/micromount/local/import-folder`, {
+        r = await fetch(`${API}/convert/local/import-folder`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ local_path: fullPath }),
         });
       } else {
-        r = await fetch(`${API}/micromount/mkpfs/import-folder-from-smb`, {
+        r = await fetch(`${API}/convert/mkpfs/import-folder-from-smb`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ source_id: smbId, smb_path: path, folder_name: folderName }),
         });
@@ -432,17 +448,25 @@ export default function FileBrowser({
     onNotification?.(`Picked ${fullPath || '/'}`, 'success');
   };
 
-  const pickConvert = (entry) => {
+  const pickConvert = (entry, intent = null) => {
     // Convert can run on local files/folders or PS5-FTP files/folders (the
     // backend stages an FTP source to a local temp dir before mkpfs and
     // pushes the result back automatically). SMB sources still need to be
     // imported first.
+    //
+    // `intent` may be 'now', 'queue', or null:
+    //   - 'now'   → pre-select the Convert tab's "🚀 Convert now"   button
+    //   - 'queue' → pre-select the Convert tab's "🕒 Add to queue"   button
+    //   - null    → just pre-fill the form, let the user decide
+    // The actual enqueue + queue pause/resume happens inside Convert.jsx so
+    // the user can still tweak options (mode, compress, push target…) before
+    // committing.
     if (kind === 'smb') {
       onNotification?.('For SMB sources, import the file first; convert reads from local fs or PS5 FTP.', 'info');
       return;
     }
     const fullPath = path === '/' ? `/${entry.name}` : `${path.replace(/\/$/, '')}/${entry.name}`;
-    onPickConvert?.({ kind, ftpIp, path: fullPath, isDir: !!entry.isDir, name: entry.name });
+    onPickConvert?.({ kind, ftpIp, path: fullPath, isDir: !!entry.isDir, name: entry.name, intent });
     onNotification?.(
       kind === 'ftp' && entry.isDir
         ? `Picked folder for convert: ${entry.name} (will stage from PS5 first)`
@@ -467,15 +491,15 @@ export default function FileBrowser({
     let url;
     if (kind === 'local') {
       const fullPath = path === '/' ? `/${entry.name}` : `${path.replace(/\/$/, '')}/${entry.name}`;
-      url = `${API}/micromount/local/download?path=${encodeURIComponent(fullPath)}`;
+      url = `${API}/convert/local/download?path=${encodeURIComponent(fullPath)}`;
     } else if (kind === 'smb') {
       if (!smbId) { onNotification?.('Pick a remote source first', 'error'); return; }
       const sub = path ? `${path.replace(/\/+$/, '')}/${entry.name}` : entry.name;
-      url = `${API}/micromount/sources/${smbId}/download?path=${encodeURIComponent(sub)}&isDir=${entry.isDir ? 1 : 0}`;
+      url = `${API}/convert/sources/${smbId}/download?path=${encodeURIComponent(sub)}&isDir=${entry.isDir ? 1 : 0}`;
     } else if (kind === 'ftp') {
       if (!ftpIp) { onNotification?.('Pick a PS5 first', 'error'); return; }
       const fullPath = path === '/' ? `/${entry.name}` : `${path.replace(/\/$/, '')}/${entry.name}`;
-      url = `${API}/micromount/ftp/download?ip=${encodeURIComponent(ftpIp)}&path=${encodeURIComponent(fullPath)}&isDir=${entry.isDir ? 1 : 0}`;
+      url = `${API}/convert/ftp/download?ip=${encodeURIComponent(ftpIp)}&path=${encodeURIComponent(fullPath)}&isDir=${entry.isDir ? 1 : 0}`;
     } else {
       return;
     }
@@ -491,6 +515,75 @@ export default function FileBrowser({
     a.click();
     document.body.removeChild(a);
     onNotification?.(`Download started: ${entry.name}${entry.isDir ? ' (zip)' : ''}`, 'info');
+  };
+
+  // ------------------------------------------------------------------
+  // Queue control + one-click enqueue helpers used by the kebab menu.
+  // Semantics shared across Upload / Convert / Extract / Download:
+  //   "X now"   → enqueue + resume the queue (auto-start)
+  //   "X queue" → enqueue + pause  the queue (user starts manually later)
+  // ------------------------------------------------------------------
+
+  const QUEUE_PATHS = {
+    upload:  '/api/convert/ftp/upload/queue',
+    convert: '/api/convert/convert/queue',
+    extract: '/api/convert/extract/queue',
+    download:'/api/downloader/queue',
+  };
+
+  const setQueueRunning = async (type, running) => {
+    const base = QUEUE_PATHS[type];
+    if (!base) return;
+    try {
+      await fetch(`${base}/${running ? 'resume' : 'pause'}`, { method: 'POST' });
+    } catch (_) { /* best-effort; the user sees the queue tab anyway */ }
+  };
+
+  // (Convert defaults are now applied inside Convert.jsx after the user picks
+  // a target file/folder via the kebab menu, so we no longer need a
+  // one-click enqueue helper here — `pickConvert` hands the entry over with
+  // an intent ('now' / 'queue' / null) and the Convert tab arms the matching
+  // action button.)
+
+  // One-click unpack — reverse of pack. mkpfs unpack pulls the .ffpfsc image
+  // apart into a folder next to it. Output folder name defaults to
+  // <basename>-extracted. SMB sources need to be imported first (mkpfs needs
+  // a local seekable input); PS5 FTP is supported via the staging dance.
+  const enqueueUnpackDefault = async (entry) => {
+    if (entry.isDir || !isPfsImage(entry.name)) {
+      onNotification?.('Unpack expects a .ffpfsc/.ffpfs/.pfs file', 'error');
+      return false;
+    }
+    const fullPath = path === '/' ? `/${entry.name}` : `${path.replace(/\/$/, '')}/${entry.name}`;
+    // Output folder mirrors the pack convention (Game.exfat → Game.ffpfsc),
+    // so .ffpfsc → folder named exactly Game/. No `-extracted` / `-final`
+    // suffix — keep round-trips clean.
+    const base = entry.name.replace(/\.(ffpfs|ffpfsc|pfs|dat|bin)$/i, '').replace(/[^A-Za-z0-9_.\-]/g, '_');
+    const body = {
+      mode: 'unpack',
+      output_name: base,
+      push_after: false,
+    };
+    if (kind === 'ftp') {
+      if (!ftpIp) { onNotification?.('Select a PS5 first', 'error'); return false; }
+      body.source_ftp = { ip: ftpIp, path: fullPath };
+    } else if (kind === 'smb') {
+      if (!smbId) { onNotification?.('Pick an SMB source first', 'error'); return false; }
+      // Backend stages the .ffpfsc from the SMB share into a per-job temp dir
+      // (smbclient one-shot get) and then runs mkpfs against the local copy.
+      // Result lands in the mkpfs work dir, not back on the share.
+      body.source_smb = { source_id: Number(smbId), path: fullPath };
+    } else {
+      body.source_path = fullPath;
+    }
+    try {
+      const r = await fetch(`${API}/convert/convert/queue`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || 'unpack queue failed');
+      return true;
+    } catch (e) { onNotification?.(`Unpack failed: ${e.message}`, 'error'); return false; }
   };
 
   const sortFiles = (a, b) => {
@@ -514,25 +607,111 @@ export default function FileBrowser({
     const isActive = selectedFile === f.name;
     const archiveFile = !f.isDir && isArchive(f.name);
 
-    const canUpload = (kind === 'local' || kind === 'smb') && enableFtpUpload && !!uploadIp;
-    const primaryAction = f.isDir ? null
-      : archiveFile && enableExtract ? (
-        <button className="btn btn-primary btn-sm" onClick={() => { setSelectedFile(f.name); setMenuOpen(null); }}>📦 Extract</button>
-      ) : canUpload ? (
-        <button className="btn btn-primary btn-sm" onClick={() => uploadEntry(f)}>⬆ Upload</button>
-      ) : null;
+    // Unified menu — for every queue-able operation the user gets two entries:
+    //   "X now"   = enqueue + resume the queue   (auto-starts)
+    //   "X queue" = enqueue + pause  the queue   (user must press ▶)
+    // Items that don't apply for the current (kind, file type) combination
+    // are filtered out entirely so the menu only shows actionable options.
+    const canUpload   = kind !== 'ftp' && enableFtpUpload;       // not already on PS5
+    const canDownload = kind !== 'local';                        // local files don't need a "download to your device" round-trip
+    const canConvert  = kind !== 'smb';                          // SMB pack still needs Import (mkpfs needs seekable local source + folder traversal)
+    const canExtract  = enableExtract && kind !== 'ftp' && !f.isDir && archiveFile;
+    const pfsImage    = !f.isDir && isPfsImage(f.name);
+    // Unpack works on local, PS5 FTP, and SMB (backend stages SMB → local
+    // temp dir via smbclient before mkpfs runs). SMB only requires that an
+    // SMB source is selected.
+    const canUnpack   = !f.isDir && pfsImage && (kind !== 'smb' || !!smbId);
+
+    const runUpload = async (auto) => {
+      const ok = await uploadEntry(f);
+      // uploadEntry returns nothing today — best-effort assume success unless
+      // it surfaced an error via onNotification.
+      await setQueueRunning('upload', auto);
+      if (!auto) onNotification?.(`Upload queued for ${f.name} — press ▶ in Queue to start`, 'info');
+    };
+    // Convert now/queue used to enqueue with defaults immediately. UX feedback
+    // showed users wanted a chance to tweak push target / advanced options
+    // first, so both actions now just pick the entry into the Convert tab and
+    // hand off the user's chosen intent ('now' = start, 'queue' = add paused).
+    // Convert.jsx renders the matching action button highlighted.
+    const sendToConvertWithIntent = (intent) => () => pickConvert(f, intent);
+    const runExtract = async (auto) => {
+      await startExtract(f.name);
+      await setQueueRunning('extract', auto);
+      if (!auto) onNotification?.(`Extract queued for ${f.name} — press ▶ in Queue to start`, 'info');
+    };
+    const runUnpack = async (auto) => {
+      const ok = await enqueueUnpackDefault(f);
+      if (!ok) return;
+      // Unpack jobs share the convert queue (mkpfs only).
+      await setQueueRunning('convert', auto);
+      onNotification?.(
+        auto ? `Unpacking ${f.name} — started` : `Unpack queued for ${f.name} — press ▶ in Queue to start`,
+        auto ? 'success' : 'info',
+      );
+    };
 
     const secondaryActions = [
-      f.isDir && enablePickDir && kind !== 'ftp' && { label: '✓ Pick', action: () => pickDir(f) },
-      enablePickConvert && (kind === 'local' || kind === 'ftp') && { label: '🔄 Convert', action: () => pickConvert(f) },
-      f.isDir && enableImportFolder && kind !== 'ftp' && { label: '📥 Import', action: () => importFolder(f.name) },
-      !f.isDir && enableImportFile && kind !== 'ftp' && { label: '📥 Import', action: () => importFile(f.name) },
-      // Unified Upload to PS5 - available for files AND folders, on local
-      // and remote (SMB / external FTP) sources.
-      canUpload && f.isDir && { label: '⬆ Upload folder', action: () => uploadEntry(f) },
-      // Download to the user's machine only makes sense for remote sources -
-      // local files already live on the manager's filesystem.
-      kind !== 'local' && { label: f.isDir ? '⬇ Download (zip)' : '⬇ Download', action: () => downloadEntry(f) },
+      // Each action is wrapped in a boolean guard so non-applicable items
+      // are filtered out entirely (no greyed-out rows). Order is preserved
+      // so the menu still feels stable across (kind, file-type) variations.
+      canUpload && {
+        label: '⬆ Upload now',
+        action: () => runUpload(true),
+        title: `Queue upload to ${uploadIp || 'PS5'} and start immediately`,
+      },
+      canUpload && {
+        label: '🕒 Upload queue',
+        action: () => runUpload(false),
+        title: `Queue upload to ${uploadIp || 'PS5'} and pause — press ▶ in Queue when ready`,
+      },
+      canDownload && {
+        label: '⬇ Download now',
+        action: () => downloadEntry(f),
+        title: f.isDir
+          ? 'Download as ZIP to your device (immediate, via your browser)'
+          : 'Download file to your device (immediate, via your browser)',
+      },
+      canDownload && onOpenQueue && {
+        label: '🕒 Download queue',
+        action: () => onOpenQueue?.('download'),
+        title: 'Open the Tasks tab — manages background URL downloads from the Download tab',
+      },
+      canConvert && {
+        label: '🔄 Convert now',
+        action: sendToConvertWithIntent('now'),
+        title: 'Pick this file/folder, switch to the Convert tab and pre-arm the "Convert now" button',
+      },
+      canConvert && {
+        label: '🕒 Convert queue',
+        action: sendToConvertWithIntent('queue'),
+        title: 'Pick this file/folder, switch to the Convert tab and pre-arm the "Add to queue" button',
+      },
+      canUnpack && {
+        label: '📂 Unpack now',
+        action: () => runUnpack(true),
+        title: 'Unpack .ffpfsc back into a folder (mkpfs unpack) and start now',
+      },
+      canUnpack && {
+        label: '🕒 Unpack queue',
+        action: () => runUnpack(false),
+        title: 'Unpack .ffpfsc back into a folder and pause — press ▶ in Queue when ready',
+      },
+      canExtract && {
+        label: '📦 Extract now',
+        action: () => runExtract(true),
+        title: 'Extract this archive and start now',
+      },
+      canExtract && {
+        label: '🕒 Extract queue',
+        action: () => runExtract(false),
+        title: 'Extract this archive and pause — press ▶ in Queue when ready',
+      },
+      // Context-specific extras below the standardised actions.
+      f.isDir && enablePickDir && kind !== 'ftp' && { label: '✓ Pick folder', action: () => pickDir(f) },
+      f.isDir && enableImportFolder && kind !== 'ftp' && { label: '📥 Import folder', action: () => importFolder(f.name) },
+      !f.isDir && enableImportFile && kind !== 'ftp' && { label: '📥 Import file', action: () => importFile(f.name) },
+      enablePickConvert && { label: '⚙ Open in Convert tab', action: () => pickConvert(f), title: 'Pre-fill the Convert form to customise options' },
       enableDelete && { label: '🗑 Delete', action: () => deleteEntry(f), danger: true },
     ].filter(Boolean);
 
@@ -564,12 +743,6 @@ export default function FileBrowser({
             <div className="text-xs text-muted">{f.isDir ? (f.size ? fmtSize(f.size) : '—') : fmtSize(f.size)}</div>
           </div>
 
-          {primaryAction && (
-            <div onClick={(e) => e.stopPropagation()}>
-              {primaryAction}
-            </div>
-          )}
-
           {secondaryActions.length > 0 && (
             <div onClick={(e) => e.stopPropagation()}>
               <button
@@ -579,18 +752,35 @@ export default function FileBrowser({
               >
                 ⋮
               </button>
-              {menuOpen === f.name && menuStyle && (
+              {menuOpen === f.name && menuStyle && createPortal(
+                // Portalled to <body> so `position: fixed` stays viewport-
+                // relative even when an ancestor (`.app-main > *` has a
+                // page-in `transform` animation) creates its own containing
+                // block. Without this, the menu would render offset or be
+                // clipped — especially inside the Convert tab and PS5 FTP
+                // view, where the FileBrowser sits deep in the DOM.
                 <div className="file-menu" style={menuStyle}>
+                  {secondaryActions.length === 0 && (
+                    <div className="file-menu-empty">
+                      No actions available for this item
+                    </div>
+                  )}
                   {secondaryActions.map((action, i) => (
                     <button
                       key={i}
                       className={`file-menu-item ${action.danger ? 'text-danger' : ''}`}
-                      onClick={() => { action.action(); setMenuOpen(null); setMenuStyle(null); }}
+                      title={action.title || action.label}
+                      onClick={() => {
+                        action.action();
+                        setMenuOpen(null);
+                        setMenuStyle(null);
+                      }}
                     >
                       {action.label}
                     </button>
                   ))}
-                </div>
+                </div>,
+                document.body,
               )}
             </div>
           )}
@@ -722,33 +912,6 @@ export default function FileBrowser({
           </div>
         </div>
 
-        {selectedFile && enableExtract && (
-          <div className="p-md" style={{ background: 'var(--panel2)', borderRadius: 8 }}>
-            <div className="text-sm mb-sm">📦 Extract: <strong>{selectedFile}</strong></div>
-            <div className="flex gap-sm items-center flex-wrap">
-              <input
-                type="password"
-                className="input"
-                style={{ maxWidth: 160 }}
-                placeholder="Archive password"
-                value={extractPwd}
-                onChange={e => setExtractPwd(e.target.value)}
-              />
-              <label className="flex items-center gap-xs text-sm" style={{ cursor: 'pointer' }}>
-                <input type="checkbox" checked={extractDeleteAfter} onChange={e => setExtractDeleteAfter(e.target.checked)} />
-                <span style={{ color: extractDeleteAfter ? 'var(--red)' : 'var(--muted)' }}>🗑 Delete after</span>
-              </label>
-            </div>
-            <div className="flex gap-sm mt-sm">
-              <button className="btn btn-success btn-sm" onClick={() => { startExtract(selectedFile); setSelectedFile(null); }}>＋ Add to Queue</button>
-              <button className="btn btn-ghost btn-sm" onClick={() => setSelectedFile(null)}>✕</button>
-            </div>
-            <div className="text-xs text-muted mt-sm">
-              Job runs once you press <strong>Start</strong> in the Queue tab.
-            </div>
-          </div>
-        )}
-
         {sortedFiles.length === 0 && !loading ? (
           <div className="empty-state">
             <div className="empty-state-icon">📂</div>
@@ -776,29 +939,6 @@ export default function FileBrowser({
           </div>
         )}
 
-      </div>
-    </div>
-  );
-}
-
-export function ExtractLogPanel({ job }) {
-  if (!job) return null;
-
-  const statusColor = job.status === 'completed' ? 'var(--green)' : job.status === 'failed' ? 'var(--red)' : 'var(--blue)';
-
-  return (
-    <div className="comp-card mt-md">
-      <div className="comp-card-header">
-        <span className="comp-card-title">📦 Extract: {job.filename}</span>
-        <span className="badge" style={{ background: statusColor }}>{job.status}</span>
-      </div>
-      <div className="comp-card-body">
-        {job.error && <div className="text-sm text-danger mb-sm">Error: {job.error}</div>}
-        {job.log && (
-          <pre className="text-xs" style={{ background: 'var(--bg)', padding: 'var(--space-sm)', borderRadius: 4, maxHeight: 200, overflowY: 'auto', whiteSpace: 'pre-wrap' }}>
-            {job.log}
-          </pre>
-        )}
       </div>
     </div>
   );
