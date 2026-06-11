@@ -151,9 +151,11 @@ Lua exploit (different port, different ABI).
   [mkpfs]: https://github.com/PSBrew/MkPFS
   [exfat-builder]: https://github.com/kerrdec97/ps5-exfat-builder
 
-- Built-in **p2jb jailbreak** Autoload template
-  (WoL → wait → Lua port check → send `p2jb.lua` → wait 55 min →
-  ELF port check)
+- Built-in **y2jb jailbreak** Autoload template
+  (WoL → wait → Lua port check → send `y2jb.lua` → wait 55 min →
+  ELF port check). Supports **PS5 firmware ≤ 12.70** (as long as
+  y2jb itself keeps supporting it upstream — the manager just ships
+  the harness)
 - Built-in **full-game launch** template
   (RP session → input script → boot wait → ELF port check)
 
@@ -277,8 +279,8 @@ python server.py
    - When you're done, **Disconnect** soft-stops into the warm cache so
      re-opening the session a few minutes later is instant; **Force reset**
      fully releases the console for someone else.
-4. **Autoload tab** — build a sequence or load the **p2jb jailbreak** or
-   **full-game launch** templates and hit Run.
+4. **Autoload tab** — build a sequence or load the **y2jb jailbreak**
+   (PS5 firmware ≤ 12.70) or **full-game launch** templates and hit Run.
 5. **Tasks tab** for every other long-running job (downloads, extracts, FTP).
 6. **Logs tab** for kernel + LUA log output.
 7. **Settings → Backup** to download/restore a full state ZIP (profiles,
@@ -429,8 +431,9 @@ who maintain them. If you find this tool useful, star their repos too.
 - **GoldHEN team (sleirsgoevy et al.)** — the PS4 GoldHEN payload
   (`goldhen.bin`, `ftp_server.bin`, `kernel_debugger.bin`). Same default-
   payload treatment for PS4 profiles
-- **[gezine](https://github.com/gezine)** — author of **p2jb**, the PS5
-  Lua-port jailbreak exploit driven from the manager
+- **[gezine](https://github.com/gezine)** — author of **y2jb**, the PS5
+  Lua-port jailbreak exploit driven from the manager. Supports PS5
+  firmware up to and including **12.70** (subject to upstream)
 
 ### Remote Play
 
