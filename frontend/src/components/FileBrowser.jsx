@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
+import Modal from './UI/Modal';
 
 const API = '/api';
 
@@ -27,6 +28,7 @@ function fmtSize(n) {
 
 const isArchive = (n) => /\.(rar|7z|zip|tar\.gz|tgz|tar|r\d{2}|part\d+\.rar)$/i.test(n);
 const isPfsImage = (n) => /\.(ffpfs|ffpfsc|pfs|dat|bin)$/i.test(n);
+const isPkgFile  = (n) => /\.pkg$/i.test(n);
 
 export default function FileBrowser({
   profiles = [],
@@ -37,7 +39,6 @@ export default function FileBrowser({
   enableImportFile = false,
   enableImportFolder = false,
   enablePickDir = false,
-  enablePickConvert = false,
   enableFtpUpload = false,
   enableSaveDefault = true,
   defaultKind = 'local',
@@ -73,9 +74,29 @@ export default function FileBrowser({
 
   // Upload-to-PS5 target. Used by the unified Upload action that handles
   // files and folders coming from either the local FS or any configured
-  // remote source (SMB / external FTP). Seeded from the default profile.
+  // remote source (SMB / external FTP). Sourced from the global Settings
+  // ("Local upload target") - configure once there, the kebab Upload
+  // actions reuse it everywhere. We still fall back to the default
+  // profile's IP when the user hasn't filled the setting yet.
   const [uploadIp, setUploadIp] = useState('');
   const [uploadDest, setUploadDest] = useState('/data/homebrew');
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await fetch(`${API}/settings`);
+        if (!r.ok) return;
+        const data = await r.json();
+        if (cancelled) return;
+        if (data.upload_target_ip) setUploadIp(data.upload_target_ip);
+        if (data.upload_target_path) setUploadDest(data.upload_target_path);
+      } catch (_) { /* silently fall back */ }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+  // Fall back to the default profile if Settings didn't supply an IP -
+  // keeps existing single-PS5 setups working without forcing them to
+  // visit Settings → Config first.
   useEffect(() => {
     if (!uploadIp && profiles.length) {
       const def = profiles.find(p => p.is_default) || profiles[0];
@@ -86,11 +107,28 @@ export default function FileBrowser({
   const [multiSelect, setMultiSelect] = useState(false);
   const [selected, setSelected] = useState(new Set());
   const [selectedFile, setSelectedFile] = useState(null);
+
+  // Cut/Copy/Paste clipboard. Single global slot - copying again
+  // replaces what was there. We snapshot the source context (kind,
+  // smbId, ftpIp, sourcePath) at copy/cut time so the user can browse
+  // around freely without losing the reference. Paste is restricted to
+  // the same kind+source identifier (FTP/SMB can't paste into local
+  // via rename - that path goes through the upload queue already).
+  const [clipboard, setClipboard] = useState(null);
+  const [pasteBusy, setPasteBusy] = useState(false);
   // menuOpen carries both the file name and the viewport-anchored style for
   // the floating ⋮ menu. We use position:fixed so the popover escapes the
   // scrollable list container (which used to clip menus on the last rows).
   const [menuOpen, setMenuOpen] = useState(null);
   const [menuStyle, setMenuStyle] = useState(null);
+
+  // Rename / Show Info modal state. `renameTarget` and `infoTarget` carry the
+  // full entry the user clicked on. `renameValue` mirrors the input field
+  // so we can validate before issuing the move request.
+  const [renameTarget, setRenameTarget] = useState(null);
+  const [renameValue, setRenameValue] = useState('');
+  const [renameBusy, setRenameBusy] = useState(false);
+  const [infoTarget, setInfoTarget] = useState(null);
 
   const openMenu = (e, fileName) => {
     e.stopPropagation();
@@ -293,6 +331,72 @@ export default function FileBrowser({
     } catch (e) { onNotification?.(`Delete failed: ${e.message}`, 'error'); }
   };
 
+  // Open the rename modal. Pre-fills the input with the current name and
+  // pre-selects the basename part (everything before the last '.') so the
+  // user lands directly on the editable portion for files; folders get the
+  // full name selected.
+  const openRename = (entry) => {
+    setRenameTarget(entry);
+    setRenameValue(entry.name);
+  };
+
+  // Commit the rename. Reuses the existing /move endpoint for each transport
+  // since "rename" is just "move with same parent dir, different basename".
+  // Validation rules:
+  //   - new name must not be empty
+  //   - must not contain '/' (would change directory; use Cut+Paste for that)
+  //   - same as old → no-op
+  const confirmRename = async () => {
+    const target = renameTarget;
+    if (!target) return;
+    const newName = (renameValue || '').trim();
+    if (!newName) { onNotification?.('Name cannot be empty', 'error'); return; }
+    if (newName.includes('/') || newName.includes('\\')) {
+      onNotification?.('Name cannot contain "/" or "\\"', 'error');
+      return;
+    }
+    if (newName === target.name) { setRenameTarget(null); return; }
+
+    setRenameBusy(true);
+    try {
+      const src = joinEntryPath(path, target.name);
+      const dst = joinEntryPath(path, newName);
+      let r;
+      if (kind === 'local') {
+        r = await fetch(`${API}/convert/local/move`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ src, dst, isDir: !!target.isDir }),
+        });
+      } else if (kind === 'ftp') {
+        if (!ftpIp) throw new Error('Select PS5 first');
+        r = await fetch(`${API}/convert/ftp/move`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ip: ftpIp, src, dst }),
+        });
+      } else {
+        if (!smbId) throw new Error('Select remote source first');
+        r = await fetch(`${API}/convert/sources/${smbId}/move`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ src, dst }),
+        });
+      }
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
+      onNotification?.(`Renamed → ${newName}`, 'success');
+      setRenameTarget(null);
+      browse(path);
+    } catch (e) {
+      onNotification?.(`Rename failed: ${e.message}`, 'error');
+    } finally {
+      setRenameBusy(false);
+    }
+  };
+
+  // Show Info just opens a read-only modal with the metadata we already have
+  // on the entry row (name, size, mtime, isDir) plus the full path. No
+  // backend round-trip required.
+  const showInfo = (entry) => setInfoTarget(entry);
+
   // Unified upload: handles files and folders from either local FS or a
   // configured remote (SMB / external FTP) source. Always enqueues into the
   // FTP upload queue - user starts/pauses jobs from the Queue tab.
@@ -302,7 +406,7 @@ export default function FileBrowser({
       return;
     }
     if (!uploadIp) {
-      onNotification?.('Pick a target PS5 first', 'error');
+      onNotification?.('No upload target PS5 set - configure it in Settings → Config → Local upload target', 'error');
       return;
     }
     let body;
@@ -340,7 +444,7 @@ export default function FileBrowser({
   };
 
   const uploadSelected = async () => {
-    if (!uploadIp) { onNotification?.('Pick a target PS5 first', 'error'); return; }
+    if (!uploadIp) { onNotification?.('No upload target PS5 set - configure it in Settings → Config → Local upload target', 'error'); return; }
     const list = Array.from(selected);
     if (list.length === 0) return;
     let ok = 0, fail = 0;
@@ -529,6 +633,7 @@ export default function FileBrowser({
     convert: '/api/convert/convert/queue',
     extract: '/api/convert/extract/queue',
     download:'/api/downloader/queue',
+    install: '/api/convert/install/queue',
   };
 
   const setQueueRunning = async (type, running) => {
@@ -544,6 +649,70 @@ export default function FileBrowser({
   // one-click enqueue helper here — `pickConvert` hands the entry over with
   // an intent ('now' / 'queue' / null) and the Convert tab arms the matching
   // action button.)
+
+  // One-click install — sends a .pkg through the install queue. Backend will
+  // stage to PS5 (or skip staging when source is already on PS5), then
+  // trigger the configured installer payload. Preflight check ensures the
+  // user sees a clear "configure installer payload in Settings" error
+  // before we drop ten queued .pkg files that all fail the same way.
+  const installEntry = async (entry) => {
+    if (entry.isDir || !isPkgFile(entry.name)) {
+      onNotification?.('Install expects a .pkg file', 'error');
+      return false;
+    }
+    // Preflight: confirm an installer payload + stage dir are configured.
+    try {
+      const pre = await fetch(`${API}/convert/install/preflight`);
+      const pd = await pre.json();
+      if (!pre.ok) throw new Error(pd.error || 'Installer not configured');
+    } catch (e) {
+      onNotification?.(`Install setup: ${e.message}`, 'error');
+      return false;
+    }
+    // We need a target PS5 IP. For ftp/local kinds we already track this
+    // (uploadIp for local/SMB → PS5 upload; ftpIp for PS5 FTP browsing).
+    const targetIp = kind === 'ftp' ? ftpIp : uploadIp;
+    if (!targetIp) {
+      onNotification?.('Pick a target PS5 first', 'error');
+      return false;
+    }
+
+    let body;
+    if (kind === 'local') {
+      const fullPath = path === '/' ? `/${entry.name}` : `${path.replace(/\/$/, '')}/${entry.name}`;
+      body = { ip: targetIp, source_kind: 'local', local_path: fullPath, pkg_name: entry.name };
+    } else if (kind === 'ftp') {
+      const fullPath = path === '/' ? `/${entry.name}` : `${path.replace(/\/$/, '')}/${entry.name}`;
+      body = { ip: targetIp, source_kind: 'ftp', source_remote_path: fullPath, pkg_name: entry.name };
+    } else if (kind === 'smb') {
+      if (!smbId) { onNotification?.('Pick a remote source first', 'error'); return false; }
+      const sub = path ? `${path.replace(/\/+$/, '')}/${entry.name}` : entry.name;
+      body = {
+        ip: targetIp,
+        source_kind: 'remote-smb',
+        source_id: Number(smbId),
+        source_remote_path: sub,
+        pkg_name: entry.name,
+      };
+    } else {
+      onNotification?.('Install: unsupported source type', 'error');
+      return false;
+    }
+
+    try {
+      const r = await fetch(`${API}/convert/install/queue`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || 'install queue failed');
+      onNotification?.(`Install queued: ${entry.name} → ${targetIp}`, 'success');
+      return true;
+    } catch (e) {
+      onNotification?.(`Install failed: ${e.message}`, 'error');
+      return false;
+    }
+  };
 
   // One-click unpack — reverse of pack. mkpfs unpack pulls the .ffpfsc image
   // apart into a folder next to it. Output folder name defaults to
@@ -586,6 +755,150 @@ export default function FileBrowser({
     } catch (e) { onNotification?.(`Unpack failed: ${e.message}`, 'error'); return false; }
   };
 
+  // ------------------------------------------------------------------
+  // Cut / Copy / Paste
+  // ------------------------------------------------------------------
+
+  // Build the full path for an entry within a given path/kind context.
+  // Mirrors how `open()` / `deleteEntry()` compose the path so the
+  // backend sees identical strings regardless of which UI action
+  // triggers them.
+  const joinEntryPath = (basePath, name) =>
+    basePath === '/' ? `/${name}` : `${(basePath || '').replace(/\/+$/, '')}/${name}`;
+
+  // Returns true when the current view targets the same logical source
+  // as the clipboard's snapshot. Pasting across a different source kind
+  // (or different SMB share / different PS5) would have to go through
+  // the queue worker; we surface the existing upload kebab actions for
+  // that case rather than overload paste.
+  const clipboardMatchesCurrent = () => {
+    if (!clipboard) return false;
+    if (clipboard.kind !== kind) return false;
+    if (kind === 'smb') return String(clipboard.smbId) === String(smbId);
+    if (kind === 'ftp') return clipboard.ftpIp === ftpIp;
+    return true;
+  };
+
+  const stashClipboard = (operation, items, ctx = {}) => {
+    const snapshot = items.map(f => ({ name: f.name, isDir: !!f.isDir }));
+    setClipboard({
+      operation,
+      kind,
+      smbId: kind === 'smb' ? smbId : null,
+      ftpIp: kind === 'ftp' ? ftpIp : null,
+      sourcePath: path,
+      items: snapshot,
+      ...ctx,
+    });
+    onNotification?.(
+      `${operation === 'cut' ? 'Cut' : 'Copied'} ${snapshot.length} item${snapshot.length === 1 ? '' : 's'} to clipboard`,
+      'info',
+    );
+  };
+
+  const cutEntry = (entry) => stashClipboard('cut', [entry]);
+  const copyEntry = (entry) => stashClipboard('copy', [entry]);
+  const cutSelected = () => {
+    const list = Array.from(selected)
+      .map(name => files.find(f => f.name === name))
+      .filter(Boolean);
+    if (!list.length) return;
+    stashClipboard('cut', list);
+    clearSelection();
+  };
+  const copySelected = () => {
+    const list = Array.from(selected)
+      .map(name => files.find(f => f.name === name))
+      .filter(Boolean);
+    if (!list.length) return;
+    stashClipboard('copy', list);
+    clearSelection();
+  };
+
+  // Perform the paste against whichever backend matches the clipboard's
+  // (kind, source) tuple. Move = rename in-place; Copy is only
+  // implemented for local. FTP/SMB copy throws a clear notification so
+  // the user knows to use the upload/import queue instead.
+  const pasteHere = async () => {
+    if (!clipboard) return;
+    if (!clipboardMatchesCurrent()) {
+      onNotification?.(
+        'Paste only works within the same source. Use the kebab Upload / Import actions to move items across transports.',
+        'error',
+      );
+      return;
+    }
+    // Same-folder paste of a cut is a no-op; surface a friendly hint
+    // rather than firing a bunch of EEXIST conflicts.
+    if (clipboard.operation === 'cut' && clipboard.sourcePath === path) {
+      onNotification?.('Items are already in this folder', 'info');
+      return;
+    }
+    if (clipboard.operation === 'copy' && kind !== 'local') {
+      onNotification?.(
+        `Copy on ${kind === 'ftp' ? 'PS5 FTP' : 'SMB'} is not supported. Use the upload / import queue instead.`,
+        'error',
+      );
+      return;
+    }
+    setPasteBusy(true);
+    let ok = 0;
+    let fail = 0;
+    let conflicts = 0;
+    for (const item of clipboard.items) {
+      const srcFull = joinEntryPath(clipboard.sourcePath, item.name);
+      const dstFull = joinEntryPath(path, item.name);
+      if (srcFull === dstFull) { fail++; continue; }
+      try {
+        let r;
+        if (kind === 'local') {
+          const endpoint = clipboard.operation === 'cut' ? 'move' : 'copy';
+          r = await fetch(`${API}/convert/local/${endpoint}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ src: srcFull, dst: dstFull, isDir: item.isDir }),
+          });
+        } else if (kind === 'ftp') {
+          r = await fetch(`${API}/convert/ftp/move`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ip: ftpIp, src: srcFull, dst: dstFull }),
+          });
+        } else {
+          // SMB cut → rename
+          r = await fetch(`${API}/convert/sources/${smbId}/move`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ src: srcFull, dst: dstFull }),
+          });
+        }
+        const d = await r.json();
+        if (!r.ok) {
+          if (d.code === 'EEXIST') conflicts++;
+          else fail++;
+          continue;
+        }
+        ok++;
+      } catch (_) {
+        fail++;
+      }
+    }
+    setPasteBusy(false);
+    const opLabel = clipboard.operation === 'cut' ? 'Moved' : 'Copied';
+    if (ok > 0) {
+      const parts = [`${opLabel} ${ok} item${ok === 1 ? '' : 's'}`];
+      if (conflicts) parts.push(`${conflicts} skipped (already exist)`);
+      if (fail) parts.push(`${fail} failed`);
+      onNotification?.(parts.join(' · '), fail ? 'warning' : 'success');
+    } else if (conflicts) {
+      onNotification?.(`All ${conflicts} item(s) already exist at destination`, 'warning');
+    } else {
+      onNotification?.('Paste failed', 'error');
+    }
+    if (clipboard.operation === 'cut') setClipboard(null); // one-shot: cut → paste consumes the clipboard
+    browse(path);
+  };
+
   const sortFiles = (a, b) => {
     if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
     let cmp = 0;
@@ -621,6 +934,10 @@ export default function FileBrowser({
     // temp dir via smbclient before mkpfs runs). SMB only requires that an
     // SMB source is selected.
     const canUnpack   = !f.isDir && pfsImage && (kind !== 'smb' || !!smbId);
+    // Install only applies to .pkg files. ftp = already on PS5 (no stage);
+    // local + smb get staged into pkg_stage_dir then triggered.
+    const pkgFile     = !f.isDir && isPkgFile(f.name);
+    const canInstall  = pkgFile && (kind !== 'smb' || !!smbId);
 
     const runUpload = async (auto) => {
       const ok = await uploadEntry(f);
@@ -629,12 +946,6 @@ export default function FileBrowser({
       await setQueueRunning('upload', auto);
       if (!auto) onNotification?.(`Upload queued for ${f.name} — press ▶ in Queue to start`, 'info');
     };
-    // Convert now/queue used to enqueue with defaults immediately. UX feedback
-    // showed users wanted a chance to tweak push target / advanced options
-    // first, so both actions now just pick the entry into the Convert tab and
-    // hand off the user's chosen intent ('now' = start, 'queue' = add paused).
-    // Convert.jsx renders the matching action button highlighted.
-    const sendToConvertWithIntent = (intent) => () => pickConvert(f, intent);
     const runExtract = async (auto) => {
       await startExtract(f.name);
       await setQueueRunning('extract', auto);
@@ -647,6 +958,15 @@ export default function FileBrowser({
       await setQueueRunning('convert', auto);
       onNotification?.(
         auto ? `Unpacking ${f.name} — started` : `Unpack queued for ${f.name} — press ▶ in Queue to start`,
+        auto ? 'success' : 'info',
+      );
+    };
+    const runInstall = async (auto) => {
+      const ok = await installEntry(f);
+      if (!ok) return;
+      await setQueueRunning('install', auto);
+      onNotification?.(
+        auto ? `Install started for ${f.name}` : `Install queued for ${f.name} — press ▶ in Queue to start`,
         auto ? 'success' : 'info',
       );
     };
@@ -677,15 +997,14 @@ export default function FileBrowser({
         action: () => onOpenQueue?.('download'),
         title: 'Open the Tasks tab — manages background URL downloads from the Download tab',
       },
+      // One Convert action — the Convert tab is where the user picks
+      // between "🚀 Convert now" and "🕒 Add to queue" anyway, so a single
+      // kebab entry that hands the file off + scrolls to #conversion
+      // is enough. Pass intent=null so neither button is pre-armed.
       canConvert && {
-        label: '🔄 Convert now',
-        action: sendToConvertWithIntent('now'),
-        title: 'Pick this file/folder, switch to the Convert tab and pre-arm the "Convert now" button',
-      },
-      canConvert && {
-        label: '🕒 Convert queue',
-        action: sendToConvertWithIntent('queue'),
-        title: 'Pick this file/folder, switch to the Convert tab and pre-arm the "Add to queue" button',
+        label: '🔄 Convert',
+        action: () => pickConvert(f),
+        title: 'Pick this file/folder and switch to the Convert tab',
       },
       canUnpack && {
         label: '📂 Unpack now',
@@ -696,6 +1015,16 @@ export default function FileBrowser({
         label: '🕒 Unpack queue',
         action: () => runUnpack(false),
         title: 'Unpack .ffpfsc back into a folder and pause — press ▶ in Queue when ready',
+      },
+      canInstall && {
+        label: '📥 Install now',
+        action: () => runInstall(true),
+        title: 'Stage to PS5 (if needed) and trigger the configured PKG installer payload',
+      },
+      canInstall && {
+        label: '🕒 Install queue',
+        action: () => runInstall(false),
+        title: 'Add .pkg to install queue and pause — press ▶ in Queue when ready',
       },
       canExtract && {
         label: '📦 Extract now',
@@ -711,7 +1040,32 @@ export default function FileBrowser({
       f.isDir && enablePickDir && kind !== 'ftp' && { label: '✓ Pick folder', action: () => pickDir(f) },
       f.isDir && enableImportFolder && kind !== 'ftp' && { label: '📥 Import folder', action: () => importFolder(f.name) },
       !f.isDir && enableImportFile && kind !== 'ftp' && { label: '📥 Import file', action: () => importFile(f.name) },
-      enablePickConvert && { label: '⚙ Open in Convert tab', action: () => pickConvert(f), title: 'Pre-fill the Convert form to customise options' },
+      // Clipboard actions. Cut = rename on paste; Copy = duplicate
+      // (local only, see pasteHere). Both available regardless of
+      // transport - paste itself validates capabilities.
+      {
+        label: '✂ Cut',
+        action: () => cutEntry(f),
+        title: 'Cut to clipboard - moves on paste (within same source)',
+      },
+      kind === 'local' && {
+        label: '📋 Copy',
+        action: () => copyEntry(f),
+        title: 'Copy to clipboard - duplicates on paste (local FS only)',
+      },
+      // Rename uses the same `move` endpoint per transport (local / ftp / smb)
+      // by passing src and dst pointing at the same directory with a different
+      // basename. Available across all three transports.
+      {
+        label: '✎ Rename',
+        action: () => openRename(f),
+        title: 'Rename this item (in place, same folder)',
+      },
+      {
+        label: 'ℹ Show info',
+        action: () => showInfo(f),
+        title: 'Show file/folder metadata',
+      },
       enableDelete && { label: '🗑 Delete', action: () => deleteEntry(f), danger: true },
     ].filter(Boolean);
 
@@ -822,25 +1176,11 @@ export default function FileBrowser({
           </select>
         )}
 
-        {/* Upload widget: picks PS5 + destination used by the per-file and
-            bulk Upload actions. Only shown when uploading is reachable
-            (local files or a selected remote SMB/FTP source) AND the
-            parent screen enabled uploads via enableFtpUpload. */}
-        {enableFtpUpload && (kind === 'local' || (kind === 'smb' && smbId)) && (
-          <div className="flex gap-sm flex-wrap items-end p-sm" style={{ background: 'var(--panel2)', borderRadius: 8 }}>
-            <div className="flex-1" style={{ minWidth: 160 }}>
-              <label className="text-xs text-muted mb-xs" style={{ display: 'block' }}>📤 Upload target PS5</label>
-              <select className="select" value={uploadIp} onChange={e => setUploadIp(e.target.value)}>
-                <option value="">— select —</option>
-                {profiles.map(p => <option key={p.id} value={p.ip_address}>{p.name} ({p.ip_address})</option>)}
-              </select>
-            </div>
-            <div className="flex-1" style={{ minWidth: 180 }}>
-              <label className="text-xs text-muted mb-xs" style={{ display: 'block' }}>Destination on PS5</label>
-              <input className="input" value={uploadDest} onChange={e => setUploadDest(e.target.value)} placeholder="/data/homebrew" />
-            </div>
-          </div>
-        )}
+        {/* Upload target + destination are configured globally in
+            Settings → Config → "Local upload target (PS5 FTP)" and read
+            into uploadIp / uploadDest on mount above. The per-screen
+            widget that used to live here was removed to avoid two
+            places to keep in sync. */}
 
         {kind === 'ftp' && (
           <select className="select" value={ftpIp} onChange={e => setFtpIp(e.target.value)}>
@@ -849,13 +1189,22 @@ export default function FileBrowser({
           </select>
         )}
 
-        {kind === 'local' && localRoots.length > 0 && (
-          <div className="flex gap-xs flex-wrap">
-            {localRoots.slice(0, 6).map(r => (
-              <button key={r} className="btn btn-ghost btn-sm" onClick={() => browse(r)}>{r}</button>
-            ))}
-          </div>
-        )}
+        {kind === 'local' && localRoots.length > 0 && (() => {
+          // Curated quick-tabs: keep the four entry points the user
+          // actually browses to (top-level mounts + payloads). Hide
+          // mkpfs / downloads / tmp / media — they're still reachable
+          // via the FolderPickerModal where they make more sense.
+          const allowed = ['/mnt', '/home', '/data', '/data/payloads'];
+          const shown = allowed.filter(p => localRoots.includes(p));
+          if (shown.length === 0) return null;
+          return (
+            <div className="flex gap-xs flex-wrap">
+              {shown.map(r => (
+                <button key={r} className="btn btn-ghost btn-sm" onClick={() => browse(r)}>{r}</button>
+              ))}
+            </div>
+          );
+        })()}
 
         <div className="flex gap-sm items-center">
           <button className="btn btn-sm btn-ghost" onClick={goUp} disabled={parent === null || parent === undefined}>↑</button>
@@ -869,6 +1218,36 @@ export default function FileBrowser({
           <button className="btn btn-sm btn-primary" onClick={() => browse(pathInput)} disabled={loading}>▶</button>
           <button className="btn btn-sm btn-ghost" onClick={refresh} disabled={loading}>↻</button>
           {enableSaveDefault && kind !== 'ftp' && <button className="btn btn-sm btn-ghost" onClick={saveDefault}>★</button>}
+          {/* Paste tile: only renders when there is something on the
+              clipboard AND the current view is a viable paste target.
+              Disabled if a paste is already in flight. Cancel (✕) drops
+              the clipboard without pasting. */}
+          {clipboard && clipboardMatchesCurrent() && (
+            <>
+              <button
+                className="btn btn-sm btn-success"
+                onClick={pasteHere}
+                disabled={pasteBusy}
+                title={
+                  clipboard.operation === 'cut'
+                    ? `Move ${clipboard.items.length} item(s) here from ${clipboard.sourcePath || '/'}`
+                    : `Copy ${clipboard.items.length} item(s) here from ${clipboard.sourcePath || '/'}`
+                }
+              >
+                {pasteBusy
+                  ? '⏳'
+                  : `📋 Paste${clipboard.items.length > 1 ? ` (${clipboard.items.length})` : ''}`}
+              </button>
+              <button
+                className="btn btn-sm btn-ghost"
+                onClick={() => setClipboard(null)}
+                title="Discard clipboard"
+                disabled={pasteBusy}
+              >
+                ✕
+              </button>
+            </>
+          )}
           {enablePickDir && kind !== 'ftp' && <button className="btn btn-sm btn-success" onClick={() => pickDir(null)}>✓ Use</button>}
         </div>
 
@@ -929,10 +1308,14 @@ export default function FileBrowser({
         )}
 
         {multiSelect && selected.size > 0 && (
-          <div className="flex gap-sm items-center p-md" style={{ background: 'var(--accent)', borderRadius: 8, position: 'sticky', bottom: 0 }}>
+          <div className="flex gap-sm items-center flex-wrap p-md" style={{ background: 'var(--accent)', borderRadius: 8, position: 'sticky', bottom: 0 }}>
             <span className="text-sm font-medium">{selected.size} selected</span>
             {enableFtpUpload && ((kind === 'smb' && smbId) || kind === 'local') && uploadIp && (
               <button className="btn btn-sm btn-success" onClick={uploadSelected}>⬆ Upload to PS5</button>
+            )}
+            <button className="btn btn-sm btn-secondary" onClick={cutSelected}>✂ Cut</button>
+            {kind === 'local' && (
+              <button className="btn btn-sm btn-secondary" onClick={copySelected}>📋 Copy</button>
             )}
             <button className="btn btn-sm btn-danger" onClick={deleteSelected}>🗑 Delete</button>
             <button className="btn btn-sm btn-ghost" onClick={clearSelection}>✕ Cancel</button>
@@ -940,6 +1323,98 @@ export default function FileBrowser({
         )}
 
       </div>
+
+      {/* Rename modal. Submitting the form triggers confirmRename which
+          dispatches the appropriate transport-specific /move endpoint. */}
+      <Modal
+        isOpen={!!renameTarget}
+        onClose={() => { if (!renameBusy) setRenameTarget(null); }}
+        title={`Rename ${renameTarget?.isDir ? 'folder' : 'file'}`}
+        footer={
+          <>
+            <button className="btn btn-ghost" onClick={() => setRenameTarget(null)} disabled={renameBusy}>
+              Cancel
+            </button>
+            <button className="btn btn-primary" onClick={confirmRename} disabled={renameBusy || !renameValue.trim()}>
+              {renameBusy ? '⏳ Renaming…' : 'Rename'}
+            </button>
+          </>
+        }
+      >
+        {renameTarget && (
+          <form
+            onSubmit={(e) => { e.preventDefault(); confirmRename(); }}
+            className="flex-col gap-sm"
+          >
+            <div className="text-xs text-muted truncate" title={renameTarget.name}>
+              Current: <span style={{ color: 'var(--text)' }}>{renameTarget.name}</span>
+            </div>
+            <input
+              className="input"
+              autoFocus
+              value={renameValue}
+              onChange={(e) => setRenameValue(e.target.value)}
+              placeholder="New name"
+              disabled={renameBusy}
+            />
+            <div className="text-xs text-muted">
+              Use the kebab → Cut and Paste in another folder to also change location.
+            </div>
+          </form>
+        )}
+      </Modal>
+
+      {/* Show Info modal. Read-only metadata pulled from the entry row
+          (already loaded by the parent browse). No extra fetch needed. */}
+      <Modal
+        isOpen={!!infoTarget}
+        onClose={() => setInfoTarget(null)}
+        title="File info"
+        footer={
+          <button className="btn btn-primary" onClick={() => setInfoTarget(null)}>Close</button>
+        }
+      >
+        {infoTarget && (() => {
+          const fullPath = joinEntryPath(path, infoTarget.name);
+          const mtime = infoTarget.mtime
+            ? new Date(typeof infoTarget.mtime === 'number' ? infoTarget.mtime : Date.parse(infoTarget.mtime))
+            : null;
+          const isDir = !!infoTarget.isDir;
+          const sizeBytes = typeof infoTarget.size === 'number' ? infoTarget.size : null;
+          const transportLabel = kind === 'local'
+            ? 'Local filesystem'
+            : kind === 'ftp'
+              ? `PS5 FTP (${ftpIp || '—'})`
+              : `Remote source #${smbId || '—'}`;
+          const rows = [
+            ['Name', infoTarget.name],
+            ['Type', isDir ? '📁 Folder' : '📄 File'],
+            ['Location', transportLabel],
+            ['Full path', fullPath],
+            ['Size', sizeBytes != null
+              ? (sizeBytes >= 1024 ? `${fmtSize(sizeBytes)} (${sizeBytes.toLocaleString()} B)` : `${sizeBytes} B`)
+              : (isDir ? '—' : 'Unknown')],
+            ['Modified', mtime && !isNaN(mtime.getTime()) ? mtime.toLocaleString() : '—'],
+          ];
+          return (
+            <div className="flex-col gap-sm">
+              {rows.map(([label, value]) => (
+                <div key={label} className="flex" style={{ gap: 'var(--space-md)', alignItems: 'flex-start' }}>
+                  <div
+                    className="text-xs text-muted"
+                    style={{ minWidth: 90, paddingTop: 2, flexShrink: 0 }}
+                  >
+                    {label}
+                  </div>
+                  <div className="text-sm" style={{ wordBreak: 'break-all', flex: 1 }}>
+                    {value}
+                  </div>
+                </div>
+              ))}
+            </div>
+          );
+        })()}
+      </Modal>
     </div>
   );
 }

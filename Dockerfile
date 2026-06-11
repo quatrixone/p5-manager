@@ -6,7 +6,11 @@ RUN npm ci
 COPY frontend/ ./
 RUN npm run build
 
-FROM debian:bullseye-slim
+# Bookworm (Debian 12) ships Python 3.11 - required by mkpfs >= some
+# release that started using `from enum import StrEnum` (Py 3.11+).
+# Bullseye (Py 3.9) crashed at import time with "cannot import name
+# 'StrEnum' from 'enum'".
+FROM debian:bookworm-slim
 
 WORKDIR /app
 
@@ -30,7 +34,10 @@ ARG MKPFS_MIN_VERSION=0.0.7
 ENV MKPFS_VENV=/app/.venv \
     MKPFS_BIN=/app/.venv/bin/mkpfs \
     MKPFS_PIP=/app/.venv/bin/pip \
-    PATH=/app/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    PKG_TOOL_VENV=/app/.venv-pkg \
+    PKG_TOOL_BIN=/app/.venv-pkg/bin/unpkg \
+    PKG_TOOL_PIP=/app/.venv-pkg/bin/pip \
+    PATH=/app/.venv/bin:/app/.venv-pkg/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     dumb-init python3 python3-pip python3-venv curl smbclient ftp rsync coreutils \
@@ -54,6 +61,33 @@ v=m.version('mkpfs'); print('verified mkpfs', v); \
 parts=lambda s: tuple(int(x) for x in re.findall(r'\d+', s)); \
 sys.exit(0 if parts(v) >= parts('${MKPFS_MIN_VERSION}') else 1)" \
     && chown -R 1000:1000 "$MKPFS_VENV"
+
+# PS4 PKG tooling lives in its own venv so it can be upgraded/replaced
+# from the UI without disturbing the mkpfs install. We bundle a Python 3
+# port of flatz's unpkg.py directly in the repo at backend/src/lib/unpkg.py
+# (see that file for credits + format docs) so the build is hermetic —
+# no network dependency, no relying on flaky third-party raw github URLs.
+#
+# The wrapper at /app/.venv-pkg/bin/unpkg exposes a pip-style CLI so the
+# rest of the system can treat it the same as mkpfs (status check,
+# upgrade endpoint, version string).
+#
+# Pack (folder → PKG) requires Sony's orbis-pub-cmd which is Windows-
+# only; we deliberately ship unpack-only for now and the /pkg/pack
+# endpoint returns a clear "tool not available" error.
+ARG PKG_TOOL_VERSION=2026-06-09
+RUN python3 -m venv "$PKG_TOOL_VENV" \
+    && "$PKG_TOOL_PIP" install --no-cache-dir --upgrade pip \
+    && printf '#!/bin/sh\nset -e\nSELF_DIR="$(dirname "$0")"\nVENV_PY="$SELF_DIR/python"\nUNPKG_PY="$SELF_DIR/unpkg.py"\nif [ "$1" = "--version" ] || [ "$1" = "-V" ]; then\n  if [ -f "$SELF_DIR/VERSION" ]; then cat "$SELF_DIR/VERSION"; else echo "unknown"; fi\n  exit 0\nfi\nif [ ! -f "$UNPKG_PY" ]; then\n  echo "PS4 PKG tool not installed. Run pkg-upgrade from the UI." >&2\n  exit 127\nfi\nexec "$VENV_PY" "$UNPKG_PY" "$@"\n' > "$PKG_TOOL_BIN" \
+    && chmod +x "$PKG_TOOL_BIN" \
+    && echo "${PKG_TOOL_VERSION}" > "$PKG_TOOL_VENV/bin/VERSION" \
+    && chown -R 1000:1000 "$PKG_TOOL_VENV"
+
+# Copy the vendored unpkg.py into the PKG venv. Separate from the venv
+# scaffolding RUN above so changing the script doesn't invalidate the
+# pip-install layer cache. Re-runs cheaply on edits.
+COPY backend/src/lib/unpkg.py /app/.venv-pkg/bin/unpkg.py
+RUN chmod 0644 /app/.venv-pkg/bin/unpkg.py && chown 1000:1000 /app/.venv-pkg/bin/unpkg.py
 
 COPY backend/package*.json ./
 RUN npm ci --only=production && npm cache clean --force

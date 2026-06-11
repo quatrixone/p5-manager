@@ -482,6 +482,16 @@ async function execRpSession(step, ctx) {
     // iteration, scheduled rerun, the user clicking Start in the UI...).
     await apiFetch('POST', '/remoteplay/quick-stop', { ip: ctx.profile.ip_address });
     runLog(ctx.run, '  · soft-stopped RP session (parked in warm cache for next start)');
+  } else if (action === 'standby') {
+    // Hard "go to sleep" — sends the PS5 standby command through the RP
+    // session (the same path the P5 Control "Standby" button uses).
+    // Requires the profile to be PSN-linked + RP-paired; /remoteplay/standby
+    // surfaces a 400 with a readable message when either is missing.
+    // We also drop the warm cache first so the next sequence start doesn't
+    // try to resume into a now-asleep console.
+    try { await apiFetch('POST', '/remoteplay/quick-stop', { ip: ctx.profile.ip_address }); } catch (_) {}
+    await apiFetch('POST', '/remoteplay/standby', { ip: ctx.profile.ip_address, profile_id: ctx.profile.id });
+    runLog(ctx.run, '  · console rest mode command sent');
   } else {
     throw new Error(`rp_session: unknown action "${action}"`);
   }

@@ -1,6 +1,6 @@
 import express from 'express';
 import fs from 'fs';
-import { log } from '../db/sqlite.js';
+import { getDatabase, saveDatabase, log } from '../db/sqlite.js';
 
 const router = express.Router();
 
@@ -108,7 +108,14 @@ router.post('/send', async (req, res) => {
 router.get('/status/:ip', async (req, res) => {
   try {
     const { ip } = req.params;
-    const ports = [9021, 9020, 8080, 6970]; // Common ports for payloads (elf/lua)
+    // Ports we probe to decide "is something payload-y listening on this
+    // console". An open listener here means the box is definitely awake.
+    //   9021 - PS5 elfldr        (ELF payloads)
+    //   9026 - PS5 Lua listener  (.lua exploit chain)
+    //   9020 - PS4 GoldHEN       (.bin payloads, also the PS4 elf path)
+    //   8080 - PS4 web exploit host
+    //   6970 - etaHEN file/util server
+    const ports = [9021, 9026, 9020, 8080, 6970];
 
     // Status check is polled every few seconds from the UI - logging every
     // probe spammed the unified Logs view, so it's intentionally silent now.
@@ -155,6 +162,39 @@ router.get('/status/:ip', async (req, res) => {
     const reachableViaDiscover = !!(discoverResult && (discoverResult.status || discoverResult.status_code));
     const isReachable = reachableViaPayload || reachableViaDiscover;
 
+    // Normalise the sidecar's host_type ("PS5" / "PS4") into our internal
+    // lowercase platform tag so the frontend never has to worry about
+    // capitalization or vendor strings drifting.
+    const rawHostType = discoverResult ? (discoverResult.host_type || null) : null;
+    const consoleType = rawHostType
+      ? (String(rawHostType).toUpperCase().includes('PS4') ? 'ps4'
+        : (String(rawHostType).toUpperCase().includes('PS5') ? 'ps5' : null))
+      : null;
+
+    // Best-effort auto-fill of the matching profile.console_type field when
+    // (a) discovery actually told us the platform, AND (b) the profile
+    // either has no console_type yet or has one that disagrees with the
+    // live console. Single-statement UPDATE, swallow any DB error so a
+    // status poll never fails for a write-side problem.
+    if (consoleType) {
+      try {
+        const db = getDatabase();
+        const stmt = db.prepare('SELECT id, console_type FROM profiles WHERE ip_address = ?');
+        stmt.bind([ip]);
+        const matches = [];
+        while (stmt.step()) matches.push(stmt.getAsObject());
+        stmt.free();
+        let changed = false;
+        for (const row of matches) {
+          if (row.console_type !== consoleType) {
+            db.run('UPDATE profiles SET console_type = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [consoleType, row.id]);
+            changed = true;
+          }
+        }
+        if (changed) saveDatabase();
+      } catch (_) { /* best-effort, ignore */ }
+    }
+
     res.json({
       ip,
       reachable: isReachable,
@@ -162,7 +202,8 @@ router.get('/status/:ip', async (req, res) => {
       via: reachableViaPayload ? 'payload' : (reachableViaDiscover ? 'discover' : null),
       discover_status: discoverResult ? (discoverResult.status || null) : null,
       host_name: discoverResult ? (discoverResult.host_name || null) : null,
-      host_type: discoverResult ? (discoverResult.host_type || null) : null,
+      host_type: rawHostType,
+      console_type: consoleType,
       running_app: discoverResult ? (discoverResult.running_app || null) : null,
       portsChecked: ports,
       timestamp: new Date().toISOString()

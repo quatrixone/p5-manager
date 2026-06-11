@@ -10,3 +10,7 @@ __pycache__/
 # Backups produced by the built-in editor (see backend/src/routes/builtin.js)
 frontend/builtin/*.bak
 frontend/builtin/*.tmp-*
+
+# Vendored PS5 Payload SDK (35 MB binary toolchain — see p5managerclient/README.md).
+# Devs install it locally via the SDK bootstrapper; not committed.
+p5managerclient/sdk/

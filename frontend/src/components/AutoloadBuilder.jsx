@@ -1,8 +1,29 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
+import { usePlatform, platformMatches } from '../contexts/PlatformContext';
+import FolderPickerModal from './UI/FolderPickerModal';
 
 const API = '/api';
 
+// Compact 📁 button rendered next to every local-path input. Lifted out
+// of AutoloadBuilder so its identity is stable across renders (otherwise
+// React would unmount/remount the button on every keystroke in the
+// adjacent input).
+function BrowseBtn({ onClick, title }) {
+  return (
+    <button
+      type="button"
+      className="btn btn-secondary"
+      onClick={onClick}
+      title={title || 'Browse folders graphically'}
+      style={{ flexShrink: 0 }}
+    >
+      📁
+    </button>
+  );
+}
+
 function AutoloadBuilder({ profiles, payloads, onNotification }) {
+  const { mode } = usePlatform();
   const [sequences, setSequences] = useState([]);
   const [templates, setTemplates] = useState([]);
   const [activeView, setActiveView] = useState('list');
@@ -38,6 +59,23 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
   const [convSourcePath, setConvSourcePath] = useState('/data/mkpfs/game.exfat');
   const [convMode, setConvMode] = useState('pack-file');
   const [convOutputName, setConvOutputName] = useState('');
+
+  // Browse-folder modal shared across every local-path field in the
+  // builder. We track which field is currently editing via `picker.target`
+  // so onPick can route the selected path back to the right setter (or
+  // patch the right step). selectFiles + fileFilter mirror the download
+  // tab's UX so users can drill into archives directly.
+  const [picker, setPicker] = useState(null); // { target, initialPath, title, selectFiles, fileFilter }
+  const closePicker = () => setPicker(null);
+  const openPicker = (cfg) => setPicker(cfg);
+  const pickFor = (cfg) => () => openPicker(cfg);
+  const handlePick = (chosen) => {
+    if (!picker) return;
+    const { target } = picker;
+    if (typeof target === 'function') {
+      target(chosen);
+    }
+  };
 
   const fetchSequences = async () => {
     try {
@@ -92,6 +130,22 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
     fetchInputScripts();
     fetchTemplates();
   }, []);
+
+  // Hide PS4-only templates when the user is in PS5 mode (and vice versa).
+  // Untagged templates ("cross-platform") always pass through.
+  const visibleTemplates = useMemo(
+    () => templates.filter(t => platformMatches(mode, t.console_type)),
+    [templates, mode]
+  );
+  const hiddenTemplateCount = templates.length - visibleTemplates.length;
+
+  // Payload picker for the "Send payload" step type also follows the
+  // active platform mode so PS4 mode never offers a PS5 .lua exploit by
+  // mistake.
+  const visiblePayloadsForStep = useMemo(
+    () => (payloads || []).filter(p => platformMatches(mode, p.console_type)),
+    [payloads, mode]
+  );
 
   const humanToMs = (value, unit) => {
     const v = parseFloat(value) || 0;
@@ -172,7 +226,11 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
     setSteps([...steps, {
       type: 'rp_session',
       action,
-      name: action === 'stop' ? 'Stop Remote Play session' : 'Start Remote Play session',
+      name: action === 'standby'
+        ? 'Console rest mode'
+        : action === 'stop'
+        ? 'Stop Remote Play session'
+        : 'Start Remote Play session',
     }]);
   };
 
@@ -269,7 +327,11 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
     } else if (merged.type === 'check_port') {
       merged.name = `Check port ${merged.port || '?'}`;
     } else if (merged.type === 'rp_session') {
-      merged.name = merged.action === 'stop' ? 'Stop Remote Play session' : 'Start Remote Play session';
+      merged.name = merged.action === 'standby'
+        ? 'Console rest mode'
+        : merged.action === 'stop'
+        ? 'Stop Remote Play session'
+        : 'Start Remote Play session';
     } else if (merged.type === 'download') {
       const url = merged.url || '';
       const tail = url.split('/').pop() || url;
@@ -487,10 +549,13 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
     <div className="flex-col gap-md">
       {activeView === 'list' && (
         <>
+          {/* Compact list header. Same shrink ratio as the Payloads tab
+              (h2 1.25rem → 1rem, subtitle 0.72rem) so both lists feel
+              like siblings of the same design system. */}
           <div className="flex justify-between items-center gap-sm flex-wrap">
             <div style={{ minWidth: 0 }}>
-              <h2 className="font-bold" style={{ fontSize: '1.25rem' }}>Sequences</h2>
-              <span className="text-muted text-sm">{sequences.length} saved</span>
+              <h2 className="font-bold" style={{ fontSize: '1rem', margin: 0, lineHeight: 1.2 }}>Sequences</h2>
+              <span className="text-muted" style={{ fontSize: '0.72rem' }}>{sequences.length} saved</span>
             </div>
             <button
               className="btn btn-success"
@@ -500,23 +565,35 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
             </button>
           </div>
 
-          {templates.length > 0 && (
+          {visibleTemplates.length > 0 && (
             <div className="comp-card">
-              <div className="comp-card-header">
-                <span className="comp-card-title">⚡ Templates</span>
-                <span className="text-xs text-muted">Tap to load &amp; edit</span>
+              <div className="comp-card-header" style={{ padding: '8px 12px' }}>
+                <span className="comp-card-title" style={{ fontSize: '0.88rem' }}>⚡ Templates</span>
+                <span className="text-muted" style={{ fontSize: '0.7rem' }}>
+                  Tap to load &amp; edit
+                  {hiddenTemplateCount > 0 && ` · ${hiddenTemplateCount} hidden by ${mode.toUpperCase()} filter`}
+                </span>
               </div>
-              <div className="comp-card-body flex-col gap-sm">
-                {templates.map(tpl => (
+              <div className="comp-card-body flex-col" style={{ padding: '6px 8px', gap: 6 }}>
+                {visibleTemplates.map(tpl => (
                   <div
                     key={tpl.id}
-                    className="flex items-center gap-sm p-sm flex-wrap"
-                    style={{ background: 'var(--panel2)', borderRadius: 8 }}
+                    className="flex items-center gap-sm flex-wrap"
+                    style={{
+                      background: 'var(--panel2)',
+                      borderRadius: 6,
+                      padding: '6px 10px',
+                    }}
                   >
                     <div style={{ minWidth: 0, flex: 1 }}>
-                      <div className="font-medium" style={{ wordBreak: 'break-word' }}>{tpl.name}</div>
-                      <div className="text-xs text-muted" style={{ wordBreak: 'break-word' }}>{tpl.description}</div>
-                      <div className="text-xs text-muted mt-xs">
+                      <div className="font-medium flex items-center gap-xs" style={{ wordBreak: 'break-word', fontSize: '0.88rem' }}>
+                        <span>{tpl.name}</span>
+                        {tpl.console_type && (
+                          <span className="console-type-badge">{tpl.console_type.toUpperCase()}</span>
+                        )}
+                      </div>
+                      <div className="text-muted" style={{ fontSize: '0.72rem', wordBreak: 'break-word', lineHeight: 1.3 }}>{tpl.description}</div>
+                      <div className="text-muted" style={{ fontSize: '0.7rem', lineHeight: 1.3 }}>
                         {tpl.steps.map(s => getStepIcon(s.type)).join(' ')} ({tpl.steps.length} steps)
                       </div>
                     </div>
@@ -544,25 +621,25 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
               </div>
             </div>
           ) : (
-            <div className="flex-col gap-sm">
+            <div className="flex-col" style={{ gap: 6 }}>
               {sequences.map(seq => (
                 <div key={seq.id} className="comp-card">
-                  <div className="comp-card-body flex-col gap-sm">
+                  <div className="comp-card-body flex-col" style={{ padding: '6px 10px', gap: 6 }}>
                     <div className="flex-1" style={{ minWidth: 0 }}>
-                      <div className="font-medium" style={{ wordBreak: 'break-word' }}>{seq.name}</div>
-                      <div className="text-sm text-muted">
+                      <div className="font-medium" style={{ wordBreak: 'break-word', fontSize: '0.88rem' }}>{seq.name}</div>
+                      <div className="text-muted" style={{ fontSize: '0.72rem', lineHeight: 1.3 }}>
                         {seq.profile_name || 'Unknown'} • {JSON.parse(seq.steps || '[]').length} steps
                       </div>
                       {seq.schedule_cron && (
-                        <div className="text-xs mt-sm" style={{ color: seq.schedule_enabled ? 'var(--green)' : 'var(--muted)' }}>
+                        <div style={{ fontSize: '0.7rem', lineHeight: 1.3, color: seq.schedule_enabled ? 'var(--green)' : 'var(--muted)' }}>
                           {seq.schedule_enabled ? '🔄' : '⏸'} {formatSchedule(seq.schedule_cron)}
                         </div>
                       )}
                     </div>
-                    <div className="flex gap-sm flex-wrap" style={{ marginTop: 'var(--space-xs)' }}>
-                      <button className="btn btn-primary" style={{ flex: '1 1 100px' }} onClick={() => runSequence(seq.id)}>▶ Run</button>
-                      <button className="btn btn-secondary" onClick={() => editSequenceLoad(seq)} aria-label="Edit">✏️ Edit</button>
-                      <button className="btn btn-danger" onClick={() => deleteSequence(seq.id)} aria-label="Delete">🗑</button>
+                    <div className="flex flex-wrap" style={{ gap: 6 }}>
+                      <button className="btn btn-sm btn-primary" style={{ flex: '1 1 100px' }} onClick={() => runSequence(seq.id)}>▶ Run</button>
+                      <button className="btn btn-sm btn-secondary" onClick={() => editSequenceLoad(seq)} aria-label="Edit">✏️ Edit</button>
+                      <button className="btn btn-sm btn-danger" onClick={() => deleteSequence(seq.id)} aria-label="Delete">🗑</button>
                     </div>
                   </div>
                 </div>
@@ -699,18 +776,29 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
 
               {showAddStepMenu === 'payload' && (
                 <div className="p-md" style={{ background: 'var(--panel2)', borderRadius: 8 }}>
-                  <label className="text-sm text-muted mb-sm" style={{ display: 'block' }}>Select Payload</label>
+                  <label className="text-sm text-muted mb-sm" style={{ display: 'block' }}>
+                    Select Payload
+                    {visiblePayloadsForStep.length !== (payloads || []).length && (
+                      <span className="text-xs" style={{ marginLeft: 8 }}>
+                        ({(payloads || []).length - visiblePayloadsForStep.length} hidden by {mode.toUpperCase()} filter)
+                      </span>
+                    )}
+                  </label>
                   <div className="flex gap-sm flex-wrap">
-                    {payloads.length === 0 ? (
-                      <span className="text-sm text-muted">No payloads available.</span>
+                    {visiblePayloadsForStep.length === 0 ? (
+                      <span className="text-sm text-muted">No payloads available for the current platform.</span>
                     ) : (
-                      payloads.map(p => (
+                      visiblePayloadsForStep.map(p => (
                         <button
                           key={p.id}
                           className="btn btn-sm btn-ghost"
                           onClick={() => { addStep(p.id); setShowAddStepMenu(null); }}
+                          title={p.console_type ? `Targets ${p.console_type.toUpperCase()}` : 'Platform unknown'}
                         >
                           + {p.name}
+                          {p.console_type && (
+                            <span className="console-type-badge" style={{ marginLeft: 6 }}>{p.console_type.toUpperCase()}</span>
+                          )}
                         </button>
                       ))
                     )}
@@ -721,7 +809,7 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
               {showAddStepMenu === 'wol' && (
                 <div className="p-md" style={{ background: 'var(--panel2)', borderRadius: 8 }}>
                   <p className="text-sm text-muted mb-sm">
-                    Pre-warm Remote Play: wakes the PS5 from standby, logs the user in
+                    Pre-warm Remote Play: wakes the PS5 from rest mode, logs the user in
                     (dismisses the "Press PS button" picker) and parks the session in the
                     sidecar's warm cache so the next input_script / rp_session step resumes
                     in ~17 ms instead of re-running the full handshake.
@@ -900,8 +988,10 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
                   <p className="text-sm text-muted">
                     Opens (or closes) a Remote Play session for the selected profile so subsequent
                     input scripts execute against a warm session. Pair the PS5 in P5 Control first.
+                    Rest mode uses the same RP session to put the console to sleep — typically the
+                    last step in an end-to-end sequence.
                   </p>
-                  <div className="flex gap-sm">
+                  <div className="flex gap-sm flex-wrap">
                     <button className="btn btn-success"
                       onClick={() => { addRpSessionStep('start'); setShowAddStepMenu(null); }}>
                       ▶ Add Start session
@@ -909,6 +999,10 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
                     <button className="btn btn-danger"
                       onClick={() => { addRpSessionStep('stop'); setShowAddStepMenu(null); }}>
                       ⏹ Add Stop session
+                    </button>
+                    <button className="btn btn-secondary"
+                      onClick={() => { addRpSessionStep('standby'); setShowAddStepMenu(null); }}>
+                      🌙 Add Console rest mode
                     </button>
                   </div>
                 </div>
@@ -960,8 +1054,17 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
                     </div>
                     <div>
                       <label className="text-sm text-muted" style={{ display: 'block' }}>Destination folder</label>
-                      <input className="input" placeholder="/data/mkpfs"
-                        value={dlDestPath} onChange={e => setDlDestPath(e.target.value)} />
+                      <div className="flex gap-xs items-center">
+                        <input className="input flex-1" placeholder="/data/mkpfs"
+                          value={dlDestPath} onChange={e => setDlDestPath(e.target.value)} />
+                        <BrowseBtn
+                          onClick={pickFor({
+                            target: setDlDestPath,
+                            initialPath: dlDestPath || '/data',
+                            title: 'Pick download folder',
+                          })}
+                        />
+                      </div>
                     </div>
                   </div>
                   <button className="btn btn-success" disabled={!dlUrl.trim()}
@@ -974,13 +1077,34 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
               {showAddStepMenu === 'extract' && (
                 <div className="p-md flex-col gap-sm" style={{ background: 'var(--panel2)', borderRadius: 8 }}>
                   <label className="text-sm text-muted" style={{ display: 'block' }}>Archive path (local)</label>
-                  <input className="input" placeholder="/data/mkpfs/archive.zip"
-                    value={extractLocalPath} onChange={e => setExtractLocalPath(e.target.value)} />
+                  <div className="flex gap-xs items-center">
+                    <input className="input flex-1" placeholder="/data/mkpfs/archive.zip"
+                      value={extractLocalPath} onChange={e => setExtractLocalPath(e.target.value)} />
+                    <BrowseBtn
+                      title="Browse for archive file"
+                      onClick={pickFor({
+                        target: setExtractLocalPath,
+                        initialPath: extractLocalPath && extractLocalPath.startsWith('/') ? extractLocalPath.replace(/[^/]+$/, '') : '/data/mkpfs',
+                        selectFiles: true,
+                        fileFilter: (n) => /\.(zip|rar|7z|tar|gz|bz2|xz|tgz|tbz2|txz)$/i.test(n),
+                        title: 'Pick archive file',
+                      })}
+                    />
+                  </div>
                   <div className="grid-2 gap-sm">
                     <div>
                       <label className="text-sm text-muted" style={{ display: 'block' }}>Extract to</label>
-                      <input className="input" placeholder="/data/mkpfs"
-                        value={extractDestPath} onChange={e => setExtractDestPath(e.target.value)} />
+                      <div className="flex gap-xs items-center">
+                        <input className="input flex-1" placeholder="/data/mkpfs"
+                          value={extractDestPath} onChange={e => setExtractDestPath(e.target.value)} />
+                        <BrowseBtn
+                          onClick={pickFor({
+                            target: setExtractDestPath,
+                            initialPath: extractDestPath || '/data',
+                            title: 'Pick extract destination folder',
+                          })}
+                        />
+                      </div>
                     </div>
                     <div>
                       <label className="text-sm text-muted" style={{ display: 'block' }}>Password (optional)</label>
@@ -1010,8 +1134,20 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
                       onClick={() => setConvMode('pack-folder')}>Folder → ffpfsc</button>
                   </div>
                   <label className="text-sm text-muted" style={{ display: 'block' }}>Source path</label>
-                  <input className="input" placeholder="/data/mkpfs/game.exfat or /data/mkpfs/game/"
-                    value={convSourcePath} onChange={e => setConvSourcePath(e.target.value)} />
+                  <div className="flex gap-xs items-center">
+                    <input className="input flex-1" placeholder="/data/mkpfs/game.exfat or /data/mkpfs/game/"
+                      value={convSourcePath} onChange={e => setConvSourcePath(e.target.value)} />
+                    <BrowseBtn
+                      title={convMode === 'pack-folder' ? 'Pick source folder' : 'Pick source file (or folder)'}
+                      onClick={pickFor({
+                        target: setConvSourcePath,
+                        initialPath: convSourcePath && convSourcePath.startsWith('/') ? convSourcePath.replace(/[^/]+$/, '') : '/data/mkpfs',
+                        // pack-file: pick a file. pack-folder: pick the folder itself ("Use this folder" CTA).
+                        selectFiles: convMode === 'pack-file',
+                        title: convMode === 'pack-folder' ? 'Pick source folder' : 'Pick source file',
+                      })}
+                    />
+                  </div>
                   <label className="text-sm text-muted" style={{ display: 'block' }}>Output filename (optional)</label>
                   <input className="input" placeholder="game.ffpfsc"
                     value={convOutputName} onChange={e => setConvOutputName(e.target.value)} />
@@ -1026,8 +1162,19 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
                 <div className="p-md flex-col gap-sm" style={{ background: 'var(--panel2)', borderRadius: 8 }}>
                   <p className="text-sm text-muted">Uploads to the IP from the sequence's profile.</p>
                   <label className="text-sm text-muted" style={{ display: 'block' }}>Local file path</label>
-                  <input className="input" placeholder="/data/mkpfs/file.ffpfsc"
-                    value={ftpLocalPath} onChange={e => setFtpLocalPath(e.target.value)} />
+                  <div className="flex gap-xs items-center">
+                    <input className="input flex-1" placeholder="/data/mkpfs/file.ffpfsc"
+                      value={ftpLocalPath} onChange={e => setFtpLocalPath(e.target.value)} />
+                    <BrowseBtn
+                      title="Browse for local file"
+                      onClick={pickFor({
+                        target: setFtpLocalPath,
+                        initialPath: ftpLocalPath && ftpLocalPath.startsWith('/') ? ftpLocalPath.replace(/[^/]+$/, '') : '/data/mkpfs',
+                        selectFiles: true,
+                        title: 'Pick local file to upload',
+                      })}
+                    />
+                  </div>
                   <label className="text-sm text-muted" style={{ display: 'block' }}>Remote destination directory</label>
                   <input className="input" placeholder="/data/homebrew"
                     value={ftpDestPath} onChange={e => setFtpDestPath(e.target.value)} />
@@ -1196,6 +1343,7 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
                                 >
                                   <option value="start">▶ Start session</option>
                                   <option value="stop">⏹ Stop session</option>
+                                  <option value="standby">🌙 Console rest mode</option>
                                 </select>
                               </>
                             )}
@@ -1231,34 +1379,68 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
                             {step.type === 'extract' && (
                               <>
                                 <label className="field-label">Archive path</label>
-                                <input
-                                  className="input"
-                                  placeholder="/data/mkpfs/archive.zip"
-                                  value={step.local_path || ''}
-                                  onChange={e => patchStep(index, { local_path: e.target.value })}
-                                />
+                                <div className="flex gap-xs items-center">
+                                  <input
+                                    className="input flex-1"
+                                    placeholder="/data/mkpfs/archive.zip"
+                                    value={step.local_path || ''}
+                                    onChange={e => patchStep(index, { local_path: e.target.value })}
+                                  />
+                                  <BrowseBtn
+                                    title="Browse for archive file"
+                                    onClick={pickFor({
+                                      target: (p) => patchStep(index, { local_path: p }),
+                                      initialPath: step.local_path && step.local_path.startsWith('/') ? step.local_path.replace(/[^/]+$/, '') : '/data/mkpfs',
+                                      selectFiles: true,
+                                      fileFilter: (n) => /\.(zip|rar|7z|tar|gz|bz2|xz|tgz|tbz2|txz)$/i.test(n),
+                                      title: 'Pick archive file',
+                                    })}
+                                  />
+                                </div>
                               </>
                             )}
                             {step.type === 'convert' && (
                               <>
                                 <label className="field-label">Source path</label>
-                                <input
-                                  className="input"
-                                  placeholder="/data/mkpfs/game.exfat"
-                                  value={step.source_path || ''}
-                                  onChange={e => patchStep(index, { source_path: e.target.value })}
-                                />
+                                <div className="flex gap-xs items-center">
+                                  <input
+                                    className="input flex-1"
+                                    placeholder="/data/mkpfs/game.exfat"
+                                    value={step.source_path || ''}
+                                    onChange={e => patchStep(index, { source_path: e.target.value })}
+                                  />
+                                  <BrowseBtn
+                                    title="Pick source file or folder"
+                                    onClick={pickFor({
+                                      target: (p) => patchStep(index, { source_path: p }),
+                                      initialPath: step.source_path && step.source_path.startsWith('/') ? step.source_path.replace(/[^/]+$/, '') : '/data/mkpfs',
+                                      selectFiles: true,
+                                      title: 'Pick source path',
+                                    })}
+                                  />
+                                </div>
                               </>
                             )}
                             {step.type === 'ftp_upload' && (
                               <>
                                 <label className="field-label">Local file</label>
-                                <input
-                                  className="input"
-                                  placeholder="/data/mkpfs/file.ffpfsc"
-                                  value={step.local_path || ''}
-                                  onChange={e => patchStep(index, { local_path: e.target.value })}
-                                />
+                                <div className="flex gap-xs items-center">
+                                  <input
+                                    className="input flex-1"
+                                    placeholder="/data/mkpfs/file.ffpfsc"
+                                    value={step.local_path || ''}
+                                    onChange={e => patchStep(index, { local_path: e.target.value })}
+                                  />
+                                  <BrowseBtn
+                                    title="Pick local file to upload"
+                                    onClick={pickFor({
+                                      target: (p) => patchStep(index, { local_path: p }),
+                                      initialPath: step.local_path && step.local_path.startsWith('/') ? step.local_path.replace(/[^/]+$/, '') : '/data/mkpfs',
+                                      selectFiles: true,
+                                      title: 'Pick local file',
+                                    })}
+                                  />
+                                </div>
                                 <label className="field-label">PS5 destination</label>
                                 <input
                                   className="input"
@@ -1288,6 +1470,16 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
           </div>
         </>
       )}
+
+      <FolderPickerModal
+        open={!!picker}
+        onClose={closePicker}
+        onPick={handlePick}
+        initialPath={picker?.initialPath}
+        title={picker?.title || 'Pick folder'}
+        selectFiles={!!picker?.selectFiles}
+        fileFilter={picker?.fileFilter}
+      />
     </div>
   );
 }

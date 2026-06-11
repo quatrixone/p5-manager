@@ -51,6 +51,7 @@ def apply() -> None:
     # add the missing surface events around touchpad clicks.
     _patch_feedback_state_controller_kind()
     _patch_controller_touchpad_click()
+    _patch_controller_shake()
     _patch_controller_state_heartbeat()
     _patch_send_event_hexdump()
 
@@ -94,11 +95,25 @@ def _patch_feedback_state_controller_kind() -> None:
 
     def patched_pack(self, buf: bytearray) -> None:
         """Pack motion + sticks + (PS5 only) controller-kind tail = DS4."""
+        # When a sidecar caller (see Controller.shake() patch) flips the
+        # `_p5m_burst` flag on the active ControllerState, encode the real
+        # motion sub-state via the (already-implemented but never-called)
+        # `_pack_motion_state` helper so accelerometer / gyro waveforms
+        # actually fly. Default = idle blob — same byte-for-byte behaviour
+        # the upstream library produces, so heartbeat ticks for stationary
+        # controllers stay indistinguishable from a real DualSense at rest.
+        if getattr(self.state, "_p5m_burst", False):
+            try:
+                motion_bytes = self._pack_motion_state()
+            except Exception:  # noqa: BLE001
+                motion_bytes = motion_idle
+        else:
+            motion_bytes = motion_idle
         pack_into(
             f"!{motion_length}shhhh",
             buf,
             12,  # FeedbackHeader.LENGTH; chiaki & pyremoteplay agree on 12
-            motion_idle,
+            motion_bytes,
             self.state.left.x,
             self.state.left.y,
             self.state.right.x,
@@ -350,6 +365,175 @@ def _patch_controller_touchpad_click() -> None:
         "patched Controller.button + added touchpad_press/release/click "
         "(emits 0xD0 surface-down + 0x80 0xB1 click; 0x80 0x91 release + 0xC0 surface-up) "
         "+ surface-only variants touchpad_surface_press/release/tap (no click button)"
+    )
+
+
+# ─── Controller.shake() — motion-burst on demand ───────────────────────────
+#
+# DualSense and DualShock 4 controllers stream accelerometer + gyro samples
+# inside every `FeedbackState` packet. Games (Death Stranding "shake to
+# clean BB", Resogun "shake to bomb", PS2 Classics that read motion, etc.)
+# look for a sustained spike on the accel axes. pyremoteplay never wires
+# the motion sub-state into `FeedbackState.pack()` — it hard-codes
+# `_MOTION_IDLE` — so motion-driven game features are unreachable from
+# Remote Play.
+#
+# Our `_patch_feedback_state_controller_kind` already swaps to the real
+# `_pack_motion_state()` encoder when `state._p5m_burst` is True. This
+# patch adds `Controller.shake(duration_ms, intensity)` which:
+#
+#   1. mutates `state.motion.accel.x/y/z` and `state.motion.gyro.x/y/z`
+#      through a short sinusoidal envelope (so the PS5 sees a real
+#      acceleration spike, not a constant offset),
+#   2. flips `state._p5m_burst = True` so the heartbeat worker's
+#      `FeedbackState` packets carry the modulated motion bytes,
+#   3. resets everything to rest (accel.y = +1g gravity, gyro = 0) and
+#      clears the burst flag when the duration elapses.
+#
+# Runs the animation in a background daemon thread so the FastAPI request
+# returns immediately (the call is one-shot, like touchpad_click). The
+# heartbeat worker already ticks at ~5 Hz / on every history event, so
+# during a 700 ms shake the PS5 receives ≥4 motion-carrying state packets
+# - enough for any motion-listening title to register the spike.
+
+_SHAKE_DEFAULT_MS = 700
+_SHAKE_DEFAULT_INTENSITY = 0.85  # 0..1, scaled against state.motion.accel.max()
+_SHAKE_FREQ_HZ = 5.5              # rough frequency of the human-scale shake
+_SHAKE_TICK_MS = 25               # animation resolution
+
+
+def _patch_controller_shake() -> None:
+    try:
+        import math
+        import threading
+        from pyremoteplay.controller import Controller  # noqa: WPS433
+    except Exception as e:  # noqa: BLE001
+        log.warning("Controller.shake patch skipped: %s", e)
+        return
+
+    def _drive_shake(controller, duration_ms: int, intensity: float) -> None:
+        """Animate motion sub-state then restore rest.
+
+        Runs on a daemon thread; the heartbeat worker (see
+        `_patch_controller_state_heartbeat`) sends the FeedbackState
+        packets that carry our motion bytes to the PS5.
+        """
+        # IMPORTANT: pyremoteplay's Controller exposes the live state
+        # via `stick_state` (alias for `_stick_state`) — there is NO
+        # `controller.state` attribute. `Controller.update_sticks` sends
+        # `FeedbackState(state=self.stick_state, ...)` on every worker
+        # tick, so this IS the object whose motion bytes hit the wire.
+        # An earlier version of this patch wrote to `controller.state`
+        # which silently no-op'd (None), so motion never modulated and
+        # the PS5 saw an idle controller.
+        state = getattr(controller, "stick_state", None)
+        if state is None:
+            state = getattr(controller, "_stick_state", None)
+        if state is None or getattr(state, "motion", None) is None:
+            return
+        motion = state.motion
+        try:
+            accel_max = float(motion.accel.max())
+        except Exception:  # noqa: BLE001
+            accel_max = 5.0
+        try:
+            gyro_max = float(motion.gyro.max())
+        except Exception:  # noqa: BLE001
+            gyro_max = 5.0
+
+        clamp = max(0.0, min(1.0, float(intensity)))
+        # Pull peak amplitude just below the encoder ceiling so the
+        # uint16-quantization head-room stays clean — running right at
+        # `max()` rolls over to 0xFFFF which the PS5 also treats as
+        # "saturated, ignore this sample".
+        accel_amp = accel_max * 0.85 * clamp
+        gyro_amp = gyro_max * 0.65 * clamp
+
+        # Save the rest pose so we can restore exactly what the caller
+        # had configured (most callers leave the default
+        # accel = (0, +1, 0) i.e. gravity along the vertical axis).
+        try:
+            rest = (
+                (motion.accel.x, motion.accel.y, motion.accel.z),
+                (motion.gyro.x, motion.gyro.y, motion.gyro.z),
+            )
+        except Exception:  # noqa: BLE001
+            rest = ((0.0, 1.0, 0.0), (0.0, 0.0, 0.0))
+
+        state._p5m_burst = True
+        t0 = time.monotonic()
+        end = t0 + max(0.05, duration_ms / 1000.0)
+        try:
+            while True:
+                now = time.monotonic()
+                if now >= end:
+                    break
+                t = now - t0
+                envelope = math.sin(math.pi * t / max(0.05, duration_ms / 1000.0))
+                wave = math.sin(2.0 * math.pi * _SHAKE_FREQ_HZ * t)
+                # Lateral shake: alternating X with a tiny Z wobble so the
+                # 3D vector actually rotates a bit (matches a real hand
+                # snapping the controller side-to-side).
+                ax = accel_amp * envelope * wave
+                az = accel_amp * envelope * wave * 0.35
+                # Keep gravity on Y so the orientation estimator on the
+                # PS5 doesn't think the controller is in free-fall — only
+                # the lateral component is what games key off for "shake".
+                ay = rest[0][1]
+                gx = gyro_amp * envelope * wave * 0.4
+                gy = gyro_amp * envelope * (1.0 - wave) * 0.4
+                gz = gyro_amp * envelope * wave * 0.6
+                try:
+                    motion.accel.x = ax
+                    motion.accel.y = ay
+                    motion.accel.z = az
+                    motion.gyro.x = gx
+                    motion.gyro.y = gy
+                    motion.gyro.z = gz
+                except Exception:  # noqa: BLE001
+                    break
+                # Nudge the heartbeat worker if it's installed — that
+                # patch exposes `_should_send` (asyncio.Event-like). If
+                # not present we simply rely on the 200 ms heartbeat tick.
+                try:
+                    ev = getattr(controller, "_should_send", None)
+                    if ev is not None and hasattr(ev, "set"):
+                        ev.set()
+                except Exception:  # noqa: BLE001
+                    pass
+                time.sleep(_SHAKE_TICK_MS / 1000.0)
+        finally:
+            try:
+                motion.accel.x, motion.accel.y, motion.accel.z = rest[0]
+                motion.gyro.x, motion.gyro.y, motion.gyro.z = rest[1]
+            except Exception:  # noqa: BLE001
+                pass
+            state._p5m_burst = False
+
+    def shake(self, duration_ms: int = _SHAKE_DEFAULT_MS,
+              intensity: float = _SHAKE_DEFAULT_INTENSITY) -> None:
+        """Fire a one-shot DualSense / DualShock-4 shake gesture.
+
+        Non-blocking — the animation runs on a daemon thread so the
+        sidecar's HTTP handler can return immediately. Multiple concurrent
+        calls overwrite each other (last writer wins for the motion
+        sub-state); that's acceptable because a shake event is inherently
+        a single user-intent action.
+        """
+        t = threading.Thread(
+            target=_drive_shake,
+            args=(self, int(duration_ms), float(intensity)),
+            name="p5m-shake",
+            daemon=True,
+        )
+        t.start()
+
+    Controller.shake = shake
+    log.info(
+        "patched Controller.shake (motion burst: %d ms default, %.0f%% intensity, %.1f Hz)",
+        _SHAKE_DEFAULT_MS,
+        _SHAKE_DEFAULT_INTENSITY * 100.0,
+        _SHAKE_FREQ_HZ,
     )
 
 

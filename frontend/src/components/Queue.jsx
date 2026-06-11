@@ -7,6 +7,7 @@ const TYPE_META = {
   extract: { icon: '📦', label: 'Extract' },
   convert: { icon: '🔄', label: 'Convert' },
   upload: { icon: '⬆️', label: 'Upload' },
+  install: { icon: '📥', label: 'Install' },
 };
 
 // Map a queue item to the per-job REST endpoint that returns its `.log`.
@@ -16,6 +17,7 @@ const TYPE_META = {
 function logUrlForItem(item) {
   if (item.type === 'download') return `${API}/downloader/${item.id}`;
   if (item.type === 'upload') return `${API}/convert/ftp/upload/${item.id}`;
+  if (item.type === 'install') return `${API}/convert/install/${item.id}`;
   // convert + extract use a separate jobs map keyed by job_id, which only
   // exists once the queue worker has picked the item up.
   if (!item.job_id) return null;
@@ -41,6 +43,8 @@ const STATUS_META = {
   staging: { color: 'var(--blue)', label: 'Staging' },
   running: { color: 'var(--blue)', label: 'Running' },
   pushing: { color: 'var(--blue)', label: 'Pushing' },
+  sending: { color: 'var(--blue)', label: 'Sending' },
+  installing: { color: 'var(--blue)', label: 'Installing' },
   unpacking: { color: 'var(--blue)', label: 'Unpacking' },
   completed: { color: 'var(--green)', label: 'Completed' },
   failed: { color: 'var(--red)', label: 'Failed' },
@@ -57,6 +61,7 @@ function itemTitle(item) {
   return (
     item.source_name ||
     item.archive ||
+    item.pkg_name ||
     item.file_name ||
     item.filename ||
     item.url ||
@@ -74,6 +79,16 @@ function itemSubtitle(item) {
   if (item.type === 'convert') return `${item.mode || ''}${item.output_name ? ` → ${item.output_name}` : ''}`;
   if (item.type === 'extract') return `${item.archive_type || ''}${item.dest ? ` → ${item.dest}` : ''}`;
   if (item.type === 'upload') return `${item.ip || ''}${item.dest_path ? ` → ${item.dest_path}` : ''}`;
+  if (item.type === 'install') {
+    // For install items the title slot already shows the pkg name, so the
+    // subtitle gives the target PS5 + the live install_status hint when the
+    // payload has streamed one (`playable`, `transferring`, etc.).
+    const parts = [];
+    if (item.ip) parts.push(item.ip);
+    if (item.install_status) parts.push(`status: ${item.install_status}`);
+    if (item.staged_path) parts.push(item.staged_path);
+    return parts.join(' · ');
+  }
   return '';
 }
 
@@ -81,14 +96,17 @@ function QueueItem({ item, queuePaused, onRemove, onRetry, onMove, onStart, onPa
   const meta = TYPE_META[item.type] || { icon: '📋', label: item.type };
   const statusMeta = STATUS_META[item.status] || { color: 'var(--muted)', label: item.status };
   const progress = Math.max(0, Math.min(100, Number(item.progress || 0)));
-  const isActive = ['running', 'starting', 'staging', 'pushing', 'unpacking'].includes(item.status);
+  const isActive = ['running', 'starting', 'staging', 'pushing', 'sending', 'installing', 'unpacking'].includes(item.status);
   const isDone = ['completed', 'failed', 'cancelled', 'push_failed'].includes(item.status);
   const isQueued = item.status === 'queued';
   const canMove = isQueued;
-  // push_failed = mkpfs finished but auto-push to PS5 errored. Showing the
-  // retry button on it is exactly what the user asked for ("pri fail daj
-  // button retry") so they can rerun without rebuilding the .ffpfsc.
-  const canRetry = ['failed', 'cancelled', 'push_failed'].includes(item.status);
+  // Retry is offered on EVERY terminal status (failed / cancelled /
+  // push_failed / completed), not just failures. The user asked for
+  // "moznost retry pri kazdom jobe" — completed gets it too so they can
+  // re-run a finished conversion or re-upload an artefact without
+  // re-queuing from scratch (executeConvertJob overwrites the existing
+  // output, uploadFileResilient overwrites the destination file).
+  const canRetry = ['failed', 'cancelled', 'push_failed', 'completed'].includes(item.status);
 
   // ── Log dropdown state ─────────────────────────────────────────────────
   // The log lives on a separate per-job endpoint (`logUrlForItem`). We only
@@ -363,6 +381,7 @@ export default function Queue() {
   const extractItems = (data?.extract?.items || []).map(i => ({ ...i, type: 'extract' }));
   const convertItems = (data?.convert?.items || []).map(i => ({ ...i, type: 'convert' }));
   const uploadItems = (data?.upload?.items || []).map(i => ({ ...i, type: 'upload' }));
+  const installItems = (data?.install?.items || []).map(i => ({ ...i, type: 'install' }));
 
   // Pause state per queue type. The UI uses these to render the correct per-task
   // start/pause/resume button on each item. There is no global pause anymore.
@@ -380,6 +399,7 @@ export default function Queue() {
     extract: !!data?.extract?.paused,
     convert: !!data?.convert?.paused,
     upload: !!data?.upload?.paused,
+    install: !!data?.install?.paused,
   }), [data, downloaderPaused]);
 
   // The upload queue is mounted under /ftp/upload/... not /upload/..., so
@@ -464,16 +484,17 @@ export default function Queue() {
     ...extractItems,
     ...convertItems,
     ...uploadItems,
+    ...installItems,
     ...downloads,
   ].sort((a, b) => {
-    const statusOrder = { running: 0, starting: 0, staging: 0, pushing: 0, unpacking: 0, queued: 1, completed: 2, failed: 3, push_failed: 3, cancelled: 4 };
+    const statusOrder = { running: 0, starting: 0, staging: 0, pushing: 0, sending: 0, installing: 0, unpacking: 0, queued: 1, completed: 2, failed: 3, push_failed: 3, cancelled: 4 };
     const aOrder = statusOrder[a.status] ?? 5;
     const bOrder = statusOrder[b.status] ?? 5;
     if (aOrder !== bOrder) return aOrder - bOrder;
     return new Date(b.added_at || b.started_at || 0) - new Date(a.added_at || a.started_at || 0);
   });
 
-  const activeCount = (arr) => arr.filter(i => ['queued', 'running', 'starting', 'staging', 'pushing', 'unpacking'].includes(i.status)).length;
+  const activeCount = (arr) => arr.filter(i => ['queued', 'running', 'starting', 'staging', 'pushing', 'sending', 'installing', 'unpacking'].includes(i.status)).length;
 
   const counts = {
     all: allItems.length,
@@ -481,17 +502,19 @@ export default function Queue() {
     extract: activeCount(extractItems),
     convert: activeCount(convertItems),
     upload: activeCount(uploadItems),
+    install: activeCount(installItems),
   };
 
-  const totalActive = counts.download + counts.extract + counts.convert + counts.upload;
+  const totalActive = counts.download + counts.extract + counts.convert + counts.upload + counts.install;
 
   const filtered = filter === 'all' ? allItems
     : filter === 'download' ? downloads
     : filter === 'extract' ? extractItems
     : filter === 'convert' ? convertItems
+    : filter === 'install' ? installItems
     : uploadItems;
 
-  const anyPaused = pausedByType.download || pausedByType.extract || pausedByType.convert || pausedByType.upload;
+  const anyPaused = pausedByType.download || pausedByType.extract || pausedByType.convert || pausedByType.upload || pausedByType.install;
 
   return (
     <div className="comp-card">
@@ -500,7 +523,7 @@ export default function Queue() {
           <span className="comp-card-title">📋 Tasks</span>
           {totalActive > 0 && (
             <span className="badge" style={{ background: anyPaused ? '#7f8c8d' : 'var(--blue)' }}>
-              {totalActive} active{anyPaused ? ' · some paused' : ''}
+              {totalActive} active
             </span>
           )}
         </div>
@@ -522,6 +545,7 @@ export default function Queue() {
             { key: 'extract', label: `📦 Extract (${counts.extract})` },
             { key: 'convert', label: `🔄 Convert (${counts.convert})` },
             { key: 'upload', label: `⬆️ Upload (${counts.upload})` },
+            { key: 'install', label: `📥 Install (${counts.install})` },
           ].map(f => (
             <button
               key={f.key}

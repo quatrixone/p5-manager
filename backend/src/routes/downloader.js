@@ -8,15 +8,20 @@ import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const projectRoot = path.resolve(__dirname, '..', '..', '..');
-const dlScratchDir = path.join(projectRoot, 'data', 'mkpfs', '.tmp');
+import { getDatabase, log } from '../db/sqlite.js';
+import { buildSmbArgs, runSmbClient, smbClientError, getSmbSource, listSmbSources, uploadDirToSmb } from '../lib/smb.js';
+import { mkpfsWorkDir } from '../lib/paths.js';
+
+// Scratch dir for in-flight SMB downloads (the worker streams into a
+// temp folder under mkpfs work dir, then copies to the share when
+// done). Lives next to mkpfs scratch so a single tmpfs/disk quota
+// covers all transient working data.
+const dlScratchDir = path.join(mkpfsWorkDir, '.tmp');
 
 function getDlScratch() {
   try { fs.mkdirSync(dlScratchDir, { recursive: true }); return dlScratchDir; }
   catch (_) { return os.tmpdir(); }
 }
-import { getDatabase, log } from '../db/sqlite.js';
-import { buildSmbArgs, runSmbClient, smbClientError, getSmbSource, listSmbSources, uploadDirToSmb } from '../lib/smb.js';
 
 const router = express.Router();
 

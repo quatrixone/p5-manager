@@ -21,6 +21,7 @@ import eventsRouter from './routes/events.js';
 import remoteplayRouter from './routes/remoteplay.js';
 import builtinRouter from './routes/builtin.js';
 import { ensureDefaultPayloads } from './lib/defaultPayloads.js';
+import { migratePaths } from './lib/migrate-paths.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -84,6 +85,11 @@ if (process.env.NODE_ENV === 'production' && fs.existsSync(distPath)) {
 }
 
 await initializeDatabase();
+
+// Layout migration: ensure /data/{payloads,mkpfs,downloads} exist and
+// move any legacy /app/data/{payloads,mkpfs} content over. Runs once,
+// idempotent. See backend/src/lib/migrate-paths.js for details.
+try { migratePaths(); } catch (e) { console.warn(`[migrate-paths] ${e.message}`); }
 
 // Auto-start log server
 startLogServer(8080);

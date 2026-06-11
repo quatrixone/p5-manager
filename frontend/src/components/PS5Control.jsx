@@ -16,6 +16,24 @@ import Badge from './UI/Badge';
 
 const API = '/api';
 
+// P5 Control top-level sub-tabs. 'control' is the default and contains
+// the live RP playback path (Start session, video preview, controller,
+// fullscreen overlay) + Input Scripts. 'settings' is where the Remote
+// Play *setup* (Sony OAuth, PIN pairing, offline activation) lives -
+// it's a once-per-account flow that doesn't belong on the hot path.
+//
+// Persisted to localStorage so a refresh / navigate-back doesn't bounce
+// the user out of Settings while they're in the middle of pairing.
+const SUBTAB_KEY = 'ps5ControlSubTab';
+const readInitialSubTab = () => {
+  try {
+    const v = localStorage.getItem(SUBTAB_KEY);
+    return v === 'settings' ? 'settings' : 'control';
+  } catch (_) {
+    return 'control';
+  }
+};
+
 function PS5Control({ profiles, onNotification, onProfilesChanged }) {
   const [status, setStatus] = useState(null);
   const [waking, setWaking] = useState(false);
@@ -23,6 +41,10 @@ function PS5Control({ profiles, onNotification, onProfilesChanged }) {
   const [stoppingSession, setStoppingSession] = useState(false);
   const [scripts, setScripts] = useState([]);
   const [notification, setNotification] = useState(null);
+  const [subTab, setSubTab] = useState(readInitialSubTab);
+  useEffect(() => {
+    try { localStorage.setItem(SUBTAB_KEY, subTab); } catch (_) { /* ignore */ }
+  }, [subTab]);
   // Remote Play session state for the default profile. Mirrors what
   // RemotePlay.jsx and ScriptRunner.jsx track independently, but PS5 Control
   // shows it in the top-level header so the user gets the full picture
@@ -144,7 +166,7 @@ function PS5Control({ profiles, onNotification, onProfilesChanged }) {
   // just to send the standby control packet (see /api/remoteplay/standby).
   const handleStandby = async () => {
     if (!defaultProfile) return;
-    if (!window.confirm(`Put ${defaultProfile.name} into standby?`)) return;
+    if (!window.confirm(`Put ${defaultProfile.name} into rest mode?`)) return;
     setStandbyBusy(true);
     try {
       const res = await fetch(`${API}/remoteplay/standby`, {
@@ -154,14 +176,14 @@ function PS5Control({ profiles, onNotification, onProfilesChanged }) {
       });
       const data = await res.json();
       if (data.success) {
-        if (data.already_standby) showToast('PS5 already in standby', 'info');
-        else showToast(`Standby sent (${data.via || 'ok'})`, 'success');
+        if (data.already_standby) showToast('PS5 already in rest mode', 'info');
+        else showToast(`Rest mode sent (${data.via || 'ok'})`, 'success');
         setTimeout(fetchStatus, 4000);
       } else {
-        showToast('Standby failed: ' + (data.error || 'Unknown error'), 'error');
+        showToast('Rest mode failed: ' + (data.error || 'Unknown error'), 'error');
       }
     } catch (err) {
-      showToast('Standby error: ' + err.message, 'error');
+      showToast('Rest mode error: ' + err.message, 'error');
     }
     setStandbyBusy(false);
   };
@@ -169,9 +191,17 @@ function PS5Control({ profiles, onNotification, onProfilesChanged }) {
   const getStatusBadge = () => {
     if (!status) return <Badge variant="muted">Unknown</Badge>;
     if (!status.reachable) return <Badge variant="danger">Offline</Badge>;
+    // Payload-listener mapping (the old badge mislabelled 9020 as "LUA"
+    // - 9020 is actually PS4 GoldHEN, 9026 is the real Lua listener).
+    //   9021 → PS5 ELF payload host
+    //   9026 → PS5 Lua exploit chain
+    //   9020 → PS4 GoldHEN payload host
     if (status.openPort === 9021) return <Badge variant="success">ELF Active</Badge>;
-    if (status.openPort === 9020) return <Badge variant="warning">LUA Active</Badge>;
-    return <Badge variant="info">Standby</Badge>;
+    if (status.openPort === 9026) return <Badge variant="success">LUA Active</Badge>;
+    if (status.openPort === 9020) return <Badge variant="warning">PS4 Payload</Badge>;
+    if (status.openPort === 8080 || status.openPort === 6970)
+      return <Badge variant="info">Active</Badge>;
+    return <Badge variant="info">Rest mode</Badge>;
   };
 
   // RP-session-specific badge. Decoupled from the legacy port status above
@@ -266,10 +296,15 @@ function PS5Control({ profiles, onNotification, onProfilesChanged }) {
         </div>
       )}
 
+      {/* Status header. Wake + Standby live here on the right side so
+          they're always visible without scrolling, matching the user's
+          mental model of "PS5 power buttons are part of the PS5 status
+          card". flex-wrap lets the action row drop below the identity
+          block on narrow viewports. */}
       <div className="comp-card mb-md">
-        <div className="flex items-center gap-md p-md">
+        <div className="flex items-center gap-md p-md flex-wrap">
           <span style={{ fontSize: '3rem' }}>🎮</span>
-          <div className="flex-1">
+          <div className="flex-1" style={{ minWidth: 180 }}>
             <div className="flex items-center gap-sm flex-wrap">
               <span className="font-bold" style={{ fontSize: '1.2rem' }}>{defaultProfile.name}</span>
               {getStatusBadge()}
@@ -283,36 +318,55 @@ function PS5Control({ profiles, onNotification, onProfilesChanged }) {
               </div>
             )}
           </div>
-          <button className="btn btn-sm btn-ghost" onClick={fetchStatus} title="Refresh">🔄</button>
+          {/* Action buttons. All use the default .btn size (34px tall)
+              to match the sub-tab selector below - the user asked for
+              every clickable element on this surface to share one
+              consistent height. */}
+          <div className="flex gap-sm flex-wrap" style={{ justifyContent: 'flex-end' }}>
+            <button
+              className="btn btn-primary"
+              onClick={handleWake}
+              disabled={waking || standbyBusy || stoppingSession}
+              title={
+                rpSession.state === 'live' ? 'A live RP session already exists - this is a no-op.'
+                : rpSession.state === 'warm' ? 'Re-warm: refreshes the warm cache TTL back to 180 s.'
+                : 'Pre-warm: wakes from rest, logs in, parks an RP session in the sidecar warm cache so the next Start is ~20 ms.'
+              }
+            >
+              {waking ? '⏳ Waking…'
+                : rpSession.state === 'live' ? '✓ Live'
+                : rpSession.state === 'warm' ? `✓ Warm ${rpSession.warmTtl}s`
+                : '📡 Wake PS5'}
+            </button>
+            <button
+              className="btn btn-secondary"
+              onClick={handleStandby}
+              disabled={standbyBusy || waking || stoppingSession}
+              title="Put the PS5 into rest mode."
+            >
+              {standbyBusy ? '⏳' : '🌙'} Rest mode
+            </button>
+            <button
+              className="btn btn-ghost"
+              onClick={fetchStatus}
+              title="Refresh PS5 status (DDP discover + RP session probe)"
+            >
+              🔄
+            </button>
+          </div>
         </div>
       </div>
 
-      {/* Quick actions: wake into warm cache + soft-stop + standby. The Wake
-          and Standby actions duplicate buttons that exist inside the embedded
-          Remote Play card below, on purpose - users frequently want them
-          without expanding the RP accordion. Stop is offered only when there
-          is something to stop so it doesn't add visual noise on idle. */}
-      <div className={rpSession.state !== 'idle' ? 'grid-3 mb-md' : 'grid-2 mb-md'}>
-        <button
-          className="btn btn-primary"
-          onClick={handleWake}
-          disabled={waking || standbyBusy || stoppingSession}
-          title={
-            rpSession.state === 'live' ? 'A live RP session already exists - this is a no-op.'
-            : rpSession.state === 'warm' ? 'Re-warm: refreshes the warm cache TTL back to 180 s.'
-            : 'Pre-warm: wakes from rest, logs in, parks an RP session in the sidecar warm cache so the next Start is ~20 ms.'
-          }
-        >
-          {waking ? '⏳ Waking…'
-            : rpSession.state === 'live' ? '✓ Live · re-warm?'
-            : rpSession.state === 'warm' ? `✓ Warm · ${rpSession.warmTtl}s · re-warm?`
-            : '📡 Wake PS5'}
-        </button>
-        {rpSession.state !== 'idle' && (
+      {/* Stop / Clear-warm only appears when there's something to stop -
+          a full-width single button so it doesn't compete for attention
+          with the always-visible Wake/Standby pair above. */}
+      {rpSession.state !== 'idle' && (
+        <div className="mb-md">
           <button
             className="btn btn-secondary"
             onClick={handleStopSession}
             disabled={stoppingSession || waking || standbyBusy}
+            style={{ width: '100%' }}
             title={
               rpSession.state === 'live'
                 ? 'Soft stop the live RP session - parks it in the warm cache for instant restart.'
@@ -322,47 +376,109 @@ function PS5Control({ profiles, onNotification, onProfilesChanged }) {
             {stoppingSession ? '⏳' : '⏹'}{' '}
             {rpSession.state === 'live' ? 'Stop session' : 'Clear warm'}
           </button>
-        )}
-        <button className="btn btn-secondary" onClick={handleStandby} disabled={standbyBusy || waking || stoppingSession}>
-          {standbyBusy ? '⏳' : '🌙'} Standby
+        </div>
+      )}
+
+      {/* Sub-tab selector. Two tabs only - more is overkill for this
+          surface. Style mirrors RemotePlay.jsx's Pair sub-tabs so the
+          two feel native to one another. */}
+      <div
+        className="flex gap-xs flex-wrap mb-md"
+        role="tablist"
+        aria-label="P5 Control sub-tabs"
+        style={{
+          padding: 4,
+          background: 'rgba(255, 255, 255, 0.03)',
+          borderRadius: 8,
+          border: '1px solid var(--border)',
+        }}
+      >
+        <button
+          type="button"
+          role="tab"
+          aria-selected={subTab === 'control'}
+          className={`btn ${subTab === 'control' ? 'btn-primary' : 'btn-ghost'}`}
+          style={{ flex: '1 1 200px' }}
+          onClick={() => setSubTab('control')}
+        >
+          {subTab === 'control' ? '● ' : ''}🎮 Control
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={subTab === 'settings'}
+          className={`btn ${subTab === 'settings' ? 'btn-primary' : 'btn-ghost'}`}
+          style={{ flex: '1 1 200px' }}
+          onClick={() => setSubTab('settings')}
+        >
+          {subTab === 'settings' ? '● ' : ''}⚙️ PS Remote Play Settings
         </button>
       </div>
 
-      <div className="comp-card mb-md">
-        <div className="comp-card-header">
-          <span className="comp-card-title">🕹️ PS Remote Play</span>
-        </div>
-        <div className="comp-card-body">
-          <RemotePlay
-            profiles={profiles}
-            onNotification={showToast}
-            onProfilesChanged={onProfilesChanged}
-            onScriptsChange={fetchScripts}
-          />
-        </div>
-      </div>
+      {/* Control sub-tab: Start session + live preview + controllers +
+          fullscreen + Input Scripts. RemotePlay.view="main" hides the
+          OAuth / Pair sections so they don't reappear here. */}
+      {subTab === 'control' && (
+        <>
+          <div className="comp-card mb-md">
+            <div className="comp-card-header">
+              <span className="comp-card-title">🕹️ PS Remote Play</span>
+            </div>
+            <div className="comp-card-body">
+              <RemotePlay
+                profiles={profiles}
+                onNotification={showToast}
+                onProfilesChanged={onProfilesChanged}
+                onScriptsChange={fetchScripts}
+                view="main"
+              />
+            </div>
+          </div>
 
-      {/* Input Scripts wrapper. ScriptRunner already renders its own nested
-          comp-cards (RP session bar, Built-in scripts, Saved scripts, etc.),
-          so on mobile we collapse the outer body padding and hide the
-          contextual hint to avoid double-padding the nested cards. The
-          built-in scripts card itself uses .builtin-scripts-compact for
-          additional mobile shrinking. */}
-      <div className="comp-card mb-md ps5control-scripts-wrap">
-        <div className="comp-card-header">
-          <span className="comp-card-title">⌨️ Input Scripts</span>
+          {/* Input Scripts wrapper. ScriptRunner already renders its own nested
+              comp-cards (RP session bar, Built-in scripts, Saved scripts, etc.),
+              so on mobile we collapse the outer body padding and hide the
+              contextual hint to avoid double-padding the nested cards. The
+              built-in scripts card itself uses .builtin-scripts-compact for
+              additional mobile shrinking. */}
+          <div className="comp-card mb-md ps5control-scripts-wrap">
+            <div className="comp-card-header">
+              <span className="comp-card-title">⌨️ Input Scripts</span>
+            </div>
+            <div className="comp-card-body">
+              <p className="text-sm text-muted mb-sm desktop-only">
+                Scripts play back via the Remote Play sidecar above. Pair the PS5 first.
+              </p>
+              <ScriptRunner
+                ip={defaultProfile.ip_address}
+                scripts={scripts}
+                onScriptsChange={fetchScripts}
+              />
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* Settings sub-tab: setup-only slice of RemotePlay - Sony OAuth
+          link + PIN pairing + offline activation. ScriptRunner is
+          intentionally NOT here; Input Scripts are a runtime concern
+          and stay on the Control sub-tab. */}
+      {subTab === 'settings' && (
+        <div className="comp-card mb-md">
+          <div className="comp-card-header">
+            <span className="comp-card-title">⚙️ PS Remote Play Settings</span>
+          </div>
+          <div className="comp-card-body">
+            <RemotePlay
+              profiles={profiles}
+              onNotification={showToast}
+              onProfilesChanged={onProfilesChanged}
+              onScriptsChange={fetchScripts}
+              view="settings"
+            />
+          </div>
         </div>
-        <div className="comp-card-body">
-          <p className="text-sm text-muted mb-sm desktop-only">
-            Scripts play back via the Remote Play sidecar above. Pair the PS5 first.
-          </p>
-          <ScriptRunner
-            ip={defaultProfile.ip_address}
-            scripts={scripts}
-            onScriptsChange={fetchScripts}
-          />
-        </div>
-      </div>
+      )}
     </div>
   );
 }
