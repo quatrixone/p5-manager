@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import FileBrowser from './FileBrowser';
 import FolderPickerModal from './UI/FolderPickerModal';
 import { usePlatform } from '../contexts/PlatformContext';
+import useVisiblePolling from '../hooks/useVisiblePolling';
 
 const API = '/api';
 
@@ -465,11 +466,11 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
     } catch (_) {}
   }, []);
 
-  useEffect(() => {
-    refreshQueue();
-    const t = setInterval(refreshQueue, 2000);
-    return () => clearInterval(t);
-  }, [refreshQueue]);
+  // 3 s polling for the inline convert-queue mini-list, pauseable when
+  // the Convert tab is in the background. The Tasks tab keeps its own
+  // 2 s refresh for the authoritative view; this list is just the
+  // contextual badge inside Convert so a slower cadence is fine.
+  useVisiblePolling(refreshQueue, 3000);
 
   const queueRemove = async (id) => {
     try {

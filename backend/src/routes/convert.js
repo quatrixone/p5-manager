@@ -1332,8 +1332,38 @@ const PKG_TOOL_VENV = process.env.PKG_TOOL_VENV || '';
 const PKG_TOOL_UNPKG_URL = process.env.PKG_TOOL_UNPKG_URL
   || 'https://raw.githubusercontent.com/AlexAltea/orbital/master/tools/unpkg.py';
 
-const MAX_LOG_LINES = 2000;
+// Per-job log buffer ceiling. Each finished job sits in the `jobs` Map
+// until evicted (see jobs-eviction interval at the bottom of this file);
+// 2000 lines × ~80 chars × ~50 historical jobs added up to ~8 MB resident
+// across long-running deployments. 800 lines covers a normal mkpfs /
+// exfat / extract run end-to-end (the tail-side noise is the interesting
+// bit anyway) and keeps the per-job ceiling under ~64 KB.
+const MAX_LOG_LINES = 800;
 const jobs = new Map();
+
+// How long a finished job is kept in memory after it transitions to a
+// terminal status (completed / failed / cancelled / push_failed).
+// 15 minutes is plenty for the user to inspect the log + retry; the queue
+// item itself stays attached to the queue array independently, so
+// removing the underlying job just frees the log buffer + cached fields.
+const JOBS_TERMINAL_TTL_MS = 15 * 60 * 1000;
+const TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled', 'push_failed']);
+
+function evictExpiredJobs() {
+  const now = Date.now();
+  for (const [id, job] of jobs) {
+    if (!TERMINAL_STATUSES.has(job.status)) continue;
+    const finishedAt = job.finished_at ? Date.parse(job.finished_at) : 0;
+    if (!finishedAt) continue;
+    if (now - finishedAt > JOBS_TERMINAL_TTL_MS) {
+      jobs.delete(id);
+    }
+  }
+}
+// Sweep every 5 minutes — cheap enough we don't bother debouncing on
+// status transitions. unref() so this timer never keeps the event loop
+// alive during shutdown.
+setInterval(evictExpiredJobs, 5 * 60 * 1000).unref?.();
 
 // Cached PyPI lookup so we don't hammer pypi.org every time the Convert
 // tab is opened (status endpoint is polled on every render). 10 minutes
@@ -5045,7 +5075,13 @@ router.post('/queue/clear-finished', (req, res) => {
 // History (completed/failed/cancelled) is capped so the file does not grow
 // without bound; oldest finished items beyond the cap are dropped.
 const QUEUE_STATE_FILE = path.join(dataDir, 'queue-state.json');
-const QUEUE_AUTOSAVE_MS = 5_000;
+// Autosave cadence for the queue snapshot. Bumped from 5 → 10 s because
+// scheduleQueueSave() is already invoked synchronously on every queue
+// mutation (debounced 250 ms) — this periodic save is just a safety net
+// for in-flight progress / phase mutations the workers do without going
+// through scheduleQueueSave(). The de-dupe in saveQueueState() means an
+// idle box writes the file at most once at startup and then never again.
+const QUEUE_AUTOSAVE_MS = 10_000;
 const QUEUE_HISTORY_KEEP = 100;
 const QUEUE_TRANSIENT_STATUSES = new Set([
   'running', 'starting', 'staging', 'pushing', 'unpacking', 'queueing',
@@ -5090,10 +5126,22 @@ function _serializeQueues() {
 function saveQueueState() {
   if (!_queuePersistReady) return;
   try {
+    // Serialise once, then skip the actual disk write when the payload is
+    // byte-identical to the last successfully saved state. `saved_at`
+    // changes on every call, so we strip it from the fingerprint window —
+    // otherwise the timestamp alone would defeat the cache.
+    const snapshot = _serializeQueues();
+    const body = JSON.stringify(snapshot, (k, v) => (k === 'saved_at' ? '' : v));
+    const fp = _fingerprintJson(body);
+    if (fp === _lastQueueFingerprint) return;
+
     fs.mkdirSync(path.dirname(QUEUE_STATE_FILE), { recursive: true });
     const tmp = `${QUEUE_STATE_FILE}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(_serializeQueues(), null, 2));
+    // Pretty-printed full snapshot (with saved_at) for the on-disk copy —
+    // makes the file diff-friendly when the user inspects /data manually.
+    fs.writeFileSync(tmp, JSON.stringify(snapshot, null, 2));
     fs.renameSync(tmp, QUEUE_STATE_FILE);
+    _lastQueueFingerprint = fp;
   } catch (e) {
     log('warn', `[queue-persist] save failed: ${e.message}`);
   }
@@ -5104,6 +5152,27 @@ function scheduleQueueSave(delay = 250) {
   if (!_queuePersistReady) return;
   if (_queueSaveTimer) clearTimeout(_queueSaveTimer);
   _queueSaveTimer = setTimeout(() => { _queueSaveTimer = null; saveQueueState(); }, delay);
+}
+
+// Lightweight change detector for the periodic snapshot. saveQueueState()
+// previously fired every QUEUE_AUTOSAVE_MS regardless of whether anything
+// changed since the last save — on an idle box that's still ~17k disk
+// writes per day for no benefit. We now serialize once into a buffer,
+// fingerprint it (length + xor-rolled hash), and only commit to disk when
+// the fingerprint differs from the last successful write.
+//
+// Plain Buffer.length+rolling-xor is good enough here: a state of size N
+// with a single field flipped will always change either the length or
+// the hash; we don't need cryptographic strength.
+let _lastQueueFingerprint = '';
+function _fingerprintJson(text) {
+  let h = 0;
+  // 4096-byte stride is enough to detect every realistic change while
+  // staying O(N/stride) — full-hash on a 50 KB queue state is ~12 ops.
+  for (let i = 0; i < text.length; i += 4096) {
+    h = ((h << 5) - h + text.charCodeAt(i)) | 0;
+  }
+  return `${text.length}:${h}`;
 }
 
 function restoreQueueState() {
@@ -5197,7 +5266,7 @@ _queuePersistReady = true;
 // Periodic snapshot picks up status/progress mutations made by the workers
 // (which we don't instrument explicitly). On a slow conversion this also
 // gives us a recent progress checkpoint in case of a power loss.
-setInterval(saveQueueState, QUEUE_AUTOSAVE_MS);
+setInterval(saveQueueState, QUEUE_AUTOSAVE_MS).unref?.();
 // docker stop -> SIGTERM, then SIGKILL 10s later. Save first so the
 // `up --build` cycle keeps the latest queue state.
 for (const sig of ['SIGTERM', 'SIGINT']) {

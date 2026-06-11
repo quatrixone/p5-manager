@@ -54,6 +54,16 @@ services:
       - PORT=3001
       - DATA_DIR=/app/data
       - PYREMOTEPLAY_SIDECAR_URL=http://127.0.0.1:9555
+      # Memory + CPU footprint tuning. Defaults (V8 picks heap target from
+      # host RAM = 11 GB here) leave Node sitting on ~115 MB RSS at idle
+      # because GC is lazy. Capping the old-space at 192 MB + semi-space at
+      # 8 MB forces more frequent minor + major GCs so steady-state RSS
+      # tracks ~70-80 MB. UV_THREADPOOL_SIZE=2 trims the libuv worker pool
+      # from 4 → 2 (fs + dns are the only consumers in this app; we never
+      # parallelise CPU-bound work via the pool) which cuts ~2 sleeping
+      # threads worth of stack (~8 MB virtual + a few hundred kB resident).
+      - NODE_OPTIONS=--max-old-space-size=192 --max-semi-space-size=8
+      - UV_THREADPOOL_SIZE=2
     # The Convert -> PS5 exFAT pipeline creates a sparse image file, formats
     # it with mkfs.exfat, then loop-mounts it to inject the source files via
     # cp/rsync. losetup + mount(2) both need CAP_SYS_ADMIN; the host's MAC

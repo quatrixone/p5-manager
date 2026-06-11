@@ -1,8 +1,9 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import ScriptRunner from './ScriptRunner';
 import RemotePlay from './RemotePlay';
+import useVisiblePolling from '../hooks/useVisiblePolling';
 // BT Virtual DualShock 4 emulator (host-side BlueZ HID device) moved to
-// a sibling repo: /home/dietpi/Projects/vcontrol. PS5 firmware rejects
+// a sibling repo (vcontrol). PS5 firmware rejects
 // every non-Sony-signed controller during the post-pair HID handshake
 // (BD_ADDR + Sony controller-auth chip required), so the feature is
 // shelved indefinitely. The DS4-via-DietPi BT bridge was also removed
@@ -76,43 +77,43 @@ function PS5Control({ profiles, onNotification, onProfilesChanged }) {
     }
   };
 
-  useEffect(() => { if (defaultProfile) fetchStatus(); }, [defaultProfile]);
   useEffect(() => { fetchScripts(); }, []);
 
-  useEffect(() => {
-    if (!defaultProfile) return;
-    const interval = setInterval(fetchStatus, 5000);
-    return () => clearInterval(interval);
-  }, [defaultProfile]);
+  // 6 s for the legacy DDP / TCP port poll. Was 5 s; visibility-gated so a
+  // backgrounded P5 Control tab stops sending the port probe entirely.
+  useVisiblePolling(
+    fetchStatus,
+    defaultProfile ? 6000 : 0,
+    [defaultProfile?.ip_address, defaultProfile?.port],
+  );
 
-  // Independent (faster) poll for RP session state. We use 3 s here -
-  // separate from the 5 s legacy port poll - so the badge tracks Start /
-  // Stop clicks (in any sub-tab) with minimal lag.
-  useEffect(() => {
+  // 4 s for the RP session state badge (was 3 s). Lower-priority signal
+  // than the user actively pressing Start/Stop (those mutate the badge
+  // optimistically), so an extra second of lag is invisible.
+  const pollRpSession = useCallback(async () => {
     if (!defaultProfile) return;
-    let cancelled = false;
-    const tick = async () => {
-      try {
-        const r = await fetch(`${API}/remoteplay/quick-status?ip=${encodeURIComponent(defaultProfile.ip_address)}`).then(r => r.json());
-        if (cancelled || !r?.success) return;
-        if (r.active) {
-          setRpSession({ state: 'live', sessionId: r.session_id || null, warmTtl: null, video: !!r.video });
-        } else if (r.warm) {
-          setRpSession({
-            state: 'warm',
-            sessionId: r.warm_session_id || null,
-            warmTtl: Math.round(r.warm_ttl_remaining_s || 0),
-            video: !!r.video,
-          });
-        } else {
-          setRpSession({ state: 'idle', sessionId: null, warmTtl: null, video: false });
-        }
-      } catch (_) { /* transient sidecar - keep prior badge */ }
-    };
-    tick();
-    const id = setInterval(tick, 3000);
-    return () => { cancelled = true; clearInterval(id); };
+    try {
+      const r = await fetch(`${API}/remoteplay/quick-status?ip=${encodeURIComponent(defaultProfile.ip_address)}`).then(r => r.json());
+      if (!r?.success) return;
+      if (r.active) {
+        setRpSession({ state: 'live', sessionId: r.session_id || null, warmTtl: null, video: !!r.video });
+      } else if (r.warm) {
+        setRpSession({
+          state: 'warm',
+          sessionId: r.warm_session_id || null,
+          warmTtl: Math.round(r.warm_ttl_remaining_s || 0),
+          video: !!r.video,
+        });
+      } else {
+        setRpSession({ state: 'idle', sessionId: null, warmTtl: null, video: false });
+      }
+    } catch (_) { /* transient sidecar - keep prior badge */ }
   }, [defaultProfile?.ip_address]);
+  useVisiblePolling(
+    pollRpSession,
+    defaultProfile ? 4000 : 0,
+    [defaultProfile?.ip_address],
+  );
 
   const fetchStatus = async () => {
     if (!defaultProfile) return;

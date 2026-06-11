@@ -1,5 +1,6 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import Badge from './UI/Badge';
+import useVisiblePolling from '../hooks/useVisiblePolling';
 
 const API = '/api';
 
@@ -48,15 +49,14 @@ function LogViewer({ logs: systemLogs, onRefresh, profiles }) {
     });
   };
 
-  useEffect(() => {
+  // 3 s (was 2 s) for both log-server status pollers, visibility-gated.
+  // Coalesced into a single visibility-aware tick so we only schedule
+  // ONE timer instead of paying double for two separate intervals.
+  const pollLogServers = useCallback(() => {
     fetchLuaStatus();
     fetchKernelStatus();
-    const interval = setInterval(() => {
-      fetchLuaStatus();
-      fetchKernelStatus();
-    }, 2000);
-    return () => clearInterval(interval);
   }, []);
+  useVisiblePolling(pollLogServers, 3000);
 
   useEffect(() => {
     if (autoScroll && logContainerRef.current) {

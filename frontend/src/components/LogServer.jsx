@@ -1,4 +1,5 @@
-import { useState, useEffect } from 'react';
+import { useState, useCallback } from 'react';
+import useVisiblePolling from '../hooks/useVisiblePolling';
 
 const API = '/api';
 
@@ -7,7 +8,7 @@ function LogServer({ profiles }) {
   const [logs, setLogs] = useState([]);
   const [port, setPort] = useState('8080');
 
-  const fetchStatus = async () => {
+  const fetchStatus = useCallback(async () => {
     try {
       const res = await fetch(`${API}/logserver/status`);
       const data = await res.json();
@@ -16,13 +17,14 @@ function LogServer({ profiles }) {
     } catch (err) {
       console.error('Failed to fetch log server status:', err);
     }
-  };
-
-  useEffect(() => {
-    fetchStatus();
-    const interval = setInterval(fetchStatus, 1000);
-    return () => clearInterval(interval);
   }, []);
+
+  // 3 s while the LogServer tab is visible. The previous 1 s poll fired
+  // 60×/min even with the tab in the background; the new cadence still
+  // surfaces fresh log lines within a couple of seconds while the user is
+  // actually looking at them. Visibility-gated so phone PWAs with this
+  // tab parked offscreen don't drain the radio.
+  useVisiblePolling(fetchStatus, 3000);
 
   const handleStart = async () => {
     try {
