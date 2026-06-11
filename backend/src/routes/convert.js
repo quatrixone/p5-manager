@@ -16,6 +16,11 @@ import { getDatabase, saveDatabase, log } from '../db/sqlite.js';
 const require = createRequire(import.meta.url);
 const archiver = require('archiver');
 import { uploadDirToSmb as smbUploadDir } from '../lib/smb.js';
+// payloads / mkpfs / downloads now live under userDataDir (/data by
+// default) so they're visible in the file-browser quick tabs and the
+// user can scp/rsync into them directly. See backend/src/lib/paths.js
+// for the rationale and migration notes.
+import { payloadsDir, mkpfsWorkDir, downloadsDir, USER_QUICK_TABS } from '../lib/paths.js';
 
 const router = express.Router();
 
@@ -30,8 +35,6 @@ const dataDir = process.env.DATA_DIR
   ? path.resolve(process.env.DATA_DIR)
   : path.join(path.resolve(__dirname, '../../..'), 'data');
 const projectRoot = path.resolve(dataDir, '..');
-const mkpfsWorkDir = path.join(dataDir, 'mkpfs');
-const payloadsDir = path.join(dataDir, 'payloads');
 
 const MM_REPO = 'PSBrew/MicroMount';
 const RELEASE_KEY = 'micromount_release_state';
@@ -715,6 +718,148 @@ router.post('/local/delete', (req, res) => {
   }
 });
 
+// Create a directory under the local allow-listed roots. Used by the
+// FolderPickerModal's "+ New folder" inline create. Recursive mkdir
+// so a/b/c works in one shot. 200 + { existed: true } when the dir is
+// already there (idempotent).
+router.post('/local/mkdir', (req, res) => {
+  try {
+    const { path: target } = req.body || {};
+    if (!target) return res.status(400).json({ error: 'path required' });
+    const abs = path.resolve(target);
+    if (!isLocalPathAllowed(abs)) return res.status(403).json({ error: `Path not allowed: ${abs}` });
+    const existed = fs.existsSync(abs);
+    if (existed && !fs.statSync(abs).isDirectory()) {
+      return res.status(400).json({ error: 'Path exists and is not a directory' });
+    }
+    fs.mkdirSync(abs, { recursive: true });
+    if (!existed) log('info', `local mkdir ${abs}`);
+    res.json({ success: true, existed, path: abs });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Move/rename a local file or folder. `src` and `dst` are FULL paths;
+// caller should suffix dst with the same basename the user expects to
+// see in the destination directory (the frontend does this when
+// translating cut/paste into a backend call). Both sides must be in
+// the allow-listed root set. EXDEV (cross-device) falls back to a
+// recursive copy + remove so moves between e.g. /mnt/sda1 and /data
+// still work — basic-ftp / smbclient don't enter this path.
+router.post('/local/move', (req, res) => {
+  try {
+    const { src, dst, isDir, overwrite } = req.body || {};
+    if (!src || !dst) return res.status(400).json({ error: 'src and dst required' });
+    const absSrc = path.resolve(src);
+    const absDst = path.resolve(dst);
+    if (!isLocalPathAllowed(absSrc)) return res.status(403).json({ error: `Source not allowed: ${absSrc}` });
+    if (!isLocalPathAllowed(absDst)) return res.status(403).json({ error: `Destination not allowed: ${absDst}` });
+    if (!fs.existsSync(absSrc)) return res.status(404).json({ error: 'Source not found' });
+    if (absSrc === absDst) return res.status(400).json({ error: 'Source and destination are identical' });
+    // Refuse to drop a folder INTO ITSELF — easy to do by mistake when
+    // the same folder is open as both clipboard source and paste target.
+    if (isDir && (absDst === absSrc || absDst.startsWith(absSrc + path.sep))) {
+      return res.status(400).json({ error: 'Cannot move a folder into itself' });
+    }
+    if (fs.existsSync(absDst) && !overwrite) {
+      return res.status(409).json({ error: 'Destination exists', code: 'EEXIST' });
+    }
+    try {
+      if (fs.existsSync(absDst) && overwrite) fs.rmSync(absDst, { recursive: true, force: true });
+      fs.renameSync(absSrc, absDst);
+    } catch (err) {
+      if (err.code !== 'EXDEV') throw err;
+      // Cross-device rename: copy then delete source.
+      fs.cpSync(absSrc, absDst, { recursive: true, force: true });
+      fs.rmSync(absSrc, { recursive: !!isDir, force: true });
+    }
+    log('info', `local move ${absSrc} → ${absDst}`);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Recursive copy of a local file or folder. Same allow-list rules as
+// move. Uses Node's native fs.cpSync (Node ≥16.7) — preserves perms
+// and modification times, handles directories transparently.
+router.post('/local/copy', (req, res) => {
+  try {
+    const { src, dst, isDir, overwrite } = req.body || {};
+    if (!src || !dst) return res.status(400).json({ error: 'src and dst required' });
+    const absSrc = path.resolve(src);
+    const absDst = path.resolve(dst);
+    if (!isLocalPathAllowed(absSrc)) return res.status(403).json({ error: `Source not allowed: ${absSrc}` });
+    if (!isLocalPathAllowed(absDst)) return res.status(403).json({ error: `Destination not allowed: ${absDst}` });
+    if (!fs.existsSync(absSrc)) return res.status(404).json({ error: 'Source not found' });
+    if (absSrc === absDst) return res.status(400).json({ error: 'Source and destination are identical' });
+    if (isDir && absDst.startsWith(absSrc + path.sep)) {
+      return res.status(400).json({ error: 'Cannot copy a folder into itself' });
+    }
+    if (fs.existsSync(absDst) && !overwrite) {
+      return res.status(409).json({ error: 'Destination exists', code: 'EEXIST' });
+    }
+    fs.cpSync(absSrc, absDst, { recursive: true, force: !!overwrite, errorOnExist: !overwrite });
+    log('info', `local copy ${absSrc} → ${absDst}`);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Rename / move a file or folder on the PS5 FTP. basic-ftp's `rename`
+// performs an in-place RNFR/RNTO sequence — the PS5 ftpd handles it
+// for both files and directories. Cross-source COPY across FTP is not
+// implemented (would require a full download+upload roundtrip — users
+// should use the existing FTP upload queue for that).
+router.post('/ftp/move', async (req, res) => {
+  try {
+    const { ip, src, dst } = req.body || {};
+    if (!ip || !src || !dst) return res.status(400).json({ error: 'ip, src and dst required' });
+    if (src === dst) return res.status(400).json({ error: 'Source and destination are identical' });
+    const ftp = loadFtp();
+    await withFtp(ip, ftp, async (client) => {
+      await client.rename(src, dst);
+    });
+    log('info', `FTP move ${ip}:${src} → ${dst}`);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Rename / move a file or folder on an SMB share. smbclient's `rename`
+// is an in-share rename (no cross-share moves) and works for files and
+// directories alike. Copy on SMB is not implemented for the same
+// reason as FTP — too expensive without a queue worker, and users can
+// stage-and-push via the existing import / upload pipelines.
+router.post('/sources/:id/move', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    const src = getSource(id);
+    if (!src) return res.status(404).json({ error: 'Source not found' });
+    if (src.type !== 'smb') return res.status(400).json({ error: 'Only SMB sources support move' });
+    const { src: srcPath, dst: dstPath } = req.body || {};
+    if (!srcPath || !dstPath) return res.status(400).json({ error: 'src and dst required' });
+    const cleanSrc = srcPath.replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '');
+    const cleanDst = dstPath.replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '');
+    if (!cleanSrc || !cleanDst) return res.status(400).json({ error: 'Refusing to move share root' });
+    if (cleanSrc === cleanDst) return res.status(400).json({ error: 'Source and destination are identical' });
+
+    const args = buildSmbArgs(src);
+    args.push('-c', `rename "${cleanSrc}" "${cleanDst}"`);
+    const { stdout, stderr, code } = await runSmbClient(args);
+    const combined = (stdout || '') + '\n' + (stderr || '');
+    const err = smbClientError(combined, code);
+    if (err) return res.status(400).json({ error: err.message, smb_status: err.status });
+    log('info', `SMB move //${src.smb_host}/${src.smb_share}/${cleanSrc} → ${cleanDst}`);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.post('/sources/:id/delete', async (req, res) => {
   try {
     const id = parseInt(req.params.id);
@@ -1174,6 +1319,18 @@ const MKPFS_BIN = process.env.MKPFS_BIN || 'mkpfs';
 // Docker we fall back to plain `pip3` which assumes the dev user has
 // write access to whichever site-packages mkpfs lives in.
 const MKPFS_PIP = process.env.MKPFS_PIP || 'pip3';
+
+// PS4 PKG tooling — see Dockerfile for how the venv is provisioned. The
+// wrapper at $PKG_TOOL_BIN exposes `--version` (reads a sibling VERSION
+// file we ship), `<pkg> <outdir>` for unpack, and exits 127 with a clear
+// "not installed" message when the bundled unpkg.py is missing. We resolve
+// pip/venv paths via env too so a non-Docker dev install can override
+// without code changes.
+const PKG_TOOL_BIN = process.env.PKG_TOOL_BIN || 'unpkg';
+const PKG_TOOL_VENV = process.env.PKG_TOOL_VENV || '';
+const PKG_TOOL_UNPKG_URL = process.env.PKG_TOOL_UNPKG_URL
+  || 'https://raw.githubusercontent.com/AlexAltea/orbital/master/tools/unpkg.py';
+
 const MAX_LOG_LINES = 2000;
 const jobs = new Map();
 
@@ -1393,6 +1550,245 @@ router.post('/mkpfs/upgrade', async (req, res) => {
     stdout: lastResult.stdout,
     stderr: lastResult.stderr,
   });
+});
+
+// ─── PS4 PKG tooling (parallel to mkpfs) ──────────────────────────────────
+// Mirrors the mkpfs status/upgrade pattern so the Convert tab can render
+// matching badges and Update buttons for both consoles. PKG unpack is
+// performed by flatz's unpkg.py bundled inside the $PKG_TOOL_VENV; pack
+// (folder → PKG) requires Sony's orbis-pub-cmd and is intentionally NOT
+// available here — the endpoint returns 501 so the UI can show "Coming
+// soon" without burning a queue slot on a known-failing job.
+
+function getInstalledPkgToolVersion() {
+  return new Promise((resolve) => {
+    const proc = spawn(PKG_TOOL_BIN, ['--version']);
+    let out = '';
+    proc.stdout.on('data', d => { out += d.toString(); });
+    proc.stderr.on('data', d => { out += d.toString(); });
+    proc.on('error', () => resolve(null));
+    proc.on('close', () => {
+      const v = out.trim().split('\n')[0] || null;
+      // "unknown" / empty means the wrapper ran but no VERSION file was
+      // populated yet (e.g. mid-upgrade); treat as "installed but version
+      // unreadable" so the UI doesn't flap.
+      if (!v || v === 'unknown') return resolve(null);
+      resolve(v);
+    });
+  });
+}
+
+router.get('/pkg/status', async (req, res) => {
+  // Quick existence probe — if the wrapper isn't even on PATH we report
+  // installed:false so the UI can offer "Install PS4 PKG tooling".
+  const wrapperCheck = await new Promise((resolve) => {
+    const proc = spawn(PKG_TOOL_BIN, ['--version']);
+    let output = '';
+    proc.stdout.on('data', d => { output += d.toString(); });
+    proc.stderr.on('data', d => { output += d.toString(); });
+    proc.on('error', () => resolve({ ok: false, output: '' }));
+    proc.on('close', (code) => resolve({ ok: code === 0, output }));
+  });
+
+  // Even if the wrapper is present, the actual unpkg.py may have been
+  // deleted (we tolerate that case in the Dockerfile build). Reflect it
+  // separately so the UI can guide the user to click "Install / Upgrade".
+  const unpkgPath = PKG_TOOL_VENV ? path.join(PKG_TOOL_VENV, 'bin', 'unpkg.py') : null;
+  const unpkgPresent = unpkgPath ? fs.existsSync(unpkgPath) : false;
+
+  if (!wrapperCheck.ok) {
+    return res.json({
+      installed: false,
+      bin: PKG_TOOL_BIN,
+      venv: PKG_TOOL_VENV || null,
+      unpkg_py_present: unpkgPresent,
+      error: wrapperCheck.output ? wrapperCheck.output.trim() : 'PS4 PKG tool wrapper not found on PATH',
+      pack_supported: false,
+      pack_supported_reason: 'PS4 PKG repack requires Sony orbis-pub-cmd which is not bundled.',
+    });
+  }
+
+  const version = await getInstalledPkgToolVersion();
+  res.json({
+    installed: true,
+    bin: PKG_TOOL_BIN,
+    venv: PKG_TOOL_VENV || null,
+    unpkg_py_present: unpkgPresent,
+    version,
+    pack_supported: false,
+    pack_supported_reason: 'PS4 PKG repack requires Sony orbis-pub-cmd which is not bundled with the manager.',
+  });
+});
+
+// Re-install / refresh the PS4 PKG unpacker. Two paths:
+//   1. body.url provided     → fetch that URL, write to venv (custom build)
+//   2. body empty / no url   → re-copy the vendored unpkg.py from
+//                              /app/src/lib/unpkg.py. Hermetic, no network,
+//                              always works.
+// The vendored copy is what ships in the Docker image; the URL form is
+// reserved for users who want to drop in a newer upstream port.
+router.post('/pkg/upgrade', async (req, res) => {
+  if (!PKG_TOOL_VENV) {
+    return res.status(500).json({ ok: false, error: 'PKG_TOOL_VENV not configured on this host (set it in docker-compose or env)' });
+  }
+  const destPy = path.join(PKG_TOOL_VENV, 'bin', 'unpkg.py');
+  const versionFile = path.join(PKG_TOOL_VENV, 'bin', 'VERSION');
+  const customUrl = (req.body && typeof req.body.url === 'string' && req.body.url.trim())
+    ? req.body.url.trim()
+    : null;
+
+  // Mode 1 — fetch a user-supplied URL.
+  if (customUrl) {
+    try {
+      const r = await fetch(customUrl, {
+        headers: { 'User-Agent': 'p5-manager/pkg-tool-upgrade' },
+        redirect: 'follow',
+        signal: AbortSignal.timeout(30000),
+      });
+      if (!r.ok) throw new Error(`http ${r.status}`);
+      const buf = Buffer.from(await r.arrayBuffer());
+      if (buf.length < 1024) throw new Error(`response suspiciously small (${buf.length} bytes)`);
+      fs.writeFileSync(destPy, buf, { mode: 0o755 });
+      const stamp = new Date().toISOString().slice(0, 10);
+      fs.writeFileSync(versionFile, stamp + '\n');
+      const newVersion = await getInstalledPkgToolVersion();
+      log('info', `[pkg upgrade] downloaded ${customUrl} (${buf.length} bytes), version=${newVersion}`);
+      return res.json({ ok: true, version: newVersion, bytes: buf.length, source_url: customUrl, mode: 'remote' });
+    } catch (e) {
+      log('error', `[pkg upgrade] custom url failed: ${e.message}`);
+      return res.status(500).json({ ok: false, error: e.message, source_url: customUrl });
+    }
+  }
+
+  // Mode 2 — restore from the vendored copy that ships with the backend.
+  // backend/src/lib/unpkg.py is COPYed into /app/src/lib/unpkg.py by the
+  // Dockerfile. In a non-Docker dev install we resolve it relative to
+  // import.meta.url so the same logic applies.
+  try {
+    const vendoredCandidates = [
+      '/app/src/lib/unpkg.py',
+      path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'lib', 'unpkg.py'),
+    ];
+    let vendoredPath = null;
+    for (const p of vendoredCandidates) {
+      if (fs.existsSync(p)) { vendoredPath = p; break; }
+    }
+    if (!vendoredPath) {
+      throw new Error(`vendored unpkg.py not found (tried ${vendoredCandidates.join(', ')})`);
+    }
+    const buf = fs.readFileSync(vendoredPath);
+    fs.writeFileSync(destPy, buf, { mode: 0o755 });
+    const stamp = new Date().toISOString().slice(0, 10);
+    fs.writeFileSync(versionFile, stamp + '\n');
+    const newVersion = await getInstalledPkgToolVersion();
+    log('info', `[pkg upgrade] restored vendored unpkg.py from ${vendoredPath} (${buf.length} bytes), version=${newVersion}`);
+    res.json({ ok: true, version: newVersion, bytes: buf.length, source_url: vendoredPath, mode: 'vendored' });
+  } catch (e) {
+    log('error', `[pkg upgrade] vendored restore failed: ${e.message}`);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// Stub for the future pack endpoint — returns 501 so the UI can render
+// a disabled button with the explanatory string. Keeping the route
+// reserved means an actual implementation later won't break existing
+// frontend calls.
+router.post('/pkg/pack/queue', (req, res) => {
+  res.status(501).json({
+    ok: false,
+    error: 'PS4 PKG repack not implemented',
+    reason: 'Sony orbis-pub-cmd is Windows-only and cannot be redistributed inside this image. Use it on a Windows host, then drop the resulting .pkg into the file browser.',
+  });
+});
+
+// POST /pkg/queue — enqueue a PS4 PKG unpack job.
+// Body: { source_path: '/path/to/Game.pkg', out_name?: 'Game' }
+// Drops a job into the same `jobs` Map the mkpfs converter uses so the
+// existing GET /queue + cancel / retry / delete handlers don't need a
+// parallel surface for PS4. The mode is 'pkg-unpack' so the queue UI can
+// render distinct icons / labels without colliding with mkpfs unpack.
+router.post('/pkg/queue', async (req, res) => {
+  try {
+    const sourcePath = (req.body?.source_path || '').trim();
+    if (!sourcePath) return res.status(400).json({ error: 'source_path required' });
+    if (!fs.existsSync(sourcePath)) return res.status(404).json({ error: `source not found: ${sourcePath}` });
+    if (!isLocalPathAllowed(sourcePath)) {
+      return res.status(403).json({ error: 'source path is in a protected location' });
+    }
+    if (!/\.pkg$/i.test(sourcePath)) {
+      return res.status(400).json({ error: 'source must be a .pkg file' });
+    }
+
+    ensureMkpfsDir();
+    const srcBase = path.basename(sourcePath).replace(/\.pkg$/i, '');
+    const outName = (req.body?.out_name && String(req.body.out_name).trim()) || srcBase;
+    const outDir = path.join(mkpfsWorkDir, outName);
+    if (fs.existsSync(outDir)) {
+      try { fs.rmSync(outDir, { recursive: true, force: true }); } catch (_) {}
+    }
+    fs.mkdirSync(outDir, { recursive: true });
+
+    const job = {
+      id: newJobId(),
+      mode: 'pkg-unpack',
+      status: 'running',
+      command: '',
+      source: sourcePath,
+      source_ftp: null,
+      source_smb: null,
+      output: outDir,
+      log: '',
+      progress: 0,
+      started_at: new Date().toISOString(),
+      finished_at: null,
+      exit_code: null,
+      error: null,
+      pid: null,
+      push_after: false,
+      push_ip: null,
+      push_dest: null,
+      delete_source_after: !!req.body?.delete_source_after,
+      _params: req.body || {},
+    };
+    jobs.set(job.id, job);
+
+    // Fire-and-forget worker. We poll the output dir for progress just
+    // like mkpfs unpack does (unpkg.py is also silent).
+    (async () => {
+      let sourceSize = 0;
+      try { sourceSize = fs.statSync(sourcePath).size; } catch (_) {}
+      appendLog(job, `[manager] $ ${PKG_TOOL_BIN} ${sourcePath} ${outDir}\n`);
+      appendLog(job, `[manager] PS4 PKG unpack via ${PKG_TOOL_BIN} (source=${sourceSize} bytes)\n`);
+      startOutputDirPoller(job, sourceSize);
+      let result;
+      try {
+        result = await spawnIntoJob(job, PKG_TOOL_BIN, [sourcePath, outDir]);
+      } finally {
+        stopOutputDirPoller(job);
+      }
+      job.exit_code = result.code;
+      job.finished_at = new Date().toISOString();
+      if (result.code === 0) {
+        job.status = 'completed';
+        job.progress = 100;
+        job.phase = null;
+        appendLog(job, `\n[manager] PS4 PKG unpack OK → ${outDir}\n`);
+        if (job.delete_source_after) {
+          try { fs.unlinkSync(sourcePath); appendLog(job, `[manager] removed source ${sourcePath}\n`); }
+          catch (e) { appendLog(job, `[manager] could not remove source: ${e.message}\n`); }
+        }
+      } else {
+        job.status = 'failed';
+        job.error = result.error || `unpkg exited with code ${result.code}`;
+        appendLog(job, `\n[manager] PS4 PKG unpack FAILED (code=${result.code})\n`);
+      }
+    })();
+
+    res.json({ ok: true, id: job.id, mode: job.mode });
+  } catch (e) {
+    log('error', `[pkg queue] ${e.message}`);
+    res.status(500).json({ error: e.message });
+  }
 });
 
 const BLOCKED_LOCAL_PREFIXES = [
@@ -1620,13 +2016,32 @@ router.put('/browser-prefs', (req, res) => {
 
 router.get('/local/roots', (req, res) => {
   const roots = [];
+  // User-data dirs come FIRST so the file-browser quick-tab buttons
+  // surface them as the primary entry points. Order: payloads, mkpfs,
+  // downloads — matches how the UI groups "what you uploaded /
+  // converted / downloaded".
+  for (const r of USER_QUICK_TABS) {
+    try {
+      if (fs.existsSync(r) && fs.statSync(r).isDirectory()) roots.push(r);
+    } catch (_) {}
+  }
   for (const r of ['/mnt', '/home', '/data', '/tmp', '/media']) {
     try {
       if (fs.existsSync(r) && fs.statSync(r).isDirectory()) roots.push(r);
     } catch (_) {}
   }
-  roots.push(mkpfsWorkDir);
   res.json({ roots: [...new Set(roots)] });
+});
+
+// Tells the frontend where the canonical user-data folders live, so
+// it can default the Downloader / Convert destination inputs without
+// hard-coding the path. Read-only.
+router.get('/paths', (req, res) => {
+  res.json({
+    payloads: payloadsDir,
+    mkpfs: mkpfsWorkDir,
+    downloads: downloadsDir,
+  });
 });
 
 router.post('/local/import-file', (req, res) => {
@@ -2332,7 +2747,10 @@ router.post('/extract/queue/:id/retry', (req, res) => {
   const id = req.params.id;
   const item = extractQueue.find(q => q.id === id);
   if (!item) return res.status(404).json({ error: 'Item not found' });
-  if (!['failed', 'cancelled', 'push_failed'].includes(item.status)) {
+  // 'completed' is included here too: the user explicitly asked for a retry
+  // button on every (terminal) job, not just failed ones — useful when an
+  // archive was re-uploaded and the previous extract is stale.
+  if (!['failed', 'cancelled', 'push_failed', 'completed'].includes(item.status)) {
     return res.status(400).json({ error: `Cannot retry item in status ${item.status}` });
   }
   item.status = 'queued';
@@ -3224,8 +3642,32 @@ router.post('/convert', async (req, res) => {
 const convertQueue = [];
 let queuePaused = true;
 let queueWorkerRunning = false;
+// Wall-clock timestamp of when queueWorkerRunning was last set to true.
+// Used by the watchdog (a few lines below) to forcibly clear the flag if
+// an executeConvertJob() promise never settles (e.g. an unhandled rejection
+// in a microtask, or a hung await). Without this the queue silently stops
+// processing new items even though queuePaused=false.
+let queueWorkerStartedAt = 0;
 
 function queueWorkerTick() {
+  // Watchdog: if the worker flag has been "running" for ages but nothing in
+  // either convertQueue or the jobs map is actually in a live status, the
+  // flag is stuck from an earlier crash/cancel race. Reset it so the next
+  // queued item can start.
+  if (queueWorkerRunning && queueWorkerStartedAt > 0) {
+    const ageMs = Date.now() - queueWorkerStartedAt;
+    const liveItemInQueue = convertQueue.some(q =>
+      ['starting', 'running', 'staging', 'pushing', 'unpacking'].includes(q.status)
+    );
+    const liveJobInMap = Array.from(jobs.values()).some(j =>
+      ['running', 'pushing', 'starting', 'staging', 'unpacking'].includes(j.status)
+    );
+    if (ageMs > 60_000 && !liveItemInQueue && !liveJobInMap) {
+      log('warn', `[queue] watchdog: queueWorkerRunning stuck for ${Math.round(ageMs/1000)}s with no live job; clearing`);
+      queueWorkerRunning = false;
+      queueWorkerStartedAt = 0;
+    }
+  }
   if (queueWorkerRunning) return;
   if (queuePaused) return;
   if (convertQueue.length === 0) return;
@@ -3237,6 +3679,7 @@ function queueWorkerTick() {
   if (!next) return;
 
   queueWorkerRunning = true;
+  queueWorkerStartedAt = Date.now();
   next.status = 'starting';
 
   try {
@@ -3246,6 +3689,7 @@ function queueWorkerTick() {
       next.error = v.error;
       next.finished_at = new Date().toISOString();
       queueWorkerRunning = false;
+      queueWorkerStartedAt = 0;
       setTimeout(queueWorkerTick, 50);
       return;
     }
@@ -3275,6 +3719,7 @@ function queueWorkerTick() {
       next.finished_at = new Date().toISOString();
     }).finally(() => {
       queueWorkerRunning = false;
+      queueWorkerStartedAt = 0;
       setTimeout(queueWorkerTick, 100);
     });
   } catch (err) {
@@ -3282,6 +3727,7 @@ function queueWorkerTick() {
     next.error = err.message;
     next.finished_at = new Date().toISOString();
     queueWorkerRunning = false;
+    queueWorkerStartedAt = 0;
     setTimeout(queueWorkerTick, 50);
   }
 }
@@ -3445,7 +3891,11 @@ router.post('/convert/queue/:id/retry', (req, res) => {
   // Retrying re-runs the whole conversion + push. We previously gated it
   // out, which left the user with no way to resurrect a push_failed item
   // except deleting and re-adding from scratch.
-  if (!['failed', 'cancelled', 'push_failed'].includes(item.status)) {
+  // 'completed' is included so the user can re-run a finished conversion
+  // (e.g. after replacing the source files or wanting a fresh push) without
+  // re-adding it to the queue from scratch. executeConvertJob already
+  // overwrites the existing output file, so the rerun is safe.
+  if (!['failed', 'cancelled', 'push_failed', 'completed'].includes(item.status)) {
     return res.status(400).json({ error: `Cannot retry item in status ${item.status}` });
   }
   item.status = 'queued';
@@ -3870,7 +4320,9 @@ router.post('/ftp/upload/queue/:id/retry', (req, res) => {
   const id = req.params.id;
   const item = ftpUploadQueue.find(q => q.id === id);
   if (!item) return res.status(404).json({ error: 'Item not found' });
-  if (!['failed', 'cancelled'].includes(item.status)) {
+  // 'completed' included so the user can re-upload the same artefact (e.g.
+  // after deleting it on the PS5) without re-queuing from the Convert tab.
+  if (!['failed', 'cancelled', 'completed'].includes(item.status)) {
     return res.status(400).json({ error: `Cannot retry item in status ${item.status}` });
   }
   item.status = 'queued';
@@ -3880,6 +4332,7 @@ router.post('/ftp/upload/queue/:id/retry', (req, res) => {
   item.started_at = null;
   item.finished_at = null;
   setTimeout(ftpUploadWorkerTick, 50);
+  scheduleQueueSave?.();
   res.json({ success: true });
 });
 
@@ -3890,6 +4343,543 @@ router.get('/ftp/upload/:id', (req, res) => {
   const item = ftpUploadQueue.find(j => j.id === req.params.id);
   if (!item) return res.status(404).json({ error: 'Job not found' });
   res.json(item);
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// INSTALL queue — pushes a .pkg to PS5 FTP (if not already there), then
+// triggers a user-configured installer payload via the elf-loader port to
+// run `sceAppInstUtilInstallByPackage` against the staged file. Modeled on
+// the FTP-upload worker (one job at a time, persistence + pause/resume,
+// per-item log via /install/:id).
+//
+// Settings consumed (in the `settings` table, key = value strings):
+//   pkg_installer_payload_id   — payloads.id of the ELF that performs the
+//                                actual sceAppInstUtilInstallByPackage call
+//                                on the PS5 side. The payload should read
+//                                the staged path from /data/.p5manager-install
+//                                (we write it via FTP just before sending).
+//   pkg_stage_dir              — where on the PS5 to stage incoming .pkg
+//                                files (default /data/pkg-stage). Cleared
+//                                after a successful install if
+//                                `delete_after` is true.
+//   pkg_trigger_file           — full path of the trigger text file on PS5
+//                                that the installer payload reads to learn
+//                                which staged .pkg to install (default
+//                                /data/.p5manager-install).
+//
+// Item lifecycle:
+//   queued → staging (uploading pkg to PS5) → sending (writing trigger +
+//   pushing installer ELF over 9021) → installing (waiting for stdout
+//   from the installer; we tag the socket like /payloads/send/:id does) →
+//   completed | failed | cancelled. We treat the socket-closed event as
+//   "installer exited"; status:"playable" / "error" lines bubble up
+//   through the per-item log and we map them onto the final status.
+// ───────────────────────────────────────────────────────────────────────────
+const installQueue = [];
+let installQueuePaused = true;
+let installQueueWorkerRunning = false;
+
+const INSTALL_DEFAULTS = {
+  stage_dir: '/data/pkg-stage',
+  trigger_file: '/data/.p5manager-install',
+};
+
+function installSettings() {
+  const out = { ...INSTALL_DEFAULTS };
+  const db = getDatabase();
+  const read = (key) => {
+    const stmt = db.prepare('SELECT value FROM settings WHERE key = ?');
+    stmt.bind([key]);
+    let v = null;
+    if (stmt.step()) v = stmt.getAsObject().value;
+    stmt.free();
+    return v;
+  };
+  out.payload_id = read('pkg_installer_payload_id') || null;
+  out.stage_dir  = read('pkg_stage_dir')  || INSTALL_DEFAULTS.stage_dir;
+  out.trigger_file = read('pkg_trigger_file') || INSTALL_DEFAULTS.trigger_file;
+  return out;
+}
+
+function newInstallJobId() { return crypto.randomBytes(8).toString('hex'); }
+
+const MAX_INSTALL_LOG_LINES = 1000;
+function appendInstallLog(item, chunk) {
+  const text = typeof chunk === 'string' ? chunk : chunk.toString();
+  item.log = (item.log || '') + text;
+  const lines = item.log.split('\n');
+  if (lines.length > MAX_INSTALL_LOG_LINES) item.log = lines.slice(-MAX_INSTALL_LOG_LINES).join('\n');
+}
+
+// Pulls the install ELF off the payloads table. Returns the parsed row + an
+// on-disk filepath that exists. Centralised so the worker (and a frontend
+// preflight) can both surface the same "no installer configured" /
+// "installer payload file missing" cases.
+function resolveInstallerPayload(payloadId) {
+  if (!payloadId) throw new Error('No PKG installer payload configured. Settings → Config → "PKG installer payload".');
+  const db = getDatabase();
+  const stmt = db.prepare('SELECT * FROM payloads WHERE id = ?');
+  stmt.bind([parseInt(payloadId)]);
+  let row = null;
+  if (stmt.step()) row = stmt.getAsObject();
+  stmt.free();
+  if (!row) throw new Error(`PKG installer payload #${payloadId} not found in DB`);
+  let fp = row.filepath;
+  if (!fs.existsSync(fp)) {
+    const alt = path.join(payloadsDir, path.basename(fp));
+    if (fs.existsSync(alt)) fp = alt;
+    else throw new Error(`Installer payload file missing on disk: ${row.filepath}`);
+  }
+  return { row, filepath: fp };
+}
+
+// Push the staged .pkg location into a trigger file on the PS5 so the
+// installer ELF knows what to install (the elfldr socket has no clean
+// arg-passing path; the payload reads this file on startup).
+async function writeInstallTrigger(ip, ftpOpts, triggerPath, stagedPkgPath, displayName) {
+  const tmp = path.join(getDiskTmpRoot(), `mm-install-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`);
+  const body = JSON.stringify({
+    pkg_path: stagedPkgPath,
+    content_name: displayName || path.basename(stagedPkgPath),
+    written_at: new Date().toISOString(),
+  });
+  fs.writeFileSync(tmp, body);
+  try {
+    const remoteDir = path.posix.dirname(triggerPath);
+    const remoteName = path.posix.basename(triggerPath);
+    await withFtp(ip, ftpOpts, async (client) => {
+      if (remoteDir && remoteDir !== '/' && remoteDir !== '.') await ensureRemoteDir(client, remoteDir);
+      else await client.cd('/');
+      await client.uploadFrom(tmp, remoteName);
+    });
+  } finally {
+    try { fs.unlinkSync(tmp); } catch (_) {}
+  }
+}
+
+// Stream the installer payload to the ELF loader (default 9021) and
+// capture stdout into the per-item log. Same plumbing as POST
+// /api/payloads/send/:id but inline here so we don't have to bounce
+// through HTTP and so we can map output lines to job status.
+function sendInstallerPayload(ip, port, filepath, displayName, item) {
+  return new Promise(async (resolve) => {
+    const net = await import('net');
+    const client = new net.Socket();
+    const buf = fs.readFileSync(filepath);
+    let buffered = '';
+    let totalOut = 0;
+    let resolved = false;
+    const finish = (outcome) => {
+      if (resolved) return;
+      resolved = true;
+      try { client.destroy(); } catch (_) {}
+      resolve(outcome);
+    };
+
+    client.on('data', (chunk) => {
+      totalOut += chunk.length;
+      const text = buffered + chunk.toString('utf8');
+      const lines = text.split(/\r?\n/);
+      buffered = lines.pop() || '';
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        appendInstallLog(item, line + '\n');
+        // Optional status hint: payloads may print a line that includes
+        // sceAppInstUtilGetInstallStatus's "status" field. We bubble the
+        // last one we see up via item.install_status so the UI surfaces
+        // "playable" or "error" without expanding the log.
+        const m = /\bstatus[:=]\s*"?(installed|playable|installing|transferring|promoting|preparing|error|none)"?/i.exec(line);
+        if (m) item.install_status = m[1].toLowerCase();
+        const p = /\bprog(?:ress)?[:=]\s*([0-9]+(?:\.[0-9]+)?)\s*%?/i.exec(line);
+        if (p) item.progress = Math.min(100, Math.max(0, Math.round(Number(p[1]))));
+      }
+    });
+    client.on('close', () => {
+      if (buffered.trim()) appendInstallLog(item, buffered + '\n');
+      appendInstallLog(item, `[manager] installer socket closed (${totalOut} B captured)\n`);
+      finish({ ok: true, totalOut });
+    });
+    client.on('error', (err) => {
+      if (err.code === 'EPIPE' || err.code === 'ECONNRESET') return; // normal at exit
+      appendInstallLog(item, `[manager] installer socket error: ${err.message}\n`);
+      finish({ ok: false, error: err.message });
+    });
+    // ELF installers can run for a while (multi-GB pkg copy + promotion).
+    // Cap at 30 min; sceAppInstUtilInstallByPackage returns to caller as soon
+    // as the task is queued in DPI, but well-behaved install payloads poll
+    // GetInstallStatus until "playable", so keep the window generous.
+    client.setTimeout(30 * 60_000, () => {
+      appendInstallLog(item, `[manager] installer hit 30min idle timeout\n`);
+      finish({ ok: false, error: 'installer payload timeout (30min)' });
+    });
+
+    client.connect(port, ip, () => {
+      appendInstallLog(item, `[manager] sending installer (${buf.length} B) to ${ip}:${port}\n`);
+      client.write(buf, (err) => {
+        if (err) { finish({ ok: false, error: err.message }); return; }
+        // Half-close write so elfldr sees EOF and starts the ELF, then keep
+        // the read side open to capture the payload's stdout.
+        try { client.end(); } catch (_) {}
+      });
+    });
+  });
+}
+
+async function executeInstallJob(item) {
+  item.log = item.log || '';
+  const cfg = installSettings();
+  const ftp = loadFtp();
+  let installerPayload;
+  try {
+    installerPayload = resolveInstallerPayload(cfg.payload_id);
+  } catch (e) {
+    item.status = 'failed';
+    item.error = e.message;
+    appendInstallLog(item, `[manager] ${e.message}\n`);
+    item.finished_at = new Date().toISOString();
+    return;
+  }
+
+  try {
+    let stagedPkgPath = item.staged_path; // when source is already on PS5
+    let stagedFromUs = false;
+
+    // ── 1. STAGE: ensure the .pkg is on the PS5 FS at a known location ──
+    if (item.source_kind === 'ftp' && item.source_remote_path) {
+      // Already on the console — just install in place.
+      stagedPkgPath = item.source_remote_path;
+      appendInstallLog(item, `[manager] using existing PS5 path: ${stagedPkgPath}\n`);
+    } else {
+      item.status = 'staging';
+      const destDir = (cfg.stage_dir || INSTALL_DEFAULTS.stage_dir).replace(/\/+$/, '');
+      stagedPkgPath = `${destDir}/${item.pkg_name}`;
+      item.staged_path = stagedPkgPath;
+      stagedFromUs = true;
+
+      let localStage = item.local_path || null;
+      let cleanupTmpDir = null;
+      if (item.source_kind === 'remote-smb' || item.source_kind === 'remote-ftp') {
+        const src = getSource(item.source_id);
+        if (!src) throw new Error(`Source #${item.source_id} no longer exists`);
+        cleanupTmpDir = fs.mkdtempSync(path.join(getDiskTmpRoot(), 'mm-install-'));
+        localStage = path.join(cleanupTmpDir, item.pkg_name);
+        appendInstallLog(item, `[manager] staging from ${src.name} (${src.type})\n`);
+        if (src.type === 'ftp') {
+          await withSourceFtp(src, async (client) => { await client.downloadTo(localStage, item.source_remote_path); });
+        } else if (src.type === 'smb') {
+          const relRemote = (item.source_remote_path || '').replace(/\\/g, '/').replace(/^\/+/, '');
+          const args = [...buildSmbArgs(src), '-c', `get "${relRemote}" "${localStage}"`];
+          const { stdout, code } = await runSmbClient(args);
+          const err = smbClientError(stdout, code);
+          if (err) throw new Error(`SMB stage: ${err.message}`);
+        } else {
+          throw new Error(`Unsupported remote source: ${src.type}`);
+        }
+      }
+      if (!localStage || !fs.existsSync(localStage)) {
+        throw new Error('No local source resolved for staging');
+      }
+      let total = 0;
+      try { total = fs.statSync(localStage).size; } catch (_) {}
+      item.bytes_total = total;
+      appendInstallLog(item, `[manager] uploading ${item.pkg_name} → ${item.ip}:${stagedPkgPath}\n`);
+      try {
+        await uploadFileResilient(item.ip, ftp, localStage, destDir, item.pkg_name, {
+          onLog: (line) => appendInstallLog(item, line),
+          onProgress: ({ bytes, total: t }) => {
+            item.bytes_transferred = bytes;
+            // Reserve 0-80% of the progress bar for the upload; the install
+            // itself bumps us to 100 once the payload completes.
+            if (t > 0) item.progress = Math.min(80, Math.round((bytes / t) * 80));
+          },
+        });
+      } finally {
+        if (cleanupTmpDir) try { fs.rmSync(cleanupTmpDir, { recursive: true, force: true }); } catch (_) {}
+      }
+      item.progress = 80;
+    }
+
+    // ── 2. WRITE TRIGGER FILE + 3. SEND INSTALLER PAYLOAD ───────────────
+    item.status = 'sending';
+    appendInstallLog(item, `[manager] writing trigger file ${cfg.trigger_file}\n`);
+    try {
+      await writeInstallTrigger(item.ip, ftp, cfg.trigger_file, stagedPkgPath, item.pkg_name);
+    } catch (e) {
+      throw new Error(`Failed to write trigger file: ${e.message}`);
+    }
+
+    item.status = 'installing';
+    item.progress = Math.max(item.progress || 0, 85);
+    const port = item.installer_port || 9021;
+    appendInstallLog(item, `[manager] launching installer payload ${installerPayload.row.name}\n`);
+    const outcome = await sendInstallerPayload(item.ip, port, installerPayload.filepath, item.pkg_name, item);
+
+    if (!outcome.ok) {
+      throw new Error(outcome.error || 'installer payload reported failure');
+    }
+    // The "error" terminal status comes from the payload's stdout regex
+    // (parsed into item.install_status). Treat anything not "error"/"none"
+    // as success — many installers exit before promotion finishes and the
+    // user can verify on the dashboard.
+    if (item.install_status === 'error' || item.install_status === 'none') {
+      throw new Error(`installer reported status="${item.install_status}"`);
+    }
+    item.progress = 100;
+    item.status = 'completed';
+    appendInstallLog(item, `[manager] install completed\n`);
+    if (item.delete_after && stagedFromUs) {
+      appendInstallLog(item, `[manager] removing staged ${stagedPkgPath}\n`);
+      try {
+        await withFtp(item.ip, ftp, async (client) => { await client.remove(stagedPkgPath); });
+      } catch (e) {
+        appendInstallLog(item, `[manager] WARNING: cleanup failed: ${e.message}\n`);
+      }
+    }
+    log('info', `install ${item.id} completed: ${item.pkg_name}`);
+  } catch (e) {
+    item.status = 'failed';
+    item.error = e.message;
+    appendInstallLog(item, `[manager] ERROR: ${e.message}\n`);
+    log('error', `install ${item.id} failed: ${e.message}`);
+  } finally {
+    item.finished_at = new Date().toISOString();
+  }
+}
+
+function installQueueWorkerTick() {
+  if (installQueueWorkerRunning) return;
+  if (installQueuePaused) return;
+  if (installQueue.length === 0) return;
+  // Don't double-launch installers — one per PS5 at a time. Cheap heuristic:
+  // any non-terminal item blocks the worker.
+  const anyLive = installQueue.some(j => ['running', 'staging', 'sending', 'installing'].includes(j.status));
+  if (anyLive) return;
+  const next = installQueue.find(q => q.status === 'queued');
+  if (!next) return;
+  installQueueWorkerRunning = true;
+  next.status = 'running';
+  next.started_at = new Date().toISOString();
+  executeInstallJob(next).catch(err => {
+    next.status = 'failed';
+    next.error = err.message;
+    next.finished_at = new Date().toISOString();
+  }).finally(() => {
+    installQueueWorkerRunning = false;
+    scheduleQueueSave?.();
+    setTimeout(installQueueWorkerTick, 100);
+  });
+}
+
+setInterval(installQueueWorkerTick, 2000);
+
+function installQueueItemPublic(item) {
+  const { log: _log, ...rest } = item;
+  return { ...rest, log_size: typeof _log === 'string' ? _log.length : 0 };
+}
+
+// ── INSTALL: enqueue ──
+router.post('/install/queue', async (req, res) => {
+  try {
+    const {
+      ip, source_kind, local_path, source_id, source_remote_path,
+      pkg_name, delete_after, installer_port,
+    } = req.body || {};
+    if (!ip) return res.status(400).json({ error: 'ip required' });
+    const kind = source_kind || (local_path ? 'local' : (source_id ? 'remote-smb' : null));
+    if (!kind) return res.status(400).json({ error: 'source_kind / local_path / source_id required' });
+    if (!['local', 'ftp', 'remote-smb', 'remote-ftp'].includes(kind)) {
+      return res.status(400).json({ error: `Unsupported source_kind: ${kind}` });
+    }
+
+    let resolvedName = pkg_name;
+    let resolvedLocal = null;
+    let resolvedRemote = null;
+    let size = 0;
+
+    if (kind === 'local') {
+      if (!local_path) return res.status(400).json({ error: 'local_path required' });
+      const abs = path.resolve(local_path);
+      if (!isLocalPathAllowed(abs)) return res.status(403).json({ error: 'Path not allowed' });
+      if (!fs.existsSync(abs)) return res.status(400).json({ error: 'Source not found' });
+      const st = fs.statSync(abs);
+      if (!st.isFile()) return res.status(400).json({ error: 'Source must be a .pkg file' });
+      resolvedLocal = abs;
+      resolvedName = resolvedName || path.basename(abs);
+      size = st.size;
+    } else if (kind === 'ftp') {
+      if (!source_remote_path) return res.status(400).json({ error: 'source_remote_path required for kind=ftp' });
+      resolvedRemote = source_remote_path;
+      resolvedName = resolvedName || path.posix.basename(source_remote_path);
+    } else {
+      // remote-smb / remote-ftp
+      if (!source_id) return res.status(400).json({ error: 'source_id required' });
+      if (!source_remote_path) return res.status(400).json({ error: 'source_remote_path required' });
+      const src = getSource(source_id);
+      if (!src) return res.status(404).json({ error: 'Source not found' });
+      if (src.type !== 'smb' && src.type !== 'ftp') {
+        return res.status(400).json({ error: 'Install only supports smb / ftp sources' });
+      }
+      resolvedRemote = source_remote_path;
+      resolvedName = resolvedName || path.posix.basename(source_remote_path);
+    }
+
+    if (!resolvedName || !/\.pkg$/i.test(resolvedName)) {
+      return res.status(400).json({ error: 'pkg_name must end with .pkg' });
+    }
+
+    const item = {
+      id: newInstallJobId(),
+      ip,
+      source_kind: kind,
+      local_path: resolvedLocal,
+      source_id: source_id || null,
+      source_remote_path: resolvedRemote,
+      pkg_name: resolvedName,
+      size,
+      staged_path: kind === 'ftp' ? resolvedRemote : null,
+      delete_after: !!delete_after,
+      installer_port: installer_port || 9021,
+      status: 'queued',
+      progress: 0,
+      added_at: new Date().toISOString(),
+      started_at: null,
+      finished_at: null,
+      error: null,
+      install_status: null,
+      log: '',
+    };
+    installQueue.push(item);
+    log('info', `install queue add ${item.id}: ${resolvedName} -> ${ip}`);
+    setTimeout(installQueueWorkerTick, 50);
+    scheduleQueueSave?.();
+    res.json({ success: true, item: installQueueItemPublic(item) });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+router.get('/install/queue', (req, res) => {
+  res.json({ paused: installQueuePaused, items: installQueue.map(installQueueItemPublic) });
+});
+
+router.delete('/install/queue/:id', (req, res) => {
+  const id = req.params.id;
+  const idx = installQueue.findIndex(q => q.id === id);
+  if (idx < 0) return res.status(404).json({ error: 'Item not found' });
+  const item = installQueue[idx];
+  // Live items don't have a tear-down hook (no spawned child here — the
+  // payload runs on PS5) so cancelling just flips state and removes the
+  // row. The payload will keep running on the console, but the worker
+  // promise's .finally still clears installQueueWorkerRunning.
+  const LIVE = ['running', 'staging', 'sending', 'installing'];
+  if (LIVE.includes(item.status)) {
+    item.status = 'cancelled';
+    item.finished_at = new Date().toISOString();
+  }
+  installQueue.splice(idx, 1);
+  scheduleQueueSave?.();
+  res.json({ success: true });
+});
+
+router.post('/install/queue/clear', (req, res) => {
+  const before = installQueue.length;
+  for (let i = installQueue.length - 1; i >= 0; i--) {
+    if (installQueue[i].status === 'queued') installQueue.splice(i, 1);
+  }
+  scheduleQueueSave?.();
+  res.json({ success: true, removed: before - installQueue.length });
+});
+
+router.post('/install/queue/clear-finished', (req, res) => {
+  const before = installQueue.length;
+  for (let i = installQueue.length - 1; i >= 0; i--) {
+    if (['completed', 'failed', 'cancelled'].includes(installQueue[i].status)) installQueue.splice(i, 1);
+  }
+  if (before !== installQueue.length) scheduleQueueSave?.();
+  res.json({ success: true, removed: before - installQueue.length });
+});
+
+router.post('/install/queue/pause', (req, res) => {
+  installQueuePaused = true;
+  log('info', 'install queue paused');
+  scheduleQueueSave?.();
+  res.json({ success: true, paused: true });
+});
+
+router.post('/install/queue/resume', (req, res) => {
+  installQueuePaused = false;
+  log('info', 'install queue resumed');
+  setTimeout(installQueueWorkerTick, 50);
+  scheduleQueueSave?.();
+  res.json({ success: true, paused: false });
+});
+
+router.post('/install/queue/:id/retry', (req, res) => {
+  const id = req.params.id;
+  const item = installQueue.find(q => q.id === id);
+  if (!item) return res.status(404).json({ error: 'Item not found' });
+  if (!['failed', 'cancelled', 'completed'].includes(item.status)) {
+    return res.status(400).json({ error: `Cannot retry item in status ${item.status}` });
+  }
+  item.status = 'queued';
+  item.error = null;
+  item.progress = 0;
+  item.started_at = null;
+  item.finished_at = null;
+  item.install_status = null;
+  item.log = '';
+  setTimeout(installQueueWorkerTick, 50);
+  scheduleQueueSave?.();
+  res.json({ success: true });
+});
+
+router.post('/install/queue/:id/move', (req, res) => {
+  const id = req.params.id;
+  const dir = req.body?.direction;
+  const idx = installQueue.findIndex(q => q.id === id);
+  if (idx < 0) return res.status(404).json({ error: 'Item not found' });
+  if (installQueue[idx].status !== 'queued') return res.status(400).json({ error: 'Only queued items can be moved' });
+  if (dir === 'up' && idx > 0 && installQueue[idx - 1].status === 'queued') {
+    [installQueue[idx - 1], installQueue[idx]] = [installQueue[idx], installQueue[idx - 1]];
+  } else if (dir === 'down' && idx < installQueue.length - 1 && installQueue[idx + 1].status === 'queued') {
+    [installQueue[idx], installQueue[idx + 1]] = [installQueue[idx + 1], installQueue[idx]];
+  } else if (dir === 'top') {
+    const [item] = installQueue.splice(idx, 1);
+    const firstQueued = installQueue.findIndex(q => q.status === 'queued');
+    const insertAt = firstQueued < 0 ? installQueue.length : firstQueued;
+    installQueue.splice(insertAt, 0, item);
+  }
+  scheduleQueueSave?.();
+  res.json({ success: true });
+});
+
+// Per-item log feed — same shape as the FTP-upload variant so the Queue
+// component's existing dropdown picks it up via `logUrlForItem`.
+router.get('/install/:id', (req, res) => {
+  const item = installQueue.find(q => q.id === req.params.id);
+  if (!item) return res.status(404).json({ error: 'Item not found' });
+  res.json({ log: item.log || '' });
+});
+
+// ── INSTALL: settings preflight ──
+// Used by the FileBrowser kebab so we can give an actionable error instead
+// of failing silently inside the worker after the user already queued ten
+// .pkg files. Returns 200 + a list of resolved settings; 400 if not
+// configured.
+router.get('/install/preflight', (req, res) => {
+  try {
+    const cfg = installSettings();
+    const probe = resolveInstallerPayload(cfg.payload_id);
+    res.json({
+      ok: true,
+      payload_id: cfg.payload_id,
+      payload_name: probe.row.name,
+      stage_dir: cfg.stage_dir,
+      trigger_file: cfg.trigger_file,
+    });
+  } catch (e) {
+    res.status(400).json({ ok: false, error: e.message });
+  }
 });
 
 router.get('/queue/all', (req, res) => {
@@ -3905,11 +4895,16 @@ router.get('/queue/all', (req, res) => {
     paused: ftpUploadPaused,
     items: ftpUploadQueue.map(item => ({ ...ftpUploadItemPublic(item), type: 'upload' })),
   };
+  const installData = {
+    paused: installQueuePaused,
+    items: installQueue.map(item => ({ ...installQueueItemPublic(item), type: 'install' })),
+  };
 
   const allItems = [
     ...extractData.items,
     ...convertData.items,
     ...uploadData.items,
+    ...installData.items,
   ].sort((a, b) => {
     const statusOrder = { running: 0, queued: 1, completed: 2, failed: 3, cancelled: 4 };
     const aOrder = statusOrder[a.status] ?? 5;
@@ -3922,11 +4917,13 @@ router.get('/queue/all', (req, res) => {
     extract: extractData,
     convert: convertData,
     upload: uploadData,
+    install: installData,
     all: allItems,
     paused: {
       extract: extractQueuePaused,
       convert: queuePaused,
       upload: ftpUploadPaused,
+      install: installQueuePaused,
     },
   });
 });
@@ -3935,6 +4932,7 @@ router.post('/queue/pause-all', (req, res) => {
   extractQueuePaused = true;
   queuePaused = true;
   ftpUploadPaused = true;
+  installQueuePaused = true;
   log('info', 'All queues paused');
   res.json({ success: true });
 });
@@ -3943,9 +4941,11 @@ router.post('/queue/resume-all', (req, res) => {
   extractQueuePaused = false;
   queuePaused = false;
   ftpUploadPaused = false;
+  installQueuePaused = false;
   log('info', 'All queues resumed');
   setTimeout(queueWorkerTick, 50);
   setTimeout(ftpUploadWorkerTick, 50);
+  setTimeout(installQueueWorkerTick, 50);
   res.json({ success: true });
 });
 
@@ -3967,6 +4967,12 @@ router.post('/queue/clear-finished', (req, res) => {
   for (let i = ftpUploadQueue.length - 1; i >= 0; i--) {
     if (TERMINAL.includes(ftpUploadQueue[i].status)) {
       ftpUploadQueue.splice(i, 1);
+      removed++;
+    }
+  }
+  for (let i = installQueue.length - 1; i >= 0; i--) {
+    if (TERMINAL.includes(installQueue[i].status)) {
+      installQueue.splice(i, 1);
       removed++;
     }
   }
@@ -4037,6 +5043,7 @@ function _serializeQueues() {
     extract: { paused: extractQueuePaused, items: _normalizeForSave(extractQueue) },
     convert: { paused: queuePaused, items: _normalizeForSave(convertQueue) },
     ftpUpload: { paused: ftpUploadPaused, items: _normalizeForSave(ftpUploadQueue) },
+    install: { paused: installQueuePaused, items: _normalizeForSave(installQueue) },
   };
 }
 
@@ -4098,7 +5105,7 @@ function restoreQueueState() {
       return it;
     };
 
-    const stats = { extract: 0, convert: 0, ftpUpload: 0, demoted: 0 };
+    const stats = { extract: 0, convert: 0, ftpUpload: 0, install: 0, demoted: 0 };
     if (data?.extract?.items) {
       extractQueuePaused = !!data.extract.paused;
       for (const r of data.extract.items) {
@@ -4126,10 +5133,19 @@ function restoreQueueState() {
         stats.ftpUpload++;
       }
     }
+    if (data?.install?.items) {
+      installQueuePaused = !!data.install.paused;
+      for (const r of data.install.items) {
+        const it = demote(r);
+        if (it.status !== r.status) stats.demoted++;
+        installQueue.push(it);
+        stats.install++;
+      }
+    }
     log('info',
       `[queue-persist] restored: extract=${stats.extract} convert=${stats.convert} ` +
-      `ftp=${stats.ftpUpload} demoted_running=${stats.demoted} ` +
-      `paused: extract=${extractQueuePaused} convert=${queuePaused} ftp=${ftpUploadPaused}`
+      `ftp=${stats.ftpUpload} install=${stats.install} demoted_running=${stats.demoted} ` +
+      `paused: extract=${extractQueuePaused} convert=${queuePaused} ftp=${ftpUploadPaused} install=${installQueuePaused}`
     );
   } catch (e) {
     log('warn', `[queue-persist] restore failed (starting fresh): ${e.message}`);

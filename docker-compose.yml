@@ -39,7 +39,13 @@ services:
       # required.
       - /mnt:/mnt
       - /home:/home
-      - /data:/data
+      # Host /data is exposed as three explicit subfolders instead of the
+      # whole tree so unrelated dirs (notably /data/compose with other
+      # docker-compose projects) stay out of the FileBrowser. Add another
+      # bind here if a new manager-relevant subfolder is introduced.
+      - /data/payloads:/data/payloads
+      - /data/downloads:/data/downloads
+      - /data/mkpfs:/data/mkpfs
     environment:
       - NODE_ENV=production
       - PORT=3001

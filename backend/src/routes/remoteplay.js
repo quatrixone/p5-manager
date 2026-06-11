@@ -1,7 +1,66 @@
 import express from 'express';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import { Client as FtpClient } from 'basic-ftp';
 import { getDatabase, saveDatabase, log } from '../db/sqlite.js';
+import { pushKernelLogEntry } from './kernelLogServer.js';
+import { payloadsDir } from '../lib/paths.js';
 
 const router = express.Router();
+
+// Default trigger file path used by offact.elf to pick up a PSN
+// account_id supplied by the manager when no on-console PSN account is
+// linked yet. Matches TRIGGER_PATH in p5managerclient/offact/main.c.
+const OFFACT_TRIGGER_DEFAULT = '/data/.p5manager-offact';
+
+// Anonymous PS5 ftpsrv on GoldHEN listens on 2121 by default. We keep
+// the trigger upload self-contained instead of going through convert.js'
+// withFtp helper because /activate-account is a small one-shot path.
+async function writeOffactTrigger(ip, triggerPath, accountIdB64, onlineId) {
+  const tmp = path.join(os.tmpdir(), `offact-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`);
+  const body =
+    `# P5 Manager - host-supplied PSN account_id for offact.elf\n` +
+    `${accountIdB64}\n` +
+    (onlineId ? `${onlineId}\n` : '');
+  fs.writeFileSync(tmp, body);
+  try {
+    const client = new FtpClient(10_000);
+    client.ftp.verbose = false;
+    try {
+      await client.access({ host: ip, port: 2121, user: 'anonymous', password: '', secure: false });
+      const remoteDir = path.posix.dirname(triggerPath);
+      const remoteName = path.posix.basename(triggerPath);
+      if (remoteDir && remoteDir !== '/' && remoteDir !== '.') {
+        await client.ensureDir(remoteDir);
+      } else {
+        await client.cd('/');
+      }
+      await client.uploadFrom(tmp, remoteName);
+    } finally {
+      try { client.close(); } catch (_) {}
+    }
+  } finally {
+    try { fs.unlinkSync(tmp); } catch (_) {}
+  }
+}
+
+// Best-effort cleanup of the trigger so a stale file from a previous
+// run can't accidentally re-link the wrong PSN account on the next
+// invocation. Failure is non-fatal — offact treats a missing file as
+// "no trigger" which is the correct behaviour after a successful run.
+async function deleteOffactTrigger(ip, triggerPath) {
+  try {
+    const client = new FtpClient(8_000);
+    client.ftp.verbose = false;
+    try {
+      await client.access({ host: ip, port: 2121, user: 'anonymous', password: '', secure: false });
+      await client.remove(triggerPath);
+    } finally {
+      try { client.close(); } catch (_) {}
+    }
+  } catch (_) { /* ignored — see comment above */ }
+}
 
 const SIDECAR_URL = process.env.PYREMOTEPLAY_SIDECAR_URL
   || process.env.CHIAKI_SIDECAR_URL  // legacy env name, kept for older compose files
@@ -154,19 +213,28 @@ async function ensureSessionForIp(ip, opts = {}) {
   if (!userProfile) {
     const profile = loadProfileByIp(ip);
     if (!profile?.rp_user_profile) {
-      throw new Error('No Remote Play credentials for this PS5 - pair first in the Remote Play tab');
+      throw new Error('No Remote Play credentials for this console - pair first in the Console tab');
     }
     try { userProfile = JSON.parse(profile.rp_user_profile); }
-    catch (_) { throw new Error('Stored Remote Play profile is corrupt - re-pair the PS5'); }
+    catch (_) { throw new Error('Stored Remote Play profile is corrupt - re-pair the console'); }
     accountId = profile.psn_account_id || null;
   }
 
+  // Profile-aware DDP host_type: when the user (or auto-detect) labelled
+  // the profile as PS4 we explicitly forward "PS4" to the sidecar so the
+  // LAUNCH packet uses the PS4 service ID. Leaving null preserves the
+  // legacy auto-detect path on the sidecar.
+  const hostTypeProfile = loadProfileByIp(ip);
+  const hostTypeOverride = hostTypeProfile?.console_type === 'ps4' ? 'PS4'
+    : hostTypeProfile?.console_type === 'ps5' ? 'PS5'
+    : null;
+
   // The sidecar uses account_id (decimal) to compute the DDP LAUNCH
-  // credential, which it fires after wakeup to dismiss the PS5 "Press PS
+  // credential, which it fires after wakeup to dismiss the "Press PS
   // button" account-picker that appears after waking from rest mode.
   //
   // Timeout budget (must match sidecar /sessions/start worst case):
-  //   pre-wait for PS5 session lock release : up to 60 s
+  //   pre-wait for session lock release     : up to 60 s
   //   gentle quiet retries (2 × 45 s)       : up to 90 s
   //   actual connect + auth                 : up to 15 s
   //   safety margin                         :    15 s
@@ -179,6 +247,7 @@ async function ensureSessionForIp(ip, opts = {}) {
       account_id: accountId,
       enable_video: enableVideo,
       resolution,
+      ...(hostTypeOverride ? { host_type: hostTypeOverride } : {}),
     },
     { timeout: 180000 });
   ipToSession.set(ip, {
@@ -417,11 +486,15 @@ router.post('/wake', async (req, res) => {
     // session" task on the sidecar (returns `warming: true` when active).
     // The sync part stays well under 5 s; we keep a 20 s ceiling so a deep-
     // standby PS5 with packet loss still has time to respond.
+    const wakeHostType = profile.console_type === 'ps4' ? 'PS4'
+      : profile.console_type === 'ps5' ? 'PS5'
+      : null;
     const data = await sidecar('POST', '/wake', {
       ip,
       account_id: profile.psn_account_id,
       online_id: profile.psn_online_id || null,
       user_profile: userProfile,
+      ...(wakeHostType ? { host_type: wakeHostType } : {}),
     }, { timeout: 20000 });
     res.json({ success: true, ...data });
   } catch (err) {
@@ -469,20 +542,33 @@ router.post('/register', async (req, res) => {
     let acctId = account_id;
     let onlineId = online_id;
     let pidInt = profile_id ? parseInt(profile_id) : null;
-    if ((!acctId || !onlineId) && pidInt) {
+    // Look up console_type alongside account info so we can hand pyremoteplay
+    // an explicit host_type during pair. Falls back to auto-detect when null.
+    let storedConsoleType = null;
+    if (pidInt) {
       const db = getDatabase();
-      const stmt = db.prepare('SELECT psn_account_id, psn_online_id FROM profiles WHERE id = ?');
+      const stmt = db.prepare('SELECT psn_account_id, psn_online_id, console_type FROM profiles WHERE id = ?');
       stmt.bind([pidInt]);
       if (stmt.step()) {
         const row = stmt.getAsObject();
         if (!acctId) acctId = row.psn_account_id;
         if (!onlineId) onlineId = row.psn_online_id;
+        storedConsoleType = row.console_type || null;
       }
       stmt.free();
     }
     if (!acctId) return res.status(400).json({ success: false, error: 'PSN account_id required (run OAuth first)' });
 
-    const data = await sidecar('POST', '/register', { ip, account_id: acctId, pin, online_id: onlineId || null }, { timeout: 60000 });
+    const pairHostType = storedConsoleType === 'ps4' ? 'PS4'
+      : storedConsoleType === 'ps5' ? 'PS5'
+      : null;
+    const data = await sidecar('POST', '/register', {
+      ip,
+      account_id: acctId,
+      pin,
+      online_id: onlineId || null,
+      ...(pairHostType ? { host_type: pairHostType } : {}),
+    }, { timeout: 60000 });
 
     if (pidInt && data.profile) {
       const db = getDatabase();
@@ -497,6 +583,492 @@ router.post('/register', async (req, res) => {
     res.json({ success: true, profile: data.profile });
   } catch (err) {
     res.status(err.status || 500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── Remote Play PIN auto-fetch ─────────────────────────────────────────────
+//
+// Sends rp-get-pin.elf (vendored under ../../p5managerclient/rp-get-pin/,
+// built into data/payloads/) to the console's elfldr (port 9021) and harvests the
+// PIN + PSN online_id (display name) + base64 Account ID from stdout.
+// The payload prints exactly:
+//
+//   Pin code: NNNN NNNN
+//   Account ID: <base64>
+//   Timeout: 120 seconds
+//
+// — within ~1-3 s of injection (the swallow-loop patched build can take a
+// few hundred ms longer when kstuff/shadowmount are concurrently running).
+// We keep the socket open longer than the regular send route's 60 s cap
+// since the payload's pairing loop holds it for up to 120 s; we don't
+// need to wait that long — once the parser sees both lines we return.
+//
+// Side effects:
+//   * stdout is tee'd into the kernel-log buffer with the [rp-get-pin.elf]
+//     tag exactly like the regular /api/payloads/send/:id route does, so
+//     the user can still inspect raw payload output from the Logs tab.
+//   * The payload kills any previously-running instance on the PS5 via
+//     SIGTERM (see main.c `find_pid` loop). If found, it prints
+//     "Send again to get a new pin code" and exits. We surface that as a
+//     409 so the UI can prompt the user to click again after a second.
+router.post('/get-pin', async (req, res) => {
+  try {
+    const { ip: rawIp, profile_id } = req.body || {};
+    let ip = rawIp;
+    if (!ip && profile_id) {
+      const db = getDatabase();
+      const stmt = db.prepare('SELECT ip_address FROM profiles WHERE id = ?');
+      stmt.bind([parseInt(profile_id)]);
+      if (stmt.step()) ip = stmt.getAsObject().ip_address;
+      stmt.free();
+    }
+    if (!ip) return res.status(400).json({ success: false, error: 'ip or profile_id required' });
+
+    // Locate the payload on disk. We accept any filename that matches
+    // `rp-get-pin*.elf` so a user can drop a hand-built variant into
+    // data/payloads/ without renaming. Prefer the canonical name first.
+    const candidates = ['rp-get-pin.elf'];
+    try {
+      const extras = fs.readdirSync(payloadsDir)
+        .filter(n => /^rp-get-pin.*\.elf$/i.test(n) && n !== 'rp-get-pin.elf');
+      candidates.push(...extras);
+    } catch (_) { /* dir may not exist yet */ }
+
+    let payloadPath = null;
+    for (const c of candidates) {
+      const p = path.join(payloadsDir, c);
+      if (fs.existsSync(p)) { payloadPath = p; break; }
+    }
+    if (!payloadPath) {
+      return res.status(404).json({
+        success: false,
+        error:
+          'rp-get-pin.elf not found in data/payloads/. Build it from the vendored source at p5managerclient/rp-get-pin/ (make + copy) or upload via the Payloads tab.',
+      });
+    }
+
+    const fileData = fs.readFileSync(payloadPath);
+    log('info', `[get-pin] sending ${path.basename(payloadPath)} (${fileData.length} B) to ${ip}:9021`);
+
+    const net = await import('net');
+    const client = new net.Socket();
+    const TAG = 'rp-get-pin.elf';
+
+    // Parser state. The payload prints the two lines we care about
+    // separated by a newline; we collect data, split on newlines, parse
+    // each complete line. `leftover` holds the trailing partial line
+    // between chunk callbacks (TCP doesn't respect line boundaries).
+    let leftover = '';
+    let pin = null;          // formatted "XXXX XXXX"
+    let accountId = null;    // base64 from the ELF
+    let onlineId = null;     // PSN display name (e.g. "MyHandle")
+    let oldInstanceMessage = null;
+    let totalBytes = 0;
+    let resolved = false;
+    // Buffer of all lines we received so the UI can surface them when
+    // capture fails (the user gets a debug log instead of just a vague
+    // "PIN not captured" message).
+    const capturedLines = [];
+
+    const finish = (extra = {}) => {
+      if (resolved) return;
+      resolved = true;
+      try { client.destroy(); } catch (_) {}
+
+      // When PSN is signed in on the console, rp-get-pin.elf prints the
+      // real PSN account_id (read straight from regmgr) + online_id.
+      // Persist them onto the profile so the rest of the pairing flow
+      // (and the "Not Activated" tab's offact path) sees the link without
+      // requiring the user to also run Sony OAuth. We only persist when
+      // a profile_id was supplied AND we actually captured an id, so we
+      // never wipe an existing OAuth-derived id on a soft failure.
+      if (profile_id && accountId) {
+        try {
+          const db = getDatabase();
+          db.run(
+            'UPDATE profiles SET psn_account_id = ?, psn_online_id = COALESCE(?, psn_online_id) WHERE id = ?',
+            [accountId, onlineId, parseInt(profile_id)],
+          );
+          log('info', `[get-pin] persisted account_id=${accountId} user=${onlineId || '?'} on profile ${profile_id}`);
+        } catch (e) {
+          log('warn', `[get-pin] persist failed: ${e.message}`);
+        }
+      }
+
+      const payload = {
+        success: true,
+        pin,
+        account_id: accountId,
+        online_id: onlineId,
+        log: capturedLines,
+        ...extra,
+      };
+      if (!pin || !accountId) {
+        // Best-effort: surface partial state. Lets the UI decide whether to
+        // ask the user to look at the PS5 screen or retry. We also surface
+        // a smarter diagnostic for the common "ptrace contention" case
+        // (kstuff / shadowmount holding SceShellUI) so the user knows
+        // exactly which fix to try (disable kstuff temporarily).
+        payload.success = !!(pin && accountId);
+        if (!payload.error && !payload.message) {
+          const log = capturedLines.join('\n');
+          if (/timed out|too many spurious|gave up waiting|Failed to allocate pincode/i.test(log)) {
+            payload.message =
+              'rp-get-pin.elf could not acquire SceShellUI (probably kstuff/shadowmount is holding ptrace). ' +
+              'Soft-reboot the PS5 and run rp-get-pin.elf before any other payload, or disable kstuff temporarily.';
+          } else if (oldInstanceMessage) {
+            payload.message = oldInstanceMessage;
+          } else if (capturedLines.length === 0) {
+            payload.message =
+              'No output from rp-get-pin.elf - the ELF may not have started (elfldr issue) or SceShellUI is stuck. Try sending the payload manually from the Payloads tab to debug.';
+          } else {
+            payload.message =
+              'Payload ran but PIN line was not captured. See "log" field for details. The PIN may still be showing on your PS5 screen as a notification.';
+          }
+        }
+      }
+      res.json(payload);
+    };
+
+    client.on('data', (chunk) => {
+      totalBytes += chunk.length;
+      const text = leftover + chunk.toString('utf8');
+      const lines = text.split(/\r?\n/);
+      leftover = lines.pop() || '';
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        pushKernelLogEntry(line, ip, TAG);
+        capturedLines.push(line);
+
+        // "Pin code: 1234 5678"
+        const mPin = /Pin code:\s*(\d{4})\s+(\d{4})/i.exec(line);
+        if (mPin) pin = `${mPin[1]} ${mPin[2]}`;
+
+        // "User: <psn-online-id>"  (may be "(unknown)" if SDK call fails)
+        const mUser = /^User:\s*(.+?)\s*$/.exec(line);
+        if (mUser && mUser[1] !== '(unknown)') onlineId = mUser[1];
+
+        // "Account ID: <base64>"
+        const mAcc = /Account ID:\s*([A-Za-z0-9+/=]{8,})/.exec(line);
+        if (mAcc) accountId = mAcc[1];
+
+        // Old-instance bail: payload prints this and exits if a previous
+        // copy was still running (it sent SIGTERM to it). The OLD copy
+        // is still happily generating a PIN and showing notifications on
+        // the PS5 screen — we surface that to the UI so the user clicks
+        // again in 2 s, by which time the old copy has shut down cleanly.
+        if (/Send again to get a new pin code/i.test(line)) {
+          oldInstanceMessage = 'Old payload instance was running; it was just terminated. Try again in 2 s.';
+        }
+      }
+
+      if (pin && accountId) {
+        log('info', `[get-pin] captured PIN ${pin} + user=${onlineId || '?'} + Account ID ${accountId}`);
+        finish();
+      }
+    });
+
+    client.on('close', () => {
+      if (leftover.trim()) pushKernelLogEntry(leftover, ip, TAG);
+      log('info', `[get-pin] socket closed, ${totalBytes} B received`);
+      finish();
+    });
+
+    client.on('error', (err) => {
+      if (err.code === 'EPIPE' || err.code === 'ECONNRESET') return;
+      log('warn', `[get-pin] socket error: ${err.message}`);
+      if (!resolved) {
+        resolved = true;
+        try { client.destroy(); } catch (_) {}
+        res.status(502).json({ success: false, error: `socket error: ${err.message}` });
+      }
+    });
+
+    // Cap how long we wait for the parser. Best case: ~3 s when there's
+    // no old instance to clean up. Worst case: ~25 s when we have to
+    // SIGKILL an old instance, wait 6 s for SceShellUI to respawn, then
+    // burn another ~15 s polling 0x80FC0004 from sceRemoteplayGeneratePinCode
+    // until the Remote Play service is ready. 45 s gives ample headroom.
+    client.setTimeout(45_000, () => {
+      log('warn', `[get-pin] read timeout (${totalBytes} B captured)`);
+      if (!resolved) finish();
+      else { try { client.destroy(); } catch (_) {} }
+    });
+
+    let writeOk = false;
+    await new Promise((resolve, reject) => {
+      client.connect(9021, ip, () => {
+        client.write(fileData, (err) => {
+          if (err) return reject(err);
+          writeOk = true;
+          // Half-close write side — elfldr reads until EOF before executing.
+          client.end();
+          resolve();
+        });
+      });
+      const earlyError = (err) => { if (!writeOk) reject(err); };
+      client.once('error', earlyError);
+    });
+  } catch (err) {
+    log('error', `[get-pin] failed: ${err.message}`);
+    if (!res.headersSent) res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── Offline PSN activation (offact.elf) ────────────────────────────────────
+//
+// Sends offact.elf (vendored under ../../p5managerclient/offact/, built into
+// data/payloads/) to the console's elfldr (port 9021). The payload picks
+// up the currently signed-in user, derives a deterministic account_id
+// from the display name, writes it + type "np" + flags 0x1002 to the
+// user's registry slot, and prints structured stdout:
+//
+//   User: <display name>
+//   Account ID: <base64 of raw 8 bytes>
+//   Account ID (hex): 0x<16 hex>
+//   Slot: <1..16>
+//   Activated: yes|already|failed
+//
+// We forward the captured account_id back to the caller and, if a
+// profile_id was supplied, also persist it into profiles.psn_account_id /
+// psn_online_id so the rest of the pairing flow ("Auto-fetch PIN" +
+// "Pair") works without the OAuth step. This is the offline-activation
+// counterpart to /oauth/exchange.
+router.post('/activate-account', async (req, res) => {
+  try {
+    const {
+      ip: rawIp,
+      profile_id,
+      force,
+      // Optional override: caller can supply a base64 account_id + online_id
+      // directly (e.g. right after running PSN OAuth in the UI). When
+      // omitted we fall back to the profile's stored psn_account_id.
+      account_id: bodyAccountId,
+      online_id: bodyOnlineId,
+      // Optional custom trigger path - matches the build-time TRIGGER_PATH
+      // in offact.elf. Defaults to /data/.p5manager-offact.
+      trigger_path: bodyTriggerPath,
+    } = req.body || {};
+
+    let ip = rawIp;
+    let psnAccountId = bodyAccountId || null;
+    let psnOnlineId = bodyOnlineId || null;
+    if ((!ip || !psnAccountId) && profile_id) {
+      const db = getDatabase();
+      const stmt = db.prepare('SELECT ip_address, psn_account_id, psn_online_id FROM profiles WHERE id = ?');
+      stmt.bind([parseInt(profile_id)]);
+      if (stmt.step()) {
+        const row = stmt.getAsObject();
+        if (!ip) ip = row.ip_address;
+        if (!psnAccountId) psnAccountId = row.psn_account_id || null;
+        if (!psnOnlineId) psnOnlineId = row.psn_online_id || null;
+      }
+      stmt.free();
+    }
+    if (!ip) return res.status(400).json({ success: false, error: 'ip or profile_id required' });
+
+    const triggerPath = bodyTriggerPath || OFFACT_TRIGGER_DEFAULT;
+
+    // If we have a host-side PSN account_id (either passed inline or
+    // pulled off the profile), drop it into the trigger file on the
+    // PS5 BEFORE we send the ELF. offact.elf reads the file when the
+    // console's own registry slot is empty (no PSN linked yet) and
+    // adopts that account_id - this is the "manager linked PSN
+    // remotely via OAuth, mirror it onto the console" path.
+    let triggerWritten = false;
+    if (psnAccountId) {
+      try {
+        await writeOffactTrigger(ip, triggerPath, psnAccountId, psnOnlineId || null);
+        triggerWritten = true;
+        log('info', `[offact] trigger file written to ${ip}:${triggerPath} (account=${psnOnlineId || psnAccountId})`);
+      } catch (e) {
+        // Non-fatal: offact still works against an on-console PSN
+        // account if one exists. We just won't be able to adopt the
+        // host-supplied id.
+        log('warn', `[offact] trigger upload failed (${e.message}); falling back to on-console registry`);
+      }
+    } else {
+      log('info', `[offact] no host PSN account_id available (profile not OAuth-linked); offact will rely on the on-console registry`);
+    }
+
+    const candidates = ['offact.elf'];
+    try {
+      const extras = fs.readdirSync(payloadsDir)
+        .filter(n => /^offact.*\.elf$/i.test(n) && n !== 'offact.elf');
+      candidates.push(...extras);
+    } catch (_) { /* dir may not exist */ }
+
+    let payloadPath = null;
+    for (const c of candidates) {
+      const p = path.join(payloadsDir, c);
+      if (fs.existsSync(p)) { payloadPath = p; break; }
+    }
+    if (!payloadPath) {
+      return res.status(404).json({
+        success: false,
+        error:
+          'offact.elf not found in data/payloads/. Build it from the vendored source at p5managerclient/offact/ (make + copy) or upload via the Payloads tab.',
+      });
+    }
+
+    const fileData = fs.readFileSync(payloadPath);
+    log('info', `[offact] sending ${path.basename(payloadPath)} (${fileData.length} B) to ${ip}:9021${force ? ' (--force)' : ''}`);
+
+    const net = await import('net');
+    const client = new net.Socket();
+    const TAG = 'offact.elf';
+
+    let leftover = '';
+    let user = null;
+    let accountIdB64 = null;
+    let accountIdHex = null;
+    let slot = null;
+    let activated = null; // 'yes' | 'already' | 'failed'
+    let resolved = false;
+    let totalBytes = 0;
+    const capturedLines = [];
+
+    const finish = (extra = {}) => {
+      if (resolved) return;
+      resolved = true;
+      try { client.destroy(); } catch (_) {}
+
+      // Persist the derived/captured account_id onto the profile so the
+      // rest of the pairing flow lights up. Only do this when we got
+      // something usable AND the user passed a profile_id - we never
+      // mutate profiles on a pure success-less probe.
+      let persisted = false;
+      if (profile_id && accountIdB64 && (activated === 'yes' || activated === 'already')) {
+        try {
+          const db = getDatabase();
+          db.run(
+            'UPDATE profiles SET psn_account_id = ?, psn_online_id = ? WHERE id = ?',
+            [accountIdB64, user || null, parseInt(profile_id)]
+          );
+          saveDatabase();
+          persisted = true;
+          log('info', `[offact] persisted account_id=${accountIdB64} user=${user || '?'} on profile ${profile_id}`);
+        } catch (e) {
+          log('warn', `[offact] failed to persist profile: ${e.message}`);
+        }
+      }
+
+      const payload = {
+        success: activated === 'yes' || activated === 'already',
+        activated,                          // 'yes' | 'already' | 'failed' | null
+        user,
+        account_id: accountIdB64,
+        account_id_hex: accountIdHex,
+        slot,
+        persisted,
+        trigger_written: triggerWritten,
+        log: capturedLines,
+        ...extra,
+      };
+
+      // Once offact has reported a terminal outcome, remove the trigger
+      // file so a later run doesn't accidentally re-adopt a stale id.
+      // Fire-and-forget — we already have the payload, no need to block
+      // the response on FTP cleanup.
+      if (triggerWritten) {
+        deleteOffactTrigger(ip, triggerPath).catch(() => {});
+      }
+      if (!payload.success && !payload.error && !payload.message) {
+        if (capturedLines.length === 0) {
+          payload.message = 'No output from offact.elf - the ELF may not have started (elfldr issue) or the PS5 is not reachable.';
+        } else if (activated === 'failed') {
+          payload.message = 'offact.elf ran but registry writes returned an error. See "log" for diagnostics (sceRegMgrSetBin / sceRegMgrSetStr return codes).';
+        } else {
+          payload.message = 'offact.elf ran but no "Activated:" line was captured. See "log" for details.';
+        }
+      }
+      res.json(payload);
+    };
+
+    client.on('data', (chunk) => {
+      totalBytes += chunk.length;
+      const text = leftover + chunk.toString('utf8');
+      const lines = text.split(/\r?\n/);
+      leftover = lines.pop() || '';
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        pushKernelLogEntry(line, ip, TAG);
+        capturedLines.push(line);
+
+        const mUser = /^User:\s*(.+?)\s*$/.exec(line);
+        if (mUser) user = mUser[1];
+
+        const mAcc = /^Account ID:\s*([A-Za-z0-9+/=]{8,})\s*$/.exec(line);
+        if (mAcc) accountIdB64 = mAcc[1];
+
+        const mHex = /^Account ID \(hex\):\s*(0x[0-9a-fA-F]+)\s*$/.exec(line);
+        if (mHex) accountIdHex = mHex[1];
+
+        const mSlot = /^Slot:\s*(\d+)\s*$/.exec(line);
+        if (mSlot) slot = parseInt(mSlot[1], 10);
+
+        const mAct = /^Activated:\s*(yes|already|failed)\s*$/i.exec(line);
+        if (mAct) activated = mAct[1].toLowerCase();
+      }
+
+      // offact is fast (no ptrace, no SceShellUI involvement); resolve
+      // as soon as we see the terminal "Activated:" line.
+      if (activated) {
+        log('info', `[offact] result: activated=${activated} user=${user || '?'} slot=${slot} id=${accountIdB64 || '?'}`);
+        finish();
+      }
+    });
+
+    client.on('close', () => {
+      if (leftover.trim()) pushKernelLogEntry(leftover, ip, TAG);
+      log('info', `[offact] socket closed, ${totalBytes} B received`);
+      finish();
+    });
+
+    client.on('error', (err) => {
+      if (err.code === 'EPIPE' || err.code === 'ECONNRESET') return;
+      log('warn', `[offact] socket error: ${err.message}`);
+      if (!resolved) {
+        resolved = true;
+        try { client.destroy(); } catch (_) {}
+        res.status(502).json({ success: false, error: `socket error: ${err.message}` });
+      }
+    });
+
+    // offact only does a handful of regmgr syscalls - 5 s is generous.
+    client.setTimeout(8_000, () => {
+      log('warn', `[offact] read timeout (${totalBytes} B captured)`);
+      if (!resolved) finish();
+      else { try { client.destroy(); } catch (_) {} }
+    });
+
+    // Forward the --force flag through to the ELF when caller requested
+    // it. elfldr concats argv after a NUL-terminated cmdline header so
+    // we just append " --force" to the bytes before send. (The simpler
+    // path: a tiny stub that reads argv. offact.elf does that already.)
+    //
+    // NOTE: elfldr on PS5 expects raw ELF only - we don't add argv here
+    // because the protocol doesn't support it. The `--force` flag is
+    // exposed via the OFFACT_FORCE=1 env path inside the ELF instead,
+    // but elfldr doesn't pass env either. For now `force` is a no-op on
+    // wire; we keep the parameter so the UI can pass it once we ship
+    // a force-variant ELF or extend elfldr.
+    let writeOk = false;
+    await new Promise((resolve, reject) => {
+      client.connect(9021, ip, () => {
+        client.write(fileData, (err) => {
+          if (err) return reject(err);
+          writeOk = true;
+          client.end();
+          resolve();
+        });
+      });
+      const earlyError = (err) => { if (!writeOk) reject(err); };
+      client.once('error', earlyError);
+    });
+  } catch (err) {
+    log('error', `[offact] failed: ${err.message}`);
+    if (!res.headersSent) res.status(500).json({ success: false, error: err.message });
   }
 });
 
@@ -597,6 +1169,27 @@ router.get('/sessions/:sid/video.mjpeg', async (req, res) => {
 router.post('/sessions/:sid/input', async (req, res) => {
   try {
     const data = await sidecar('POST', `/sessions/${encodeURIComponent(req.params.sid)}/input`, req.body || {}, { timeout: 5000 });
+    res.json({ success: true, ...data });
+  } catch (err) {
+    res.status(err.status || 502).json({ success: false, error: err.message });
+  }
+});
+
+// Fullscreen "Shake" gesture — proxies to the sidecar's Controller.shake()
+// motion-burst patch. The sidecar fires the animation on a daemon thread
+// and returns immediately, so a short timeout is fine even though the
+// PS5-side effect lasts the full duration_ms.
+router.post('/sessions/:sid/shake', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const payload = {};
+    if (body.duration_ms !== undefined && body.duration_ms !== null) {
+      payload.duration_ms = Math.max(50, Math.min(5000, Number(body.duration_ms) || 700));
+    }
+    if (body.intensity !== undefined && body.intensity !== null) {
+      payload.intensity = Math.max(0, Math.min(1, Number(body.intensity) || 0.85));
+    }
+    const data = await sidecar('POST', `/sessions/${encodeURIComponent(req.params.sid)}/shake`, payload, { timeout: 6500 });
     res.json({ success: true, ...data });
   } catch (err) {
     res.status(err.status || 502).json({ success: false, error: err.message });
@@ -1012,6 +1605,28 @@ router.post('/forget', (req, res) => {
     const db = getDatabase();
     db.run('UPDATE profiles SET rp_user_profile = NULL WHERE id = ?', [parseInt(profile_id)]);
     saveDatabase();
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Counterpart of /oauth/exchange + /activate-account: drops the PSN
+// account binding from the profile. We deliberately do NOT touch
+// rp_user_profile here - the pairing credential is independent and
+// users may want to re-link a different PSN account onto the same
+// pairing (e.g. to fix an account_id mismatch from upstream OAuth).
+router.post('/forget-account', (req, res) => {
+  try {
+    const { profile_id } = req.body || {};
+    if (!profile_id) return res.status(400).json({ success: false, error: 'profile_id required' });
+    const db = getDatabase();
+    db.run(
+      'UPDATE profiles SET psn_account_id = NULL, psn_online_id = NULL WHERE id = ?',
+      [parseInt(profile_id)],
+    );
+    saveDatabase();
+    log('info', `Forgotten PSN account on profile ${profile_id}`);
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });

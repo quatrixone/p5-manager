@@ -351,6 +351,11 @@ class RegisterReq(BaseModel):
     account_id: str
     pin: str
     online_id: Optional[str] = None
+    # Optional override; when omitted we ask /discover before registering
+    # so the value is auto-detected (current behaviour for PS5 stays
+    # identical). Accepted values: "PS5" | "PS4". Anything else is
+    # ignored and we fall back to discovery.
+    host_type: Optional[str] = None
 
 
 def _profile_name(online_id: Optional[str], account_id: str) -> str:
@@ -380,15 +385,23 @@ def _to_user_credential(account_id: str) -> Optional[str]:
         return None
 
 
-def _send_ddp_launch(host: str, account_id: str) -> bool:
-    """Best-effort DDP LAUNCH packet to log the user in remotely."""
+def _send_ddp_launch(host: str, account_id: str, host_type: Optional[str] = None) -> bool:
+    """Best-effort DDP LAUNCH packet to log the user in remotely.
+
+    `host_type` accepts "PS5" / "PS4". When omitted we default to PS5
+    (historical behaviour); the wrapper from /start_session passes the
+    auto-detected value from /discover.
+    """
     if not ddp_launch:
         return False
     cred = _to_user_credential(account_id)
     if not cred:
         return False
+    ht = (host_type or "PS5").upper()
+    if ht not in ("PS5", "PS4"):
+        ht = "PS5"
     try:
-        ddp_launch(host, cred, host_type="PS5")
+        ddp_launch(host, cred, host_type=ht)
         return True
     except Exception as e:  # noqa: BLE001
         log.debug("ddp launch failed: %s", e)
@@ -488,10 +501,14 @@ class StartSessionReq(BaseModel):
     # serves a live MJPEG stream. Default false to keep the input-only fast path
     # (zero CPU for frame decoding, ~10 MB less RAM).
     enable_video: Optional[bool] = False
-    # PS5 Remote Play stream resolution. Only 360p / 540p / 720p are
+    # PS5 / PS4 Remote Play stream resolution. Only 360p / 540p / 720p are
     # accepted - 1080p was removed because the MJPEG re-encode pass at
     # 1080p saturates a Pi-class CPU. 720p is the sweet spot.
     resolution: Optional[str] = "720p"
+    # Optional console hint ("PS5" / "PS4"). When omitted we keep the
+    # legacy auto-detect path (discover before LAUNCH so the host_type
+    # is filled in from the live device).
+    host_type: Optional[str] = None
 
 # Resolution allowlist for the stream knob above. Anything outside falls
 # back to the default - pyremoteplay raises a confusing AttributeError if
@@ -572,9 +589,18 @@ async def _prime_rp_control_port(device, ip: str, name: str, profiles, aid: str,
             log.info("PS5 %s woke - waiting 2 s, then sending LAUNCH (login)", ip)
             await asyncio.sleep(2.0)
         if aid:
-            ok = _send_ddp_launch(ip, aid)
+            # Derive the console family from whatever pyremoteplay last
+            # filled into device.status (PS5 / PS4 strings). When unknown
+            # we let _send_ddp_launch default to PS5 which matches legacy
+            # behaviour.
+            ddp_host_type = None
+            try:
+                ddp_host_type = (device.status or {}).get("host-type")
+            except Exception:  # noqa: BLE001
+                ddp_host_type = None
+            ok = _send_ddp_launch(ip, aid, host_type=ddp_host_type)
             if ok:
-                log.info("DDP launch sent to %s", ip)
+                log.info("DDP launch sent to %s (%s)", ip, ddp_host_type or "PS5")
                 await asyncio.sleep(3.0 if was_standby else 1.5)
             else:
                 log.warning("Could not send DDP launch (no credential or pyremoteplay missing)")
@@ -945,8 +971,17 @@ async def _session_start_impl(req: StartSessionReq):
             except Exception:  # noqa: BLE001
                 pass
             if aid:
-                if _send_ddp_launch(req.ip, aid):
-                    log.info("re-prime: DDP launch sent to %s", req.ip)
+                # Prefer the client-supplied host_type, otherwise pull from
+                # device.status (auto-detect). _send_ddp_launch falls back
+                # to PS5 if both are unknown.
+                ddp_host_type = req.host_type
+                if not ddp_host_type:
+                    try:
+                        ddp_host_type = (device.status or {}).get("host-type")
+                    except Exception:  # noqa: BLE001
+                        ddp_host_type = None
+                if _send_ddp_launch(req.ip, aid, host_type=ddp_host_type):
+                    log.info("re-prime: DDP launch sent to %s (%s)", req.ip, ddp_host_type or "PS5")
                     await asyncio.sleep(2.0)
 
     if last_err is not None:
@@ -1062,9 +1097,18 @@ async def session_input(session_id: str, req: InputReq):
                 await asyncio.sleep(max(0.02, (req.duration_ms or 80) / 1000.0))
                 controller.button(req.button, "release")
         elif req.stick:
+            # `Controller.stick` accepts EITHER (stick_name, axis='x'|'y',
+            # value=float) OR (stick_name, point=(x, y)). Earlier code
+            # called `controller.stick(req.stick, x, y)` which positionally
+            # mapped to `axis=<float x>, value=<float y>` — `axis.lower()`
+            # then raised AttributeError on the float and the entire stick
+            # input was silently dropped (FastAPI returns 500, browser
+            # ignores it). Pass the (x, y) tuple through the `point`
+            # keyword so both axes update atomically and the upstream
+            # `_should_send.release()` fires exactly once per frame.
             x = max(-1.0, min(1.0, float(req.x or 0)))
             y = max(-1.0, min(1.0, float(req.y or 0)))
-            controller.stick(req.stick, x, y)
+            controller.stick(req.stick, point=(x, y))
         else:
             raise HTTPException(400, "button or stick required")
     except HTTPException:
@@ -1073,6 +1117,57 @@ async def session_input(session_id: str, req: InputReq):
         log.exception("input failed")
         raise HTTPException(500, f"input failed: {e}")
     return {"ok": True}
+
+
+class ShakeReq(BaseModel):
+    """Trigger a one-shot motion-burst (accel + gyro waveform) on the
+    active controller. Used by the fullscreen overlay's Shake button to
+    simulate the player physically shaking the DualSense / DualShock 4.
+
+    Both parameters are optional — the patch in
+    `pyremoteplay_patches._patch_controller_shake` ships sensible defaults
+    (700 ms, 85 % intensity, ~5.5 Hz lateral oscillation) that register
+    reliably on every motion-driven title we tested.
+    """
+
+    duration_ms: Optional[int] = None
+    intensity: Optional[float] = None
+
+
+@app.post("/sessions/{session_id}/shake")
+async def session_shake(session_id: str, req: ShakeReq):
+    s = SESSIONS.get(session_id)
+    if not s:
+        raise HTTPException(404, "session not found")
+    device = s["device"]
+    controller = getattr(device, "controller", None)
+    if not controller:
+        raise HTTPException(500, "controller not available on session")
+    shake_fn = getattr(controller, "shake", None)
+    if shake_fn is None:
+        # Either the patch failed to apply (older container) or pyremoteplay
+        # upstream replaced our monkey-patched method. Tell the UI clearly
+        # so it can show a fix-suggestion instead of silently swallowing
+        # the gesture.
+        raise HTTPException(
+            501,
+            "shake unsupported on this sidecar build (controller.shake not patched)",
+        )
+    s["last_used"] = time.time()
+    # shake() is non-blocking (kicks off a daemon thread), so we can
+    # return immediately. duration/intensity default to the patch's tuned
+    # values when omitted by the caller.
+    kwargs = {}
+    if req.duration_ms is not None:
+        kwargs["duration_ms"] = int(req.duration_ms)
+    if req.intensity is not None:
+        kwargs["intensity"] = float(req.intensity)
+    try:
+        await asyncio.to_thread(shake_fn, **kwargs)
+    except Exception as e:  # noqa: BLE001
+        log.exception("shake failed")
+        raise HTTPException(500, f"shake failed: {e}")
+    return {"ok": True, **kwargs}
 
 
 @app.get("/sessions/{session_id}")
@@ -1308,6 +1403,9 @@ class WakeReq(BaseModel):
     account_id: str
     online_id: Optional[str] = None
     user_profile: Optional[Dict[str, Any]] = None  # preferred - has registered hosts
+    # Optional "PS5" / "PS4" override. When omitted the DDP launch packet
+    # falls back to PS5 — matches the historical behaviour of /wake.
+    host_type: Optional[str] = None
 
 
 @app.post("/wake")
@@ -1349,10 +1447,12 @@ async def wake(req: WakeReq):
             last_err = e
         await asyncio.sleep(0.4)
 
-    # Also fire a DDP LAUNCH so PS5 logs the account in. Without it, after a
-    # remote wakeup the console sits on the "Press PS button" prompt and
-    # Remote Play stays unreachable.
-    launched = _send_ddp_launch(req.ip, req.account_id)
+    # Also fire a DDP LAUNCH so the console logs the account in. Without it,
+    # after a remote wakeup the console sits on the "Press PS button" prompt
+    # and Remote Play stays unreachable. host_type defaults to PS5 inside
+    # _send_ddp_launch when neither the client nor the cached status supply
+    # it; PS4 callers explicitly pass req.host_type="PS4".
+    launched = _send_ddp_launch(req.ip, req.account_id, host_type=req.host_type)
 
     if sent == 0:
         raise HTTPException(502, f"wake failed: {last_err}")

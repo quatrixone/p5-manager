@@ -5,13 +5,12 @@ import { fileURLToPath } from 'url';
 import fetch from 'node-fetch';
 import AdmZip from 'adm-zip';
 import { getDatabase, saveDatabase, log } from '../db/sqlite.js';
-import { ensureDefaultPayloads, getEssentialPayloads } from '../lib/defaultPayloads.js';
+import { ensureDefaultPayloads, getEssentialPayloads, scanPayloadsDir } from '../lib/defaultPayloads.js';
 import { pushKernelLogEntry } from './kernelLogServer.js';
+import { payloadsDir } from '../lib/paths.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const dataDir = process.env.DATA_DIR || path.join(process.cwd(), 'data');
-const payloadsDir = path.join(dataDir, 'payloads');
 
 const router = express.Router();
 
@@ -21,8 +20,41 @@ function ensurePayloadsDir() {
   }
 }
 
+// Heuristic platform detection from filename + URL. Used for any payload
+// the user adds (GitHub fetch, file upload) that doesn't already carry an
+// explicit console_type. PS4 GoldHEN-ecosystem payloads are .bin and
+// frequently include "goldhen" / "hen" / "mira" in the URL; PS5 payloads
+// are .lua / .elf and live under ps5-payload-dev, BestPig, EchoStretch
+// etc. Returns 'ps4' | 'ps5' | null (= "could be either").
+function detectConsoleTypeFromHints({ filename, url } = {}) {
+  const lc = (filename || '').toLowerCase();
+  const urlLc = (url || '').toLowerCase();
+  const blob = lc + ' ' + urlLc;
+
+  // .bin is essentially PS4-only in our context.
+  if (lc.endsWith('.bin')) return 'ps4';
+
+  // Strong PS4 keywords.
+  if (/(^|[^a-z])(goldhen|mira|gold_hen|jkpatch)([^a-z]|$)/.test(blob)) return 'ps4';
+  if (/(\b)(ps4|fw9\.00|fw5\.05|fw7\.55|fw6\.72)(\b)/.test(blob)) return 'ps4';
+
+  // Strong PS5 keywords / repos.
+  if (/ps5-payload-dev|ps5_payload|byepervisor|kstuff|backpork|micromount|p2jb/.test(blob)) return 'ps5';
+  if (/(\b)ps5(\b)/.test(blob)) return 'ps5';
+  if (lc.endsWith('.lua')) return 'ps5';
+
+  // .elf alone isn't a strong signal — both consoles use ELF binaries.
+  return null;
+}
+
 router.get('/', (req, res) => {
   try {
+    // Pick up any .lua/.elf/.bin files dropped into data/payloads/ by
+    // means other than the UI (FTP, SCP, file-browser, host volume).
+    // scanPayloadsDir() is idempotent and bails out fast when nothing
+    // new is on disk, so calling it on every list-request is cheap.
+    try { scanPayloadsDir(); } catch (e) { log('error', `scanPayloadsDir failed: ${e.message}`); }
+
     const db = getDatabase();
     const results = [];
     const stmt = db.prepare('SELECT * FROM payloads ORDER BY created_at DESC');
@@ -109,7 +141,7 @@ router.post('/fetch-url', async (req, res) => {
 
       for (const asset of release.assets) {
         const name = asset.name.toLowerCase();
-        const isLuaOrElf = name.endsWith('.lua') || name.endsWith('.elf');
+        const isLuaOrElf = name.endsWith('.lua') || name.endsWith('.elf') || name.endsWith('.bin');
         const isZip = name.endsWith('.zip');
 
         if (isLuaOrElf || isZip) {
@@ -124,18 +156,19 @@ router.post('/fetch-url', async (req, res) => {
 
               for (const entry of zipEntries) {
                 const entryName = entry.entryName.toLowerCase();
-                if (entryName.endsWith('.lua') || entryName.endsWith('.elf')) {
+                if (entryName.endsWith('.lua') || entryName.endsWith('.elf') || entryName.endsWith('.bin')) {
                   const entryBuffer = entry.getData();
                   const filename = entry.entryName.split('/').pop();
                   const filepath = path.join(payloadsDir, filename);
 
                   fs.writeFileSync(filepath, entryBuffer);
+                  const consoleType = detectConsoleTypeFromHints({ filename, url: downloadUrl });
                   db.run(
-                    'INSERT INTO payloads (name, filename, filepath, source_url, size, version) VALUES (?, ?, ?, ?, ?, ?)',
-                    [filename, filename, filepath, downloadUrl, entryBuffer.length, version]
+                    'INSERT INTO payloads (name, filename, filepath, source_url, size, version, console_type) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                    [filename, filename, filepath, downloadUrl, entryBuffer.length, version, consoleType]
                   );
                   const lastId = db.exec('SELECT last_insert_rowid()')[0].values[0][0];
-                  results.push({ id: lastId, name: filename, size: entryBuffer.length, version });
+                  results.push({ id: lastId, name: filename, size: entryBuffer.length, version, console_type: consoleType });
                   log('info', `Extracted from ZIP ${version}: ${entry.entryName}`);
                 }
               }
@@ -147,12 +180,13 @@ router.post('/fetch-url', async (req, res) => {
             const filepath = path.join(payloadsDir, filename);
 
             fs.writeFileSync(filepath, buffer);
+            const consoleType = detectConsoleTypeFromHints({ filename, url: downloadUrl });
             db.run(
-              'INSERT INTO payloads (name, filename, filepath, source_url, size, version) VALUES (?, ?, ?, ?, ?, ?)',
-              [filename, filename, filepath, downloadUrl, buffer.length, version]
+              'INSERT INTO payloads (name, filename, filepath, source_url, size, version, console_type) VALUES (?, ?, ?, ?, ?, ?, ?)',
+              [filename, filename, filepath, downloadUrl, buffer.length, version, consoleType]
             );
             const lastId = db.exec('SELECT last_insert_rowid()')[0].values[0][0];
-            results.push({ id: lastId, name: filename, size: buffer.length, version });
+            results.push({ id: lastId, name: filename, size: buffer.length, version, console_type: consoleType });
             log('info', `Downloaded from release ${version}: ${asset.name}`);
           }
         }
@@ -189,7 +223,7 @@ router.post('/fetch-url', async (req, res) => {
         throw new Error('Downloaded file is empty');
       }
 
-      if (filename.endsWith('.lua') || filename.endsWith('.elf')) {
+      if (filename.endsWith('.lua') || filename.endsWith('.elf') || filename.endsWith('.bin')) {
         // Check if already exists
         const checkStmt = db.prepare('SELECT id FROM payloads WHERE source_url = ?');
         checkStmt.bind([url]);
@@ -202,15 +236,16 @@ router.post('/fetch-url', async (req, res) => {
         const filepath = path.join(payloadsDir, filename);
         fs.writeFileSync(filepath, buffer);
 
+        const consoleType = detectConsoleTypeFromHints({ filename, url });
         db.run(
-          'INSERT INTO payloads (name, filename, filepath, source_url, size) VALUES (?, ?, ?, ?, ?)',
-          [filename, filename, filepath, url, buffer.length]
+          'INSERT INTO payloads (name, filename, filepath, source_url, size, console_type) VALUES (?, ?, ?, ?, ?, ?)',
+          [filename, filename, filepath, url, buffer.length, consoleType]
         );
         const lastId = db.exec('SELECT last_insert_rowid()')[0].values[0][0];
         saveDatabase();
 
         log('info', `Downloaded: ${filename} (${buffer.length} bytes)`);
-        return res.json({ success: true, downloaded: [{ id: lastId, name: filename, size: buffer.length }] });
+        return res.json({ success: true, downloaded: [{ id: lastId, name: filename, size: buffer.length, console_type: consoleType }] });
       }
     }
 
@@ -230,8 +265,8 @@ router.post('/fetch-url', async (req, res) => {
       const buffer = await response.arrayBuffer().then(ab => Buffer.from(ab));
       const filename = decodeURIComponent(filePath.split('/').pop());
 
-      if (!filename.endsWith('.lua') && !filename.endsWith('.elf')) {
-        return res.status(400).json({ error: 'Only .lua and .elf files are supported' });
+      if (!filename.endsWith('.lua') && !filename.endsWith('.elf') && !filename.endsWith('.bin')) {
+        return res.status(400).json({ error: 'Only .lua, .elf and .bin files are supported' });
       }
 
       // Check if already exists
@@ -246,15 +281,16 @@ router.post('/fetch-url', async (req, res) => {
       const filepath = path.join(payloadsDir, filename);
       fs.writeFileSync(filepath, buffer);
 
+      const consoleType = detectConsoleTypeFromHints({ filename, url });
       db.run(
-        'INSERT INTO payloads (name, filename, filepath, source_url, size) VALUES (?, ?, ?, ?, ?)',
-        [filename, filename, filepath, url, buffer.length]
+        'INSERT INTO payloads (name, filename, filepath, source_url, size, console_type) VALUES (?, ?, ?, ?, ?, ?)',
+        [filename, filename, filepath, url, buffer.length, consoleType]
       );
       const lastId = db.exec('SELECT last_insert_rowid()')[0].values[0][0];
       saveDatabase();
 
       log('info', `Downloaded: ${filename}`);
-      return res.json({ success: true, downloaded: [{ id: lastId, name: filename, size: buffer.length }] });
+      return res.json({ success: true, downloaded: [{ id: lastId, name: filename, size: buffer.length, console_type: consoleType }] });
     }
 
     throw new Error('Invalid GitHub URL');
@@ -266,7 +302,10 @@ router.post('/fetch-url', async (req, res) => {
 
 router.post('/upload', (req, res) => {
   try {
-    const { name, data } = req.body;
+    // `console_type` is optional. When omitted we try to infer from the
+    // filename so the UI can immediately filter the upload into the right
+    // platform bucket; the user can correct via the manual update endpoint.
+    const { name, data, console_type } = req.body;
 
     if (!name || !data) {
       return res.status(400).json({ error: 'Name and data required' });
@@ -275,24 +314,127 @@ router.post('/upload', (req, res) => {
     ensurePayloadsDir();
 
     const buffer = Buffer.from(data, 'base64');
-    const filepath = path.join(payloadsDir, name);
+    const db = getDatabase();
+    const isZip = name.toLowerCase().endsWith('.zip');
 
+    // ZIP path: walk every entry, keep only the supported payload
+    // formats (.lua / .elf / .bin) and ignore everything else (README,
+    // source, screenshots, nested archives, ...). Each extracted file
+    // becomes its own payloads row, so the UI lists them individually
+    // and the user can send / update them independently. The original
+    // archive is not retained on disk - it has no use once unpacked.
+    if (isZip) {
+      let zip;
+      try {
+        zip = new AdmZip(buffer);
+      } catch (zipErr) {
+        return res.status(400).json({ error: `Invalid ZIP file: ${zipErr.message}` });
+      }
+
+      const SUPPORTED_EXT = ['.lua', '.elf', '.bin'];
+      const extracted = [];
+      const skipped = [];
+
+      for (const entry of zip.getEntries()) {
+        if (entry.isDirectory) continue;
+        // Take the basename so nested paths like "Release/foo.elf"
+        // collapse to "foo.elf" - mirrors how /fetch-url handles ZIPs.
+        const filename = entry.entryName.split('/').pop();
+        if (!filename) continue;
+        const lc = filename.toLowerCase();
+
+        if (!SUPPORTED_EXT.some(ext => lc.endsWith(ext))) {
+          skipped.push(entry.entryName);
+          continue;
+        }
+
+        const entryBuffer = entry.getData();
+        const filepath = path.join(payloadsDir, filename);
+        fs.writeFileSync(filepath, entryBuffer);
+
+        const detected = detectConsoleTypeFromHints({ filename });
+        const finalConsoleType = (console_type === 'ps4' || console_type === 'ps5')
+          ? console_type
+          : detected;
+
+        db.run(
+          'INSERT INTO payloads (name, filename, filepath, size, console_type) VALUES (?, ?, ?, ?, ?)',
+          [filename, filename, filepath, entryBuffer.length, finalConsoleType]
+        );
+        const lastId = db.exec('SELECT last_insert_rowid()')[0].values[0][0];
+        extracted.push({
+          id: lastId,
+          name: filename,
+          size: entryBuffer.length,
+          console_type: finalConsoleType,
+        });
+        log('info', `Extracted from ZIP ${name}: ${filename}${finalConsoleType ? ` (${finalConsoleType})` : ''}`);
+      }
+
+      if (extracted.length === 0) {
+        return res.status(400).json({
+          error: 'ZIP contained no supported payloads (.lua / .elf / .bin)',
+          skipped,
+        });
+      }
+
+      saveDatabase();
+      return res.json({
+        success: true,
+        zip: true,
+        extracted,
+        skipped,
+        message: `Extracted ${extracted.length} payload(s) from ZIP${skipped.length ? `; ignored ${skipped.length} unsupported file(s)` : ''}`,
+      });
+    }
+
+    // Plain single-file upload: only accept the supported extensions
+    // so users can't drop random binaries into payloads/ via the form.
+    const lcName = name.toLowerCase();
+    if (!(lcName.endsWith('.lua') || lcName.endsWith('.elf') || lcName.endsWith('.bin'))) {
+      return res.status(400).json({ error: 'Only .lua, .elf, .bin and .zip files are supported' });
+    }
+
+    const filepath = path.join(payloadsDir, name);
     fs.writeFileSync(filepath, buffer);
 
-    const db = getDatabase();
+    const detected = detectConsoleTypeFromHints({ filename: name });
+    const finalConsoleType = (console_type === 'ps4' || console_type === 'ps5')
+      ? console_type
+      : detected;
+
     db.run(
-      'INSERT INTO payloads (name, filename, filepath, size) VALUES (?, ?, ?, ?)',
-      [name, name, filepath, buffer.length]
+      'INSERT INTO payloads (name, filename, filepath, size, console_type) VALUES (?, ?, ?, ?, ?)',
+      [name, name, filepath, buffer.length, finalConsoleType]
     );
 
     const lastId = db.exec('SELECT last_insert_rowid()')[0].values[0][0];
     saveDatabase();
 
-    log('info', `Uploaded payload: ${name}`);
+    log('info', `Uploaded payload: ${name}${finalConsoleType ? ` (${finalConsoleType})` : ''}`);
 
-    res.json({ success: true, id: lastId });
+    res.json({ success: true, id: lastId, console_type: finalConsoleType });
   } catch (error) {
     log('error', `Upload failed: ${error.message}`);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Manual override of the platform tag for an existing payload (e.g. the
+// detector got it wrong, or the user wants to retag an .elf they know is
+// for the other console).
+router.put('/:id/console-type', (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid id' });
+    const raw = req.body?.console_type;
+    const consoleType = (raw === 'ps4' || raw === 'ps5') ? raw : null;
+    const db = getDatabase();
+    db.run('UPDATE payloads SET console_type = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [consoleType, id]);
+    saveDatabase();
+    res.json({ success: true, id, console_type: consoleType });
+  } catch (error) {
+    log('error', `Update payload console_type failed: ${error.message}`);
     res.status(500).json({ error: error.message });
   }
 });
@@ -306,7 +448,14 @@ router.post('/send-raw', async (req, res) => {
     }
 
     const buffer = Buffer.from(data, 'base64');
-    const targetPort = name?.endsWith('.lua') ? 9026 : port;
+    // Same port heuristic as POST /send/:id — .lua = PS5 Lua port 9026,
+    // .bin = PS4 GoldHEN port 9020, anything else honors the explicit
+    // `port` provided by the caller (default falls back to PS5 ELF 9021).
+    const nameLc = (name || '').toLowerCase();
+    let inferred = port;
+    if (nameLc.endsWith('.lua')) inferred = 9026;
+    else if (nameLc.endsWith('.bin')) inferred = 9020;
+    const targetPort = inferred || port || 9021;
 
     log('info', `Sending raw payload to ${ip}:${targetPort}`);
 
@@ -371,7 +520,21 @@ router.post('/send/:id', async (req, res) => {
 
     const fileData = fs.readFileSync(filepath);
 
-    const targetPort = payload.name.toLowerCase().endsWith('.lua') ? 9026 : 9021;
+    // Port selection: the file extension is authoritative for formats
+    // that have a fixed listener port. The frontend always passes
+    // `profile.port` (which is the *ELF* port, usually 9021), so blindly
+    // honouring it would route .lua to 9021 and .bin to 9021 — both
+    // wrong. We only fall back to the caller-supplied `port` for the
+    // ambiguous .elf case, where the user may legitimately want to hit
+    // a non-default listener.
+    //   .lua            → 9026  (PS5 Lua exploit chain)
+    //   .bin / PS4 row  → 9020  (PS4 GoldHEN payload sender)
+    //   .elf and friends→ req.body.port || 9021  (PS5 ELF default)
+    const nameLc = (payload.name || '').toLowerCase();
+    let targetPort;
+    if (nameLc.endsWith('.lua')) targetPort = 9026;
+    else if (nameLc.endsWith('.bin') || payload.console_type === 'ps4') targetPort = 9020;
+    else targetPort = req.body?.port || 9021;
 
     log('info', `Sending ${payload.name} to ${ip}:${targetPort}`);
 

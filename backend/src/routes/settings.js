@@ -1,5 +1,7 @@
 import express from 'express';
+import path from 'path';
 import { getDatabase, saveDatabase, log } from '../db/sqlite.js';
+import { payloadsDir } from '../lib/paths.js';
 
 const router = express.Router();
 
@@ -82,7 +84,7 @@ router.post('/payloads', async (req, res) => {
     const db = getDatabase();
     db.run(
       'INSERT INTO payloads (name, filename, filepath, source_url) VALUES (?, ?, ?, ?)',
-      [name, `${name}.elf`, `/app/data/payloads/${name}.elf`, source_url]
+      [name, `${name}.elf`, path.join(payloadsDir, `${name}.elf`), source_url]
     );
     saveDatabase();
 

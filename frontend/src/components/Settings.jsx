@@ -11,7 +11,11 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
   const [restoreFile, setRestoreFile] = useState(null);
   const [showProfileModal, setShowProfileModal] = useState(false);
   const [editingProfile, setEditingProfile] = useState(null);
-  const [profileForm, setProfileForm] = useState({ name: '', ip: '', mac: '' });
+  // `consoleType` is null = "auto-detect via pyremoteplay /discover on next
+  // status poll" (default for newly-added profiles); explicit 'ps4' / 'ps5'
+  // is the manual override. The status route already auto-fills it when
+  // discovery succeeds, so leaving this blank is usually fine.
+  const [profileForm, setProfileForm] = useState({ name: '', ip: '', mac: '', consoleType: '' });
   const [scanning, setScanning] = useState(false);
   const [discoveredDevices, setDiscoveredDevices] = useState([]);
   const [scanMode, setScanMode] = useState('local');
@@ -19,11 +23,28 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
   // "Default subnet" config field and the scan input, so saving in one place
   // is reflected in the other.
   const [defaultSubnet, setDefaultSubnet] = useState('10.0.0.0/24');
+  // Default destination for the Convert-tab "Auto-upload .ffpfsc to PS5 FTP"
+  // checkbox. Moved here from the per-job UI so users configure once and
+  // every conversion picks the same target. Empty IP = fall back to the
+  // current default profile at submit time (legacy behaviour).
+  const [uploadTargetIp, setUploadTargetIp] = useState('');
+  const [uploadTargetPath, setUploadTargetPath] = useState('/data/homebrew');
+  // PKG installer settings. The install queue stages .pkg files to
+  // `pkg_stage_dir` on the PS5 via FTP, drops a trigger file with the path
+  // at `pkg_trigger_file`, then sends `pkg_installer_payload_id` over the
+  // ELF loader port — that payload (user-supplied for now; build instructions
+  // in p5managerclient/pkg-install/) reads the trigger file and calls
+  // sceAppInstUtilInstallByPackage.
+  const [pkgInstallerPayloadId, setPkgInstallerPayloadId] = useState('');
+  const [pkgStageDir, setPkgStageDir] = useState('/data/pkg-stage');
+  const [pkgTriggerFile, setPkgTriggerFile] = useState('/data/.p5manager-install');
+  const [availablePayloads, setAvailablePayloads] = useState([]);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
 
   useEffect(() => {
     fetchSettings();
+    fetchPayloads();
   }, []);
 
   const fetchSettings = async () => {
@@ -31,8 +52,29 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
       const res = await fetch(`${API}/settings`);
       const data = await res.json();
       if (data.default_subnet) setDefaultSubnet(data.default_subnet);
+      if (data.upload_target_ip !== undefined) setUploadTargetIp(data.upload_target_ip || '');
+      if (data.upload_target_path) setUploadTargetPath(data.upload_target_path);
+      if (data.pkg_installer_payload_id) setPkgInstallerPayloadId(String(data.pkg_installer_payload_id));
+      if (data.pkg_stage_dir) setPkgStageDir(data.pkg_stage_dir);
+      if (data.pkg_trigger_file) setPkgTriggerFile(data.pkg_trigger_file);
     } catch (err) {
       console.error('Failed to fetch settings:', err);
+    }
+  };
+
+  // Only show ELF payloads in the "PKG installer payload" picker — .lua and
+  // .bin won't be sent to port 9021 by sendInstallerPayload, so listing them
+  // would let the user save a non-functional config.
+  const fetchPayloads = async () => {
+    try {
+      const res = await fetch(`${API}/payloads`);
+      if (!res.ok) return;
+      const list = await res.json();
+      if (Array.isArray(list)) {
+        setAvailablePayloads(list.filter(p => /\.elf$/i.test(p.name || '')));
+      }
+    } catch (err) {
+      console.error('Failed to load payloads:', err);
     }
   };
 
@@ -46,6 +88,54 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
         body: JSON.stringify({ key: 'default_subnet', value: defaultSubnet })
       });
       setMessage('Settings saved!');
+    } catch (err) {
+      setMessage('Failed to save: ' + err.message);
+    }
+    setLoading(false);
+    setTimeout(() => setMessage(''), 3000);
+  };
+
+  const saveUploadTarget = async () => {
+    setLoading(true);
+    setMessage('');
+    try {
+      await fetch(`${API}/settings`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: 'upload_target_ip', value: uploadTargetIp })
+      });
+      await fetch(`${API}/settings`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: 'upload_target_path', value: uploadTargetPath })
+      });
+      setMessage('Upload target saved!');
+    } catch (err) {
+      setMessage('Failed to save: ' + err.message);
+    }
+    setLoading(false);
+    setTimeout(() => setMessage(''), 3000);
+  };
+
+  // Three keys in one button so the user always saves a consistent install
+  // setup: empty payload id is allowed (clears the binding so the install
+  // queue errors out cleanly with "no installer configured" instead of
+  // silently failing on /api/payloads/<old-id>).
+  const savePkgInstaller = async () => {
+    setLoading(true);
+    setMessage('');
+    try {
+      await fetch(`${API}/settings`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: 'pkg_installer_payload_id', value: pkgInstallerPayloadId })
+      });
+      await fetch(`${API}/settings`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: 'pkg_stage_dir', value: pkgStageDir })
+      });
+      await fetch(`${API}/settings`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: 'pkg_trigger_file', value: pkgTriggerFile })
+      });
+      setMessage('PKG installer saved!');
     } catch (err) {
       setMessage('Failed to save: ' + err.message);
     }
@@ -110,21 +200,28 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
 
   const openAddProfile = () => {
     setEditingProfile(null);
-    setProfileForm({ name: '', ip: '', mac: '' });
+    setProfileForm({ name: '', ip: '', mac: '', consoleType: '' });
     setShowProfileModal(true);
   };
 
   const openEditProfile = (profile) => {
     setEditingProfile(profile);
-    setProfileForm({ name: profile.name, ip: profile.ip_address, mac: profile.mac_address || '' });
+    setProfileForm({
+      name: profile.name,
+      ip: profile.ip_address,
+      mac: profile.mac_address || '',
+      consoleType: profile.console_type || '',
+    });
     setShowProfileModal(true);
   };
 
   const handleSaveProfile = () => {
+    // Empty string from the <select> becomes null at the backend = auto-detect.
+    const consoleType = profileForm.consoleType || null;
     if (editingProfile) {
-      onProfileUpdate(editingProfile.id, profileForm.name, profileForm.ip, profileForm.mac);
+      onProfileUpdate(editingProfile.id, profileForm.name, profileForm.ip, profileForm.mac, consoleType);
     } else {
-      onProfileCreate(profileForm.name, profileForm.ip, profileForm.mac);
+      onProfileCreate(profileForm.name, profileForm.ip, profileForm.mac, consoleType);
     }
     setShowProfileModal(false);
   };
@@ -234,6 +331,11 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
                 <div className="flex items-center gap-sm">
                   <span className="list-item-title">{profile.name}</span>
                   {profile.is_default && <Badge variant="success">Default</Badge>}
+                  {profile.console_type && (
+                    <span className="console-type-badge" title="Console type stored on this profile">
+                      {profile.console_type.toUpperCase()}
+                    </span>
+                  )}
                 </div>
                 <div className="list-item-subtitle">{profile.ip_address}</div>
                 {profile.mac_address && <div className="text-xs text-muted">MAC: {profile.mac_address}</div>}
@@ -323,6 +425,101 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
         </div>
       </div>
 
+      <div className="comp-card">
+        <div className="comp-card-body">
+          <div className="font-bold mb-sm">Local upload target (PS5 FTP)</div>
+          <div className="text-xs text-muted mb-md">
+            Used by the Convert tab when "Auto-upload .ffpfsc to PS5 FTP when conversion finishes" is enabled.
+            Configure once here and every conversion will push to the same console + path.
+          </div>
+          <div className="mb-md">
+            <label className="text-sm text-muted mb-sm" style={{ display: 'block' }}>Target PS5</label>
+            <select
+              className="select"
+              value={uploadTargetIp}
+              onChange={e => setUploadTargetIp(e.target.value)}
+              style={{ maxWidth: 320 }}
+            >
+              <option value="">— use current default profile —</option>
+              {profiles.map(p => (
+                <option key={p.id} value={p.ip_address}>{p.name} ({p.ip_address})</option>
+              ))}
+            </select>
+          </div>
+          <div className="mb-md">
+            <label className="text-sm text-muted mb-sm" style={{ display: 'block' }}>Destination on PS5</label>
+            <input
+              className="input"
+              type="text"
+              value={uploadTargetPath}
+              onChange={e => setUploadTargetPath(e.target.value)}
+              placeholder="/data/homebrew"
+              style={{ maxWidth: 320 }}
+            />
+          </div>
+          <button className="btn btn-primary" onClick={saveUploadTarget} disabled={loading}>
+            {loading ? '⏳ Saving...' : '💾 Save Upload Target'}
+          </button>
+        </div>
+      </div>
+
+      <div className="comp-card">
+        <div className="comp-card-body">
+          <div className="font-bold mb-sm">PKG installer (fake .pkg)</div>
+          <div className="text-xs text-muted mb-md">
+            The install queue stages .pkg files to <code>{pkgStageDir}</code> on the PS5 via FTP,
+            drops a trigger file at <code>{pkgTriggerFile}</code> with the staged path, then sends
+            the configured installer payload over the ELF loader port (9021). The payload reads
+            the trigger file and calls <code>sceAppInstUtilInstallByPackage</code>.
+            Build instructions are in <code>p5managerclient/pkg-install/README.md</code> in the repo.
+          </div>
+          <div className="mb-md">
+            <label className="text-sm text-muted mb-sm" style={{ display: 'block' }}>Installer payload (ELF)</label>
+            <select
+              className="select"
+              value={pkgInstallerPayloadId}
+              onChange={e => setPkgInstallerPayloadId(e.target.value)}
+              style={{ maxWidth: 420 }}
+            >
+              <option value="">— select an installer ELF —</option>
+              {availablePayloads.map(p => (
+                <option key={p.id} value={p.id}>{p.name}</option>
+              ))}
+            </select>
+            {availablePayloads.length === 0 && (
+              <div className="text-xs text-muted mt-sm">
+                No ELF payloads found. Upload <code>pkg-install.elf</code> in the Payloads tab first.
+              </div>
+            )}
+          </div>
+          <div className="mb-md">
+            <label className="text-sm text-muted mb-sm" style={{ display: 'block' }}>Staging directory on PS5</label>
+            <input
+              className="input"
+              type="text"
+              value={pkgStageDir}
+              onChange={e => setPkgStageDir(e.target.value)}
+              placeholder="/data/pkg-stage"
+              style={{ maxWidth: 420 }}
+            />
+          </div>
+          <div className="mb-md">
+            <label className="text-sm text-muted mb-sm" style={{ display: 'block' }}>Trigger file on PS5</label>
+            <input
+              className="input"
+              type="text"
+              value={pkgTriggerFile}
+              onChange={e => setPkgTriggerFile(e.target.value)}
+              placeholder="/data/.p5manager-install"
+              style={{ maxWidth: 420 }}
+            />
+          </div>
+          <button className="btn btn-primary" onClick={savePkgInstaller} disabled={loading}>
+            {loading ? '⏳ Saving...' : '💾 Save PKG Installer'}
+          </button>
+        </div>
+      </div>
+
       <RemoteSourcesSection profiles={profiles} />
     </div>
   );
@@ -368,7 +565,24 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
           <div>
             <label className="text-sm text-muted mb-sm" style={{ display: 'block' }}>MAC Address</label>
             <input className="input" type="text" placeholder="AA:BB:CC:DD:EE:FF" value={profileForm.mac} onChange={e => setProfileForm(p => ({ ...p, mac: e.target.value }))} />
-            <div className="text-xs text-muted mt-sm">Pair the PS5 in P5 Control to enable Wake on LAN - no credential field needed any more.</div>
+            <div className="text-xs text-muted mt-sm">Pair the console in P5 Control to enable Wake on LAN - no credential field needed any more.</div>
+          </div>
+          <div>
+            <label className="text-sm text-muted mb-sm" style={{ display: 'block' }}>Console</label>
+            <select
+              className="select"
+              value={profileForm.consoleType}
+              onChange={e => setProfileForm(p => ({ ...p, consoleType: e.target.value }))}
+            >
+              <option value="">Auto-detect (pyremoteplay)</option>
+              <option value="ps5">PS5</option>
+              <option value="ps4">PS4</option>
+            </select>
+            <div className="text-xs text-muted mt-sm">
+              Drives which payloads, autoload templates and Convert sub-tabs the UI offers when
+              this profile is the default. Auto-detect resolves on the next status poll via
+              pyremoteplay /discover and persists into the profile.
+            </div>
           </div>
         </div>
       </Modal>

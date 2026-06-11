@@ -6,6 +6,7 @@ import PS5Control from './components/PS5Control';
 import Settings from './components/Settings';
 import FileOps from './components/FileOps';
 import BuiltinEditor from './components/BuiltinEditor';
+import { PlatformProvider, usePlatform } from './contexts/PlatformContext';
 import './styles.css';
 
 const API = '/api';
@@ -225,10 +226,22 @@ function App() {
       });
       const data = await res.json();
       if (data.success) {
-        showNotification('Payload uploaded', 'success');
+        // ZIP uploads return { zip: true, extracted: [...], skipped: [...] }
+        // so the user immediately sees how many payloads landed and how
+        // many were dropped (e.g. README.md, source files, etc.).
+        if (data.zip) {
+          const n = data.extracted?.length || 0;
+          const s = data.skipped?.length || 0;
+          showNotification(
+            `Extracted ${n} payload${n === 1 ? '' : 's'} from ZIP${s ? ` · skipped ${s} unsupported file${s === 1 ? '' : 's'}` : ''}`,
+            n > 0 ? 'success' : 'warning'
+          );
+        } else {
+          showNotification('Payload uploaded', 'success');
+        }
         fetchPayloads();
         fetchLogs();
-              } else {
+      } else {
         showNotification(data.error, 'error');
       }
     } catch (err) {
@@ -236,12 +249,20 @@ function App() {
     }
   };
 
-  const createProfile = async (name, ip, mac) => {
+  const createProfile = async (name, ip, mac, consoleType) => {
     try {
       await fetch(`${API}/profiles`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, ip_address: ip, mac_address: mac })
+        body: JSON.stringify({
+          name,
+          ip_address: ip,
+          mac_address: mac,
+          // consoleType may be 'ps4' | 'ps5' | null/undefined. Backend
+          // normalises invalid values back to NULL = auto-detect, so we
+          // can pass it through verbatim.
+          console_type: consoleType ?? null,
+        })
       });
       showNotification('Profile created', 'success');
       fetchProfiles();
@@ -260,12 +281,19 @@ function App() {
     }
   };
 
-  const updateProfile = async (id, name, ip, mac) => {
+  const updateProfile = async (id, name, ip, mac, consoleType) => {
     try {
       await fetch(`${API}/profiles/${id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, ip_address: ip, mac_address: mac })
+        body: JSON.stringify({
+          name,
+          ip_address: ip,
+          mac_address: mac,
+          // Pass undefined when caller didn't supply one (legacy callers)
+          // so the backend leaves the column untouched.
+          ...(consoleType !== undefined ? { console_type: consoleType } : {}),
+        })
       });
       showNotification('Profile updated', 'success');
       fetchProfiles();
@@ -374,55 +402,35 @@ function App() {
     if (!defaultProfile) return 'offline';
     if (!defaultStatus) return 'offline';
     if (!defaultStatus.reachable) return 'offline';
-    if (defaultStatus.openPort === 9021 || defaultStatus.openPort === 9020) return 'online';
+    // Any open payload listener (ELF 9021, Lua 9026, PS4 GoldHEN 9020,
+    // PS4 web exploit 8080, etaHEN 6970) means the console is awake and
+    // running a payload host - never report "standby" in that case.
+    // Anything else came from the DDP discover fallback (UDP-visible
+    // but no TCP listener), which is what "standby" actually represents.
+    const PAYLOAD_PORTS = new Set([9021, 9026, 9020, 8080, 6970]);
+    if (PAYLOAD_PORTS.has(defaultStatus.openPort)) return 'online';
     return 'standby';
   })();
 
   const sidebar = (
-    <aside className="app-sidebar">
-      <h6>Workspace</h6>
-      {tabs.map(tab => (
-        <button
-          key={tab.id}
-          className={`nav-item ${activeTab === tab.id ? 'active' : ''}`}
-          onClick={() => setActiveTab(tab.id)}
-        >
-          <span className="nav-item-icon">{tab.icon}</span>
-          <span>{tab.label}</span>
-        </button>
-      ))}
-    </aside>
+    <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} />
   );
 
   const mobileNav = (
-    <nav className="bottom-nav">
-      <div className="bottom-nav-inner">
-        {tabs.map(tab => (
-          <button
-            key={tab.id}
-            className={`bottom-nav-item ${activeTab === tab.id ? 'active' : ''}`}
-            onClick={() => setActiveTab(tab.id)}
-          >
-            <span className="bottom-nav-icon">{tab.icon}</span>
-            <span>{tab.label}</span>
-          </button>
-        ))}
-      </div>
-    </nav>
+    <MobileNav activeTab={activeTab} setActiveTab={setActiveTab} />
   );
 
   return (
+    <PlatformProvider activeProfile={defaultProfile}>
     <>
       <header className="app-topbar">
-        <div className="app-brand">
-          <span className="app-brand-mark">P5</span>
-          <span>Manager</span>
-        </div>
+        <PlatformAwareBrand />
 
         {defaultProfile && (
           <div className="app-status" title={defaultProfile.name}>
             <span className={`dot ${statusDot}`} />
             <span className="truncate">{defaultProfile.name}</span>
+            <ConsoleTypeBadge consoleType={defaultStatus?.console_type || defaultProfile.console_type} />
             <span className="ip">{defaultProfile.ip_address}</span>
           </div>
         )}
@@ -433,6 +441,14 @@ function App() {
           {notification.message}
         </div>
       )}
+
+      {/* First-run onboarding: empty DB → nudge the user into Settings to
+          add their first profile. The platform mode then follows the new
+          profile's console_type automatically. */}
+      <FirstRunOnboarding
+        profiles={profiles}
+        onStart={() => setActiveTab('settings')}
+      />
 
       <div className="app-shell">
         {sidebar}
@@ -479,7 +495,125 @@ function App() {
 
       {mobileNav}
     </>
+    </PlatformProvider>
   );
+}
+
+// Brand + mode-aware subtitle. "PS4 mode" / "PS5 mode" / "PS4 / PS5" so
+// the user always sees which content the rest of the UI is filtered to.
+function PlatformAwareBrand() {
+  const { mode } = usePlatform();
+  const subtitle = mode === 'ps4' ? 'PS4 mode'
+    : mode === 'ps5' ? 'PS5 mode'
+    : 'PS4 / PS5';
+  return (
+    <div className="app-brand">
+      <span className="app-brand-mark">P5</span>
+      <span>Manager</span>
+      <span className="app-brand-subtitle" title={`Platform filter: ${subtitle}`}>{subtitle}</span>
+    </div>
+  );
+}
+
+// Tab label resolver — the "Console / PS5 Control / PS4 Control" label
+// is the only tab that needs to flex with the platform mode. Everything
+// else keeps its static label.
+function effectiveTabLabel(tabId, mode) {
+  if (tabId !== 'remote') return null;
+  if (mode === 'ps4') return 'PS4 Control';
+  if (mode === 'ps5') return 'PS5 Control';
+  return 'Console';
+}
+
+function Sidebar({ activeTab, setActiveTab }) {
+  const { mode } = usePlatform();
+  return (
+    <aside className="app-sidebar">
+      <h6>Workspace</h6>
+      {tabs.map(tab => (
+        <button
+          key={tab.id}
+          className={`nav-item ${activeTab === tab.id ? 'active' : ''}`}
+          onClick={() => setActiveTab(tab.id)}
+        >
+          <span className="nav-item-icon">{tab.icon}</span>
+          <span>{effectiveTabLabel(tab.id, mode) || tab.label}</span>
+        </button>
+      ))}
+    </aside>
+  );
+}
+
+function MobileNav({ activeTab, setActiveTab }) {
+  const { mode } = usePlatform();
+  return (
+    <nav className="bottom-nav">
+      <div className="bottom-nav-inner">
+        {tabs.map(tab => (
+          <button
+            key={tab.id}
+            className={`bottom-nav-item ${activeTab === tab.id ? 'active' : ''}`}
+            onClick={() => setActiveTab(tab.id)}
+          >
+            <span className="bottom-nav-icon">{tab.icon}</span>
+            <span>{effectiveTabLabel(tab.id, mode) || tab.label}</span>
+          </button>
+        ))}
+      </div>
+    </nav>
+  );
+}
+
+// First-run onboarding. Renders nothing once the user has at least one
+// profile OR has explicitly dismissed the welcome card. Sends the user
+// straight into Settings to add their first profile — at which point
+// they pick the console type in the form and the rest of the UI follows
+// it automatically (no separate platform switch).
+function FirstRunOnboarding({ profiles, onStart }) {
+  const STORAGE_KEY = 'p5-manager-onboarded';
+  const [dismissed, setDismissed] = useState(() => {
+    try { return !!localStorage.getItem(STORAGE_KEY); } catch (_) { return false; }
+  });
+
+  if (dismissed) return null;
+  if (!Array.isArray(profiles) || profiles.length > 0) return null;
+
+  const finish = () => {
+    try { localStorage.setItem(STORAGE_KEY, '1'); } catch (_) {}
+    setDismissed(true);
+    onStart?.();
+  };
+
+  return (
+    <div className="onboarding-overlay" role="dialog" aria-labelledby="onboarding-title">
+      <div className="onboarding-card">
+        <h2 id="onboarding-title" className="onboarding-title">Welcome to P5 Manager</h2>
+        <p className="onboarding-body">
+          Let's add your first console. Pick PS4 or PS5 in the profile form on the next screen —
+          the rest of the UI then adapts to that platform automatically (payloads, autoload
+          templates, Convert tools). Auto-detect via Remote Play discovery works too.
+        </p>
+        <div className="onboarding-actions">
+          <button className="btn btn-primary" onClick={finish}>
+            ➕ Add my first console
+          </button>
+          <button className="btn btn-ghost onboarding-skip" onClick={finish}>
+            Skip for now
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Small platform badge shown next to the profile name in the status pill.
+// Reads the live host_type returned by /api/ps5/status (preferred) or
+// falls back to the persisted profile.console_type.
+function ConsoleTypeBadge({ consoleType }) {
+  if (!consoleType) return null;
+  const label = consoleType === 'ps4' ? 'PS4' : (consoleType === 'ps5' ? 'PS5' : null);
+  if (!label) return null;
+  return <span className="console-type-badge" aria-label={`Detected ${label}`}>{label}</span>;
 }
 
 export default App;

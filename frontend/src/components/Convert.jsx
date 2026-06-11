@@ -1,5 +1,7 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import FileBrowser from './FileBrowser';
+import FolderPickerModal from './UI/FolderPickerModal';
+import { usePlatform } from '../contexts/PlatformContext';
 
 const API = '/api';
 
@@ -117,6 +119,14 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
   const [job, setJob] = useState(null);
   const [running, setRunning] = useState(false);
 
+  // FolderPickerModal wiring. The modal is reused for three distinct
+  // contexts (pack source, unpack PKG source, mkpfs output dir), so we
+  // store the active context as a string and the input setter on the
+  // picker open call. Picker resets on close.
+  const [picker, setPicker] = useState(null); // { for, initialPath, mode }
+  const openPicker = (cfg) => setPicker(cfg);
+  const closePicker = () => setPicker(null);
+
   // When a file/folder is sent here from the Files tab kebab menu with an
   // intent ('now' or 'queue'), we highlight the matching action button so
   // it's obvious which one the user originally clicked. Cleared after the
@@ -218,11 +228,30 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
     }
   }, [mkpfsUpgrading, mkpfsStatus?.latest_version, onNotification]);
 
+  // The upload target (PS5 IP + destination path) is configured globally in
+  // Settings → Config now, so we pull it here once and only fall back to the
+  // current default profile if no override is saved.
   useEffect(() => {
-    if (!pushIp) {
-      const p = profiles.find(x => x.is_default) || profiles[0];
-      if (p) setPushIp(p.ip_address);
-    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await fetch(`${API}/settings`);
+        if (!r.ok) return;
+        const d = await r.json();
+        if (cancelled) return;
+        if (d.upload_target_path) setPushDest(d.upload_target_path);
+        if (d.upload_target_ip) {
+          setPushIp(d.upload_target_ip);
+          return;
+        }
+        const p = profiles.find(x => x.is_default) || profiles[0];
+        if (p) setPushIp(p.ip_address);
+      } catch (_) {
+        const p = profiles.find(x => x.is_default) || profiles[0];
+        if (p) setPushIp(p.ip_address);
+      }
+    })();
+    return () => { cancelled = true; };
   }, [profiles]);
 
   useEffect(() => {
@@ -508,6 +537,11 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
     setPendingIntent(intent || null);
   }, []);
 
+  // Anchor we scroll to after a kebab-driven pick. Reference is attached
+  // to the <section id="conversion"> below so deep-linking via #conversion
+  // and "Convert now" from another sub-tab both land in the same place.
+  const conversionSectionRef = useRef(null);
+
   // Consume a pending pick handed in by FileOps (e.g. user clicked
   // "Convert now" on a file inside the Files sub-tab). Only run once per pick.
   useEffect(() => {
@@ -520,7 +554,37 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
       : '';
     onNotification?.(`Loaded ${initialPick.name} into Convert${intentSuffix}`, 'success');
     onPickConsumed?.();
+    // Tab-switch + scroll. The Convert sub-tab is the parent's responsibility
+    // (FileOps already calls switchTab('convert') before stashing the pick);
+    // we just need to bring the conversion form into view. requestAnimationFrame
+    // delays one frame so we run after the section's first paint — without it
+    // scrollIntoView fires before the DOM has the new active sub-tab visible
+    // and the browser scrolls to where the section *was*. Also update the
+    // URL hash to "#conversion" so the deep-link works for both flows.
+    requestAnimationFrame(() => {
+      const el = conversionSectionRef.current;
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      // Avoid replaceState when the hash is already set — saves a history entry.
+      if (window.location.hash !== '#conversion') {
+        try { window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}#conversion`); } catch (_) {}
+      }
+    });
   }, [initialPick, applyConvertPick, onPickConsumed, onNotification]);
+
+  // Honour `#conversion` deep-links: when this component mounts (or the
+  // hash changes externally) jump to the section. Independent of the
+  // initialPick flow above — useful when a user shares a link or navigates
+  // directly to the Convert tab.
+  useEffect(() => {
+    const scrollIfMatching = () => {
+      if (window.location.hash !== '#conversion') return;
+      const el = conversionSectionRef.current;
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    };
+    scrollIfMatching();
+    window.addEventListener('hashchange', scrollIfMatching);
+    return () => window.removeEventListener('hashchange', scrollIfMatching);
+  }, []);
 
   return (
     <>
@@ -576,7 +640,7 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
                   )}
                 </span>
               )
-              : <span className="badge badge-danger">mkpfs not installed — run: pip install mkpfs</span>
+              : null
           )}
         </div>
         <div className="convert-intro-hint">
@@ -588,7 +652,7 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
       <FileBrowser
         profiles={profiles}
         onNotification={onNotification}
-        enableExtract enableDelete enablePickConvert enableFtp enableFtpUpload
+        enableExtract enableDelete enableFtp enableFtpUpload
         onOpenQueue={onOpenQueue}
         onImported={() => refresh()}
         onPickConvert={applyConvertPick}
@@ -596,7 +660,7 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
         description="Local FS, SMB (after import) or PS5 FTP. Use the ⋮ menu → 🔄 Convert now to load it here."
       />
 
-      <section style={styles.section}>
+      <section ref={conversionSectionRef} id="conversion" style={styles.section}>
         <div style={styles.h}>Conversion</div>
         <div style={styles.col}>
           <div>
@@ -626,14 +690,30 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
                 ? <span style={{ color: C.muted, fontWeight: 400 }}> · absolute path or relative to work dir</span>
                 : <span style={{ color: C.muted, fontWeight: 400 }}> · relative to work dir</span>}
             </label>
-            <input
-              style={styles.input}
-              value={selected}
-              onChange={e => { setSelected(e.target.value); setSourceFtp(null); }}
-              placeholder={scanRoot
-                ? (mode === 'pack-file' ? '/mnt/sda1/.../GAME1234.exfat' : '/mnt/sda1/.../GAME1234/')
-                : (mode === 'pack-file' ? 'GAME1234.exfat' : 'GAME1234/')}
-            />
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+              <input
+                style={{ ...styles.input, flex: 1 }}
+                value={selected}
+                onChange={e => { setSelected(e.target.value); setSourceFtp(null); }}
+                placeholder={scanRoot
+                  ? (mode === 'pack-file' ? '/mnt/sda1/.../GAME1234.exfat' : '/mnt/sda1/.../GAME1234/')
+                  : (mode === 'pack-file' ? 'GAME1234.exfat' : 'GAME1234/')}
+              />
+              <button
+                type="button"
+                style={styles.btn(C.blue, false)}
+                onClick={() => openPicker({
+                  for: 'pack-source',
+                  initialPath: selected && selected.startsWith('/') ? selected.replace(/[^/]+$/, '') : '/mnt',
+                  // pack-file picks a single file; pack-folder picks a directory.
+                  selectFiles: mode === 'pack-file',
+                  fileFilter: mode === 'pack-file' ? (n) => /\.(exfat|iso|img|bin)$/i.test(n) : undefined,
+                })}
+                title={mode === 'pack-file' ? 'Browse for a source file' : 'Browse for a source folder'}
+              >
+                📁 Browse…
+              </button>
+            </div>
             {sourceFtp && (
               <button
                 type="button"
@@ -699,18 +779,18 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
               <input type="checkbox" checked={pushAfter} onChange={e => setPushAfter(e.target.checked)} /> Auto-upload .ffpfsc to PS5 FTP when conversion finishes
             </label>
             {pushAfter && (
-              <div style={styles.grid2}>
-                <div>
-                  <label style={styles.label}>PS5</label>
-                  <select style={styles.input} value={pushIp} onChange={e => setPushIp(e.target.value)}>
-                    <option value="">— select —</option>
-                    {profiles.map(p => <option key={p.id} value={p.ip_address}>{p.name} ({p.ip_address})</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label style={styles.label}>Destination on PS5</label>
-                  <input style={styles.input} value={pushDest} onChange={e => setPushDest(e.target.value)} />
-                </div>
+              <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', padding: '0.25rem 0 0.25rem 1.5rem' }}>
+                Target:{' '}
+                <span style={{ color: 'var(--text)' }}>
+                  {(() => {
+                    const p = profiles.find(x => x.ip_address === pushIp);
+                    return p ? `${p.name} (${p.ip_address})` : (pushIp || '— not set —');
+                  })()}
+                </span>
+                {' · '}
+                <span style={{ color: 'var(--text)' }}>{pushDest || '/data/homebrew'}</span>
+                {' '}
+                <span style={{ opacity: 0.7 }}>· change in Settings → Config</span>
               </div>
             )}
             <label style={{ ...styles.row, fontSize: '0.85rem', marginTop: '0.5rem' }}>
@@ -771,20 +851,266 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
         </div>
       </section>
 
+      <FolderPickerModal
+        open={!!picker}
+        onClose={closePicker}
+        onPick={(p) => {
+          if (picker?.for === 'pack-source') {
+            setSelected(p);
+            setSourceFtp(null);
+          }
+        }}
+        initialPath={picker?.initialPath || '/mnt'}
+        selectFiles={!!picker?.selectFiles}
+        fileFilter={picker?.fileFilter}
+        title={picker?.selectFiles ? 'Pick source file' : 'Pick source folder'}
+      />
     </>
   );
 }
 
-// Convert tab — thin shell around ConvertSection. The page-level title is
-// already shown by the FileOps wrapper, so we don't render another h2 here.
-export default function Convert({ profiles, onNotification, onOpenQueue, initialPick, onPickConsumed }) {
+// PS4 PKG sub-tab — light wrapper around the /pkg/* endpoints. Keeps the
+// status badge + Update button visually parallel to the mkpfs section so
+// the user sees the same shape whichever console they're targeting.
+function PkgSection({ profiles, onNotification, onOpenQueue }) {
+  const [pkgStatus, setPkgStatus] = useState(null);
+  const [pkgUpgrading, setPkgUpgrading] = useState(false);
+  const [unpackSrc, setUnpackSrc] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  // Folder picker for selecting the source .pkg. Same component reused
+  // here as in PfsConverter but with its own state slot since the two
+  // sub-tabs render independently.
+  const [picker, setPicker] = useState(null);
+  const openPicker = (cfg) => setPicker(cfg);
+  const closePicker = () => setPicker(null);
+
+  const fetchStatus = useCallback(async () => {
+    try {
+      const r = await fetch(`${API}/convert/pkg/status`);
+      const j = await r.json().catch(() => ({}));
+      setPkgStatus(j);
+    } catch (e) {
+      setPkgStatus({ installed: false, error: e.message });
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchStatus();
+    const id = setInterval(fetchStatus, 60_000);
+    return () => clearInterval(id);
+  }, [fetchStatus]);
+
+  const doPkgUpgrade = useCallback(async () => {
+    if (pkgUpgrading) return;
+    if (!window.confirm('Re-download the bundled PS4 PKG unpacker (unpkg.py)?')) return;
+    setPkgUpgrading(true);
+    try {
+      const r = await fetch(`${API}/convert/pkg/upgrade`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!j.ok) throw new Error(j.error || `HTTP ${r.status}`);
+      onNotification?.(`PS4 PKG tool updated → ${j.version || 'unknown'}`, 'success');
+      await fetchStatus();
+    } catch (e) {
+      onNotification?.(`PKG tool update failed: ${e.message}`, 'error');
+    } finally {
+      setPkgUpgrading(false);
+    }
+  }, [pkgUpgrading, fetchStatus, onNotification]);
+
+  const enqueueUnpack = useCallback(async () => {
+    if (!unpackSrc.trim()) return;
+    setSubmitting(true);
+    try {
+      const r = await fetch(`${API}/convert/pkg/queue`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source_path: unpackSrc.trim() }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || !j.ok) throw new Error(j.error || `HTTP ${r.status}`);
+      onNotification?.(`PS4 PKG unpack queued (job ${j.id.slice(0, 8)})`, 'success');
+      setUnpackSrc('');
+      onOpenQueue?.();
+    } catch (e) {
+      onNotification?.(`PKG unpack failed: ${e.message}`, 'error');
+    } finally {
+      setSubmitting(false);
+    }
+  }, [unpackSrc, onNotification, onOpenQueue]);
+
   return (
-    <ConvertSection
-      profiles={profiles}
-      onNotification={onNotification}
-      onOpenQueue={onOpenQueue}
-      initialPick={initialPick}
-      onPickConsumed={onPickConsumed}
-    />
+    <>
+      <section className="convert-intro">
+        <div className="convert-intro-row" style={{ flexWrap: 'wrap', gap: '0.5rem' }}>
+          <div className="convert-intro-title">📦 PS4 PKG tools</div>
+          {pkgStatus && (
+            pkgStatus.installed
+              ? (
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap' }}>
+                  <span className="badge badge-success">
+                    pkg-tool installed{pkgStatus.version ? ` · ${pkgStatus.version}` : ''}
+                  </span>
+                  {!pkgStatus.unpkg_py_present && (
+                    <span className="badge" style={{ background: 'var(--amber-dim)', color: 'var(--amber)', border: '1px solid rgba(255,184,107,0.32)' }}>
+                      unpkg.py missing — click Refresh
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    disabled={pkgUpgrading}
+                    onClick={doPkgUpgrade}
+                    style={{ ...styles.btn(C.blue, pkgUpgrading), padding: '0.25rem 0.6rem', fontSize: '0.72rem', fontWeight: 600 }}
+                  >
+                    {pkgUpgrading ? 'Refreshing…' : '⤴ Refresh tool'}
+                  </button>
+                </span>
+              )
+              : (
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}>
+                  <span className="badge badge-danger" title={pkgStatus.error || ''}>pkg-tool not installed</span>
+                  <button
+                    type="button"
+                    disabled={pkgUpgrading}
+                    onClick={doPkgUpgrade}
+                    style={{ ...styles.btn(C.blue, pkgUpgrading), padding: '0.25rem 0.6rem', fontSize: '0.72rem', fontWeight: 600 }}
+                  >
+                    {pkgUpgrading ? 'Installing…' : '⤴ Install'}
+                  </button>
+                </span>
+              )
+          )}
+        </div>
+        <div className="convert-intro-hint">
+          PS4 <code>.pkg</code> unpack uses flatz&apos;s <code>unpkg.py</code>, bundled in <code>/app/.venv-pkg</code>.
+          Pack (folder → <code>.pkg</code>) requires Sony <code>orbis-pub-cmd</code> which is Windows-only and not
+          available here — produce the PKG on a Windows host and drop it back via the File Browser.
+        </div>
+      </section>
+
+      <section style={styles.section}>
+        <h3 style={styles.h}>Unpack PS4 .pkg</h3>
+        <div style={styles.col}>
+          <label style={styles.label}>Source PKG path</label>
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            <input
+              style={{ ...styles.input, flex: 1 }}
+              type="text"
+              placeholder="/data/mkpfs/CUSA00000.pkg"
+              value={unpackSrc}
+              onChange={e => setUnpackSrc(e.target.value)}
+            />
+            <button
+              type="button"
+              style={styles.btn(C.blue, false)}
+              onClick={() => openPicker({
+                for: 'unpack-pkg',
+                initialPath: unpackSrc && unpackSrc.startsWith('/') ? unpackSrc.replace(/[^/]+$/, '') : '/data/mkpfs',
+                selectFiles: true,
+                fileFilter: (n) => /\.pkg$/i.test(n),
+              })}
+              title="Browse for a .pkg file"
+            >
+              📁 Browse…
+            </button>
+          </div>
+          <div className="text-xs text-muted">
+            Output lands in the same <code>/data/mkpfs/</code> working dir under a folder named after the PKG basename.
+          </div>
+          <div>
+            <button
+              type="button"
+              onClick={enqueueUnpack}
+              disabled={!unpackSrc.trim() || submitting || !pkgStatus?.installed}
+              style={styles.btn(C.green, !unpackSrc.trim() || submitting || !pkgStatus?.installed)}
+            >
+              {submitting ? 'Queuing…' : '📦 Unpack PKG'}
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <section style={styles.section}>
+        <h3 style={styles.h}>Pack (folder → .pkg)</h3>
+        <div className="text-sm text-muted">
+          Not available in this image. {pkgStatus?.pack_supported_reason || ''}
+        </div>
+      </section>
+
+      <FolderPickerModal
+        open={!!picker}
+        onClose={closePicker}
+        onPick={(p) => { if (picker?.for === 'unpack-pkg') setUnpackSrc(p); }}
+        initialPath={picker?.initialPath || '/data/mkpfs'}
+        selectFiles={!!picker?.selectFiles}
+        fileFilter={picker?.fileFilter}
+        title="Pick PKG file"
+      />
+    </>
+  );
+}
+
+// Convert tab — sub-tab shell. PS5 mode shows only the mkpfs / PFS
+// converter; PS4 mode shows only the PKG section; All mode lets the user
+// flip between them with a segmented control. The sub-tab is auto-picked
+// from the active platform mode so the common case ("user is in PS5
+// mode, opens Convert") is zero clicks deep.
+export default function Convert({ profiles, onNotification, onOpenQueue, initialPick, onPickConsumed }) {
+  const { mode } = usePlatform();
+  const showPs5 = mode !== 'ps4';
+  const showPs4 = mode !== 'ps5';
+  const [activeSub, setActiveSub] = useState('ps5');
+
+  useEffect(() => {
+    // Default sub-tab follows the platform mode so a fresh load matches
+    // the user's expectations. Manual selection inside this view sticks
+    // until the platform mode flips again.
+    if (mode === 'ps4') setActiveSub('ps4');
+    else if (mode === 'ps5') setActiveSub('ps5');
+    // 'all' keeps whatever the user clicked last.
+  }, [mode]);
+
+  return (
+    <>
+      {showPs5 && showPs4 && (
+        <div style={{ display: 'flex', gap: '0.4rem', marginBottom: '0.8rem' }}>
+          <button
+            type="button"
+            onClick={() => setActiveSub('ps5')}
+            style={styles.tab(activeSub === 'ps5')}
+            title="PS5 PFS converter (mkpfs)"
+          >
+            PS5 PFS
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveSub('ps4')}
+            style={styles.tab(activeSub === 'ps4')}
+            title="PS4 PKG unpack / pack"
+          >
+            PS4 PKG
+          </button>
+        </div>
+      )}
+      {((showPs5 && !showPs4) || (showPs5 && showPs4 && activeSub === 'ps5')) && (
+        <ConvertSection
+          profiles={profiles}
+          onNotification={onNotification}
+          onOpenQueue={onOpenQueue}
+          initialPick={initialPick}
+          onPickConsumed={onPickConsumed}
+        />
+      )}
+      {((showPs4 && !showPs5) || (showPs5 && showPs4 && activeSub === 'ps4')) && (
+        <PkgSection
+          profiles={profiles}
+          onNotification={onNotification}
+          onOpenQueue={onOpenQueue}
+        />
+      )}
+    </>
   );
 }

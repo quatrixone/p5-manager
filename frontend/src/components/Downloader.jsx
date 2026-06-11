@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import FolderPickerModal from './UI/FolderPickerModal';
 
 const API = '/api';
 
@@ -10,12 +11,16 @@ export default function Downloader({ profiles = [], onNotification, onOpenQueue 
   const [url, setUrl] = useState('');
   const [filename, setFilename] = useState('');
   const [destKind, setDestKind] = useState('local');
-  const [destPath, setDestPath] = useState('/mnt');
+  // Default to the canonical /data/downloads folder. We fetch the
+  // authoritative path from /api/convert/paths once on mount so the
+  // value tracks server-side overrides (USER_DATA_DIR env, etc.).
+  const [destPath, setDestPath] = useState('/data/downloads');
   const [smbSourceId, setSmbSourceId] = useState('');
   const [smbSubdir, setSmbSubdir] = useState('');
   const [overwrite, setOverwrite] = useState(false);
   const [smbSources, setSmbSources] = useState([]);
   const [submitting, setSubmitting] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
 
   const refreshSources = useCallback(async () => {
     try {
@@ -27,6 +32,15 @@ export default function Downloader({ profiles = [], onNotification, onOpenQueue 
   }, [smbSourceId]);
 
   useEffect(() => { refreshSources(); }, [refreshSources]);
+
+  // Pull the server-side default download folder so the input reflects
+  // wherever USER_DATA_DIR actually points to (useful when tests
+  // override it or when running outside Docker).
+  useEffect(() => {
+    fetch(`${API}/convert/paths`).then(r => r.json()).then(d => {
+      if (d?.downloads) setDestPath(d.downloads);
+    }).catch(() => {});
+  }, []);
 
   const start = async () => {
     const trimmed = url.trim();
@@ -114,14 +128,24 @@ export default function Downloader({ profiles = [], onNotification, onOpenQueue 
             {destKind === 'local' ? (
               <div>
                 <label className="text-xs text-muted mb-sm" style={{ display: 'block' }}>Folder on the manager</label>
-                <input
-                  className="input"
-                  value={destPath}
-                  onChange={e => setDestPath(e.target.value)}
-                  placeholder="/mnt/sda1/downloads"
-                />
+                <div className="flex gap-xs items-center">
+                  <input
+                    className="input flex-1"
+                    value={destPath}
+                    onChange={e => setDestPath(e.target.value)}
+                    placeholder="/data/downloads"
+                  />
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={() => setPickerOpen(true)}
+                    title="Browse folders graphically"
+                  >
+                    📁 Browse…
+                  </button>
+                </div>
                 <div className="text-xs text-muted mt-sm">
-                  Tip: in the Browse tab, use the folder's ⋮ menu to navigate, then paste the path here.
+                  Default <code>/data/downloads</code>. Click <b>Browse…</b> to pick a folder, or type a path directly.
                 </div>
               </div>
             ) : (
@@ -153,6 +177,14 @@ export default function Downloader({ profiles = [], onNotification, onOpenQueue 
           </button>
         </div>
       </div>
+
+      <FolderPickerModal
+        open={pickerOpen}
+        onClose={() => setPickerOpen(false)}
+        onPick={(p) => setDestPath(p)}
+        initialPath={destPath}
+        title="Pick download folder"
+      />
     </div>
   );
 }

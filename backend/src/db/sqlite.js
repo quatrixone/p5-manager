@@ -105,6 +105,13 @@ export async function initDatabase() {
   try { db.run(`ALTER TABLE profiles ADD COLUMN psn_account_id TEXT`); } catch (e) {}
   try { db.run(`ALTER TABLE profiles ADD COLUMN psn_online_id TEXT`); } catch (e) {}
   try { db.run(`ALTER TABLE profiles ADD COLUMN rp_user_profile TEXT`); } catch (e) {}
+  // Platform: 'ps4' | 'ps5' | NULL (auto-detect via pyremoteplay /discover).
+  // Drives which payloads, autoload templates, FTP defaults and Convert
+  // sub-tabs the UI shows for this profile. Filled in either at profile
+  // creation (user picks in Settings) or by the periodic status poll
+  // calling /api/ps5/status which already extracts host_type from the
+  // sidecar discover response.
+  try { db.run(`ALTER TABLE profiles ADD COLUMN console_type TEXT`); } catch (e) {}
 
   db.run(`
     CREATE TABLE IF NOT EXISTS payloads (
@@ -124,6 +131,16 @@ export async function initDatabase() {
   // Add updated_at column if it doesn't exist (for existing databases)
   try {
     db.run(`ALTER TABLE payloads ADD COLUMN updated_at DATETIME DEFAULT CURRENT_TIMESTAMP`);
+  } catch (e) {
+    // Column already exists
+  }
+
+  // Platform tag for payloads: 'ps4' | 'ps5' | NULL (= any/unknown).
+  // Lets the Payloads tab + Autoload "send payload" picker filter by
+  // the active platform mode so PS4 mode never accidentally pushes a
+  // PS5 LUA payload to a PS4 (different ports, different ABI).
+  try {
+    db.run(`ALTER TABLE payloads ADD COLUMN console_type TEXT`);
   } catch (e) {
     // Column already exists
   }

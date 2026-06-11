@@ -194,6 +194,86 @@ pre,
   .app-brand-tag { display: inline-block; }
 }
 
+/* Mode-aware subtitle right next to the brand. Reads the live mode from
+   PlatformContext so the user always sees PS4 mode / PS5 mode / PS4 / PS5
+   without leaving the current view. */
+.app-brand-subtitle {
+  display: none;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  color: var(--muted);
+  padding: 2px 8px;
+  border-left: 1px solid var(--border);
+  margin-left: 4px;
+}
+@media (min-width: 600px) {
+  .app-brand-subtitle { display: inline-block; }
+}
+
+/* First-run onboarding overlay. Centred modal-like card the user sees
+   when the DB has zero profiles. Dismissal persists in localStorage so
+   the card doesn't reappear once the user clicks any option. */
+.onboarding-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(10, 11, 16, 0.78);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  display: grid;
+  place-items: center;
+  z-index: 1000;
+  padding: var(--space-md);
+}
+.onboarding-card {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg, 16px);
+  padding: 1.75rem 1.5rem 1.25rem;
+  max-width: 460px;
+  width: 100%;
+  text-align: center;
+  box-shadow: 0 24px 48px -16px rgba(0, 0, 0, 0.55);
+}
+.onboarding-title {
+  font-size: 1.4rem;
+  font-weight: 700;
+  margin: 0 0 0.4rem;
+}
+.onboarding-body {
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.5;
+  margin: 0 0 1.2rem;
+}
+.onboarding-actions {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: center;
+  flex-wrap: wrap;
+  margin-bottom: 0.75rem;
+}
+.onboarding-skip {
+  font-size: 0.78rem !important;
+  color: var(--muted) !important;
+}
+
+/* PS4 / PS5 tag rendered alongside the profile name in the topbar status
+   pill (and reused elsewhere — payload list, autoload picker, etc.). */
+.console-type-badge {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(124, 255, 179, 0.12);
+  color: var(--accent);
+  border: 1px solid rgba(124, 255, 179, 0.22);
+  text-transform: uppercase;
+}
+
 .app-status {
   margin-left: auto;
   display: inline-flex;
@@ -587,8 +667,13 @@ pre,
   font-size: 0.95rem;
 }
 
-.btn-sm { min-height: 28px; padding: 4px 8px; font-size: 0.72rem; border-radius: 6px; gap: 4px; }
-.btn-lg { min-height: 42px; padding: 10px 18px; font-size: 0.9rem; border-radius: 10px; }
+/* Unified button height across the whole app: every .btn variant
+   (sm/lg/icon) lands on the same 34 px row so vertical alignment in
+   any flex/grid layout is automatic. We keep the smaller font, padding
+   and border-radius for visual density - .btn-sm still LOOKS compact -
+   only the outer height is normalised. */
+.btn-sm { min-height: 34px; padding: 4px 8px; font-size: 0.72rem; border-radius: 6px; gap: 4px; }
+.btn-lg { min-height: 34px; padding: 4px 18px; font-size: 0.9rem; border-radius: 10px; }
 .btn-block { width: 100%; }
 
 /* Touch targets */
@@ -903,7 +988,7 @@ textarea.input {
   grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
   gap: var(--space-sm);
 }
-.autoload-add-grid > button { min-height: 44px; width: 100%; }
+.autoload-add-grid > button { min-height: 34px; width: 100%; }
 .step-card {
   background: var(--bg-elev);
   border: 1px solid var(--border);
@@ -926,7 +1011,7 @@ textarea.input {
   word-break: break-word;
 }
 .step-card-head .step-actions { display: flex; gap: var(--space-xs); margin-left: auto; }
-.step-card-head .step-actions > button { min-height: 32px; min-width: 32px; }
+.step-card-head .step-actions > button { min-height: 34px; min-width: 34px; }
 .step-card-body {
   display: flex;
   flex-wrap: wrap;
@@ -948,7 +1033,7 @@ textarea.input {
 }
 @media (max-width: 600px) {
   .step-card-body .input, .step-card-body .select { flex-basis: 100%; }
-  .step-card-head .step-actions > button { min-height: 36px; min-width: 36px; }
+  .step-card-head .step-actions > button { min-height: 34px; min-width: 34px; }
 }
 
 /* ---------- action bar (multi-select) ---------- */
@@ -1590,6 +1675,84 @@ pre { padding: 12px; overflow-x: auto; }
   .rp-pad-center > button { min-width: 48px; height: 32px; font-size: 0.72rem; padding: 0 6px; }
   .rp-dpad > div > button, .rp-face > div > button { font-size: 0.95rem; }
   .rp-controller-hint { font-size: 0.7rem; margin-top: 2px; }
+}
+
+/* ---------- Live-session layout ----------
+   On mobile/tablet (<1024px) this is just a vertical stack: chips →
+   video → pad. The pad keeps its own internal layout (shoulders/main/
+   center).
+
+   On desktop (≥1024px) the layout reflows into a 3-column grid where:
+     - left column  = L2/L1 + D-pad
+     - center col   = MJPEG chips + (bigger) video + system-button row
+                      + PS2 row + hint
+     - right column = R1/R2 + face buttons
+   The pad's internal wrappers switch to `display: contents` so their
+   grandchildren (each shoulder side, the D-pad, the face cluster)
+   become direct grid items and can be placed individually via
+   grid-template-areas. */
+.rp-live-layout {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+@media (min-width: 1024px) {
+  .rp-live-layout {
+    --rp-video-max: 1100px;
+    display: grid;
+    grid-template-columns: minmax(140px, 200px) minmax(0, 1fr) minmax(140px, 200px);
+    grid-template-areas:
+      "lshoul chips  rshoul"
+      "ldpad  video  rface"
+      ".      center ."
+      ".      ps2    ."
+      ".      hint   .";
+    align-items: start;
+    justify-items: center;
+    column-gap: var(--space-md);
+    row-gap: var(--space-sm);
+  }
+
+  /* Flatten the pad wrappers so their children become real grid items. */
+  .rp-live-layout .rp-pad,
+  .rp-live-layout .rp-pad-shoulders,
+  .rp-live-layout .rp-pad-main { display: contents; }
+
+  .rp-live-layout .rp-live-chips { grid-area: chips; justify-self: center; }
+  .rp-live-layout .rp-live-video {
+    grid-area: video;
+    width: 100%;
+    margin: 0;
+  }
+
+  /* The first .rp-pad-shoulders-side (without the -right modifier) is
+     the L2/L1 side; the second carries .rp-pad-shoulders-side-right. */
+  .rp-live-layout .rp-pad-shoulders-side {
+    grid-area: lshoul;
+    justify-self: stretch;
+    width: 100%;
+  }
+  .rp-live-layout .rp-pad-shoulders-side-right {
+    grid-area: rshoul;
+    justify-self: stretch;
+  }
+  .rp-live-layout .rp-pad-shoulders-side > button { flex: 1; }
+
+  .rp-live-layout .rp-dpad {
+    grid-area: ldpad;
+    width: min(100%, 200px);
+    aspect-ratio: 1;
+  }
+  .rp-live-layout .rp-face {
+    grid-area: rface;
+    width: min(100%, 200px);
+    aspect-ratio: 1;
+  }
+
+  .rp-live-layout .rp-pad-center-main { grid-area: center; }
+  .rp-live-layout .rp-pad-center-ps2 { grid-area: ps2; }
+  .rp-live-layout .rp-controller-hint { grid-area: hint; justify-self: center; text-align: center; }
 }
 
 /* ---------- compact scripts card (built-in + saved tabs) ---------- */

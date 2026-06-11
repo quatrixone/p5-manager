@@ -4,10 +4,9 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import AdmZip from 'adm-zip';
 import { getDatabase, saveDatabase, log } from '../db/sqlite.js';
+import { payloadsDir } from '../lib/paths.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const dataDir = path.join(__dirname, '../../data');
-const payloadsDir = path.join(dataDir, 'payloads');
 
 const router = express.Router();
 

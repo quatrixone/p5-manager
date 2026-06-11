@@ -66,9 +66,19 @@ router.get('/default', (req, res) => {
   }
 });
 
+// Accepted values for the platform tag stored on each profile. NULL is also
+// legal and means "auto-detect via pyremoteplay /discover on next status
+// poll".
+const CONSOLE_TYPES = new Set(['ps4', 'ps5']);
+function normalizeConsoleType(v) {
+  if (v === null || v === undefined || v === '') return null;
+  const s = String(v).trim().toLowerCase();
+  return CONSOLE_TYPES.has(s) ? s : null;
+}
+
 router.post('/', (req, res) => {
   try {
-    const { name, ip_address, mac_address, port } = req.body;
+    const { name, ip_address, mac_address, port, console_type } = req.body;
 
     if (!name || !ip_address) {
       return res.status(400).json({ error: 'Name and IP address required' });
@@ -76,8 +86,8 @@ router.post('/', (req, res) => {
 
     const db = getDatabase();
     db.run(
-      'INSERT INTO profiles (name, ip_address, mac_address, port) VALUES (?, ?, ?, ?)',
-      [name, ip_address, mac_address || null, port || 9021]
+      'INSERT INTO profiles (name, ip_address, mac_address, port, console_type) VALUES (?, ?, ?, ?, ?)',
+      [name, ip_address, mac_address || null, port || 9021, normalizeConsoleType(console_type)]
     );
 
     const lastId = db.exec('SELECT last_insert_rowid()')[0].values[0][0];
@@ -94,7 +104,7 @@ router.post('/', (req, res) => {
 router.put('/:id', (req, res) => {
   try {
     const { id } = req.params;
-    const { name, ip_address, mac_address, port } = req.body;
+    const { name, ip_address, mac_address, port, console_type } = req.body;
 
     const db = getDatabase();
 
@@ -110,9 +120,22 @@ router.put('/:id', (req, res) => {
       return res.status(404).json({ error: 'Profile not found' });
     }
 
+    // console_type === undefined means "don't touch"; explicit null clears
+    // the field back to auto-detect, explicit 'ps4' / 'ps5' overrides.
+    const nextConsoleType = console_type === undefined
+      ? existing.console_type
+      : normalizeConsoleType(console_type);
+
     db.run(
-      'UPDATE profiles SET name = ?, ip_address = ?, mac_address = ?, port = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-      [name || existing.name, ip_address || existing.ip_address, mac_address !== undefined ? mac_address : existing.mac_address, port || existing.port, parseInt(id)]
+      'UPDATE profiles SET name = ?, ip_address = ?, mac_address = ?, port = ?, console_type = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      [
+        name || existing.name,
+        ip_address || existing.ip_address,
+        mac_address !== undefined ? mac_address : existing.mac_address,
+        port || existing.port,
+        nextConsoleType,
+        parseInt(id),
+      ]
     );
 
     saveDatabase();
