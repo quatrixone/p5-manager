@@ -197,11 +197,19 @@ and Autoload all share one source of truth.
 - PS5 console on the same LAN
 - For the LUA exploit path: Star Wars Racer Revenge (CUSA03474 USA / CUSA03492 EU)
 - PS5 firmware ≤ 12.70 for the LUA payloads
-- Docker + Docker Compose (recommended) **or** Node.js 20 for manual runs
+- Docker + Docker Compose (the only supported runtime). Node.js 20 only
+  needed if you're hacking on the source — see "Development (Node.js)"
+  below
 
 ## Quick Start
 
-### Docker Compose (recommended)
+> **Use Docker Compose.** The Node.js / Python setup further down is
+> development-only: it skips the sudoers + capability plumbing that the
+> exFAT pipeline needs, doesn't carry the vendored `mkpfs` venv, and
+> won't survive a host reboot the way the compose stack does. Run the
+> stack with `docker compose` for any real install.
+
+### Docker Compose (the supported install path)
 
 ```bash
 git clone https://github.com/psdeviant/p5-manager.git
@@ -221,7 +229,18 @@ Two containers come up:
 Both run in `network_mode: host` so PS5 discovery, Wake on LAN broadcasts and
 Remote Play UDP streams work without port forwarding.
 
-### Manual (Node.js)
+Updates: `git pull && docker compose up -d --build`. The `data/` volume
+(SQLite DB, payloads, downloads, mkpfs work dir) is bind-mounted so
+nothing is lost across rebuilds.
+
+### Development (Node.js, **not** for normal use)
+
+This path is only for working on the source itself — building the
+frontend live, debugging the backend with a real debugger, etc.
+**Not a substitute for the Docker setup**: the PS5 exFAT pipeline
+needs the container's sudoers + `cap_add: [SYS_ADMIN]` plumbing,
+which a bare-metal Node run cannot provide. Run the compose stack
+instead and only drop into manual mode when you're editing code.
 
 ```bash
 cd backend && npm install
