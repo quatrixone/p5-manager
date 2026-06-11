@@ -52,7 +52,7 @@ Lua exploit (different port, different ABI).
     one), then continues with Auto-fetch PIN + pair
   - Pairing instructions still adapt to PS4 vs PS5 for the manual path
     (different menu, same 8-digit PIN format)
-- **On-screen DualSense / DualShock**: face buttons, dpad, triggers,
+- **On-screen DualShock**: face buttons, dpad, triggers,
   sticks, options / share / PS / touchpad
 - **Input Scripts**: tiny DSL (`x`, `circle`, `wait 500`, `lstick 0.5 0 200`,
   `type "Revenge"` …) saved per-profile and replayed through the live
@@ -186,7 +186,7 @@ and Autoload all share one source of truth.
 - Responsive layout that works the same from a phone, tablet or
   desktop browser — no separate app, no scroll-zoom dance
 - Touch-friendly hit targets, mobile keyboard hooks for input
-  scripts / text entry on the PS5, and an on-screen DualSense laid
+  scripts / text entry on the PS5, and an on-screen DualShock laid
   out for thumb reach
 - Builders (Autoload, Convert, FileBrowser) collapse to single
   columns on small screens; setup blocks that are already complete
@@ -360,7 +360,7 @@ feature keeps working.
   wrapped, for the PS5 exFAT pipeline) / smbclient
 - **Frontend:** React 18 + Vite, PWA with offline service worker
 - **pyremoteplay sidecar:** Python 3.11 + FastAPI + `pyremoteplay` (PSN OAuth,
-  registration, Remote Play session, DualSense input emulation) with
+  registration, Remote Play session, DualShock input emulation) with
   runtime patches that fix the upstream `Session.standby` /
   `async_standby` / `wait` timeout predicates so standby and post-stop
   reconnect behave deterministically
@@ -418,7 +418,7 @@ who maintain them. If you find this tool useful, star their repos too.
 - **[ktnrg45 / pyremoteplay](https://github.com/ktnrg45/pyremoteplay)**
   — the Python Remote Play protocol library powering the sidecar
   container. PSN OAuth, console registration, Remote Play session
-  lifecycle and DualSense input emulation are all upstream; our sidecar
+  lifecycle and DualShock input emulation are all upstream; our sidecar
   just wraps it in a FastAPI surface and patches a couple of timeout
   predicates (`Session.standby` / `async_standby` / `wait`) so
   standby + post-stop reconnect behave deterministically
