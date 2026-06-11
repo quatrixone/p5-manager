@@ -12,11 +12,10 @@ browser tab.
 
 ## Dual-platform: PS4 + PS5
 
-P5 Manager is one app that targets both PlayStation generations. A
-global mode switch lives in the topbar (`PS4 / PS5 / All`) and filters
-every list, picker and the Convert mode pills so a PS4 mode session
-can't accidentally fire a PS5 Lua exploit (different port, different
-ABI).
+P5 Manager is one app that targets both PlayStation generations.
+Every list, picker and the Convert mode pills are filtered by the
+active platform so a PS4 mode session can't accidentally fire a PS5
+Lua exploit (different port, different ABI).
 
 - Each profile in Settings carries a `console_type` (`PS4`, `PS5`,
   or `Auto-detect`). Auto-detect resolves on the next status poll via
