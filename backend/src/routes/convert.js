@@ -21,6 +21,7 @@ import { uploadDirToSmb as smbUploadDir } from '../lib/smb.js';
 // user can scp/rsync into them directly. See backend/src/lib/paths.js
 // for the rationale and migration notes.
 import { payloadsDir, mkpfsWorkDir, downloadsDir, USER_QUICK_TABS } from '../lib/paths.js';
+import { createExfatImage, unpackExfatImage } from '../lib/exfat.js';
 
 const router = express.Router();
 
@@ -3119,11 +3120,18 @@ async function runUnpack(job, opts) {
 }
 
 // Modes:
-//   pack-file   — pack a single .exfat/.ffpkg → .ffpfsc
-//   pack-folder — pack a game-dump folder    → .ffpfsc
-//   unpack      — reverse: .ffpfsc → folder (also supports .ffpfs, .pfs, …)
-const CONVERT_MODES = ['pack-file', 'pack-folder', 'unpack'];
+//   pack-file     — pack a single .exfat/.ffpkg → .ffpfsc (mkpfs)
+//   pack-folder   — pack a game-dump folder    → .ffpfsc (mkpfs)
+//   unpack        — reverse: .ffpfsc → folder (also supports .ffpfs, .pfs, …)
+//   exfat-file    — wrap a single file       → .exfat (mkfs.exfat + loop mount)
+//   exfat-folder  — wrap a game-dump folder → .exfat
+//   exfat-unpack  — reverse: .exfat → folder (loop mount + rsync)
+const CONVERT_MODES = ['pack-file', 'pack-folder', 'unpack', 'exfat-file', 'exfat-folder', 'exfat-unpack'];
 const UNPACKABLE_EXT_RE = /\.(ffpfs|ffpfsc|pfs|dat|bin)$/i;
+// .exfat is its own unpack source — kept in a separate regex so we don't
+// accidentally route .exfat into mkpfs (which would happily start and then
+// emit a misleading "header invalid" error).
+const EXFAT_EXT_RE = /\.exfat$/i;
 
 function validateConvertParams(params) {
   const {
@@ -3136,13 +3144,21 @@ function validateConvertParams(params) {
   ensureMkpfsDir();
 
   // Compute a sensible default output name for the current mode.
-  // Pack convention:   Game.exfat / Game.ffpkg  → Game.ffpfsc
-  // Unpack convention: Game.ffpfsc               → Game/         (folder, no suffix)
+  // PFS pack:        Game.exfat / Game.ffpkg  → Game.ffpfsc
+  // PFS unpack:      Game.ffpfsc               → Game/         (folder, no suffix)
+  // exFAT pack:      Game.iso / Game (folder) → Game.exfat
+  // exFAT unpack:    Game.exfat                → Game/         (folder, no suffix)
   // Keeping the names symmetric so a round-trip pack ↔ unpack lands back on
   // the same basename.
   const defaultOutName = (srcBase) => {
     if (mode === 'unpack') {
       return srcBase.replace(UNPACKABLE_EXT_RE, '');
+    }
+    if (mode === 'exfat-unpack') {
+      return srcBase.replace(EXFAT_EXT_RE, '');
+    }
+    if (mode === 'exfat-file' || mode === 'exfat-folder') {
+      return srcBase.replace(/\.(exfat|ffpkg|ffpfsc|iso|img|bin)$/i, '') + '.exfat';
     }
     return srcBase.replace(/\.(exfat|ffpkg|ffpfsc)$/i, '') + '.ffpfsc';
   };
@@ -3163,6 +3179,9 @@ function validateConvertParams(params) {
     if (mode === 'unpack' && !UNPACKABLE_EXT_RE.test(remoteBase)) {
       return { error: 'Unpack expects .ffpfsc/.ffpfs/.pfs/.dat/.bin' };
     }
+    if (mode === 'exfat-unpack' && !EXFAT_EXT_RE.test(remoteBase)) {
+      return { error: 'exFAT unpack expects a .exfat image' };
+    }
     const baseName = params.output_name && params.output_name.trim()
       ? params.output_name.trim()
       : defaultOutName(remoteBase);
@@ -3171,7 +3190,7 @@ function validateConvertParams(params) {
     // shows something sensible.
     return {
       src: `ftp://${source_ftp.ip}${ftpPath}`,
-      src_ftp: { ip: source_ftp.ip, path: ftpPath, name: remoteBase, is_dir: mode === 'pack-folder' },
+      src_ftp: { ip: source_ftp.ip, path: ftpPath, name: remoteBase, is_dir: mode === 'pack-folder' || mode === 'exfat-folder' },
       out: path.join(mkpfsWorkDir, baseName),
       baseName,
       stat: null,
@@ -3195,6 +3214,9 @@ function validateConvertParams(params) {
     if (mode === 'unpack' && !UNPACKABLE_EXT_RE.test(remoteBase)) {
       return { error: 'Unpack expects .ffpfsc/.ffpfs/.pfs/.dat/.bin' };
     }
+    if (mode === 'exfat-unpack' && !EXFAT_EXT_RE.test(remoteBase)) {
+      return { error: 'exFAT unpack expects a .exfat image' };
+    }
     const baseName = params.output_name && params.output_name.trim()
       ? params.output_name.trim()
       : defaultOutName(remoteBase);
@@ -3205,7 +3227,7 @@ function validateConvertParams(params) {
         source_name: smbRow.name,
         path: rawPath,
         name: remoteBase,
-        is_dir: mode === 'pack-folder',
+        is_dir: mode === 'pack-folder' || mode === 'exfat-folder',
       },
       out: path.join(mkpfsWorkDir, baseName),
       baseName,
@@ -3227,9 +3249,15 @@ function validateConvertParams(params) {
   const stat = fs.statSync(src);
   if (mode === 'pack-file' && !stat.isFile()) return { error: 'Source must be a file for pack-file mode' };
   if (mode === 'pack-folder' && !stat.isDirectory()) return { error: 'Source must be a directory for pack-folder mode' };
+  if (mode === 'exfat-file' && !stat.isFile()) return { error: 'Source must be a file for exfat-file mode' };
+  if (mode === 'exfat-folder' && !stat.isDirectory()) return { error: 'Source must be a directory for exfat-folder mode' };
   if (mode === 'unpack') {
     if (!stat.isFile()) return { error: 'Source must be a .ffpfsc file for unpack mode' };
     if (!UNPACKABLE_EXT_RE.test(src)) return { error: 'Unpack expects .ffpfsc/.ffpfs/.pfs/.dat/.bin' };
+  }
+  if (mode === 'exfat-unpack') {
+    if (!stat.isFile()) return { error: 'Source must be a .exfat file for exfat-unpack mode' };
+    if (!EXFAT_EXT_RE.test(src)) return { error: 'exFAT unpack expects a .exfat image' };
   }
   const baseName = params.output_name && params.output_name.trim()
     ? params.output_name.trim()
@@ -3266,9 +3294,9 @@ function buildConvertJob(params, validated) {
     pid: null,
     // FTP-sourced jobs imply auto-push (the staged copy alone is useless on
     // the manager box), so flip push_after on by default in that case.
-    // Unpack produces a folder, not a single .ffpfsc — pushing folders back
-    // to PS5 FTP isn't supported in this code path, so always opt out.
-    push_after: (params.mode === 'unpack') ? false
+    // Unpack modes produce folders, not single image files — pushing folders
+    // back to PS5 FTP isn't supported in this code path, so always opt out.
+    push_after: (params.mode === 'unpack' || params.mode === 'exfat-unpack') ? false
       : (fromFtp ? (params.push_after !== false) : !!params.push_after),
     push_ip: params.push_ip || defaultPushIp,
     push_dest: params.push_dest || defaultPushDest,
@@ -3297,7 +3325,7 @@ async function stageFromPs5Ftp(job) {
   const ftp = loadFtp();
   const stageDir = path.join(getDiskTmpRoot(), 'ftp-stage', job.id);
   fs.mkdirSync(stageDir, { recursive: true });
-  const isDir = !!job.source_ftp.is_dir || job.mode === 'pack-folder';
+  const isDir = !!job.source_ftp.is_dir || job.mode === 'pack-folder' || job.mode === 'exfat-folder';
   const localSrc = path.join(stageDir, job.source_ftp.name);
   appendLog(job, `[manager] Staging ${isDir ? 'folder' : 'file'} ${job.source_ftp.path} from ${job.source_ftp.ip} → ${localSrc}\n`);
   job.status = 'staging';
@@ -3393,7 +3421,7 @@ async function stageFromSmb(job) {
   }
   const stageDir = path.join(getDiskTmpRoot(), 'smb-stage', job.id);
   fs.mkdirSync(stageDir, { recursive: true });
-  const isDir = !!job.source_smb.is_dir || job.mode === 'pack-folder';
+  const isDir = !!job.source_smb.is_dir || job.mode === 'pack-folder' || job.mode === 'exfat-folder';
   const remotePath = job.source_smb.path.replace(/^\/+/, '');
   const remoteName = job.source_smb.name;
   const localSrc = path.join(stageDir, remoteName);
@@ -3570,6 +3598,18 @@ async function executeConvertJob(job) {
         new_crypt: !!params.new_crypt,
       };
       result = await runUnpack(job, unpackOpts);
+    }
+    else if (job.mode === 'exfat-file' || job.mode === 'exfat-folder') {
+      // exFAT image builder — lib/exfat.js does the mkfs.exfat + loop-mount
+      // + rsync dance. The same appendLog / updateProgressFromText pipeline
+      // is wired through so phase + progress surface in the Tasks UI.
+      result = await createExfatImage(job, { appendLog, updateProgressFromText }, job.source, job.output, {
+        volume_label: params.volume_label,
+        size_bytes: params.size_bytes,
+      });
+    }
+    else if (job.mode === 'exfat-unpack') {
+      result = await unpackExfatImage(job, { appendLog, updateProgressFromText }, job.source, job.output);
     }
   } catch (e) {
     result = { code: -1, error: e.message };
