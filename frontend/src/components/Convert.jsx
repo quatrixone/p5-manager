@@ -411,13 +411,22 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
 
   const pickItem = (relPath, isDir, name) => {
     setSelected(relPath);
+    // Honour the currently-selected target format (.ffpfsc vs .exfat) when
+    // deriving the suggested output name. Pick the matching file/folder
+    // variant of the same family — e.g. if the user is on `exfat-file` and
+    // picks a directory, flip to `exfat-folder` rather than yanking them
+    // back into PFS land.
+    const isExfatFamily = mode === 'exfat-file' || mode === 'exfat-folder';
+    const ext = isExfatFamily ? '.exfat' : '.ffpfsc';
     if (isDir) {
       const safeName = name.replace(/[^A-Za-z0-9_.\-]/g, '_');
-      setOutputName(safeName + '.ffpfsc');
-      if (mode === 'pack-file') setMode('pack-folder');
+      setOutputName(safeName + ext);
+      const targetMode = isExfatFamily ? 'exfat-folder' : 'pack-folder';
+      if (mode !== targetMode) setMode(targetMode);
     } else {
-      setOutputName(name.replace(/\.(exfat|ffpkg|ffpfsc)$/i, '') + '.ffpfsc');
-      if (mode !== 'pack-file') setMode('pack-file');
+      setOutputName(name.replace(/\.(exfat|ffpkg|ffpfsc)$/i, '') + ext);
+      const targetMode = isExfatFamily ? 'exfat-file' : 'pack-file';
+      if (mode !== targetMode) setMode(targetMode);
     }
   };
 
@@ -590,7 +599,7 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
     <>
       <section className="convert-intro">
         <div className="convert-intro-row" style={{ flexWrap: 'wrap', gap: '0.5rem' }}>
-          <div className="convert-intro-title">🔄 mkpfs converter</div>
+          <div className="convert-intro-title">🔄 PS5 converter</div>
           {mkpfsStatus && (
             mkpfsStatus.installed
               ? (
@@ -644,8 +653,11 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
           )}
         </div>
         <div className="convert-intro-hint">
-          Pack <code>.exfat</code> / <code>.ffpkg</code> files or game-dump folders into <code>.ffpfsc</code>.
-          Sources scanned from <code>{workdir || 'data/mkpfs'}</code>.
+          Pack a single file or a game-dump folder into a PS5-mountable image:
+          {' '}<code>.ffpfsc</code> via <code>mkpfs</code> for ShadowMount+ /
+          MicroMount, or raw <code>.exfat</code> via <code>mkfs.exfat</code> +
+          loop-mount. Pick the target format below. Sources are scanned from
+          <code> {workdir || 'data/mkpfs'}</code>.
         </div>
       </section>
 
@@ -665,16 +677,26 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
         <div style={styles.col}>
           <div>
             <label style={styles.label}>Mode</label>
-            <div style={{ ...styles.row, gap: '0.4rem' }}>
+            {/* Four pack modes lined up in one row — used to be split between
+                two sub-tabs (PS5 PFS vs PS5 exFAT). The active mode drives the
+                source picker (file vs folder), the output extension and which
+                advanced options stay visible. Switching mode auto-rewrites
+                the output filename so a half-typed name doesn't end up with
+                a stale extension. */}
+            <div style={{ ...styles.row, gap: '0.4rem', flexWrap: 'wrap' }}>
               {[
-                { id: 'pack-file', label: 'File → ffpfsc' },
-                { id: 'pack-folder', label: 'Folder → ffpfsc' },
+                { id: 'pack-file', label: 'File → .ffpfsc' },
+                { id: 'pack-folder', label: 'Folder → .ffpfsc' },
+                { id: 'exfat-file', label: 'File → .exfat' },
+                { id: 'exfat-folder', label: 'Folder → .exfat' },
               ].map(m => (
                 <button key={m.id} style={styles.tab(mode === m.id)} onClick={() => {
                   setMode(m.id);
+                  const isExfatNew = m.id === 'exfat-file' || m.id === 'exfat-folder';
+                  const ext = isExfatNew ? '.exfat' : '.ffpfsc';
                   if (outputName) {
-                    const base = outputName.replace(/\.(exfat|ffpfsc)$/i, '');
-                    setOutputName(base + '.ffpfsc');
+                    const base = outputName.replace(/\.(exfat|ffpfsc|ffpkg)$/i, '');
+                    setOutputName(base + ext);
                   }
                 }}>{m.label}</button>
               ))}
@@ -683,9 +705,9 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
 
           <div>
             <label style={styles.label}>
-              {mode === 'pack-file' ? 'Source file' : 'Source folder'}
+              {(mode === 'pack-file' || mode === 'exfat-file') ? 'Source file' : 'Source folder'}
               {sourceFtp ? (
-                <span style={{ color: 'var(--blue)', fontWeight: 500 }}> · PS5 FTP (will stage locally before mkpfs)</span>
+                <span style={{ color: 'var(--blue)', fontWeight: 500 }}> · PS5 FTP (will stage locally first)</span>
               ) : scanRoot
                 ? <span style={{ color: C.muted, fontWeight: 400 }}> · absolute path or relative to work dir</span>
                 : <span style={{ color: C.muted, fontWeight: 400 }}> · relative to work dir</span>}
@@ -696,8 +718,8 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
                 value={selected}
                 onChange={e => { setSelected(e.target.value); setSourceFtp(null); }}
                 placeholder={scanRoot
-                  ? (mode === 'pack-file' ? '/mnt/sda1/.../GAME1234.exfat' : '/mnt/sda1/.../GAME1234/')
-                  : (mode === 'pack-file' ? 'GAME1234.exfat' : 'GAME1234/')}
+                  ? ((mode === 'pack-file' || mode === 'exfat-file') ? '/mnt/sda1/.../GAME1234.iso' : '/mnt/sda1/.../GAME1234/')
+                  : ((mode === 'pack-file' || mode === 'exfat-file') ? 'GAME1234.iso' : 'GAME1234/')}
               />
               <button
                 type="button"
@@ -705,11 +727,17 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
                 onClick={() => openPicker({
                   for: 'pack-source',
                   initialPath: selected && selected.startsWith('/') ? selected.replace(/[^/]+$/, '') : '/mnt',
-                  // pack-file picks a single file; pack-folder picks a directory.
-                  selectFiles: mode === 'pack-file',
-                  fileFilter: mode === 'pack-file' ? (n) => /\.(exfat|iso|img|bin)$/i.test(n) : undefined,
+                  // *-file modes pick a single file; *-folder modes pick a directory.
+                  selectFiles: (mode === 'pack-file' || mode === 'exfat-file'),
+                  // PFS pack-file expects an existing exFAT / FFPKG / raw image;
+                  // exFAT pack-file is happy with anything (a single big file
+                  // gets wrapped into a fresh exFAT container around it). Keep
+                  // the PFS filter for clarity but loosen exFAT to "any file".
+                  fileFilter: mode === 'pack-file'
+                    ? (n) => /\.(exfat|iso|img|bin|ffpkg)$/i.test(n)
+                    : (mode === 'exfat-file' ? undefined : undefined),
                 })}
-                title={mode === 'pack-file' ? 'Browse for a source file' : 'Browse for a source folder'}
+                title={(mode === 'pack-file' || mode === 'exfat-file') ? 'Browse for a source file' : 'Browse for a source folder'}
               >
                 📁 Browse…
               </button>
@@ -727,56 +755,80 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
           <div>
             <label style={styles.label}>Output filename</label>
             <input style={styles.input} value={outputName} onChange={e => setOutputName(e.target.value)}
-              placeholder="GAME1234.ffpfsc" />
+              placeholder={(mode === 'exfat-file' || mode === 'exfat-folder') ? 'GAME1234.exfat' : 'GAME1234.ffpfsc'} />
           </div>
 
-          <div style={styles.grid2}>
-            <label style={{ ...styles.row, fontSize: '0.85rem' }}>
-              <input type="checkbox" checked={compress} onChange={e => setCompress(e.target.checked)} /> Compress (PFSC)
-            </label>
-            <label style={{ ...styles.row, fontSize: '0.85rem' }}>
-              <input type="checkbox" checked={verify} onChange={e => setVerify(e.target.checked)} /> Verify after pack
-            </label>
-          </div>
-
-          <details className="convert-advanced">
-            <summary>⚙️ Advanced options</summary>
-            <div className="convert-advanced-body">
+          {/* PFS-specific toggles + advanced options. Hidden in exFAT mode
+              because mkfs.exfat / loop-mount don't honour any of them — the
+              image is always uncompressed and verification happens through
+              the unpack round-trip if the user wants it. */}
+          {(mode === 'pack-file' || mode === 'pack-folder') && (
+            <>
               <div style={styles.grid2}>
-                <div>
-                  <label style={styles.label}>PFS version</label>
-                  <select style={styles.input} value={version} onChange={e => setVersion(e.target.value)}>
-                    <option value="PS5">PS5</option>
-                    <option value="PS4">PS4</option>
-                  </select>
-                </div>
-                <div>
-                  <label style={styles.label}>Compression level (0-9)</label>
-                  <input type="number" min="0" max="9" style={styles.input} value={compressionLevel} onChange={e => setCompressionLevel(e.target.value)} placeholder="9" />
-                </div>
+                <label style={{ ...styles.row, fontSize: '0.85rem' }}>
+                  <input type="checkbox" checked={compress} onChange={e => setCompress(e.target.checked)} /> Compress (PFSC)
+                </label>
+                <label style={{ ...styles.row, fontSize: '0.85rem' }}>
+                  <input type="checkbox" checked={verify} onChange={e => setVerify(e.target.checked)} /> Verify after pack
+                </label>
               </div>
-              {mode === 'pack-folder' && (
-                <div style={styles.grid2}>
-                  <label style={{ ...styles.row, fontSize: '0.85rem' }}>
-                    <input type="checkbox" checked={caseSensitive} onChange={e => setCaseSensitive(e.target.checked)} /> Case-sensitive
-                  </label>
-                  <label style={{ ...styles.row, fontSize: '0.85rem' }}>
-                    <input type="checkbox" checked={skipExecComp} onChange={e => setSkipExecComp(e.target.checked)} /> Skip exec compression
-                  </label>
-                  <label style={{ ...styles.row, fontSize: '0.85rem' }}>
-                    <input type="checkbox" checked={signed} onChange={e => setSigned(e.target.checked)} /> Signed (zero EKPFS)
-                  </label>
-                  <label style={{ ...styles.row, fontSize: '0.85rem' }}>
-                    <input type="checkbox" checked={requireGameFiles} onChange={e => setRequireGameFiles(e.target.checked)} /> Require game files
-                  </label>
+
+              <details className="convert-advanced">
+                <summary>⚙️ Advanced options</summary>
+                <div className="convert-advanced-body">
+                  <div style={styles.grid2}>
+                    <div>
+                      <label style={styles.label}>PFS version</label>
+                      <select style={styles.input} value={version} onChange={e => setVersion(e.target.value)}>
+                        <option value="PS5">PS5</option>
+                        <option value="PS4">PS4</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label style={styles.label}>Compression level (0-9)</label>
+                      <input type="number" min="0" max="9" style={styles.input} value={compressionLevel} onChange={e => setCompressionLevel(e.target.value)} placeholder="9" />
+                    </div>
+                  </div>
+                  {mode === 'pack-folder' && (
+                    <div style={styles.grid2}>
+                      <label style={{ ...styles.row, fontSize: '0.85rem' }}>
+                        <input type="checkbox" checked={caseSensitive} onChange={e => setCaseSensitive(e.target.checked)} /> Case-sensitive
+                      </label>
+                      <label style={{ ...styles.row, fontSize: '0.85rem' }}>
+                        <input type="checkbox" checked={skipExecComp} onChange={e => setSkipExecComp(e.target.checked)} /> Skip exec compression
+                      </label>
+                      <label style={{ ...styles.row, fontSize: '0.85rem' }}>
+                        <input type="checkbox" checked={signed} onChange={e => setSigned(e.target.checked)} /> Signed (zero EKPFS)
+                      </label>
+                      <label style={{ ...styles.row, fontSize: '0.85rem' }}>
+                        <input type="checkbox" checked={requireGameFiles} onChange={e => setRequireGameFiles(e.target.checked)} /> Require game files
+                      </label>
+                    </div>
+                  )}
                 </div>
-              )}
+              </details>
+            </>
+          )}
+
+          {/* exFAT-specific hint card. Keeps the user oriented on what's
+              about to happen (loop-mount + rsync into a freshly formatted
+              container) so the absence of compression/verify checkboxes
+              doesn't feel like missing options. */}
+          {(mode === 'exfat-file' || mode === 'exfat-folder') && (
+            <div style={{ ...styles.card, background: C.bg, marginBottom: 0, fontSize: '0.82rem', color: C.muted, lineHeight: 1.45 }}>
+              <strong style={{ color: C.text }}>exFAT image build:</strong> formats a sparse
+              container with <code>mkfs.exfat</code>, loop-mounts it inside the manager and
+              <code>rsync</code>s your source in. Image size is auto-computed (payload + ~10% headroom,
+              min 64 MiB). Mountable on PS5 directly via ShadowMount+ / MicroMount.
             </div>
-          </details>
+          )}
 
           <div style={{ ...styles.card, background: C.bg, marginBottom: 0 }}>
             <label style={{ ...styles.row, fontSize: '0.85rem', marginBottom: '0.5rem' }}>
-              <input type="checkbox" checked={pushAfter} onChange={e => setPushAfter(e.target.checked)} /> Auto-upload .ffpfsc to PS5 FTP when conversion finishes
+              <input type="checkbox" checked={pushAfter} onChange={e => setPushAfter(e.target.checked)} />
+              {(mode === 'exfat-file' || mode === 'exfat-folder')
+                ? ' Auto-upload .exfat to PS5 FTP when build finishes'
+                : ' Auto-upload .ffpfsc to PS5 FTP when conversion finishes'}
             </label>
             {pushAfter && (
               <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', padding: '0.25rem 0 0.25rem 1.5rem' }}>
@@ -798,28 +850,37 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
             </label>
           </div>
 
+          {(() => {
+            // exFAT modes don't depend on mkpfs being installed (they go
+            // through mkfs.exfat + loop-mount instead), so the "mkpfs missing"
+            // gate only applies when a PFS mode is selected.
+            const isExfat = mode === 'exfat-file' || mode === 'exfat-folder';
+            const blocked = (!selected && !sourceFtp) || (!isExfat && !mkpfsStatus?.installed) || running;
+            return (
           <div style={{ ...styles.row, gap: '0.5rem' }}>
             <button
               type="button"
-              disabled={(!selected && !sourceFtp) || !mkpfsStatus?.installed || running}
+              disabled={blocked}
               onClick={() => submitConvert(true)}
               style={{
-                ...styles.btn(C.green, (!selected && !sourceFtp) || !mkpfsStatus?.installed || running),
+                ...styles.btn(C.green, blocked),
                 fontWeight: 600,
                 boxShadow: pendingIntent === 'now' ? '0 0 0 2px var(--accent)' : 'none',
                 outline: pendingIntent === 'now' ? '2px solid var(--accent-dim)' : 'none',
                 outlineOffset: 2,
               }}
-              title="Enqueue this conversion and resume the convert queue so it starts immediately"
+              title={isExfat
+                ? 'Build this exFAT image now and resume the convert queue'
+                : 'Enqueue this conversion and resume the convert queue so it starts immediately'}
             >
-              🚀 Convert now
+              🚀 {isExfat ? 'Build now' : 'Convert now'}
             </button>
             <button
               type="button"
-              disabled={(!selected && !sourceFtp) || !mkpfsStatus?.installed || running}
+              disabled={blocked}
               onClick={() => submitConvert(false)}
               style={{
-                ...styles.btn(C.panel2, (!selected && !sourceFtp) || !mkpfsStatus?.installed || running),
+                ...styles.btn(C.panel2, blocked),
                 border: `1px solid ${pendingIntent === 'queue' ? 'var(--blue)' : C.border}`,
                 color: '#fff',
                 fontWeight: 500,
@@ -848,6 +909,8 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
               <button type="button" style={styles.btn(C.red)} onClick={cancelJob}>Cancel</button>
             )}
           </div>
+            );
+          })()}
         </div>
       </section>
 
@@ -869,6 +932,14 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
   );
 }
 
+// ExfatSection (kerrdec97/ps5-exfat-builder-style standalone form) was
+// removed when the four pack modes (file/folder × ffpfsc/exfat) got merged
+// into the unified mode picker inside ConvertSection. The `exfat-file` /
+// `exfat-folder` queue modes themselves still live on the backend and are
+// driven from the unified Conversion form; only the duplicated UI panel
+// was deleted. For `.exfat → folder` unpack, queue an `exfat-unpack` job
+// through the File Browser kebab menu's "Unpack now" action.
+//
 // PS4 PKG sub-tab — light wrapper around the /pkg/* endpoints. Keeps the
 // status badge + Update button visually parallel to the mkpfs section so
 // the user sees the same shape whichever console they're targeting.
@@ -1062,40 +1133,15 @@ export default function Convert({ profiles, onNotification, onOpenQueue, initial
   const { mode } = usePlatform();
   const showPs5 = mode !== 'ps4';
   const showPs4 = mode !== 'ps5';
-  const [activeSub, setActiveSub] = useState('ps5');
 
-  useEffect(() => {
-    // Default sub-tab follows the platform mode so a fresh load matches
-    // the user's expectations. Manual selection inside this view sticks
-    // until the platform mode flips again.
-    if (mode === 'ps4') setActiveSub('ps4');
-    else if (mode === 'ps5') setActiveSub('ps5');
-    // 'all' keeps whatever the user clicked last.
-  }, [mode]);
-
+  // No more sub-tabs — the PS5 converter now handles both PFS (.ffpfsc) and
+  // exFAT (.exfat) targets through a unified mode picker inside ConvertSection
+  // itself, and the PS4 PKG section just stacks underneath when the user is
+  // in PS4 / All mode. This collapses the previously three sub-tabbed views
+  // (PS5 PFS · PS5 exFAT · PS4 PKG) into a single scrollable page.
   return (
     <>
-      {showPs5 && showPs4 && (
-        <div style={{ display: 'flex', gap: '0.4rem', marginBottom: '0.8rem' }}>
-          <button
-            type="button"
-            onClick={() => setActiveSub('ps5')}
-            style={styles.tab(activeSub === 'ps5')}
-            title="PS5 PFS converter (mkpfs)"
-          >
-            PS5 PFS
-          </button>
-          <button
-            type="button"
-            onClick={() => setActiveSub('ps4')}
-            style={styles.tab(activeSub === 'ps4')}
-            title="PS4 PKG unpack / pack"
-          >
-            PS4 PKG
-          </button>
-        </div>
-      )}
-      {((showPs5 && !showPs4) || (showPs5 && showPs4 && activeSub === 'ps5')) && (
+      {showPs5 && (
         <ConvertSection
           profiles={profiles}
           onNotification={onNotification}
@@ -1104,7 +1150,7 @@ export default function Convert({ profiles, onNotification, onOpenQueue, initial
           onPickConsumed={onPickConsumed}
         />
       )}
-      {((showPs4 && !showPs5) || (showPs5 && showPs4 && activeSub === 'ps4')) && (
+      {showPs4 && (
         <PkgSection
           profiles={profiles}
           onNotification={onNotification}

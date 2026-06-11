@@ -14,8 +14,9 @@ browser tab.
 
 P5 Manager is one app that targets both PlayStation generations. A
 global mode switch lives in the topbar (`PS4 / PS5 / All`) and filters
-every list, picker and Convert sub-tab so a PS4 mode session can't
-accidentally fire a PS5 Lua exploit (different port, different ABI).
+every list, picker and the Convert mode pills so a PS4 mode session
+can't accidentally fire a PS5 Lua exploit (different port, different
+ABI).
 
 - Each profile in Settings carries a `console_type` (`PS4`, `PS5`,
   or `Auto-detect`). Auto-detect resolves on the next status poll via
@@ -76,9 +77,10 @@ accidentally fire a PS5 Lua exploit (different port, different ABI).
 
 **Tasks**
 - Single tab listing every background job (downloads, extracts,
-  converts, FTP uploads, PFS / PKG pack-unpack, PKG installs) with
-  per-job progress bars and **per-job** start / pause / resume / retry /
-  cancel controls — every job, including the failed ones, gets a Retry
+  converts, FTP uploads, PFS / PKG pack-unpack, exFAT pack/unpack,
+  PKG installs) with per-job progress bars and **per-job** start /
+  pause / resume / retry / cancel controls — every job, including the
+  failed ones, gets a Retry
 - Dedicated **Install** sub-queue for fake PKG installs on PS5 using
   the vendored `pkg-install.elf` (stages the PKG to the console, calls
   `sceAppInstUtilInstallByPackage`, polls install status)
@@ -111,9 +113,45 @@ accidentally fire a PS5 Lua exploit (different port, different ABI).
 
 ### PS5-only features
 
-- **Convert · PS5 PFS sub-tab**: pack / unpack PFS containers via
-  `mkpfs`, push `.ffpfsc` to PS5 via FTP — all queued, all stoppable.
-  Works directly on files (and folders) already sitting on the PS5 FTP
+- **Convert tab — unified PS5 converter**: one form with a 4-mode pill
+  selector at the bottom that picks the target image format up-front.
+  No more sub-tabs to flip between, no more guessing which page builds
+  which output.
+  - **File → .ffpfsc**: pack a single file (`.exfat`, `.ffpkg`, raw
+    `.iso`, …) into a compressed PFS container via [`mkpfs`][mkpfs] —
+    mountable on PS5 by ShadowMount+ / MicroMount
+  - **Folder → .ffpfsc**: pack a whole game-dump folder into `.ffpfsc`;
+    the form transparently promotes a wrapper directory if your dump
+    nests the real game root one level down (so mkpfs always sees
+    `eboot.bin` at the image root)
+  - **File → .exfat**: wrap a single file into a raw exFAT image — the
+    Linux equivalent of the build pipeline in
+    [kerrdec97/ps5-exfat-builder][exfat-builder]. `mkfs.exfat` formats a
+    sparse container, the manager loop-mounts it and rsync streams the
+    payload in
+  - **Folder → .exfat**: same as above but for a game-dump folder. The
+    image root mirrors the source layout (no wrapper dir)
+
+  PFS-specific advanced options (compression level, EKPFS signing,
+  case-sensitive flag, …) only appear in the PFS modes; the exFAT modes
+  show a one-line hint card instead so the form doesn't feel empty.
+  Image size for exFAT is auto-computed (payload + ~10% headroom, min
+  64 MiB, max +1 GiB ceiling) and the volume label defaults to the
+  output basename (sanitised, 11-char exFAT max).
+
+  Both formats also unpack back to a folder via the File Browser kebab
+  menu's "Unpack now" action — `.ffpfsc` → `mkpfs unpack`, `.exfat` →
+  loop-mount + rsync out. Everything queues through the same Tasks tab
+  with progress + pause + retry + cancel.
+
+  Loop+mount needs `cap_add: [SYS_ADMIN]` + `seccomp:unconfined` + the
+  `/dev/loopN` device passthroughs already set in `docker-compose.yml`;
+  `mount`/`losetup`/`umount`/`mkfs.exfat` are invoked through a NOPASSWD
+  sudoers allowlist so the worker stays on uid 1000 for everything else.
+
+  [mkpfs]: https://github.com/PSBrew/MkPFS
+  [exfat-builder]: https://github.com/kerrdec97/ps5-exfat-builder
+
 - Built-in **p2jb jailbreak** Autoload template
   (WoL → wait → Lua port check → send `p2jb.lua` → wait 55 min →
   ELF port check)
@@ -127,10 +165,12 @@ accidentally fire a PS5 Lua exploit (different port, different ABI).
 
 ### PS4-only features
 
-- **Convert · PS4 PKG sub-tab**: unpack `.pkg` files via the bundled
-  `unpkg.py` (flatz). Pack is out of scope (requires Sony's
-  Windows-only `orbis-pub-cmd`) — produce the PKG elsewhere and drop
-  it back via the File Browser
+- **Convert tab — PS4 PKG section**: unpack `.pkg` files via flatz's
+  classic `unpkg.py` (Python 3 port vendored at
+  `backend/src/lib/unpkg.py`). Renders inline below the PS5 converter
+  when the platform mode is `PS4` or `All`. Pack is out of scope
+  (requires Sony's Windows-only `orbis-pub-cmd`) — produce the PKG
+  elsewhere and drop it back via the File Browser
 - Bundled **modern GoldHEN** payloads (`goldhen.bin`, `ftp_server.bin`,
   `kernel_debugger.bin`) auto-downloaded for FW 5.05 → 11.00
 - Autoload templates: **Load GoldHEN** (wake → wait → send
@@ -277,7 +317,7 @@ use the manager.
   p5manager.db       # SQLite (profiles, payloads, sequences, scripts, settings)
   payloads/          # uploaded/downloaded payload files
   downloads/         # default destination for the Downloader
-  mkpfs/             # mkpfs scratch / staging
+  mkpfs/             # mkpfs + exFAT scratch / staging (also the default output dir for Convert)
 ```
 
 The DB has gone through three filenames as the project was renamed:
@@ -287,11 +327,38 @@ action needed when upgrading.
 
 Backup & restore the whole thing as a ZIP from **Settings → Backup**.
 
+### Container privileges for the exFAT pipeline
+
+The two exFAT modes in the Convert tab loop-mount `.exfat` images
+inside the container, which needs more than the default Docker security
+envelope. `docker-compose.yml`
+sets all of this for you out of the box:
+
+- `cap_add: [SYS_ADMIN, MKNOD]` so `mount(2)` / `losetup(8)` can run
+- `security_opt: [apparmor:unconfined, seccomp:unconfined]` because the
+  default seccomp profile drops `mount`, `umount2`, `mknod` and the loop
+  `ioctl`s even when SYS_ADMIN is in the bounding set
+- `devices: /dev/loop-control, /dev/loop0..7, /dev/fuse` — the actual
+  block devices `losetup -f` picks from
+- `group_add: ["6"]` so uid 1000 can open the `root:disk`-owned loop
+  device nodes
+
+Inside the image the Dockerfile installs `exfatprogs` + `util-linux` +
+`sudo`, creates the `p5manager` user (uid 1000), and writes a
+`/etc/sudoers.d/p5manager-exfat` NOPASSWD allowlist that's strictly
+limited to `losetup`, `mount`, `umount`, `mkfs.exfat`. No other binary
+in the manager can use sudo. If you'd rather not run with relaxed
+seccomp/AppArmor, comment those two lines out of `docker-compose.yml`
+and the two exFAT modes in the Convert tab will fail with a clear
+"must be superuser" in the job log — every other Convert / Tasks
+feature keeps working.
+
 ## Tech Stack
 
 - **Backend:** Node.js 20 + Express, native UDP (`dgram`) for PS5 discovery /
   WoL / pair, `sql.js` SQLite, `basic-ftp` for resilient FTP, `child_process`
-  spawn for 7z / unrar / mkpfs / smbclient
+  spawn for 7z / unrar / mkpfs / `mkfs.exfat` + `losetup` + `mount` (sudo-
+  wrapped, for the PS5 exFAT pipeline) / smbclient
 - **Frontend:** React 18 + Vite, PWA with offline service worker
 - **pyremoteplay sidecar:** Python 3.11 + FastAPI + `pyremoteplay` (PSN OAuth,
   registration, Remote Play session, DualSense input emulation) with
@@ -304,6 +371,69 @@ Backup & restore the whole thing as a ZIP from **Settings → Backup**.
 
 - Linux / macOS / Windows with Docker (host networking required)
 - Tested on Debian on amd64 / Intel x86_64 hardware
+
+## Credits & Acknowledgements
+
+P5 Manager glues together a lot of independent scene work — none of the
+PS4/PS5 console parts would exist without these projects and the people
+who maintain them. If you find this tool useful, star their repos too.
+
+### Conversion / image tooling
+
+- **[PSBrew / MkPFS](https://github.com/PSBrew/MkPFS)** — `mkpfs`, the
+  PFS (`.ffpfsc` / `.ffpfs`) packer and unpacker. Drives every PS5 PFS
+  mode in the Convert tab. Installed straight from PyPI into a per-app
+  venv so the "Update mkpfs" button can pull a new release without a
+  rebuild
+- **[PSBrew / MicroMount](https://github.com/PSBrew/MicroMount)** —
+  source of the bundled MicroMount payload + config editor in the
+  Convert tab's MicroMount section
+- **[kerrdec97 / ps5-exfat-builder](https://github.com/kerrdec97/ps5-exfat-builder)**
+  — the Windows-side reference for the exFAT image build pipeline. Our
+  Linux port (`backend/src/lib/exfat.js`) mirrors the same Allocate →
+  `mkfs.exfat` → mount → copy → unmount sequence but uses kernel loop
+  + rsync instead of OSFMount + robocopy
+- **flatz** — original public-domain `unpkg.py` PS4 PKG parser /
+  extractor (rev 0x00000008, 2017). Our `backend/src/lib/unpkg.py` is a
+  Python 3 port (originally by **CelesteBlue**) trimmed to ship as a
+  single hermetic file
+
+### Console payloads + jailbreak
+
+- **[ps5-payload-dev / sdk](https://github.com/ps5-payload-dev/sdk)** —
+  the PS5 user-mode payload SDK used to build every ELF under
+  `p5managerclient/` (`rp-get-pin.elf`, `offact.elf`, `pkg-install.elf`).
+  `prospero-clang`, the libc/SCE stubs and the ptrace + regmgr helpers
+  all come from this project
+- **etaHEN team** — the etaHEN payload (PS5 jailbreak / kernel exploit
+  + homebrew enabler). Pulled in as a "Default Payload" so a fresh
+  install can wake a console and inject etaHEN in two clicks
+- **GoldHEN team (sleirsgoevy et al.)** — the PS4 GoldHEN payload
+  (`goldhen.bin`, `ftp_server.bin`, `kernel_debugger.bin`). Same default-
+  payload treatment for PS4 profiles
+- **[gezine](https://github.com/gezine)** — author of **p2jb**, the PS5
+  Lua-port jailbreak exploit driven from the manager
+
+### Remote Play
+
+- **[ktnrg45 / pyremoteplay](https://github.com/ktnrg45/pyremoteplay)**
+  — the Python Remote Play protocol library powering the sidecar
+  container. PSN OAuth, console registration, Remote Play session
+  lifecycle and DualSense input emulation are all upstream; our sidecar
+  just wraps it in a FastAPI surface and patches a couple of timeout
+  predicates (`Session.standby` / `async_standby` / `wait`) so
+  standby + post-stop reconnect behave deterministically
+
+### Misc
+
+- **DietPi / Debian** — the host platform this is daily-driven on
+- Everyone whose forum posts, GitHub issues and IRC pings filled in the
+  undocumented quirks of regmgr, sceRemoteplayGeneratePinCode,
+  ShadowMount+ and the rest of the homebrew stack. Too many to list
+  individually — thank you
+
+If you spot something we should be crediting and currently aren't,
+open an issue and we'll add it.
 
 ## License
 

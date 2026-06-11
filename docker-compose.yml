@@ -51,6 +51,50 @@ services:
       - PORT=3001
       - DATA_DIR=/app/data
       - PYREMOTEPLAY_SIDECAR_URL=http://127.0.0.1:9555
+    # The Convert -> PS5 exFAT pipeline creates a sparse image file, formats
+    # it with mkfs.exfat, then loop-mounts it to inject the source files via
+    # cp/rsync. losetup + mount(2) both need CAP_SYS_ADMIN; on Debian hosts
+    # AppArmor also blocks the FUSE/loop syscalls until we unconfine the
+    # container. /dev/loop-control alone isn't enough — losetup needs to
+    # *see* the individual /dev/loopN nodes to allocate one, so we pass the
+    # full range through (the host pre-creates loop0..7; if your kernel uses
+    # max_loop=N >8, just bump this list — Docker is fine with missing entries
+    # being optional via device-cgroup-rules but `devices:` requires explicit
+    # nodes). MKNOD is needed so the container can create new loop devices on
+    # the fly if losetup -f exhausts the pre-existing pool.
+    cap_add:
+      - SYS_ADMIN
+      - MKNOD
+    # uid 1000 (the runtime user) needs membership in `disk` (gid 6 on
+    # Debian) so it can open the root:disk-owned /dev/loopN device nodes.
+    # File caps on losetup/mount/umount/mkfs.exfat (set in the Dockerfile)
+    # then handle the privileged syscalls themselves.
+    group_add:
+      - "6"
+    security_opt:
+      # AppArmor blocks the FUSE/loop/mount syscalls on Debian hosts; we
+      # unconfine so SYS_ADMIN can take effect inside the container.
+      - apparmor:unconfined
+      # Docker's default seccomp profile drops `mount`, `umount2`, `mknod`
+      # and several other syscalls even when CAP_SYS_ADMIN is in the
+      # bounding set — that's why setuid-root mount still printed "must be
+      # superuser to use mount". Unconfining seccomp lets the convert
+      # worker's loop+mount sequence actually reach the kernel. If you'd
+      # rather keep seccomp on, point this at a custom JSON profile that
+      # allowlists at least: mount, umount2, mknod, mknodat, pivot_root,
+      # ioctl(LOOP_*), and statfs.
+      - seccomp:unconfined
+    devices:
+      - /dev/loop-control:/dev/loop-control
+      - /dev/loop0:/dev/loop0
+      - /dev/loop1:/dev/loop1
+      - /dev/loop2:/dev/loop2
+      - /dev/loop3:/dev/loop3
+      - /dev/loop4:/dev/loop4
+      - /dev/loop5:/dev/loop5
+      - /dev/loop6:/dev/loop6
+      - /dev/loop7:/dev/loop7
+      - /dev/fuse:/dev/fuse
     depends_on:
       - pyremoteplay
     restart: unless-stopped
