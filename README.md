@@ -63,7 +63,8 @@ Autoload. Mobile-friendly responsive UI.
 ## Requirements
 
 - PS5 firmware **≤ 12.70** for the LUA exploit chain (y2jb)
-- LUA exploit needs *Star Wars Racer Revenge* (CUSA03474 / CUSA03492)
+- A Lua-vulnerable game (~24 known titles, e.g. *Star Wars Racer
+  Revenge* CUSA03474 / CUSA03492) or the y2jb harness
 - Console reachable on the same LAN
 - Docker + Docker Compose
 
