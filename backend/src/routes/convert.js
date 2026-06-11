@@ -22,6 +22,9 @@ import { uploadDirToSmb as smbUploadDir } from '../lib/smb.js';
 // for the rationale and migration notes.
 import { payloadsDir, mkpfsWorkDir, downloadsDir, USER_QUICK_TABS } from '../lib/paths.js';
 import { createExfatImage, unpackExfatImage } from '../lib/exfat.js';
+// Generic FIFO worker + standard CRUD endpoint binder. Replaces four nearly
+// identical hand-rolled queue scaffolds further down in this file.
+import { JobQueue, mountQueueRoutes } from '../lib/JobQueue.js';
 
 const router = express.Router();
 
@@ -2584,65 +2587,67 @@ router.post('/extract', async (req, res) => {
   }
 });
 
-const extractQueue = [];
-let extractQueuePaused = true;
-let extractQueueWorkerRunning = false;
-
-function extractQueueWorkerTick() {
-  if (extractQueueWorkerRunning) return;
-  if (extractQueuePaused) return;
-  if (extractQueue.length === 0) return;
-  const anyRunning = Array.from(extractJobs.values()).some(j => j.status === 'running');
-  if (anyRunning) return;
-
-  const next = extractQueue.find(q => q.status === 'queued');
-  if (!next) return;
-
-  extractQueueWorkerRunning = true;
-  next.status = 'starting';
-
-  try {
-    const prep = validateExtractParams(next.params);
-    if (prep.error) {
-      next.status = 'failed';
-      next.error = prep.error;
-      next.finished_at = new Date().toISOString();
-      extractQueueWorkerRunning = false;
-      setTimeout(extractQueueWorkerTick, 50);
-      return;
-    }
-    const job = buildExtractJob(next.params, prep);
-    extractJobs.set(job.id, job);
-    next.status = 'running';
-    next.job_id = job.id;
-    next.started_at = job.started_at;
-    next.dest = prep.destLabel;
-    next._job = job;
-
-    executeExtractJob(job).then(() => {
-      next.status = job.status;
-      next.error = job.error || null;
-      next.exit_code = job.exit_code;
-      next.finished_at = job.finished_at;
-      next.progress = job.progress;
-    }).catch(err => {
-      next.status = 'failed';
-      next.error = err.message;
-      next.finished_at = new Date().toISOString();
-    }).finally(() => {
-      extractQueueWorkerRunning = false;
-      setTimeout(extractQueueWorkerTick, 100);
-    });
-  } catch (err) {
-    next.status = 'failed';
-    next.error = err.message;
-    next.finished_at = new Date().toISOString();
-    extractQueueWorkerRunning = false;
-    setTimeout(extractQueueWorkerTick, 50);
+function extractQueueItemPublic(item) {
+  const { params, _job, ...rest } = item;
+  if (_job) {
+    if (_job.progress != null) rest.progress = _job.progress;
+    if (_job.log) rest.log_size = _job.log.length;
   }
+  rest.job_id = item.job_id;
+  return rest;
 }
 
-setInterval(extractQueueWorkerTick, 2000);
+// Extract queue — unpacks archives into a local/remote destination. One job
+// at a time, blocked while any other extractJobs entry is still running.
+const extractQ = new JobQueue({
+  name: 'mm extract',
+  log,
+  scheduleSave: () => scheduleQueueSave?.(),
+  startingStatus: 'starting',
+  liveStatuses: ['running', 'starting', 'staging', 'pushing', 'unpacking'],
+  terminalStatuses: ['queued', 'completed', 'failed', 'cancelled', 'push_failed'],
+  finishedStatuses: ['completed', 'failed', 'cancelled', 'push_failed'],
+  retryStatuses: ['failed', 'cancelled', 'push_failed', 'completed'],
+  shouldBlockRun: () => Array.from(extractJobs.values()).some(j => j.status === 'running'),
+  validate: (params) => validateExtractParams(params),
+  buildJob: (params, prep) => {
+    const job = buildExtractJob(params, prep);
+    return job;
+  },
+  jobsMap: extractJobs,
+  execute: (job) => executeExtractJob(job),
+  finalize: (item, job) => {
+    item.status = job.status;
+    item.error = job.error || null;
+    item.exit_code = job.exit_code;
+    item.finished_at = job.finished_at;
+    item.progress = job.progress;
+    // The extract-specific destLabel (`prep.destLabel`) was stamped on the
+    // item right after buildJob succeeded in the old worker — preserve it
+    // by mirroring from the job in finalize as a fallback.
+    if (item.dest == null && job.destLabel != null) item.dest = job.destLabel;
+  },
+  itemPublic: extractQueueItemPublic,
+  cancelHook: (item) => {
+    const job = item._job || (item.job_id ? extractJobs.get(item.job_id) : null);
+    if (job && job._proc) {
+      try { job._proc.kill('SIGTERM'); } catch (_) {}
+      job.status = 'cancelled';
+      job.finished_at = new Date().toISOString();
+    }
+  },
+  retryReset: (item) => {
+    item.error = null;
+    item.exit_code = null;
+    item.started_at = null;
+    item.finished_at = null;
+    item.job_id = null;
+    item.progress = 0;
+    item._job = undefined;
+  },
+});
+extractQ.start();
+mountQueueRoutes(router, '/extract/queue', extractQ);
 
 router.post('/extract/queue', (req, res) => {
   try {
@@ -2665,136 +2670,12 @@ router.post('/extract/queue', (req, res) => {
       error: null,
       exit_code: null,
     };
-    extractQueue.push(item);
+    extractQ.add(item);
     log('info', `mm extract-queue add ${item.id}: ${item.archive} → ${item.dest}`);
-    setTimeout(extractQueueWorkerTick, 50);
-    scheduleQueueSave?.();
     res.json({ success: true, item: { ...item, params: undefined } });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
-});
-
-function extractQueueItemPublic(item) {
-  const { params, _job, ...rest } = item;
-  if (_job) {
-    if (_job.progress != null) rest.progress = _job.progress;
-    if (_job.log) rest.log_size = _job.log.length;
-  }
-  rest.job_id = item.job_id;
-  return rest;
-}
-
-router.get('/extract/queue', (req, res) => {
-  res.json({
-    paused: extractQueuePaused,
-    items: extractQueue.map(extractQueueItemPublic),
-  });
-});
-
-router.delete('/extract/queue/:id', (req, res) => {
-  const id = req.params.id;
-  const idx = extractQueue.findIndex(q => q.id === id);
-  if (idx < 0) return res.status(404).json({ error: 'Item not found' });
-  const item = extractQueue[idx];
-
-  const LIVE_STATUSES = ['running', 'starting', 'staging', 'pushing', 'unpacking'];
-  if (LIVE_STATUSES.includes(item.status)) {
-    const job = item._job || (item.job_id ? extractJobs.get(item.job_id) : null);
-    if (job && job._proc) {
-      try { job._proc.kill('SIGTERM'); } catch (_) {}
-      job.status = 'cancelled';
-      job.finished_at = new Date().toISOString();
-    }
-    item.status = 'cancelled';
-    item.finished_at = new Date().toISOString();
-    extractQueue.splice(idx, 1);
-    scheduleQueueSave?.();
-    return res.json({ success: true, cancelled: true });
-  }
-  const TERMINAL_STATUSES = ['queued', 'completed', 'failed', 'cancelled', 'push_failed'];
-  if (TERMINAL_STATUSES.includes(item.status)) {
-    extractQueue.splice(idx, 1);
-    scheduleQueueSave?.();
-    return res.json({ success: true });
-  }
-  return res.status(400).json({ error: `Cannot remove item in status ${item.status}` });
-});
-
-router.post('/extract/queue/clear', (req, res) => {
-  const before = extractQueue.length;
-  for (let i = extractQueue.length - 1; i >= 0; i--) {
-    if (extractQueue[i].status === 'queued') extractQueue.splice(i, 1);
-  }
-  res.json({ success: true, removed: before - extractQueue.length });
-});
-
-router.post('/extract/queue/clear-finished', (req, res) => {
-  const before = extractQueue.length;
-  for (let i = extractQueue.length - 1; i >= 0; i--) {
-    if (['completed', 'failed', 'cancelled', 'push_failed'].includes(extractQueue[i].status)) extractQueue.splice(i, 1);
-  }
-  if (before !== extractQueue.length) scheduleQueueSave?.();
-  res.json({ success: true, removed: before - extractQueue.length });
-});
-
-router.post('/extract/queue/pause', (req, res) => {
-  extractQueuePaused = true;
-  log('info', 'mm extract-queue paused');
-  scheduleQueueSave?.();
-  res.json({ success: true, paused: true });
-});
-
-router.post('/extract/queue/resume', (req, res) => {
-  extractQueuePaused = false;
-  log('info', 'mm extract-queue resumed');
-  setTimeout(extractQueueWorkerTick, 50);
-  scheduleQueueSave?.();
-  res.json({ success: true, paused: false });
-});
-
-router.post('/extract/queue/:id/move', (req, res) => {
-  const id = req.params.id;
-  const dir = req.body?.direction;
-  const idx = extractQueue.findIndex(q => q.id === id);
-  if (idx < 0) return res.status(404).json({ error: 'Item not found' });
-  if (extractQueue[idx].status !== 'queued') return res.status(400).json({ error: 'Only queued items can be moved' });
-  if (dir === 'up' && idx > 0 && extractQueue[idx - 1].status === 'queued') {
-    [extractQueue[idx - 1], extractQueue[idx]] = [extractQueue[idx], extractQueue[idx - 1]];
-  } else if (dir === 'down' && idx < extractQueue.length - 1 && extractQueue[idx + 1].status === 'queued') {
-    [extractQueue[idx], extractQueue[idx + 1]] = [extractQueue[idx + 1], extractQueue[idx]];
-  } else if (dir === 'top') {
-    // Splice the item out and reinsert just after any currently-running items,
-    // so per-task "Start" puts it next in line without disturbing in-flight work.
-    const [item] = extractQueue.splice(idx, 1);
-    const firstQueued = extractQueue.findIndex(q => q.status === 'queued');
-    const insertAt = firstQueued < 0 ? extractQueue.length : firstQueued;
-    extractQueue.splice(insertAt, 0, item);
-  }
-  res.json({ success: true });
-});
-
-router.post('/extract/queue/:id/retry', (req, res) => {
-  const id = req.params.id;
-  const item = extractQueue.find(q => q.id === id);
-  if (!item) return res.status(404).json({ error: 'Item not found' });
-  // 'completed' is included here too: the user explicitly asked for a retry
-  // button on every (terminal) job, not just failed ones — useful when an
-  // archive was re-uploaded and the previous extract is stale.
-  if (!['failed', 'cancelled', 'push_failed', 'completed'].includes(item.status)) {
-    return res.status(400).json({ error: `Cannot retry item in status ${item.status}` });
-  }
-  item.status = 'queued';
-  item.error = null;
-  item.exit_code = null;
-  item.started_at = null;
-  item.finished_at = null;
-  item.job_id = null;
-  item.progress = 0;
-  item._job = undefined;
-  setTimeout(extractQueueWorkerTick, 50);
-  scheduleQueueSave?.();
-  res.json({ success: true });
 });
 
 function hasBin(name) {
@@ -3709,100 +3590,84 @@ router.post('/convert', async (req, res) => {
   }
 });
 
-const convertQueue = [];
-let queuePaused = true;
-let queueWorkerRunning = false;
-// Wall-clock timestamp of when queueWorkerRunning was last set to true.
-// Used by the watchdog (a few lines below) to forcibly clear the flag if
-// an executeConvertJob() promise never settles (e.g. an unhandled rejection
-// in a microtask, or a hung await). Without this the queue silently stops
-// processing new items even though queuePaused=false.
-let queueWorkerStartedAt = 0;
-
-function queueWorkerTick() {
-  // Watchdog: if the worker flag has been "running" for ages but nothing in
-  // either convertQueue or the jobs map is actually in a live status, the
-  // flag is stuck from an earlier crash/cancel race. Reset it so the next
-  // queued item can start.
-  if (queueWorkerRunning && queueWorkerStartedAt > 0) {
-    const ageMs = Date.now() - queueWorkerStartedAt;
-    const liveItemInQueue = convertQueue.some(q =>
-      ['starting', 'running', 'staging', 'pushing', 'unpacking'].includes(q.status)
-    );
-    const liveJobInMap = Array.from(jobs.values()).some(j =>
-      ['running', 'pushing', 'starting', 'staging', 'unpacking'].includes(j.status)
-    );
-    if (ageMs > 60_000 && !liveItemInQueue && !liveJobInMap) {
-      log('warn', `[queue] watchdog: queueWorkerRunning stuck for ${Math.round(ageMs/1000)}s with no live job; clearing`);
-      queueWorkerRunning = false;
-      queueWorkerStartedAt = 0;
-    }
+function convertQueueItemPublic(item) {
+  const { params, _job, ...rest } = item;
+  if (_job) {
+    if (_job.progress != null) rest.progress = _job.progress;
+    if (_job.bytes_written != null) rest.bytes_written = _job.bytes_written;
+    if (_job.bytes_read != null) rest.bytes_read = _job.bytes_read;
+    if (_job.bytes_total != null) rest.bytes_total = _job.bytes_total;
+    if (_job.phase != null) rest.phase = _job.phase;
+    if (_job.unpack_phase != null) rest.unpack_phase = _job.unpack_phase;
+    if (_job.log) rest.log_size = _job.log.length;
   }
-  if (queueWorkerRunning) return;
-  if (queuePaused) return;
-  if (convertQueue.length === 0) return;
-  // only block on running CONVERT jobs — extract runs in a separate queue/worker in parallel
-  const anyRunning = Array.from(jobs.values()).some(j => j.status === 'running' || j.status === 'pushing');
-  if (anyRunning) return;
-
-  const next = convertQueue.find(q => q.status === 'queued');
-  if (!next) return;
-
-  queueWorkerRunning = true;
-  queueWorkerStartedAt = Date.now();
-  next.status = 'starting';
-
-  try {
-    const v = validateConvertParams(next.params);
-    if (v.error) {
-      next.status = 'failed';
-      next.error = v.error;
-      next.finished_at = new Date().toISOString();
-      queueWorkerRunning = false;
-      queueWorkerStartedAt = 0;
-      setTimeout(queueWorkerTick, 50);
-      return;
-    }
-    const job = buildConvertJob(next.params, v);
-    jobs.set(job.id, job);
-    next.status = 'running';
-    next.job_id = job.id;
-    next.started_at = job.started_at;
-    next.output = job.output;
-    next._job = job;
-
-    executeConvertJob(job).then(() => {
-      next.status = job.status;
-      next.error = job.error || null;
-      next.exit_code = job.exit_code;
-      next.finished_at = job.finished_at;
-      next.progress = job.progress;
-      // Mirror the cleared phase fields too — convertQueueItemPublic only
-      // surfaces `_job.phase` when it's non-null, but if `_job` is gone
-      // (e.g. after a process restart that rehydrated this item) we want
-      // the snapshot on the queue item itself to reflect "done".
-      next.phase = job.phase;
-      next.unpack_phase = job.unpack_phase;
-    }).catch(err => {
-      next.status = 'failed';
-      next.error = err.message;
-      next.finished_at = new Date().toISOString();
-    }).finally(() => {
-      queueWorkerRunning = false;
-      queueWorkerStartedAt = 0;
-      setTimeout(queueWorkerTick, 100);
-    });
-  } catch (err) {
-    next.status = 'failed';
-    next.error = err.message;
-    next.finished_at = new Date().toISOString();
-    queueWorkerRunning = false;
-    queueWorkerStartedAt = 0;
-    setTimeout(queueWorkerTick, 50);
-  }
+  rest.job_id = item.job_id;
+  return rest;
 }
 
-setInterval(queueWorkerTick, 2000);
+// Convert queue — wraps validateConvertParams / buildConvertJob /
+// executeConvertJob into the generic JobQueue runner. The watchdog config
+// reproduces the 60-second stuck-flag detector that the old hand-rolled
+// queueWorkerTick had (see commit history for the original explanation).
+const convertQ = new JobQueue({
+  name: 'mm convert',
+  log,
+  scheduleSave: () => scheduleQueueSave?.(),
+  startingStatus: 'starting',
+  liveStatuses: ['running', 'starting', 'staging', 'pushing', 'unpacking'],
+  terminalStatuses: ['queued', 'completed', 'failed', 'cancelled', 'push_failed'],
+  finishedStatuses: ['completed', 'failed', 'cancelled', 'push_failed'],
+  retryStatuses: ['failed', 'cancelled', 'push_failed', 'completed'],
+  watchdog: {
+    jobsMap: jobs,
+    liveItemStatuses: ['starting', 'running', 'staging', 'pushing', 'unpacking'],
+    liveJobStatuses: ['running', 'pushing', 'starting', 'staging', 'unpacking'],
+    ageMs: 60_000,
+  },
+  // only block on running CONVERT jobs — extract runs in a separate queue
+  // (extractQ) so the two never collide on this gate.
+  shouldBlockRun: () => Array.from(jobs.values()).some(j => j.status === 'running' || j.status === 'pushing'),
+  validate: (params) => validateConvertParams(params),
+  buildJob: (params, v) => buildConvertJob(params, v),
+  jobsMap: jobs,
+  execute: (job) => executeConvertJob(job),
+  finalize: (item, job) => {
+    item.status = job.status;
+    item.error = job.error || null;
+    item.exit_code = job.exit_code;
+    item.finished_at = job.finished_at;
+    item.progress = job.progress;
+    // Mirror the cleared phase fields too — convertQueueItemPublic only
+    // surfaces `_job.phase` when non-null, but if `_job` is gone (e.g.
+    // after a process restart that rehydrated this item) we want the
+    // queue snapshot itself to read "done".
+    item.phase = job.phase;
+    item.unpack_phase = job.unpack_phase;
+    if (item.output == null && job.output != null) item.output = job.output;
+  },
+  itemPublic: convertQueueItemPublic,
+  cancelHook: (item) => {
+    const job = item._job || (item.job_id ? jobs.get(item.job_id) : null);
+    if (job && job._proc) {
+      try { job._proc.kill('SIGTERM'); } catch (_) {}
+      job.status = 'cancelled';
+      job.finished_at = new Date().toISOString();
+    }
+  },
+  retryReset: (item) => {
+    item.error = null;
+    item.exit_code = null;
+    item.started_at = null;
+    item.finished_at = null;
+    item.job_id = null;
+    item.progress = 0;
+    item.phase = null;
+    item.unpack_phase = null;
+    item._job = undefined;
+  },
+});
+convertQ.start();
+mountQueueRoutes(router, '/convert/queue', convertQ);
 
 router.post('/convert/queue', (req, res) => {
   try {
@@ -3832,155 +3697,12 @@ router.post('/convert/queue', (req, res) => {
       error: null,
       exit_code: null,
     };
-    convertQueue.push(item);
+    convertQ.add(item);
     log('info', `mm queue add ${item.id}: ${item.source_name} -> ${item.output_name}`);
-    setTimeout(queueWorkerTick, 50);
-    scheduleQueueSave?.();
     res.json({ success: true, item: { ...item, params: undefined } });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
-});
-
-function convertQueueItemPublic(item) {
-  const { params, _job, ...rest } = item;
-  if (_job) {
-    if (_job.progress != null) rest.progress = _job.progress;
-    if (_job.bytes_written != null) rest.bytes_written = _job.bytes_written;
-    if (_job.bytes_read != null) rest.bytes_read = _job.bytes_read;
-    if (_job.bytes_total != null) rest.bytes_total = _job.bytes_total;
-    if (_job.phase != null) rest.phase = _job.phase;
-    if (_job.unpack_phase != null) rest.unpack_phase = _job.unpack_phase;
-    if (_job.log) rest.log_size = _job.log.length;
-  }
-  rest.job_id = item.job_id;
-  return rest;
-}
-
-router.get('/convert/queue', (req, res) => {
-  res.json({
-    paused: queuePaused,
-    items: convertQueue.map(convertQueueItemPublic),
-  });
-});
-
-router.delete('/convert/queue/:id', (req, res) => {
-  const id = req.params.id;
-  const idx = convertQueue.findIndex(q => q.id === id);
-  if (idx < 0) return res.status(404).json({ error: 'Item not found' });
-  const item = convertQueue[idx];
-
-  // Anything with a live worker → SIGTERM it first, then remove. We treat
-  // every transient/intermediate status as cancellable here (starting,
-  // staging, pushing, unpacking) so the user can always escape a stuck
-  // job. Previously only running/starting were handled, and a job that
-  // got stuck in "staging" or "pushing" stayed in the queue forever.
-  const LIVE_STATUSES = ['running', 'starting', 'staging', 'pushing', 'unpacking'];
-  if (LIVE_STATUSES.includes(item.status)) {
-    const job = item._job || (item.job_id ? jobs.get(item.job_id) : null);
-    if (job && job._proc) {
-      try { job._proc.kill('SIGTERM'); } catch (_) {}
-      job.status = 'cancelled';
-      job.finished_at = new Date().toISOString();
-    }
-    item.status = 'cancelled';
-    item.finished_at = new Date().toISOString();
-    convertQueue.splice(idx, 1);
-    scheduleQueueSave?.();
-    return res.json({ success: true, cancelled: true });
-  }
-
-  // Terminal statuses — push_failed was previously missing here and
-  // tripped the catch-all 400 below, which is exactly the "ked failne
-  // nejde odstranit" symptom the user reported.
-  const TERMINAL_STATUSES = ['queued', 'completed', 'failed', 'cancelled', 'push_failed'];
-  if (TERMINAL_STATUSES.includes(item.status)) {
-    convertQueue.splice(idx, 1);
-    scheduleQueueSave?.();
-    return res.json({ success: true });
-  }
-  return res.status(400).json({ error: `Cannot remove item in status ${item.status}` });
-});
-
-router.post('/convert/queue/clear', (req, res) => {
-  const before = convertQueue.length;
-  for (let i = convertQueue.length - 1; i >= 0; i--) {
-    if (convertQueue[i].status === 'queued') convertQueue.splice(i, 1);
-  }
-  res.json({ success: true, removed: before - convertQueue.length });
-});
-
-router.post('/convert/queue/clear-finished', (req, res) => {
-  const before = convertQueue.length;
-  for (let i = convertQueue.length - 1; i >= 0; i--) {
-    if (['completed', 'failed', 'cancelled', 'push_failed'].includes(convertQueue[i].status)) convertQueue.splice(i, 1);
-  }
-  if (before !== convertQueue.length) scheduleQueueSave?.();
-  res.json({ success: true, removed: before - convertQueue.length });
-});
-
-router.post('/convert/queue/pause', (req, res) => {
-  queuePaused = true;
-  log('info', 'mm queue paused');
-  scheduleQueueSave?.();
-  res.json({ success: true, paused: true });
-});
-
-router.post('/convert/queue/resume', (req, res) => {
-  queuePaused = false;
-  log('info', 'mm queue resumed');
-  setTimeout(queueWorkerTick, 50);
-  scheduleQueueSave?.();
-  res.json({ success: true, paused: false });
-});
-
-router.post('/convert/queue/:id/move', (req, res) => {
-  const id = req.params.id;
-  const dir = req.body?.direction;
-  const idx = convertQueue.findIndex(q => q.id === id);
-  if (idx < 0) return res.status(404).json({ error: 'Item not found' });
-  if (convertQueue[idx].status !== 'queued') return res.status(400).json({ error: 'Only queued items can be moved' });
-  if (dir === 'up' && idx > 0 && convertQueue[idx - 1].status === 'queued') {
-    [convertQueue[idx - 1], convertQueue[idx]] = [convertQueue[idx], convertQueue[idx - 1]];
-  } else if (dir === 'down' && idx < convertQueue.length - 1 && convertQueue[idx + 1].status === 'queued') {
-    [convertQueue[idx], convertQueue[idx + 1]] = [convertQueue[idx + 1], convertQueue[idx]];
-  } else if (dir === 'top') {
-    const [item] = convertQueue.splice(idx, 1);
-    const firstQueued = convertQueue.findIndex(q => q.status === 'queued');
-    const insertAt = firstQueued < 0 ? convertQueue.length : firstQueued;
-    convertQueue.splice(insertAt, 0, item);
-  }
-  res.json({ success: true });
-});
-
-router.post('/convert/queue/:id/retry', (req, res) => {
-  const id = req.params.id;
-  const item = convertQueue.find(q => q.id === id);
-  if (!item) return res.status(404).json({ error: 'Item not found' });
-  // push_failed: mkpfs finished OK but the auto-FTP push to PS5 errored.
-  // Retrying re-runs the whole conversion + push. We previously gated it
-  // out, which left the user with no way to resurrect a push_failed item
-  // except deleting and re-adding from scratch.
-  // 'completed' is included so the user can re-run a finished conversion
-  // (e.g. after replacing the source files or wanting a fresh push) without
-  // re-adding it to the queue from scratch. executeConvertJob already
-  // overwrites the existing output file, so the rerun is safe.
-  if (!['failed', 'cancelled', 'push_failed', 'completed'].includes(item.status)) {
-    return res.status(400).json({ error: `Cannot retry item in status ${item.status}` });
-  }
-  item.status = 'queued';
-  item.error = null;
-  item.exit_code = null;
-  item.started_at = null;
-  item.finished_at = null;
-  item.job_id = null;
-  item.progress = 0;
-  item.phase = null;
-  item.unpack_phase = null;
-  item._job = undefined;
-  setTimeout(queueWorkerTick, 50);
-  scheduleQueueSave?.();
-  res.json({ success: true });
 });
 
 router.get('/convert/:id', (req, res) => {
@@ -4012,32 +3734,34 @@ router.get('/convert', (req, res) => {
   res.json(list);
 });
 
-const ftpUploadQueue = [];
-let ftpUploadPaused = true;
-let ftpUploadWorkerRunning = false;
-
-function ftpUploadWorkerTick() {
-  if (ftpUploadWorkerRunning) return;
-  if (ftpUploadPaused) return;
-  if (ftpUploadQueue.length === 0) return;
-  const anyRunning = ftpUploadQueue.some(j => j.status === 'running');
-  if (anyRunning) return;
-  const next = ftpUploadQueue.find(q => q.status === 'queued');
-  if (!next) return;
-  ftpUploadWorkerRunning = true;
-  next.status = 'running';
-  next.started_at = new Date().toISOString();
-  executeFtpUploadJob(next).catch(err => {
-    next.status = 'failed';
-    next.error = err.message;
-    next.finished_at = new Date().toISOString();
-  }).finally(() => {
-    ftpUploadWorkerRunning = false;
-    setTimeout(ftpUploadWorkerTick, 100);
-  });
+function ftpUploadItemPublic(item) {
+  const { log: jobLog, ...rest } = item;
+  if (jobLog) rest.log_size = jobLog.length;
+  return rest;
 }
 
-setInterval(ftpUploadWorkerTick, 2000);
+// FTP upload queue — pushes already-built artefacts to the PS5 (or staging
+// to a remote FTP/SMB share first). One job at a time, blocked only by its
+// own in-flight item.
+const ftpUploadQ = new JobQueue({
+  name: 'ftp upload',
+  log,
+  scheduleSave: () => scheduleQueueSave?.(),
+  liveStatuses: ['running'],
+  terminalStatuses: ['queued', 'completed', 'failed', 'cancelled', 'push_failed'],
+  finishedStatuses: ['completed', 'failed', 'cancelled', 'push_failed'],
+  retryStatuses: ['failed', 'cancelled', 'completed'],
+  execute: (item) => executeFtpUploadJob(item),
+  itemPublic: ftpUploadItemPublic,
+  retryReset: (item) => {
+    item.error = null;
+    item.progress = 0;
+    item.bytes_sent = 0;
+    item.started_at = null;
+    item.finished_at = null;
+  },
+});
+ftpUploadQ.start();
 
 const ftpUploadJobs = new Map();
 const MAX_FTP_LOG_LINES = 1000;
@@ -4217,7 +3941,7 @@ router.post('/ftp/upload/queue', async (req, res) => {
         job_id: null,
         error: null,
       };
-      ftpUploadQueue.push(item);
+      ftpUploadQ.add(item);
       addedItems.push(item);
     };
 
@@ -4304,113 +4028,19 @@ router.post('/ftp/upload/queue', async (req, res) => {
       return res.status(400).json({ error: 'Provide local_path or source_id+source_path' });
     }
     log('info', `ftp-upload queue add: ${addedItems.length} item(s) -> ${ip}:${destBase}`);
-    setTimeout(ftpUploadWorkerTick, 50);
-    scheduleQueueSave?.();
     res.json({ success: true, items: addedItems, count: addedItems.length, item: addedItems[0] });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-function ftpUploadItemPublic(item) {
-  const { log: jobLog, ...rest } = item;
-  if (jobLog) rest.log_size = jobLog.length;
-  return rest;
-}
-
-router.get('/ftp/upload/queue', (req, res) => {
-  res.json({ paused: ftpUploadPaused, items: ftpUploadQueue.map(ftpUploadItemPublic) });
-});
-
-router.delete('/ftp/upload/queue/:id', (req, res) => {
-  const idx = ftpUploadQueue.findIndex(q => q.id === req.params.id);
-  if (idx < 0) return res.status(404).json({ error: 'Item not found' });
-  const item = ftpUploadQueue[idx];
-  // FTP uploads can't be killed mid-stream cleanly from basic-ftp; mark cancelled and remove.
-  // The stream will error on the next chunk write and the job promise will resolve.
-  if (item.status === 'running') {
-    item.status = 'cancelled';
-    item.error = 'cancelled';
-    item.finished_at = new Date().toISOString();
-  }
-  ftpUploadQueue.splice(idx, 1);
-  res.json({ success: true });
-});
-
-router.post('/ftp/upload/queue/clear', (req, res) => {
-  const before = ftpUploadQueue.length;
-  for (let i = ftpUploadQueue.length - 1; i >= 0; i--) {
-    if (ftpUploadQueue[i].status === 'queued') ftpUploadQueue.splice(i, 1);
-  }
-  res.json({ success: true, removed: before - ftpUploadQueue.length });
-});
-
-router.post('/ftp/upload/queue/clear-finished', (req, res) => {
-  const before = ftpUploadQueue.length;
-  for (let i = ftpUploadQueue.length - 1; i >= 0; i--) {
-    if (['completed', 'failed', 'cancelled', 'push_failed'].includes(ftpUploadQueue[i].status)) ftpUploadQueue.splice(i, 1);
-  }
-  if (before !== ftpUploadQueue.length) scheduleQueueSave?.();
-  res.json({ success: true, removed: before - ftpUploadQueue.length });
-});
-
-router.post('/ftp/upload/queue/pause', (req, res) => {
-  ftpUploadPaused = true;
-  scheduleQueueSave?.();
-  res.json({ success: true, paused: true });
-});
-
-router.post('/ftp/upload/queue/resume', (req, res) => {
-  ftpUploadPaused = false;
-  setTimeout(ftpUploadWorkerTick, 50);
-  scheduleQueueSave?.();
-  res.json({ success: true, paused: false });
-});
-
-router.post('/ftp/upload/queue/:id/move', (req, res) => {
-  const id = req.params.id;
-  const dir = req.body?.direction;
-  const idx = ftpUploadQueue.findIndex(q => q.id === id);
-  if (idx < 0) return res.status(404).json({ error: 'Item not found' });
-  if (ftpUploadQueue[idx].status !== 'queued') return res.status(400).json({ error: 'Only queued items can be moved' });
-  if (dir === 'up' && idx > 0 && ftpUploadQueue[idx - 1].status === 'queued') {
-    [ftpUploadQueue[idx - 1], ftpUploadQueue[idx]] = [ftpUploadQueue[idx], ftpUploadQueue[idx - 1]];
-  } else if (dir === 'down' && idx < ftpUploadQueue.length - 1 && ftpUploadQueue[idx + 1].status === 'queued') {
-    [ftpUploadQueue[idx], ftpUploadQueue[idx + 1]] = [ftpUploadQueue[idx + 1], ftpUploadQueue[idx]];
-  } else if (dir === 'top') {
-    const [item] = ftpUploadQueue.splice(idx, 1);
-    const firstQueued = ftpUploadQueue.findIndex(q => q.status === 'queued');
-    const insertAt = firstQueued < 0 ? ftpUploadQueue.length : firstQueued;
-    ftpUploadQueue.splice(insertAt, 0, item);
-  }
-  res.json({ success: true });
-});
-
-router.post('/ftp/upload/queue/:id/retry', (req, res) => {
-  const id = req.params.id;
-  const item = ftpUploadQueue.find(q => q.id === id);
-  if (!item) return res.status(404).json({ error: 'Item not found' });
-  // 'completed' included so the user can re-upload the same artefact (e.g.
-  // after deleting it on the PS5) without re-queuing from the Convert tab.
-  if (!['failed', 'cancelled', 'completed'].includes(item.status)) {
-    return res.status(400).json({ error: `Cannot retry item in status ${item.status}` });
-  }
-  item.status = 'queued';
-  item.error = null;
-  item.progress = 0;
-  item.bytes_sent = 0;
-  item.started_at = null;
-  item.finished_at = null;
-  setTimeout(ftpUploadWorkerTick, 50);
-  scheduleQueueSave?.();
-  res.json({ success: true });
-});
+mountQueueRoutes(router, '/ftp/upload/queue', ftpUploadQ);
 
 // Per-job detail endpoint for upload — used by the queue UI to render the
 // expandable log dropdown. Upload "jobs" live as items inside the upload
 // queue (no separate jobs map is populated for them), so look it up there.
 router.get('/ftp/upload/:id', (req, res) => {
-  const item = ftpUploadQueue.find(j => j.id === req.params.id);
+  const item = ftpUploadQ.items.find(j => j.id === req.params.id);
   if (!item) return res.status(404).json({ error: 'Job not found' });
   res.json(item);
 });
@@ -4445,10 +4075,6 @@ router.get('/ftp/upload/:id', (req, res) => {
 //   "installer exited"; status:"playable" / "error" lines bubble up
 //   through the per-item log and we map them onto the final status.
 // ───────────────────────────────────────────────────────────────────────────
-const installQueue = [];
-let installQueuePaused = true;
-let installQueueWorkerRunning = false;
-
 const INSTALL_DEFAULTS = {
   stage_dir: '/data/pkg-stage',
   trigger_file: '/data/.p5manager-install',
@@ -4716,36 +4342,36 @@ async function executeInstallJob(item) {
   }
 }
 
-function installQueueWorkerTick() {
-  if (installQueueWorkerRunning) return;
-  if (installQueuePaused) return;
-  if (installQueue.length === 0) return;
-  // Don't double-launch installers — one per PS5 at a time. Cheap heuristic:
-  // any non-terminal item blocks the worker.
-  const anyLive = installQueue.some(j => ['running', 'staging', 'sending', 'installing'].includes(j.status));
-  if (anyLive) return;
-  const next = installQueue.find(q => q.status === 'queued');
-  if (!next) return;
-  installQueueWorkerRunning = true;
-  next.status = 'running';
-  next.started_at = new Date().toISOString();
-  executeInstallJob(next).catch(err => {
-    next.status = 'failed';
-    next.error = err.message;
-    next.finished_at = new Date().toISOString();
-  }).finally(() => {
-    installQueueWorkerRunning = false;
-    scheduleQueueSave?.();
-    setTimeout(installQueueWorkerTick, 100);
-  });
-}
-
-setInterval(installQueueWorkerTick, 2000);
-
 function installQueueItemPublic(item) {
   const { log: _log, ...rest } = item;
   return { ...rest, log_size: typeof _log === 'string' ? _log.length : 0 };
 }
+
+// Install queue — one .pkg installer running at a time per host. The "is
+// anything live?" gate has to consider not just `running` but the staging /
+// sending / installing intermediate statuses too so a wedged item doesn't
+// let a second installer start behind it.
+const installQ = new JobQueue({
+  name: 'install',
+  log,
+  scheduleSave: () => scheduleQueueSave?.(),
+  liveStatuses: ['running', 'staging', 'sending', 'installing'],
+  terminalStatuses: ['queued', 'completed', 'failed', 'cancelled'],
+  finishedStatuses: ['completed', 'failed', 'cancelled'],
+  retryStatuses: ['failed', 'cancelled', 'completed'],
+  shouldBlockRun: (q) => q.items.some(j => ['running', 'staging', 'sending', 'installing'].includes(j.status)),
+  execute: (item) => executeInstallJob(item),
+  itemPublic: installQueueItemPublic,
+  retryReset: (item) => {
+    item.error = null;
+    item.progress = 0;
+    item.started_at = null;
+    item.finished_at = null;
+    item.install_status = null;
+    item.log = '';
+  },
+});
+installQ.start();
 
 // ── INSTALL: enqueue ──
 router.post('/install/queue', async (req, res) => {
@@ -4818,115 +4444,20 @@ router.post('/install/queue', async (req, res) => {
       install_status: null,
       log: '',
     };
-    installQueue.push(item);
+    installQ.add(item);
     log('info', `install queue add ${item.id}: ${resolvedName} -> ${ip}`);
-    setTimeout(installQueueWorkerTick, 50);
-    scheduleQueueSave?.();
     res.json({ success: true, item: installQueueItemPublic(item) });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
-router.get('/install/queue', (req, res) => {
-  res.json({ paused: installQueuePaused, items: installQueue.map(installQueueItemPublic) });
-});
-
-router.delete('/install/queue/:id', (req, res) => {
-  const id = req.params.id;
-  const idx = installQueue.findIndex(q => q.id === id);
-  if (idx < 0) return res.status(404).json({ error: 'Item not found' });
-  const item = installQueue[idx];
-  // Live items don't have a tear-down hook (no spawned child here — the
-  // payload runs on PS5) so cancelling just flips state and removes the
-  // row. The payload will keep running on the console, but the worker
-  // promise's .finally still clears installQueueWorkerRunning.
-  const LIVE = ['running', 'staging', 'sending', 'installing'];
-  if (LIVE.includes(item.status)) {
-    item.status = 'cancelled';
-    item.finished_at = new Date().toISOString();
-  }
-  installQueue.splice(idx, 1);
-  scheduleQueueSave?.();
-  res.json({ success: true });
-});
-
-router.post('/install/queue/clear', (req, res) => {
-  const before = installQueue.length;
-  for (let i = installQueue.length - 1; i >= 0; i--) {
-    if (installQueue[i].status === 'queued') installQueue.splice(i, 1);
-  }
-  scheduleQueueSave?.();
-  res.json({ success: true, removed: before - installQueue.length });
-});
-
-router.post('/install/queue/clear-finished', (req, res) => {
-  const before = installQueue.length;
-  for (let i = installQueue.length - 1; i >= 0; i--) {
-    if (['completed', 'failed', 'cancelled'].includes(installQueue[i].status)) installQueue.splice(i, 1);
-  }
-  if (before !== installQueue.length) scheduleQueueSave?.();
-  res.json({ success: true, removed: before - installQueue.length });
-});
-
-router.post('/install/queue/pause', (req, res) => {
-  installQueuePaused = true;
-  log('info', 'install queue paused');
-  scheduleQueueSave?.();
-  res.json({ success: true, paused: true });
-});
-
-router.post('/install/queue/resume', (req, res) => {
-  installQueuePaused = false;
-  log('info', 'install queue resumed');
-  setTimeout(installQueueWorkerTick, 50);
-  scheduleQueueSave?.();
-  res.json({ success: true, paused: false });
-});
-
-router.post('/install/queue/:id/retry', (req, res) => {
-  const id = req.params.id;
-  const item = installQueue.find(q => q.id === id);
-  if (!item) return res.status(404).json({ error: 'Item not found' });
-  if (!['failed', 'cancelled', 'completed'].includes(item.status)) {
-    return res.status(400).json({ error: `Cannot retry item in status ${item.status}` });
-  }
-  item.status = 'queued';
-  item.error = null;
-  item.progress = 0;
-  item.started_at = null;
-  item.finished_at = null;
-  item.install_status = null;
-  item.log = '';
-  setTimeout(installQueueWorkerTick, 50);
-  scheduleQueueSave?.();
-  res.json({ success: true });
-});
-
-router.post('/install/queue/:id/move', (req, res) => {
-  const id = req.params.id;
-  const dir = req.body?.direction;
-  const idx = installQueue.findIndex(q => q.id === id);
-  if (idx < 0) return res.status(404).json({ error: 'Item not found' });
-  if (installQueue[idx].status !== 'queued') return res.status(400).json({ error: 'Only queued items can be moved' });
-  if (dir === 'up' && idx > 0 && installQueue[idx - 1].status === 'queued') {
-    [installQueue[idx - 1], installQueue[idx]] = [installQueue[idx], installQueue[idx - 1]];
-  } else if (dir === 'down' && idx < installQueue.length - 1 && installQueue[idx + 1].status === 'queued') {
-    [installQueue[idx], installQueue[idx + 1]] = [installQueue[idx + 1], installQueue[idx]];
-  } else if (dir === 'top') {
-    const [item] = installQueue.splice(idx, 1);
-    const firstQueued = installQueue.findIndex(q => q.status === 'queued');
-    const insertAt = firstQueued < 0 ? installQueue.length : firstQueued;
-    installQueue.splice(insertAt, 0, item);
-  }
-  scheduleQueueSave?.();
-  res.json({ success: true });
-});
+mountQueueRoutes(router, '/install/queue', installQ);
 
 // Per-item log feed — same shape as the FTP-upload variant so the Queue
 // component's existing dropdown picks it up via `logUrlForItem`.
 router.get('/install/:id', (req, res) => {
-  const item = installQueue.find(q => q.id === req.params.id);
+  const item = installQ.items.find(q => q.id === req.params.id);
   if (!item) return res.status(404).json({ error: 'Item not found' });
   res.json({ log: item.log || '' });
 });
@@ -4952,101 +4483,55 @@ router.get('/install/preflight', (req, res) => {
   }
 });
 
-router.get('/queue/all', (req, res) => {
-  const extractData = {
-    paused: extractQueuePaused,
-    items: extractQueue.map(item => ({ ...extractQueueItemPublic(item), type: 'extract' })),
-  };
-  const convertData = {
-    paused: queuePaused,
-    items: convertQueue.map(item => ({ ...convertQueueItemPublic(item), type: 'convert' })),
-  };
-  const uploadData = {
-    paused: ftpUploadPaused,
-    items: ftpUploadQueue.map(item => ({ ...ftpUploadItemPublic(item), type: 'upload' })),
-  };
-  const installData = {
-    paused: installQueuePaused,
-    items: installQueue.map(item => ({ ...installQueueItemPublic(item), type: 'install' })),
-  };
+// Cross-queue aggregator + bulk controls — used by the unified "Queue" tab
+// in the frontend so it can render and pause/resume every queue at once.
+// Each entry stamps the canonical type so the UI can branch on shape
+// (extract vs convert vs upload vs install) without a separate request.
+const QUEUE_TYPES = [
+  { key: 'extract', type: 'extract', queue: () => extractQ },
+  { key: 'convert', type: 'convert', queue: () => convertQ },
+  { key: 'upload',  type: 'upload',  queue: () => ftpUploadQ },
+  { key: 'install', type: 'install', queue: () => installQ },
+];
 
-  const allItems = [
-    ...extractData.items,
-    ...convertData.items,
-    ...uploadData.items,
-    ...installData.items,
-  ].sort((a, b) => {
+router.get('/queue/all', (req, res) => {
+  const out = {};
+  const paused = {};
+  for (const { key, type, queue } of QUEUE_TYPES) {
+    const q = queue();
+    const snap = q.snapshot();
+    out[key] = { paused: snap.paused, items: snap.items.map(it => ({ ...it, type })) };
+    paused[key] = snap.paused;
+  }
+  const allItems = QUEUE_TYPES.flatMap(({ key }) => out[key].items).sort((a, b) => {
     const statusOrder = { running: 0, queued: 1, completed: 2, failed: 3, cancelled: 4 };
     const aOrder = statusOrder[a.status] ?? 5;
     const bOrder = statusOrder[b.status] ?? 5;
     if (aOrder !== bOrder) return aOrder - bOrder;
     return new Date(b.added_at || 0) - new Date(a.added_at || 0);
   });
-
   res.json({
-    extract: extractData,
-    convert: convertData,
-    upload: uploadData,
-    install: installData,
+    ...out,
     all: allItems,
-    paused: {
-      extract: extractQueuePaused,
-      convert: queuePaused,
-      upload: ftpUploadPaused,
-      install: installQueuePaused,
-    },
+    paused,
   });
 });
 
 router.post('/queue/pause-all', (req, res) => {
-  extractQueuePaused = true;
-  queuePaused = true;
-  ftpUploadPaused = true;
-  installQueuePaused = true;
+  for (const { queue } of QUEUE_TYPES) queue().pause();
   log('info', 'All queues paused');
   res.json({ success: true });
 });
 
 router.post('/queue/resume-all', (req, res) => {
-  extractQueuePaused = false;
-  queuePaused = false;
-  ftpUploadPaused = false;
-  installQueuePaused = false;
+  for (const { queue } of QUEUE_TYPES) queue().resume();
   log('info', 'All queues resumed');
-  setTimeout(queueWorkerTick, 50);
-  setTimeout(ftpUploadWorkerTick, 50);
-  setTimeout(installQueueWorkerTick, 50);
   res.json({ success: true });
 });
 
 router.post('/queue/clear-finished', (req, res) => {
-  const TERMINAL = ['completed', 'failed', 'cancelled', 'push_failed'];
   let removed = 0;
-  for (let i = extractQueue.length - 1; i >= 0; i--) {
-    if (TERMINAL.includes(extractQueue[i].status)) {
-      extractQueue.splice(i, 1);
-      removed++;
-    }
-  }
-  for (let i = convertQueue.length - 1; i >= 0; i--) {
-    if (TERMINAL.includes(convertQueue[i].status)) {
-      convertQueue.splice(i, 1);
-      removed++;
-    }
-  }
-  for (let i = ftpUploadQueue.length - 1; i >= 0; i--) {
-    if (TERMINAL.includes(ftpUploadQueue[i].status)) {
-      ftpUploadQueue.splice(i, 1);
-      removed++;
-    }
-  }
-  for (let i = installQueue.length - 1; i >= 0; i--) {
-    if (TERMINAL.includes(installQueue[i].status)) {
-      installQueue.splice(i, 1);
-      removed++;
-    }
-  }
-  if (removed > 0) scheduleQueueSave?.();
+  for (const { queue } of QUEUE_TYPES) removed += queue().clearFinished().removed;
   res.json({ success: true, removed });
 });
 
@@ -5112,15 +4597,23 @@ function _normalizeForSave(items) {
   return [...live, ...trimmedFinished];
 }
 
+// Map persistence-key → JobQueue instance. Lazy getters because the queues
+// are declared further up the file but persistence must remain referentially
+// neutral if/when they get hoisted into a controller class.
+const PERSIST_QUEUES = [
+  ['extract',   () => extractQ],
+  ['convert',   () => convertQ],
+  ['ftpUpload', () => ftpUploadQ],
+  ['install',   () => installQ],
+];
+
 function _serializeQueues() {
-  return {
-    version: 1,
-    saved_at: new Date().toISOString(),
-    extract: { paused: extractQueuePaused, items: _normalizeForSave(extractQueue) },
-    convert: { paused: queuePaused, items: _normalizeForSave(convertQueue) },
-    ftpUpload: { paused: ftpUploadPaused, items: _normalizeForSave(ftpUploadQueue) },
-    install: { paused: installQueuePaused, items: _normalizeForSave(installQueue) },
-  };
+  const out = { version: 1, saved_at: new Date().toISOString() };
+  for (const [key, qref] of PERSIST_QUEUES) {
+    const q = qref();
+    out[key] = { paused: q.paused, items: _normalizeForSave(q.items) };
+  }
+  return out;
 }
 
 function saveQueueState() {
@@ -5215,46 +4708,22 @@ function restoreQueueState() {
     };
 
     const stats = { extract: 0, convert: 0, ftpUpload: 0, install: 0, demoted: 0 };
-    if (data?.extract?.items) {
-      extractQueuePaused = !!data.extract.paused;
-      for (const r of data.extract.items) {
+    for (const [key, qref] of PERSIST_QUEUES) {
+      const slice = data?.[key];
+      if (!slice?.items) continue;
+      const q = qref();
+      q.paused = !!slice.paused;
+      for (const r of slice.items) {
         const it = demote(r);
         if (it.status !== r.status) stats.demoted++;
-        extractQueue.push(it);
-        stats.extract++;
-      }
-    }
-    if (data?.convert?.items) {
-      queuePaused = !!data.convert.paused;
-      for (const r of data.convert.items) {
-        const it = demote(r);
-        if (it.status !== r.status) stats.demoted++;
-        convertQueue.push(it);
-        stats.convert++;
-      }
-    }
-    if (data?.ftpUpload?.items) {
-      ftpUploadPaused = !!data.ftpUpload.paused;
-      for (const r of data.ftpUpload.items) {
-        const it = demote(r);
-        if (it.status !== r.status) stats.demoted++;
-        ftpUploadQueue.push(it);
-        stats.ftpUpload++;
-      }
-    }
-    if (data?.install?.items) {
-      installQueuePaused = !!data.install.paused;
-      for (const r of data.install.items) {
-        const it = demote(r);
-        if (it.status !== r.status) stats.demoted++;
-        installQueue.push(it);
-        stats.install++;
+        q.items.push(it);
+        stats[key]++;
       }
     }
     log('info',
       `[queue-persist] restored: extract=${stats.extract} convert=${stats.convert} ` +
       `ftp=${stats.ftpUpload} install=${stats.install} demoted_running=${stats.demoted} ` +
-      `paused: extract=${extractQueuePaused} convert=${queuePaused} ftp=${ftpUploadPaused} install=${installQueuePaused}`
+      `paused: extract=${extractQ.paused} convert=${convertQ.paused} ftp=${ftpUploadQ.paused} install=${installQ.paused}`
     );
   } catch (e) {
     log('warn', `[queue-persist] restore failed (starting fresh): ${e.message}`);
