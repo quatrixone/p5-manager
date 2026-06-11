@@ -1,4 +1,5 @@
-import { useState, useEffect, useMemo, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import useVisiblePolling from '../hooks/useVisiblePolling';
 
 const API = '/api';
 
@@ -341,7 +342,7 @@ export default function Queue() {
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('all');
 
-  const fetchQueue = async () => {
+  const fetchQueue = useCallback(async () => {
     try {
       const [queueRes, downloadRes, dlState] = await Promise.all([
         fetch(`${API}/convert/queue/all`),
@@ -370,13 +371,12 @@ export default function Queue() {
     } finally {
       setLoading(false);
     }
-  };
-
-  useEffect(() => {
-    fetchQueue();
-    const interval = setInterval(fetchQueue, 1500);
-    return () => clearInterval(interval);
   }, []);
+
+  // 2 s while the Tasks tab is visible (was a fixed 1.5 s setInterval that
+  // kept running even when the user was on another tab). The visibility
+  // hook also fires immediately on tab-resume so the bar isn't stale.
+  useVisiblePolling(fetchQueue, 2000);
 
   const extractItems = (data?.extract?.items || []).map(i => ({ ...i, type: 'extract' }));
   const convertItems = (data?.convert?.items || []).map(i => ({ ...i, type: 'convert' }));

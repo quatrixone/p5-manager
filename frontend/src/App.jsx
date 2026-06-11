@@ -7,6 +7,7 @@ import Settings from './components/Settings';
 import FileOps from './components/FileOps';
 import BuiltinEditor from './components/BuiltinEditor';
 import { PlatformProvider, usePlatform } from './contexts/PlatformContext';
+import useVisiblePolling from './hooks/useVisiblePolling';
 import './styles.css';
 
 const API = '/api';
@@ -89,13 +90,20 @@ function App() {
     }
   }, []);
 
+  // One-shot loads on first mount (payloads + profiles); logs use the
+  // visibility-aware poller below so the request stops while the tab is
+  // hidden. fetchPayloads/Profiles don't need polling at all — they're
+  // refreshed explicitly whenever the user mutates them.
   useEffect(() => {
     fetchPayloads();
     fetchProfiles();
-    fetchLogs();
-    const interval = setInterval(fetchLogs, 5000);
-    return () => clearInterval(interval);
-  }, [fetchPayloads, fetchProfiles, fetchLogs]);
+  }, [fetchPayloads, fetchProfiles]);
+
+  // 5 s while the app is foregrounded. The server-side log buffer is
+  // append-only so a slightly slower cadence costs nothing user-visible,
+  // and the visibility gate means a backgrounded browser tab stops
+  // making the call entirely.
+  useVisiblePolling(fetchLogs, 5000);
 
   useEffect(() => {
     localStorage.setItem('activeTab', activeTab);
@@ -377,26 +385,24 @@ function App() {
 
   // Lightweight status poll for the topbar status pill. Mirrors PS5Control's
   // own poll so the indicator always reflects the default console, no matter
-  // which tab the user is on.
-  useEffect(() => {
+  // which tab the user is on. Visibility-gated + a 15 s cadence (was 10 s):
+  // the pill is a "is the console online" affordance, not a precision
+  // sensor — a few extra seconds of latency is invisible to users and
+  // saves a /api/ps5/status call every 5 s for every backgrounded tab.
+  const pollDefaultStatus = useCallback(async () => {
     if (!defaultProfile) {
       setDefaultStatus(null);
       return;
     }
-    let cancelled = false;
-    const tick = async () => {
-      try {
-        const res = await fetch(`${API}/ps5/status/${defaultProfile.ip_address}?port=${defaultProfile.port || 9021}`);
-        const data = await res.json();
-        if (!cancelled) setDefaultStatus(data);
-      } catch (_) {
-        if (!cancelled) setDefaultStatus({ reachable: false });
-      }
-    };
-    tick();
-    const id = setInterval(tick, 10000);
-    return () => { cancelled = true; clearInterval(id); };
+    try {
+      const res = await fetch(`${API}/ps5/status/${defaultProfile.ip_address}?port=${defaultProfile.port || 9021}`);
+      const data = await res.json();
+      setDefaultStatus(data);
+    } catch (_) {
+      setDefaultStatus({ reachable: false });
+    }
   }, [defaultProfile?.ip_address, defaultProfile?.port]);
+  useVisiblePolling(pollDefaultStatus, defaultProfile ? 15000 : 0, [defaultProfile?.ip_address, defaultProfile?.port]);
 
   const statusDot = (() => {
     if (!defaultProfile) return 'offline';

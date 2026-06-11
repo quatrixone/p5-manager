@@ -3,6 +3,7 @@ import Convert from './Convert';
 import Downloader from './Downloader';
 import Queue from './Queue';
 import FileBrowser from './FileBrowser';
+import useVisiblePolling from '../hooks/useVisiblePolling';
 
 const API = '/api';
 const STORAGE_TAB = 'fileops.tab';
@@ -38,11 +39,11 @@ function useQueueCounts() {
     } catch (_) { /* keep last good value */ }
   }, []);
 
-  useEffect(() => {
-    refresh();
-    const t = setInterval(refresh, 2500);
-    return () => clearInterval(t);
-  }, [refresh]);
+  // 4 s while the File Ops shell is visible. The tab badges only need to
+  // surface "is there anything cooking right now" — the actual queue page
+  // does its own 2 s refresh. Bumped from 2.5 s and visibility-gated so a
+  // background tab doesn't keep hammering /api/convert/queue/all.
+  useVisiblePolling(refresh, 4000);
 
   return counts;
 }
