@@ -78,8 +78,45 @@ app.get('/api/health', (req, res) => {
 
 const distPath = path.join(__dirname, '../dist');
 if (process.env.NODE_ENV === 'production' && fs.existsSync(distPath)) {
-  app.use(express.static(distPath));
+  // Cache strategy:
+  //   - /assets/* uses content-hashed filenames (index-<hash>.js) so we can
+  //     safely tell the browser to cache them forever (immutable).
+  //   - sw.js, index.html, registerSW.js, manifest.webmanifest, workbox-*.js
+  //     MUST always revalidate so a fresh build's service-worker + entry
+  //     html are picked up immediately. Without this, PWAs stay pinned to
+  //     the previously-installed bundle until the user manually clears
+  //     cache or unregisters the SW — which is exactly what makes "I
+  //     can't see my new data / new features" tickets so common after a
+  //     deploy.
+  app.use(express.static(distPath, {
+    etag: true,
+    lastModified: true,
+    setHeaders(res, filePath) {
+      const rel = path.relative(distPath, filePath).replace(/\\/g, '/');
+      if (rel.startsWith('assets/')) {
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        return;
+      }
+      if (
+        rel === 'sw.js' ||
+        rel === 'registerSW.js' ||
+        rel === 'index.html' ||
+        rel === 'manifest.webmanifest' ||
+        /^workbox-[^/]+\.js$/.test(rel)
+      ) {
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
+        return;
+      }
+    },
+  }));
   app.get('*', (req, res) => {
+    // SPA fallback: index.html should never be cached for the same reason
+    // as above — the new bundle hash lives inside it.
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
     res.sendFile(path.join(distPath, 'index.html'));
   });
 }

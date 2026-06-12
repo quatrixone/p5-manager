@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import fetch from 'node-fetch';
 import AdmZip from 'adm-zip';
-import { getDatabase, saveDatabase, log } from '../db/sqlite.js';
+import { getRepo, log } from '../db/sqlite.js';
 import { loadBuiltin } from './builtinLoader.js';
 import { payloadsDir } from './paths.js';
 
@@ -22,12 +22,10 @@ function ensurePayloadsDir() {
 }
 
 function payloadExists(filename) {
-  const db = getDatabase();
-  const stmt = db.prepare('SELECT id, filepath FROM payloads WHERE filename = ? OR name = ? LIMIT 1');
-  stmt.bind([filename, filename]);
-  let row = null;
-  if (stmt.step()) row = stmt.getAsObject();
-  stmt.free();
+  const row = getRepo().queryOne(
+    'SELECT id, filepath FROM payloads WHERE filename = ? OR name = ? LIMIT 1',
+    [filename, filename],
+  );
   if (!row) return false;
   // Make sure the file is actually on disk; otherwise treat as missing so we re-fetch.
   if (row.filepath && fs.existsSync(row.filepath)) return true;
@@ -43,27 +41,26 @@ function normalizeConsoleType(v) {
 }
 
 function insertPayload({ name, filename, filepath, source_url, size, version, console_type }) {
-  const db = getDatabase();
+  const repo = getRepo();
   // If a stale row exists (file missing), refresh it instead of duplicating.
-  const checkStmt = db.prepare('SELECT id FROM payloads WHERE filename = ? OR name = ? LIMIT 1');
-  checkStmt.bind([filename, filename]);
-  let existingId = null;
-  if (checkStmt.step()) existingId = checkStmt.getAsObject().id;
-  checkStmt.free();
+  const existingId = repo.queryScalar(
+    'SELECT id FROM payloads WHERE filename = ? OR name = ? LIMIT 1',
+    [filename, filename],
+  );
 
   const ct = normalizeConsoleType(console_type);
   if (existingId) {
-    db.run(
+    repo.run(
       'UPDATE payloads SET name = ?, filename = ?, filepath = ?, source_url = ?, size = ?, version = ?, console_type = COALESCE(?, console_type), updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-      [name, filename, filepath, source_url || null, size || null, version || null, ct, existingId]
+      [name, filename, filepath, source_url || null, size || null, version || null, ct, existingId],
     );
   } else {
-    db.run(
+    repo.run(
       'INSERT INTO payloads (name, filename, filepath, source_url, size, version, console_type) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      [name, filename, filepath, source_url || null, size || null, version || null, ct]
+      [name, filename, filepath, source_url || null, size || null, version || null, ct],
     );
   }
-  saveDatabase();
+  repo.save();
 }
 
 async function fetchBuffer(url) {
@@ -161,15 +158,11 @@ export function scanPayloadsDir() {
 
   // Collect filenames currently known to the DB once — much cheaper than
   // one SELECT per file when the folder has dozens of entries.
-  const db = getDatabase();
   const known = new Set();
   try {
-    const stmt = db.prepare('SELECT filename FROM payloads');
-    while (stmt.step()) {
-      const row = stmt.getAsObject();
+    for (const row of getRepo().queryAll('SELECT filename FROM payloads')) {
       if (row.filename) known.add(String(row.filename));
     }
-    stmt.free();
   } catch (e) {
     log('error', `scanPayloadsDir: SELECT failed: ${e.message}`);
     return added;

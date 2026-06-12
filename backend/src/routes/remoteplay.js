@@ -3,7 +3,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { Client as FtpClient } from 'basic-ftp';
-import { getDatabase, saveDatabase, log } from '../db/sqlite.js';
+import { getRepo, log } from '../db/sqlite.js';
 import { pushKernelLogEntry } from './kernelLogServer.js';
 import { payloadsDir } from '../lib/paths.js';
 
@@ -116,23 +116,11 @@ async function sidecar(method, urlPath, body, { timeout = 30000 } = {}) {
 const PROFILE_COLS = 'id, ip_address, rp_user_profile, psn_account_id, psn_online_id';
 
 function loadProfileByIp(ip) {
-  const db = getDatabase();
-  const stmt = db.prepare(`SELECT ${PROFILE_COLS} FROM profiles WHERE ip_address = ? LIMIT 1`);
-  stmt.bind([ip]);
-  let row = null;
-  if (stmt.step()) row = stmt.getAsObject();
-  stmt.free();
-  return row;
+  return getRepo().queryOne(`SELECT ${PROFILE_COLS} FROM profiles WHERE ip_address = ? LIMIT 1`, [ip]);
 }
 
 function loadProfileById(id) {
-  const db = getDatabase();
-  const stmt = db.prepare(`SELECT ${PROFILE_COLS} FROM profiles WHERE id = ? LIMIT 1`);
-  stmt.bind([parseInt(id)]);
-  let row = null;
-  if (stmt.step()) row = stmt.getAsObject();
-  stmt.free();
-  return row;
+  return getRepo().queryOne(`SELECT ${PROFILE_COLS} FROM profiles WHERE id = ? LIMIT 1`, [parseInt(id)]);
 }
 
 // Single shared entry-point for "give me a working Remote Play session for
@@ -434,12 +422,10 @@ router.post('/oauth/exchange', async (req, res) => {
     if (!redirect_url) return res.status(400).json({ success: false, error: 'redirect_url required' });
     const data = await sidecar('POST', '/oauth/exchange', { redirect_url }, { timeout: 20000 });
     if (profile_id && data.account_id) {
-      const db = getDatabase();
-      db.run(
+      getRepo().runAndSave(
         'UPDATE profiles SET psn_account_id = ?, psn_online_id = ? WHERE id = ?',
-        [data.account_id, data.online_id || null, parseInt(profile_id)]
+        [data.account_id, data.online_id || null, parseInt(profile_id)],
       );
-      saveDatabase();
       log('info', `Linked PSN account ${data.online_id || data.account_id} to profile ${profile_id}`);
     }
     res.json({ success: true, account_id: data.account_id, online_id: data.online_id });
@@ -546,16 +532,12 @@ router.post('/register', async (req, res) => {
     // an explicit host_type during pair. Falls back to auto-detect when null.
     let storedConsoleType = null;
     if (pidInt) {
-      const db = getDatabase();
-      const stmt = db.prepare('SELECT psn_account_id, psn_online_id, console_type FROM profiles WHERE id = ?');
-      stmt.bind([pidInt]);
-      if (stmt.step()) {
-        const row = stmt.getAsObject();
+      const row = getRepo().queryOne('SELECT psn_account_id, psn_online_id, console_type FROM profiles WHERE id = ?', [pidInt]);
+      if (row) {
         if (!acctId) acctId = row.psn_account_id;
         if (!onlineId) onlineId = row.psn_online_id;
         storedConsoleType = row.console_type || null;
       }
-      stmt.free();
     }
     if (!acctId) return res.status(400).json({ success: false, error: 'PSN account_id required (run OAuth first)' });
 
@@ -571,12 +553,10 @@ router.post('/register', async (req, res) => {
     }, { timeout: 60000 });
 
     if (pidInt && data.profile) {
-      const db = getDatabase();
-      db.run(
+      getRepo().runAndSave(
         'UPDATE profiles SET rp_user_profile = ? WHERE id = ?',
-        [JSON.stringify(data.profile), pidInt]
+        [JSON.stringify(data.profile), pidInt],
       );
-      saveDatabase();
       log('info', `Stored Remote Play credentials for profile ${pidInt}`);
     }
 
@@ -616,11 +596,7 @@ router.post('/get-pin', async (req, res) => {
     const { ip: rawIp, profile_id } = req.body || {};
     let ip = rawIp;
     if (!ip && profile_id) {
-      const db = getDatabase();
-      const stmt = db.prepare('SELECT ip_address FROM profiles WHERE id = ?');
-      stmt.bind([parseInt(profile_id)]);
-      if (stmt.step()) ip = stmt.getAsObject().ip_address;
-      stmt.free();
+      ip = getRepo().queryScalar('SELECT ip_address FROM profiles WHERE id = ?', [parseInt(profile_id)]) || null;
     }
     if (!ip) return res.status(400).json({ success: false, error: 'ip or profile_id required' });
 
@@ -684,8 +660,7 @@ router.post('/get-pin', async (req, res) => {
       // never wipe an existing OAuth-derived id on a soft failure.
       if (profile_id && accountId) {
         try {
-          const db = getDatabase();
-          db.run(
+          getRepo().run(
             'UPDATE profiles SET psn_account_id = ?, psn_online_id = COALESCE(?, psn_online_id) WHERE id = ?',
             [accountId, onlineId, parseInt(profile_id)],
           );
@@ -854,16 +829,12 @@ router.post('/activate-account', async (req, res) => {
     let psnAccountId = bodyAccountId || null;
     let psnOnlineId = bodyOnlineId || null;
     if ((!ip || !psnAccountId) && profile_id) {
-      const db = getDatabase();
-      const stmt = db.prepare('SELECT ip_address, psn_account_id, psn_online_id FROM profiles WHERE id = ?');
-      stmt.bind([parseInt(profile_id)]);
-      if (stmt.step()) {
-        const row = stmt.getAsObject();
+      const row = getRepo().queryOne('SELECT ip_address, psn_account_id, psn_online_id FROM profiles WHERE id = ?', [parseInt(profile_id)]);
+      if (row) {
         if (!ip) ip = row.ip_address;
         if (!psnAccountId) psnAccountId = row.psn_account_id || null;
         if (!psnOnlineId) psnOnlineId = row.psn_online_id || null;
       }
-      stmt.free();
     }
     if (!ip) return res.status(400).json({ success: false, error: 'ip or profile_id required' });
 
@@ -940,12 +911,10 @@ router.post('/activate-account', async (req, res) => {
       let persisted = false;
       if (profile_id && accountIdB64 && (activated === 'yes' || activated === 'already')) {
         try {
-          const db = getDatabase();
-          db.run(
+          getRepo().runAndSave(
             'UPDATE profiles SET psn_account_id = ?, psn_online_id = ? WHERE id = ?',
-            [accountIdB64, user || null, parseInt(profile_id)]
+            [accountIdB64, user || null, parseInt(profile_id)],
           );
-          saveDatabase();
           persisted = true;
           log('info', `[offact] persisted account_id=${accountIdB64} user=${user || '?'} on profile ${profile_id}`);
         } catch (e) {
@@ -1474,11 +1443,7 @@ router.post('/run-script', async (req, res) => {
 
     let actualScript = rawScript;
     if (!actualScript && script_id) {
-      const db = getDatabase();
-      const stmt = db.prepare('SELECT script FROM input_scripts WHERE id = ?');
-      stmt.bind([parseInt(script_id)]);
-      if (stmt.step()) actualScript = stmt.getAsObject().script;
-      stmt.free();
+      actualScript = getRepo().queryScalar('SELECT script FROM input_scripts WHERE id = ?', [parseInt(script_id)]) || null;
     }
     if (!actualScript) return res.status(400).json({ success: false, error: 'script or script_id required' });
 
@@ -1602,9 +1567,7 @@ router.post('/forget', (req, res) => {
   try {
     const { profile_id } = req.body || {};
     if (!profile_id) return res.status(400).json({ success: false, error: 'profile_id required' });
-    const db = getDatabase();
-    db.run('UPDATE profiles SET rp_user_profile = NULL WHERE id = ?', [parseInt(profile_id)]);
-    saveDatabase();
+    getRepo().runAndSave('UPDATE profiles SET rp_user_profile = NULL WHERE id = ?', [parseInt(profile_id)]);
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -1620,12 +1583,10 @@ router.post('/forget-account', (req, res) => {
   try {
     const { profile_id } = req.body || {};
     if (!profile_id) return res.status(400).json({ success: false, error: 'profile_id required' });
-    const db = getDatabase();
-    db.run(
+    getRepo().runAndSave(
       'UPDATE profiles SET psn_account_id = NULL, psn_online_id = NULL WHERE id = ?',
       [parseInt(profile_id)],
     );
-    saveDatabase();
     log('info', `Forgotten PSN account on profile ${profile_id}`);
     res.json({ success: true });
   } catch (err) {

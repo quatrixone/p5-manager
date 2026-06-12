@@ -1,6 +1,6 @@
 import express from 'express';
 import fs from 'fs';
-import { getDatabase, saveDatabase, log } from '../db/sqlite.js';
+import { getRepo, log } from '../db/sqlite.js';
 
 const router = express.Router();
 
@@ -178,20 +178,16 @@ router.get('/status/:ip', async (req, res) => {
     // status poll never fails for a write-side problem.
     if (consoleType) {
       try {
-        const db = getDatabase();
-        const stmt = db.prepare('SELECT id, console_type FROM profiles WHERE ip_address = ?');
-        stmt.bind([ip]);
-        const matches = [];
-        while (stmt.step()) matches.push(stmt.getAsObject());
-        stmt.free();
+        const repo = getRepo();
+        const matches = repo.queryAll('SELECT id, console_type FROM profiles WHERE ip_address = ?', [ip]);
         let changed = false;
         for (const row of matches) {
           if (row.console_type !== consoleType) {
-            db.run('UPDATE profiles SET console_type = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [consoleType, row.id]);
+            repo.run('UPDATE profiles SET console_type = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [consoleType, row.id]);
             changed = true;
           }
         }
-        if (changed) saveDatabase();
+        if (changed) repo.save();
       } catch (_) { /* best-effort, ignore */ }
     }
 

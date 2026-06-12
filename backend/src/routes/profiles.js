@@ -1,18 +1,11 @@
 import express from 'express';
-import { getDatabase, saveDatabase, log } from '../db/sqlite.js';
+import { getRepo, log } from '../db/sqlite.js';
 
 const router = express.Router();
 
 router.get('/', (req, res) => {
   try {
-    const db = getDatabase();
-    const results = [];
-    const stmt = db.prepare('SELECT * FROM profiles ORDER BY name');
-    while (stmt.step()) {
-      results.push(stmt.getAsObject());
-    }
-    stmt.free();
-    res.json(results);
+    res.json(getRepo().queryAll('SELECT * FROM profiles ORDER BY name'));
   } catch (error) {
     log('error', `Failed to get profiles: ${error.message}`);
     res.status(500).json({ error: error.message });
@@ -21,18 +14,8 @@ router.get('/', (req, res) => {
 
 router.get('/:id', (req, res) => {
   try {
-    const db = getDatabase();
-    const stmt = db.prepare('SELECT * FROM profiles WHERE id = ?');
-    stmt.bind([parseInt(req.params.id)]);
-    let profile = null;
-    if (stmt.step()) {
-      profile = stmt.getAsObject();
-    }
-    stmt.free();
-
-    if (!profile) {
-      return res.status(404).json({ error: 'Profile not found' });
-    }
+    const profile = getRepo().queryOne('SELECT * FROM profiles WHERE id = ?', [parseInt(req.params.id)]);
+    if (!profile) return res.status(404).json({ error: 'Profile not found' });
     res.json(profile);
   } catch (error) {
     log('error', `Failed to get profile: ${error.message}`);
@@ -42,23 +25,9 @@ router.get('/:id', (req, res) => {
 
 router.get('/default', (req, res) => {
   try {
-    const db = getDatabase();
-    const stmt = db.prepare('SELECT * FROM profiles WHERE is_default = 1 LIMIT 1');
-    let profile = null;
-    if (stmt.step()) {
-      profile = stmt.getAsObject();
-    }
-    stmt.free();
-
-    // If no default, get the first profile
-    if (!profile) {
-      const allStmt = db.prepare('SELECT * FROM profiles ORDER BY id LIMIT 1');
-      if (allStmt.step()) {
-        profile = allStmt.getAsObject();
-      }
-      allStmt.free();
-    }
-
+    const repo = getRepo();
+    const profile = repo.queryOne('SELECT * FROM profiles WHERE is_default = 1 LIMIT 1')
+      || repo.queryOne('SELECT * FROM profiles ORDER BY id LIMIT 1');
     res.json(profile || { error: 'No profile found' });
   } catch (error) {
     log('error', `Failed to get default profile: ${error.message}`);
@@ -79,20 +48,11 @@ function normalizeConsoleType(v) {
 router.post('/', (req, res) => {
   try {
     const { name, ip_address, mac_address, port, console_type } = req.body;
-
-    if (!name || !ip_address) {
-      return res.status(400).json({ error: 'Name and IP address required' });
-    }
-
-    const db = getDatabase();
-    db.run(
+    if (!name || !ip_address) return res.status(400).json({ error: 'Name and IP address required' });
+    const lastId = getRepo().runAndSave(
       'INSERT INTO profiles (name, ip_address, mac_address, port, console_type) VALUES (?, ?, ?, ?, ?)',
-      [name, ip_address, mac_address || null, port || 9021, normalizeConsoleType(console_type)]
+      [name, ip_address, mac_address || null, port || 9021, normalizeConsoleType(console_type)],
     );
-
-    const lastId = db.exec('SELECT last_insert_rowid()')[0].values[0][0];
-    saveDatabase();
-
     log('info', `Created profile: ${name} (${ip_address})`);
     res.json({ success: true, id: lastId });
   } catch (error) {
@@ -105,20 +65,9 @@ router.put('/:id', (req, res) => {
   try {
     const { id } = req.params;
     const { name, ip_address, mac_address, port, console_type } = req.body;
-
-    const db = getDatabase();
-
-    const selectStmt = db.prepare('SELECT * FROM profiles WHERE id = ?');
-    selectStmt.bind([parseInt(id)]);
-    let existing = null;
-    if (selectStmt.step()) {
-      existing = selectStmt.getAsObject();
-    }
-    selectStmt.free();
-
-    if (!existing) {
-      return res.status(404).json({ error: 'Profile not found' });
-    }
+    const repo = getRepo();
+    const existing = repo.queryOne('SELECT * FROM profiles WHERE id = ?', [parseInt(id)]);
+    if (!existing) return res.status(404).json({ error: 'Profile not found' });
 
     // console_type === undefined means "don't touch"; explicit null clears
     // the field back to auto-detect, explicit 'ps4' / 'ps5' overrides.
@@ -126,7 +75,7 @@ router.put('/:id', (req, res) => {
       ? existing.console_type
       : normalizeConsoleType(console_type);
 
-    db.run(
+    repo.runAndSave(
       'UPDATE profiles SET name = ?, ip_address = ?, mac_address = ?, port = ?, console_type = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
       [
         name || existing.name,
@@ -135,10 +84,8 @@ router.put('/:id', (req, res) => {
         port || existing.port,
         nextConsoleType,
         parseInt(id),
-      ]
+      ],
     );
-
-    saveDatabase();
     log('info', `Updated profile: ${id}`);
     res.json({ success: true });
   } catch (error) {
@@ -150,13 +97,8 @@ router.put('/:id', (req, res) => {
 router.delete('/:id', (req, res) => {
   try {
     const { id } = req.params;
-
-    const db = getDatabase();
-    db.run('DELETE FROM profiles WHERE id = ?', [parseInt(id)]);
-    saveDatabase();
-
+    getRepo().runAndSave('DELETE FROM profiles WHERE id = ?', [parseInt(id)]);
     log('info', `Deleted profile: ${id}`);
-
     res.json({ success: true });
   } catch (error) {
     log('error', `Failed to delete profile: ${error.message}`);
@@ -167,16 +109,9 @@ router.delete('/:id', (req, res) => {
 router.post('/:id/set-default', (req, res) => {
   try {
     const { id } = req.params;
-
-    const db = getDatabase();
-
-    // First, unset all defaults
-    db.run('UPDATE profiles SET is_default = 0');
-
-    // Then set the selected one as default
-    db.run('UPDATE profiles SET is_default = 1 WHERE id = ?', [parseInt(id)]);
-    saveDatabase();
-
+    const repo = getRepo();
+    repo.run('UPDATE profiles SET is_default = 0');
+    repo.runAndSave('UPDATE profiles SET is_default = 1 WHERE id = ?', [parseInt(id)]);
     log('info', `Set profile ${id} as default`);
     res.json({ success: true });
   } catch (error) {
@@ -188,23 +123,9 @@ router.post('/:id/set-default', (req, res) => {
 router.post('/:id/autoload', async (req, res) => {
   try {
     const { id } = req.params;
-    const { sequence } = req.body;
-
-    const db = getDatabase();
-    const stmt = db.prepare('SELECT * FROM profiles WHERE id = ?');
-    stmt.bind([parseInt(id)]);
-    let profile = null;
-    if (stmt.step()) {
-      profile = stmt.getAsObject();
-    }
-    stmt.free();
-
-    if (!profile) {
-      return res.status(404).json({ error: 'Profile not found' });
-    }
-
+    const profile = getRepo().queryOne('SELECT * FROM profiles WHERE id = ?', [parseInt(id)]);
+    if (!profile) return res.status(404).json({ error: 'Profile not found' });
     log('info', `Starting autoload sequence for ${profile.name}`);
-
     res.json({ success: true, message: 'Autoload started', profile: profile.name });
   } catch (error) {
     log('error', `Autoload failed: ${error.message}`);
