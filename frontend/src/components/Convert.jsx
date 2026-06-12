@@ -3,8 +3,7 @@ import FileBrowser from './FileBrowser';
 import FolderPickerModal from './UI/FolderPickerModal';
 import { usePlatform } from '../contexts/PlatformContext';
 import useVisiblePolling from '../hooks/useVisiblePolling';
-
-const API = '/api';
+import { api, apiSafe } from '../lib/api.js';
 
 const C = {
   bg: 'var(--bg)',
@@ -135,62 +134,38 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
   const [pendingIntent, setPendingIntent] = useState(null);
 
   const refresh = useCallback(async () => {
-    try {
-      const r = await fetch(`${API}/convert/mkpfs/status`);
-      setMkpfsStatus(await r.json());
-    } catch (_) { setMkpfsStatus({ installed: false }); }
+    const st = await apiSafe.get('/convert/mkpfs/status');
+    setMkpfsStatus(st || { installed: false });
 
-    let savedScanRoot = '';
-    try {
-      const r = await fetch(`${API}/convert/browser-prefs`);
-      if (r.ok) {
-        const prefs = await r.json();
-        savedScanRoot = prefs?.local?.path || '';
-        setScanRoot(savedScanRoot);
-      }
-    } catch (_) {}
+    const prefs = await apiSafe.get('/convert/browser-prefs');
+    const savedScanRoot = prefs?.local?.path || '';
+    if (savedScanRoot) setScanRoot(savedScanRoot);
+
+    const applyBrowse = (d) => {
+      setWorkdir(d.path);
+      setScanCurrent(d.path);
+      setScanParent(d.parent || null);
+      setFiles(d.files || []);
+    };
 
     if (savedScanRoot) {
       const target = scanCurrent && scanCurrent.startsWith(savedScanRoot) ? scanCurrent : savedScanRoot;
-      try {
-        const r = await fetch(`${API}/convert/local/browse`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ path: target }),
-        });
-        const d = await r.json();
-        if (r.ok) {
-          setWorkdir(d.path);
-          setScanCurrent(d.path);
-          setScanParent(d.parent || null);
-          setFiles(d.files || []);
-        } else {
-          // fallback: try the saved root again
-          const r2 = await fetch(`${API}/convert/local/browse`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ path: savedScanRoot }),
-          });
-          const d2 = await r2.json();
-          if (r2.ok) {
-            setWorkdir(d2.path); setScanCurrent(d2.path);
-            setScanParent(d2.parent || null); setFiles(d2.files || []);
-          }
-        }
-      } catch (_) {}
+      let d = await apiSafe.post('/convert/local/browse', { path: target });
+      // Fallback: if the target path no longer exists, retry from the saved root.
+      if (!d) d = await apiSafe.post('/convert/local/browse', { path: savedScanRoot });
+      if (d) applyBrowse(d);
     } else {
-      try {
-        const r = await fetch(`${API}/convert/mkpfs/files?sub=${encodeURIComponent(sub)}`);
-        const d = await r.json();
+      const d = await apiSafe.get(`/convert/mkpfs/files?sub=${encodeURIComponent(sub)}`);
+      if (d) {
         setWorkdir(d.workdir);
         setFiles(d.files || []);
         setScanCurrent('');
         setScanParent(null);
-      } catch (_) {}
+      }
     }
 
-    try {
-      const r = await fetch(`${API}/convert/sources`);
-      setSources((await r.json()).filter(s => s.type === 'smb'));
-    } catch (_) {}
+    const srcs = await apiSafe.get('/convert/sources');
+    if (Array.isArray(srcs)) setSources(srcs.filter(s => s.type === 'smb'));
     // Recent jobs were previously listed inline here; the Queue tab now owns
     // job history so we don't refetch it on every refresh.
   }, [sub, scanCurrent]);
@@ -205,23 +180,16 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
     }
     setMkpfsUpgrading(true);
     try {
-      const r = await fetch(`${API}/convert/mkpfs/upgrade`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
-      });
-      const d = await r.json().catch(() => ({}));
-      if (!r.ok || !d.ok) {
-        const msg = d.stderr || d.error || `HTTP ${r.status}`;
+      const d = await api.post('/convert/mkpfs/upgrade', {});
+      if (!d.ok) {
+        const msg = d.stderr || d.error || 'upgrade failed';
         throw new Error(msg.split('\n').slice(-4).join('\n'));
       }
       onNotification?.(`mkpfs updated to ${d.version || 'latest'}`, 'success');
       // Re-fetch status with refresh=1 to bust the PyPI cache and pick
       // up update_available=false right away.
-      try {
-        const rr = await fetch(`${API}/convert/mkpfs/status?refresh=1`);
-        if (rr.ok) setMkpfsStatus(await rr.json());
-      } catch (_) {}
+      const rr = await apiSafe.get('/convert/mkpfs/status?refresh=1');
+      if (rr) setMkpfsStatus(rr);
     } catch (e) {
       onNotification?.(`mkpfs update failed: ${e.message}`, 'error');
     } finally {
@@ -235,22 +203,17 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      try {
-        const r = await fetch(`${API}/settings`);
-        if (!r.ok) return;
-        const d = await r.json();
-        if (cancelled) return;
+      const d = await apiSafe.get('/settings');
+      if (cancelled) return;
+      if (d) {
         if (d.upload_target_path) setPushDest(d.upload_target_path);
         if (d.upload_target_ip) {
           setPushIp(d.upload_target_ip);
           return;
         }
-        const p = profiles.find(x => x.is_default) || profiles[0];
-        if (p) setPushIp(p.ip_address);
-      } catch (_) {
-        const p = profiles.find(x => x.is_default) || profiles[0];
-        if (p) setPushIp(p.ip_address);
       }
+      const p = profiles.find(x => x.is_default) || profiles[0];
+      if (p) setPushIp(p.ip_address);
     })();
     return () => { cancelled = true; };
   }, [profiles]);
@@ -258,17 +221,14 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
   useEffect(() => {
     const id = localStorage.getItem('mm.job.convert');
     if (!id) return;
-    fetch(`${API}/convert/convert/${id}`)
-      .then(r => r.ok ? r.json() : null)
-      .then(d => {
-        if (d && d.id) {
-          setJob(d);
-          if (d.status === 'running' || d.status === 'pushing') setRunning(true);
-        } else {
-          localStorage.removeItem('mm.job.convert');
-        }
-      })
-      .catch(() => localStorage.removeItem('mm.job.convert'));
+    apiSafe.get(`/convert/convert/${id}`).then(d => {
+      if (d && d.id) {
+        setJob(d);
+        if (d.status === 'running' || d.status === 'pushing') setRunning(true);
+      } else {
+        localStorage.removeItem('mm.job.convert');
+      }
+    });
   }, []);
 
   useEffect(() => {
@@ -281,19 +241,17 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
     }
     if (!isActive) return;
     const t = setInterval(async () => {
-      try {
-        const r = await fetch(`${API}/convert/convert/${job.id}`);
-        const d = await r.json();
-        setJob(d);
-        if (d.status !== 'running' && d.status !== 'pushing') {
-          setRunning(false);
-          refresh();
-          if (d.status === 'completed') onNotification?.('Conversion completed', 'success');
-          else if (d.status === 'failed') onNotification?.(`Conversion failed: ${d.error || `exit ${d.exit_code}`}`, 'error');
-          else if (d.status === 'push_failed') onNotification?.(`Push failed: ${d.error}`, 'error');
-          else if (d.status === 'cancelled') onNotification?.('Conversion cancelled', 'warning');
-        }
-      } catch (_) {}
+      const d = await apiSafe.get(`/convert/convert/${job.id}`);
+      if (!d) return;
+      setJob(d);
+      if (d.status !== 'running' && d.status !== 'pushing') {
+        setRunning(false);
+        refresh();
+        if (d.status === 'completed') onNotification?.('Conversion completed', 'success');
+        else if (d.status === 'failed') onNotification?.(`Conversion failed: ${d.error || `exit ${d.exit_code}`}`, 'error');
+        else if (d.status === 'push_failed') onNotification?.(`Push failed: ${d.error}`, 'error');
+        else if (d.status === 'cancelled') onNotification?.('Conversion cancelled', 'warning');
+      }
     }, 1500);
     return () => clearInterval(t);
   }, [job?.id, job?.status, onNotification, refresh]);
@@ -324,13 +282,9 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
     if (!confirm(`Delete ${label}?`)) return;
     try {
       if (scanRoot) {
-        const r = await fetch(`${API}/convert/local/delete`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ path: fullPath, isDir: !!isDir }),
-        });
-        if (!r.ok) throw new Error((await r.json()).error);
+        await api.post('/convert/local/delete', { path: fullPath, isDir: !!isDir });
       } else {
-        await fetch(`${API}/convert/mkpfs/files?sub=${encodeURIComponent(rel)}`, { method: 'DELETE' });
+        await api.del(`/convert/mkpfs/files?sub=${encodeURIComponent(rel)}`);
       }
       refresh();
     } catch (e) { onNotification?.(e.message, 'error'); }
@@ -343,10 +297,10 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
   useEffect(() => {
     const id = localStorage.getItem('mm.job.folderImport');
     if (!id) return;
-    fetch(`${API}/convert/mkpfs/import-folder-from-smb/${id}`)
-      .then(r => r.ok ? r.json() : null)
-      .then(d => { if (d && d.id) setFolderImportJob(d); else localStorage.removeItem('mm.job.folderImport'); })
-      .catch(() => localStorage.removeItem('mm.job.folderImport'));
+    apiSafe.get(`/convert/mkpfs/import-folder-from-smb/${id}`).then(d => {
+      if (d && d.id) setFolderImportJob(d);
+      else localStorage.removeItem('mm.job.folderImport');
+    });
   }, []);
 
   useEffect(() => {
@@ -358,16 +312,14 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
       return;
     }
     const t = setInterval(async () => {
-      try {
-        const r = await fetch(`${API}/convert/mkpfs/import-folder-from-smb/${folderImportJob.id}`);
-        const d = await r.json();
-        setFolderImportJob(d);
-        if (d.status !== 'running') {
-          refresh();
-          if (d.status === 'completed') onNotification?.('Folder imported', 'success');
-          else if (d.status === 'failed') onNotification?.(`Import failed: ${d.error}`, 'error');
-        }
-      } catch (_) {}
+      const d = await apiSafe.get(`/convert/mkpfs/import-folder-from-smb/${folderImportJob.id}`);
+      if (!d) return;
+      setFolderImportJob(d);
+      if (d.status !== 'running') {
+        refresh();
+        if (d.status === 'completed') onNotification?.('Folder imported', 'success');
+        else if (d.status === 'failed') onNotification?.(`Import failed: ${d.error}`, 'error');
+      }
     }, 2000);
     return () => clearInterval(t);
   }, [folderImportJob?.id, folderImportJob?.status]);
@@ -382,16 +334,8 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
     if (!selected && !sourceFtp) return onNotification?.('Pick a source first', 'error');
     setRunning(true);
     try {
-      const r = await fetch(`${API}/convert/convert/queue`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(buildConvertParams()),
-      });
-      const d = await r.json();
-      if (!r.ok) throw new Error(d.error);
-      try {
-        await fetch(`${API}/convert/convert/queue/${autoStart ? 'resume' : 'pause'}`, { method: 'POST' });
-      } catch (_) { /* best-effort — Queue tab still works either way */ }
+      const d = await api.post('/convert/convert/queue', buildConvertParams());
+      await apiSafe.post(`/convert/convert/queue/${autoStart ? 'resume' : 'pause'}`);
       onNotification?.(
         autoStart
           ? `Started: ${d.item.source_name} → ${d.item.output_name}`
@@ -433,7 +377,7 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
 
   const cancelJob = async () => {
     if (!job) return;
-    await fetch(`${API}/convert/convert/${job.id}/cancel`, { method: 'POST' });
+    await apiSafe.post(`/convert/convert/${job.id}/cancel`);
   };
 
   const buildConvertParams = () => ({
@@ -460,10 +404,8 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
 
   const [queueState, setQueueState] = useState({ paused: false, items: [] });
   const refreshQueue = useCallback(async () => {
-    try {
-      const r = await fetch(`${API}/convert/convert/queue`);
-      setQueueState(await r.json());
-    } catch (_) {}
+    const d = await apiSafe.get('/convert/convert/queue');
+    if (d) setQueueState(d);
   }, []);
 
   // 3 s polling for the inline convert-queue mini-list, pauseable when
@@ -474,42 +416,35 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
 
   const queueRemove = async (id) => {
     try {
-      const r = await fetch(`${API}/convert/convert/queue/${id}`, { method: 'DELETE' });
-      if (!r.ok) throw new Error((await r.json()).error);
+      await api.del(`/convert/convert/queue/${id}`);
       refreshQueue();
     } catch (e) { onNotification?.(e.message, 'error'); }
   };
   const queueMove = async (id, direction) => {
-    try {
-      await fetch(`${API}/convert/convert/queue/${id}/move`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ direction }),
-      });
-      refreshQueue();
-    } catch (_) {}
+    await apiSafe.post(`/convert/convert/queue/${id}/move`, { direction });
+    refreshQueue();
   };
   const queueRetry = async (id) => {
     try {
-      const r = await fetch(`${API}/convert/convert/queue/${id}/retry`, { method: 'POST' });
-      if (!r.ok) throw new Error((await r.json()).error);
+      await api.post(`/convert/convert/queue/${id}/retry`);
       refreshQueue();
     } catch (e) { onNotification?.(e.message, 'error'); }
   };
   const queuePause = async () => {
-    await fetch(`${API}/convert/convert/queue/pause`, { method: 'POST' });
+    await apiSafe.post('/convert/convert/queue/pause');
     refreshQueue();
   };
   const queueResume = async () => {
-    await fetch(`${API}/convert/convert/queue/resume`, { method: 'POST' });
+    await apiSafe.post('/convert/convert/queue/resume');
     refreshQueue();
   };
   const queueClearPending = async () => {
     if (!window.confirm('Clear all queued items?')) return;
-    await fetch(`${API}/convert/convert/queue/clear`, { method: 'POST' });
+    await apiSafe.post('/convert/convert/queue/clear');
     refreshQueue();
   };
   const queueClearFinished = async () => {
-    await fetch(`${API}/convert/convert/queue/clear-finished`, { method: 'POST' });
+    await apiSafe.post('/convert/convert/queue/clear-finished');
     refreshQueue();
   };
 
@@ -958,9 +893,8 @@ function PkgSection({ profiles, onNotification, onOpenQueue }) {
 
   const fetchStatus = useCallback(async () => {
     try {
-      const r = await fetch(`${API}/convert/pkg/status`);
-      const j = await r.json().catch(() => ({}));
-      setPkgStatus(j);
+      const j = await api.get('/convert/pkg/status');
+      setPkgStatus(j || {});
     } catch (e) {
       setPkgStatus({ installed: false, error: e.message });
     }
@@ -977,13 +911,8 @@ function PkgSection({ profiles, onNotification, onOpenQueue }) {
     if (!window.confirm('Re-download the bundled PS4 PKG unpacker (unpkg.py)?')) return;
     setPkgUpgrading(true);
     try {
-      const r = await fetch(`${API}/convert/pkg/upgrade`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
-      });
-      const j = await r.json().catch(() => ({}));
-      if (!j.ok) throw new Error(j.error || `HTTP ${r.status}`);
+      const j = await api.post('/convert/pkg/upgrade', {});
+      if (!j.ok) throw new Error(j.error || 'upgrade failed');
       onNotification?.(`PS4 PKG tool updated → ${j.version || 'unknown'}`, 'success');
       await fetchStatus();
     } catch (e) {
@@ -997,13 +926,8 @@ function PkgSection({ profiles, onNotification, onOpenQueue }) {
     if (!unpackSrc.trim()) return;
     setSubmitting(true);
     try {
-      const r = await fetch(`${API}/convert/pkg/queue`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ source_path: unpackSrc.trim() }),
-      });
-      const j = await r.json().catch(() => ({}));
-      if (!r.ok || !j.ok) throw new Error(j.error || `HTTP ${r.status}`);
+      const j = await api.post('/convert/pkg/queue', { source_path: unpackSrc.trim() });
+      if (!j.ok) throw new Error(j.error || 'queue failed');
       onNotification?.(`PS4 PKG unpack queued (job ${j.id.slice(0, 8)})`, 'success');
       setUnpackSrc('');
       onOpenQueue?.();

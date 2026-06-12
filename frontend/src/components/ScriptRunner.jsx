@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-
-const API = '/api';
+import { api, apiSafe } from '../lib/api.js';
 
 const AVAILABLE_COMMANDS = [
   { cmd: 'left', desc: 'D-pad left' },
@@ -110,10 +109,9 @@ function ScriptRunner({ ip, onSendInput, scripts, onScriptsChange }) {
   const [showCommands, setShowCommands] = useState(false);
   useEffect(() => {
     let cancelled = false;
-    fetch(`${API}/input-scripts/builtin`)
-      .then(r => r.ok ? r.json() : [])
-      .then(list => { if (!cancelled && Array.isArray(list)) setBuiltinScripts(list); })
-      .catch(() => {});
+    apiSafe.get('/input-scripts/builtin').then(list => {
+      if (!cancelled && Array.isArray(list)) setBuiltinScripts(list);
+    });
     return () => { cancelled = true; };
   }, []);
   // Mirror the latest state into a ref so the polling closure always reads
@@ -131,50 +129,43 @@ function ScriptRunner({ ip, onSendInput, scripts, onScriptsChange }) {
     if (!ip) return;
     let cancelled = false;
     const tick = async () => {
-      try {
-        const [r, statusRes] = await Promise.all([
-          fetch(`${API}/remoteplay/quick-status?ip=${encodeURIComponent(ip)}`).then(r => r.json()),
-          // Use the same unified endpoint the top-right header badge uses
-          // (TCP port scan + pyremoteplay discover fallback). Earlier we
-          // called /remoteplay/discover directly and matched on
-          // `status === 'Standby'`, but the sidecar actually returns
-          // "Server Standby" / status_code=null, so the input-script
-          // badge wrongly displayed "PS5 offline" for any Standby console.
-          // /api/ps5/status normalises all of that into a single
-          // `reachable` boolean — one source of truth across the app.
-          fetch(`${API}/ps5/status/${encodeURIComponent(ip)}`)
-            .then(r => r.json()).catch(() => null),
-        ]);
-        if (cancelled) return;
-        if (statusRes && typeof statusRes.reachable === 'boolean') {
-          setPs5Online(statusRes.reachable);
-        } else {
-          setPs5Online(null);
-        }
-        const cur = sessionStateRef.current;
-        if (r.success && r.active) {
-          if (cur !== 'connected') setSessionState('connected');
-          if (r.session_id) setSessionId(r.session_id);
-          setWarmInfo(null);
-          return;
-        }
-        if (r.success && r.warm) {
-          setWarmInfo({
-            ageS: Math.round(r.warm_age_s || 0),
-            ttlS: Math.round(r.warm_ttl_remaining_s || 0),
-          });
-          if (cur === 'connecting' || cur === 'stopping') return;
-          if (cur !== 'warm') setSessionState('warm');
-          if (sessionId) setSessionId('');
-          return;
-        }
+      // Use the same unified endpoint the top-right header badge uses
+      // (TCP port scan + pyremoteplay discover fallback). /api/ps5/status
+      // normalises DDP discover + port probe into a single `reachable`
+      // boolean — one source of truth across the app.
+      const [r, statusRes] = await Promise.all([
+        apiSafe.get(`/remoteplay/quick-status?ip=${encodeURIComponent(ip)}`),
+        apiSafe.get(`/ps5/status/${encodeURIComponent(ip)}`),
+      ]);
+      if (cancelled || !r) return;
+      if (statusRes && typeof statusRes.reachable === 'boolean') {
+        setPs5Online(statusRes.reachable);
+      } else {
+        setPs5Online(null);
+      }
+      const cur = sessionStateRef.current;
+      if (r.success && r.active) {
+        if (cur !== 'connected') setSessionState('connected');
+        if (r.session_id) setSessionId(r.session_id);
         setWarmInfo(null);
-        // Inactive - only flip to idle when we're not actively starting or
-        // stopping the session ourselves.
+        return;
+      }
+      if (r.success && r.warm) {
+        setWarmInfo({
+          ageS: Math.round(r.warm_age_s || 0),
+          ttlS: Math.round(r.warm_ttl_remaining_s || 0),
+        });
         if (cur === 'connecting' || cur === 'stopping') return;
-        if (cur !== 'idle') setSessionState('idle');
+        if (cur !== 'warm') setSessionState('warm');
         if (sessionId) setSessionId('');
-      } catch (_) {}
+        return;
+      }
+      setWarmInfo(null);
+      // Inactive - only flip to idle when we're not actively starting or
+      // stopping the session ourselves.
+      if (cur === 'connecting' || cur === 'stopping') return;
+      if (cur !== 'idle') setSessionState('idle');
+      if (sessionId) setSessionId('');
     };
     tick();
     const id = setInterval(tick, 4000);
@@ -186,10 +177,7 @@ function ScriptRunner({ ip, onSendInput, scripts, onScriptsChange }) {
     if (!ip) return;
     setSessionState('connecting');
     try {
-      const r = await fetch(`${API}/remoteplay/quick-start`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ip }),
-      }).then(r => r.json());
+      const r = await api.post('/remoteplay/quick-start', { ip });
       if (!r.success) throw new Error(r.error);
       setSessionId(r.session_id || '');
       setSessionState('connected');
@@ -204,10 +192,7 @@ function ScriptRunner({ ip, onSendInput, scripts, onScriptsChange }) {
     if (!ip) return;
     setSessionState('stopping');
     try {
-      await fetch(`${API}/remoteplay/quick-stop`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ip }),
-      });
+      await api.post('/remoteplay/quick-stop', { ip });
       addOutput('⏹ Session stopped', 'info');
     } catch (e) {
       addOutput(`Session stop error: ${e.message}`, 'warning');
@@ -227,19 +212,13 @@ function ScriptRunner({ ip, onSendInput, scripts, onScriptsChange }) {
     }
 
     try {
-      const res = await fetch(`${API}/ps5control/input`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ip, button: cmd, param: params })
-      });
-      const data = await res.json();
+      const data = await api.post('/ps5control/input', { ip, button: cmd, param: params });
       if (data.success) {
         addOutput(`✓ ${cmd}${params ? ' ' + params : ''}`, 'success');
         return true;
-      } else {
-        addOutput(`✗ ${cmd} - ${data.error}`, 'error');
-        return false;
       }
+      addOutput(`✗ ${cmd} - ${data.error}`, 'error');
+      return false;
     } catch (err) {
       addOutput(`✗ ${cmd} - ${err.message}`, 'error');
       return false;
@@ -371,14 +350,9 @@ function ScriptRunner({ ip, onSendInput, scripts, onScriptsChange }) {
     }
 
     try {
-      const method = editingId ? 'PUT' : 'POST';
-      const url = editingId ? `${API}/input-scripts/${editingId}` : `${API}/input-scripts`;
-      const res = await fetch(url, {
-        method,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: scriptName, script })
-      });
-      const data = await res.json();
+      const data = editingId
+        ? await api.put(`/input-scripts/${editingId}`, { name: scriptName, script })
+        : await api.post('/input-scripts', { name: scriptName, script });
       if (data.success) {
         addOutput(editingId ? 'Script updated' : 'Script saved', 'success');
         setScriptName('');
@@ -411,7 +385,7 @@ function ScriptRunner({ ip, onSendInput, scripts, onScriptsChange }) {
   const deleteScript = async (id) => {
     if (!confirm('Delete this script?')) return;
     try {
-      await fetch(`${API}/input-scripts/${id}`, { method: 'DELETE' });
+      await api.del(`/input-scripts/${id}`);
       addOutput('Script deleted', 'success');
       onScriptsChange();
       if (editingId === id) {

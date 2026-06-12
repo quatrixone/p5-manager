@@ -14,8 +14,7 @@ import useVisiblePolling from '../hooks/useVisiblePolling';
 // the PS5 USB port (see project docs); that path bypasses every
 // filter because PS5 sees a wired Sony-signed HID gamepad.
 import Badge from './UI/Badge';
-
-const API = '/api';
+import { api, apiSafe } from '../lib/api.js';
 
 // P5 Control top-level sub-tabs. 'control' is the default and contains
 // the live RP playback path (Start session, video preview, controller,
@@ -68,16 +67,47 @@ function PS5Control({ profiles, onNotification, onProfilesChanged }) {
   };
 
   const fetchScripts = async () => {
-    try {
-      const res = await fetch(`${API}/input-scripts`);
-      const data = await res.json();
-      setScripts(data);
-    } catch (err) {
-      console.error('Failed to fetch scripts:', err);
-    }
+    const data = await apiSafe.get('/input-scripts');
+    if (Array.isArray(data)) setScripts(data);
   };
 
   useEffect(() => { fetchScripts(); }, []);
+
+  // NOTE: `fetchStatus` and `pollRpSession` are declared with `const`, so they
+  // MUST be defined before any code that references them at render time
+  // (i.e. before the useVisiblePolling calls below). Putting the useVisiblePolling
+  // calls above these `const` declarations triggers a Temporal Dead Zone
+  // ReferenceError on every render → blank PS5 Control tab.
+  const fetchStatus = useCallback(async () => {
+    if (!defaultProfile) return;
+    try {
+      const data = await api.get(`/ps5/status/${defaultProfile.ip_address}`);
+      setStatus(data);
+    } catch (err) {
+      setStatus({ status: 'unreachable', error: err.message });
+    }
+  }, [defaultProfile?.ip_address]);
+
+  // 4 s for the RP session state badge (was 3 s). Lower-priority signal
+  // than the user actively pressing Start/Stop (those mutate the badge
+  // optimistically), so an extra second of lag is invisible.
+  const pollRpSession = useCallback(async () => {
+    if (!defaultProfile) return;
+    const r = await apiSafe.get(`/remoteplay/quick-status?ip=${encodeURIComponent(defaultProfile.ip_address)}`);
+    if (!r?.success) return;
+    if (r.active) {
+      setRpSession({ state: 'live', sessionId: r.session_id || null, warmTtl: null, video: !!r.video });
+    } else if (r.warm) {
+      setRpSession({
+        state: 'warm',
+        sessionId: r.warm_session_id || null,
+        warmTtl: Math.round(r.warm_ttl_remaining_s || 0),
+        video: !!r.video,
+      });
+    } else {
+      setRpSession({ state: 'idle', sessionId: null, warmTtl: null, video: false });
+    }
+  }, [defaultProfile?.ip_address]);
 
   // 6 s for the legacy DDP / TCP port poll. Was 5 s; visibility-gated so a
   // backgrounded P5 Control tab stops sending the port probe entirely.
@@ -86,45 +116,11 @@ function PS5Control({ profiles, onNotification, onProfilesChanged }) {
     defaultProfile ? 6000 : 0,
     [defaultProfile?.ip_address, defaultProfile?.port],
   );
-
-  // 4 s for the RP session state badge (was 3 s). Lower-priority signal
-  // than the user actively pressing Start/Stop (those mutate the badge
-  // optimistically), so an extra second of lag is invisible.
-  const pollRpSession = useCallback(async () => {
-    if (!defaultProfile) return;
-    try {
-      const r = await fetch(`${API}/remoteplay/quick-status?ip=${encodeURIComponent(defaultProfile.ip_address)}`).then(r => r.json());
-      if (!r?.success) return;
-      if (r.active) {
-        setRpSession({ state: 'live', sessionId: r.session_id || null, warmTtl: null, video: !!r.video });
-      } else if (r.warm) {
-        setRpSession({
-          state: 'warm',
-          sessionId: r.warm_session_id || null,
-          warmTtl: Math.round(r.warm_ttl_remaining_s || 0),
-          video: !!r.video,
-        });
-      } else {
-        setRpSession({ state: 'idle', sessionId: null, warmTtl: null, video: false });
-      }
-    } catch (_) { /* transient sidecar - keep prior badge */ }
-  }, [defaultProfile?.ip_address]);
   useVisiblePolling(
     pollRpSession,
     defaultProfile ? 4000 : 0,
     [defaultProfile?.ip_address],
   );
-
-  const fetchStatus = async () => {
-    if (!defaultProfile) return;
-    try {
-      const res = await fetch(`${API}/ps5/status/${defaultProfile.ip_address}`);
-      const data = await res.json();
-      setStatus(data);
-    } catch (err) {
-      setStatus({ status: 'unreachable', error: err.message });
-    }
-  };
 
   // Wake = full pre-warm flow:
   //   1) start a real Remote Play session (wake from rest + DDP LAUNCH +
@@ -140,12 +136,7 @@ function PS5Control({ profiles, onNotification, onProfilesChanged }) {
     if (!defaultProfile) return;
     setWaking(true);
     try {
-      const res = await fetch(`${API}/remoteplay/prewarm`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ profile_id: defaultProfile.id }),
-      });
-      const data = await res.json();
+      const data = await api.post('/remoteplay/prewarm', { profile_id: defaultProfile.id });
       if (data.success) {
         let msg;
         if (data.already_live) msg = 'Remote Play session is already live';
@@ -170,12 +161,7 @@ function PS5Control({ profiles, onNotification, onProfilesChanged }) {
     if (!window.confirm(`Put ${defaultProfile.name} into rest mode?`)) return;
     setStandbyBusy(true);
     try {
-      const res = await fetch(`${API}/remoteplay/standby`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ profile_id: defaultProfile.id }),
-      });
-      const data = await res.json();
+      const data = await api.post('/remoteplay/standby', { profile_id: defaultProfile.id });
       if (data.success) {
         if (data.already_standby) showToast('PS5 already in rest mode', 'info');
         else showToast(`Rest mode sent (${data.via || 'ok'})`, 'success');
@@ -246,12 +232,7 @@ function PS5Control({ profiles, onNotification, onProfilesChanged }) {
     setStoppingSession(true);
     const wasWarm = rpSession.state === 'warm';
     try {
-      const res = await fetch(`${API}/remoteplay/quick-stop`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ip: defaultProfile.ip_address, all: wasWarm }),
-      });
-      const data = await res.json();
+      const data = await api.post('/remoteplay/quick-stop', { ip: defaultProfile.ip_address, all: wasWarm });
       if (data.success) {
         showToast(wasWarm
           ? 'Warm cache cleared — next Start will wait ~60 s for the PS5 session lock'

@@ -1,8 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import Modal from './UI/Modal';
-
-const API = '/api';
+import { api, apiSafe } from '../lib/api.js';
 
 const C = {
   bg: 'var(--bg)',
@@ -83,14 +82,10 @@ export default function FileBrowser({
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      try {
-        const r = await fetch(`${API}/settings`);
-        if (!r.ok) return;
-        const data = await r.json();
-        if (cancelled) return;
-        if (data.upload_target_ip) setUploadIp(data.upload_target_ip);
-        if (data.upload_target_path) setUploadDest(data.upload_target_path);
-      } catch (_) { /* silently fall back */ }
+      const data = await apiSafe.get('/settings');
+      if (cancelled || !data) return;
+      if (data.upload_target_ip) setUploadIp(data.upload_target_ip);
+      if (data.upload_target_path) setUploadDest(data.upload_target_path);
     })();
     return () => { cancelled = true; };
   }, []);
@@ -175,17 +170,15 @@ export default function FileBrowser({
   const listRef = useRef(null);
 
   useEffect(() => {
-    fetch(`${API}/convert/sources`).then(r => r.json()).then(rows => {
-      // The "SMB" tab now lists every remote source (SMB + FTP). The backend
-      // /sources/:id/browse endpoint handles both transports transparently.
+    // The "SMB" tab now lists every remote source (SMB + FTP). The backend
+    // /sources/:id/browse endpoint handles both transports transparently.
+    apiSafe.get('/convert/sources').then(rows => {
       setSmbSources((rows || []).filter(s => s.type === 'smb' || s.type === 'ftp'));
-    }).catch(() => {});
-    fetch(`${API}/convert/local/roots`).then(r => r.json()).then(d => {
-      setLocalRoots(d.roots || []);
-    }).catch(() => {});
-    fetch(`${API}/convert/browser-prefs`).then(r => r.json()).then(d => {
-      setBrowserPrefs({ local: d.local || '', smb: d.smb || {} });
-    }).catch(() => {});
+    });
+    apiSafe.get('/convert/local/roots').then(d => { if (d) setLocalRoots(d.roots || []); });
+    apiSafe.get('/convert/browser-prefs').then(d => {
+      if (d) setBrowserPrefs({ local: d.local || '', smb: d.smb || {} });
+    });
   }, []);
 
   useEffect(() => {
@@ -200,30 +193,19 @@ export default function FileBrowser({
     setSelectedFile(null);
     setSelected(new Set());
     try {
-      let r;
+      let d;
       if (kind === 'local') {
-        r = await fetch(`${API}/convert/local/browse`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ path: p }),
-        });
+        d = await api.post('/convert/local/browse', { path: p });
       } else if (kind === 'smb') {
         if (!smbId) { setLoading(false); setError('Select SMB source'); return; }
-        r = await fetch(`${API}/convert/sources/${smbId}/browse`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ subPath: p }),
-        });
+        d = await api.post(`/convert/sources/${smbId}/browse`, { subPath: p });
       } else {
         if (!ftpIp) { setLoading(false); setError('Select PS5 IP'); return; }
-        r = await fetch(`${API}/convert/ftp/browse`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ip: ftpIp, path: p }),
-        });
+        d = await api.post('/convert/ftp/browse', { ip: ftpIp, path: p });
       }
-      const d = await r.json();
-      if (!r.ok) { setError(d.error); setFiles([]); return; }
       setPath(d.path); setPathInput(d.path);
       setFiles(d.files || []); setParent(d.parent);
-    } catch (e) { setError(e.message); }
+    } catch (e) { setError(e.message); setFiles([]); }
     finally { setLoading(false); }
   }, [kind, smbId, ftpIp]);
 
@@ -256,10 +238,7 @@ export default function FileBrowser({
       if (kind === 'local') next.local = path;
       else if (kind === 'smb' && smbId) next.smb = { ...(next.smb || {}), [smbId]: path };
       else { onNotification?.('Default save not supported for FTP', 'info'); return; }
-      const r = await fetch(`${API}/convert/browser-prefs`, {
-        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(next),
-      });
-      if (!r.ok) throw new Error((await r.json()).error);
+      await api.put('/convert/browser-prefs', next);
       setBrowserPrefs(next);
       onNotification?.(`Default saved: ${path}`, 'success');
     } catch (e) { onNotification?.(e.message, 'error'); }
@@ -304,28 +283,16 @@ export default function FileBrowser({
   const deleteEntry = async (entry) => {
     if (!window.confirm(`Delete ${entry.isDir ? 'folder' : 'file'}\n${entry.name}?`)) return;
     try {
-      let r, body;
       if (kind === 'local') {
         const fullPath = path === '/' ? `/${entry.name}` : `${path.replace(/\/$/, '')}/${entry.name}`;
-        body = { path: fullPath, isDir: entry.isDir };
-        r = await fetch(`${API}/convert/local/delete`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-        });
+        await api.post('/convert/local/delete', { path: fullPath, isDir: entry.isDir });
       } else if (kind === 'smb') {
         const sub = path ? `${path.replace(/\/+$/, '')}/${entry.name}` : entry.name;
-        body = { path: sub, isDir: entry.isDir };
-        r = await fetch(`${API}/convert/sources/${smbId}/delete`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-        });
+        await api.post(`/convert/sources/${smbId}/delete`, { path: sub, isDir: entry.isDir });
       } else {
         const fullPath = path === '/' ? `/${entry.name}` : `${path.replace(/\/$/, '')}/${entry.name}`;
-        body = { ip: ftpIp, path: fullPath, isDir: entry.isDir };
-        r = await fetch(`${API}/convert/ftp/delete`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-        });
+        await api.post('/convert/ftp/delete', { ip: ftpIp, path: fullPath, isDir: entry.isDir });
       }
-      const d = await r.json();
-      if (!r.ok) throw new Error(d.error);
       onNotification?.(`Deleted ${entry.name}`, 'success');
       browse(path);
     } catch (e) { onNotification?.(`Delete failed: ${e.message}`, 'error'); }
@@ -361,27 +328,15 @@ export default function FileBrowser({
     try {
       const src = joinEntryPath(path, target.name);
       const dst = joinEntryPath(path, newName);
-      let r;
       if (kind === 'local') {
-        r = await fetch(`${API}/convert/local/move`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ src, dst, isDir: !!target.isDir }),
-        });
+        await api.post('/convert/local/move', { src, dst, isDir: !!target.isDir });
       } else if (kind === 'ftp') {
         if (!ftpIp) throw new Error('Select PS5 first');
-        r = await fetch(`${API}/convert/ftp/move`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ip: ftpIp, src, dst }),
-        });
+        await api.post('/convert/ftp/move', { ip: ftpIp, src, dst });
       } else {
         if (!smbId) throw new Error('Select remote source first');
-        r = await fetch(`${API}/convert/sources/${smbId}/move`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ src, dst }),
-        });
+        await api.post(`/convert/sources/${smbId}/move`, { src, dst });
       }
-      const d = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
       onNotification?.(`Renamed → ${newName}`, 'success');
       setRenameTarget(null);
       browse(path);
@@ -427,12 +382,7 @@ export default function FileBrowser({
       return;
     }
     try {
-      const r = await fetch(`${API}/convert/ftp/upload/queue`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      const d = await r.json();
-      if (!r.ok) throw new Error(d.error || 'upload queue failed');
+      const d = await api.post('/convert/ftp/upload/queue', body);
       const n = d.count || (d.items?.length ?? 1);
       onNotification?.(
         n > 1
@@ -483,11 +433,7 @@ export default function FileBrowser({
         };
       }
       // Always go through the queue; user controls Start/Pause from the Queue tab.
-      const r = await fetch(`${API}/convert/extract/queue`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-      });
-      const d = await r.json();
-      if (!r.ok) throw new Error(d.error);
+      await api.post('/convert/extract/queue', body);
       onNotification?.(`Extract added to queue: ${filename}`, 'success');
     } catch (e) { onNotification?.(e.message, 'error'); }
   };
@@ -495,21 +441,13 @@ export default function FileBrowser({
   const importFile = async (filename) => {
     if (kind === 'ftp') return;
     try {
-      let r;
+      let d;
       if (kind === 'local') {
         const fullPath = path === '/' ? `/${filename}` : `${path.replace(/\/$/, '')}/${filename}`;
-        r = await fetch(`${API}/convert/local/import-file`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ local_path: fullPath }),
-        });
+        d = await api.post('/convert/local/import-file', { local_path: fullPath });
       } else {
-        r = await fetch(`${API}/convert/sources/${smbId}/import-file`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ smb_path: path, filename }),
-        });
+        d = await api.post(`/convert/sources/${smbId}/import-file`, { smb_path: path, filename });
       }
-      const d = await r.json();
-      if (!r.ok) throw new Error(d.error);
       onNotification?.(`Imported ${filename}`, 'success');
       onImported?.(d);
     } catch (e) { onNotification?.(e.message, 'error'); }
@@ -518,21 +456,15 @@ export default function FileBrowser({
   const importFolder = async (folderName) => {
     if (kind === 'ftp') return;
     try {
-      let r;
+      let d;
       if (kind === 'local') {
         const fullPath = path === '/' ? `/${folderName}` : `${path.replace(/\/$/, '')}/${folderName}`;
-        r = await fetch(`${API}/convert/local/import-folder`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ local_path: fullPath }),
-        });
+        d = await api.post('/convert/local/import-folder', { local_path: fullPath });
       } else {
-        r = await fetch(`${API}/convert/mkpfs/import-folder-from-smb`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ source_id: smbId, smb_path: path, folder_name: folderName }),
+        d = await api.post('/convert/mkpfs/import-folder-from-smb', {
+          source_id: smbId, smb_path: path, folder_name: folderName,
         });
       }
-      const d = await r.json();
-      if (!r.ok) throw new Error(d.error);
       onNotification?.(`Folder import started: ${folderName}`, 'info');
       onImported?.(d);
     } catch (e) { onNotification?.(e.message, 'error'); }
@@ -629,19 +561,17 @@ export default function FileBrowser({
   // ------------------------------------------------------------------
 
   const QUEUE_PATHS = {
-    upload:  '/api/convert/ftp/upload/queue',
-    convert: '/api/convert/convert/queue',
-    extract: '/api/convert/extract/queue',
-    download:'/api/downloader/queue',
-    install: '/api/convert/install/queue',
+    upload:  '/convert/ftp/upload/queue',
+    convert: '/convert/convert/queue',
+    extract: '/convert/extract/queue',
+    download:'/downloader/queue',
+    install: '/convert/install/queue',
   };
 
   const setQueueRunning = async (type, running) => {
     const base = QUEUE_PATHS[type];
     if (!base) return;
-    try {
-      await fetch(`${base}/${running ? 'resume' : 'pause'}`, { method: 'POST' });
-    } catch (_) { /* best-effort; the user sees the queue tab anyway */ }
+    await apiSafe.post(`${base}/${running ? 'resume' : 'pause'}`);
   };
 
   // (Convert defaults are now applied inside Convert.jsx after the user picks
@@ -662,9 +592,7 @@ export default function FileBrowser({
     }
     // Preflight: confirm an installer payload + stage dir are configured.
     try {
-      const pre = await fetch(`${API}/convert/install/preflight`);
-      const pd = await pre.json();
-      if (!pre.ok) throw new Error(pd.error || 'Installer not configured');
+      await api.get('/convert/install/preflight');
     } catch (e) {
       onNotification?.(`Install setup: ${e.message}`, 'error');
       return false;
@@ -700,12 +628,7 @@ export default function FileBrowser({
     }
 
     try {
-      const r = await fetch(`${API}/convert/install/queue`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      const d = await r.json();
-      if (!r.ok) throw new Error(d.error || 'install queue failed');
+      await api.post('/convert/install/queue', body);
       onNotification?.(`Install queued: ${entry.name} → ${targetIp}`, 'success');
       return true;
     } catch (e) {
@@ -746,11 +669,7 @@ export default function FileBrowser({
       body.source_path = fullPath;
     }
     try {
-      const r = await fetch(`${API}/convert/convert/queue`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-      });
-      const d = await r.json();
-      if (!r.ok) throw new Error(d.error || 'unpack queue failed');
+      await api.post('/convert/convert/queue', body);
       return true;
     } catch (e) { onNotification?.(`Unpack failed: ${e.message}`, 'error'); return false; }
   };
@@ -850,37 +769,19 @@ export default function FileBrowser({
       const dstFull = joinEntryPath(path, item.name);
       if (srcFull === dstFull) { fail++; continue; }
       try {
-        let r;
         if (kind === 'local') {
           const endpoint = clipboard.operation === 'cut' ? 'move' : 'copy';
-          r = await fetch(`${API}/convert/local/${endpoint}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ src: srcFull, dst: dstFull, isDir: item.isDir }),
-          });
+          await api.post(`/convert/local/${endpoint}`, { src: srcFull, dst: dstFull, isDir: item.isDir });
         } else if (kind === 'ftp') {
-          r = await fetch(`${API}/convert/ftp/move`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ip: ftpIp, src: srcFull, dst: dstFull }),
-          });
+          await api.post('/convert/ftp/move', { ip: ftpIp, src: srcFull, dst: dstFull });
         } else {
           // SMB cut → rename
-          r = await fetch(`${API}/convert/sources/${smbId}/move`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ src: srcFull, dst: dstFull }),
-          });
-        }
-        const d = await r.json();
-        if (!r.ok) {
-          if (d.code === 'EEXIST') conflicts++;
-          else fail++;
-          continue;
+          await api.post(`/convert/sources/${smbId}/move`, { src: srcFull, dst: dstFull });
         }
         ok++;
-      } catch (_) {
-        fail++;
+      } catch (e) {
+        if (e.data?.code === 'EEXIST') conflicts++;
+        else fail++;
       }
     }
     setPasteBusy(false);

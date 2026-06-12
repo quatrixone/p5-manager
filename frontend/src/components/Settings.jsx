@@ -2,8 +2,7 @@ import { useState, useEffect } from 'react';
 import Modal from './UI/Modal';
 import Badge from './UI/Badge';
 import RemoteSourcesSection from './RemoteSourcesSection';
-
-const API = '/api';
+import { api, apiSafe, putSetting } from '../lib/api.js';
 
 function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete, onProfileSetDefault }) {
   const [activeTab, setActiveTab] = useState('profiles');
@@ -43,51 +42,33 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
   const [message, setMessage] = useState('');
 
   useEffect(() => {
-    fetchSettings();
-    fetchPayloads();
+    (async () => {
+      const data = await apiSafe.get('/settings');
+      if (data) {
+        if (data.default_subnet) setDefaultSubnet(data.default_subnet);
+        if (data.upload_target_ip !== undefined) setUploadTargetIp(data.upload_target_ip || '');
+        if (data.upload_target_path) setUploadTargetPath(data.upload_target_path);
+        if (data.pkg_installer_payload_id) setPkgInstallerPayloadId(String(data.pkg_installer_payload_id));
+        if (data.pkg_stage_dir) setPkgStageDir(data.pkg_stage_dir);
+        if (data.pkg_trigger_file) setPkgTriggerFile(data.pkg_trigger_file);
+      }
+      // Only show ELF payloads in the "PKG installer payload" picker — .lua and
+      // .bin won't be sent to port 9021 by sendInstallerPayload, so listing them
+      // would let the user save a non-functional config.
+      const list = await apiSafe.get('/payloads');
+      if (Array.isArray(list)) setAvailablePayloads(list.filter(p => /\.elf$/i.test(p.name || '')));
+    })();
   }, []);
 
-  const fetchSettings = async () => {
-    try {
-      const res = await fetch(`${API}/settings`);
-      const data = await res.json();
-      if (data.default_subnet) setDefaultSubnet(data.default_subnet);
-      if (data.upload_target_ip !== undefined) setUploadTargetIp(data.upload_target_ip || '');
-      if (data.upload_target_path) setUploadTargetPath(data.upload_target_path);
-      if (data.pkg_installer_payload_id) setPkgInstallerPayloadId(String(data.pkg_installer_payload_id));
-      if (data.pkg_stage_dir) setPkgStageDir(data.pkg_stage_dir);
-      if (data.pkg_trigger_file) setPkgTriggerFile(data.pkg_trigger_file);
-    } catch (err) {
-      console.error('Failed to fetch settings:', err);
-    }
-  };
-
-  // Only show ELF payloads in the "PKG installer payload" picker — .lua and
-  // .bin won't be sent to port 9021 by sendInstallerPayload, so listing them
-  // would let the user save a non-functional config.
-  const fetchPayloads = async () => {
-    try {
-      const res = await fetch(`${API}/payloads`);
-      if (!res.ok) return;
-      const list = await res.json();
-      if (Array.isArray(list)) {
-        setAvailablePayloads(list.filter(p => /\.elf$/i.test(p.name || '')));
-      }
-    } catch (err) {
-      console.error('Failed to load payloads:', err);
-    }
-  };
-
-  const saveConfigSettings = async () => {
+  // Generic helper for the "save N settings keys + flash a status banner"
+  // pattern. Centralised so the three save buttons below don't each carry
+  // their own setLoading / try-catch / setTimeout boilerplate.
+  const saveSettingsKeys = async (entries, successMsg) => {
     setLoading(true);
     setMessage('');
     try {
-      await fetch(`${API}/settings`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ key: 'default_subnet', value: defaultSubnet })
-      });
-      setMessage('Settings saved!');
+      for (const [key, value] of entries) await putSetting(key, value);
+      setMessage(successMsg);
     } catch (err) {
       setMessage('Failed to save: ' + err.message);
     }
@@ -95,107 +76,85 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
     setTimeout(() => setMessage(''), 3000);
   };
 
-  const saveUploadTarget = async () => {
-    setLoading(true);
-    setMessage('');
-    try {
-      await fetch(`${API}/settings`, {
-        method: 'PUT', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ key: 'upload_target_ip', value: uploadTargetIp })
-      });
-      await fetch(`${API}/settings`, {
-        method: 'PUT', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ key: 'upload_target_path', value: uploadTargetPath })
-      });
-      setMessage('Upload target saved!');
-    } catch (err) {
-      setMessage('Failed to save: ' + err.message);
-    }
-    setLoading(false);
-    setTimeout(() => setMessage(''), 3000);
-  };
+  const saveConfigSettings = () => saveSettingsKeys([
+    ['default_subnet', defaultSubnet],
+  ], 'Settings saved!');
+
+  const saveUploadTarget = () => saveSettingsKeys([
+    ['upload_target_ip', uploadTargetIp],
+    ['upload_target_path', uploadTargetPath],
+  ], 'Upload target saved!');
 
   // Three keys in one button so the user always saves a consistent install
   // setup: empty payload id is allowed (clears the binding so the install
   // queue errors out cleanly with "no installer configured" instead of
   // silently failing on /api/payloads/<old-id>).
-  const savePkgInstaller = async () => {
-    setLoading(true);
-    setMessage('');
+  const savePkgInstaller = () => saveSettingsKeys([
+    ['pkg_installer_payload_id', pkgInstallerPayloadId],
+    ['pkg_stage_dir', pkgStageDir],
+    ['pkg_trigger_file', pkgTriggerFile],
+  ], 'PKG installer saved!');
+
+  // Both scans share the same loading flag + result handler — the only
+  // difference is method (GET vs POST) and query/body shape, so we keep a
+  // single helper and pass the call site as a thunk.
+  const runScan = async (call) => {
+    setScanning(true);
+    setDiscoveredDevices([]);
     try {
-      await fetch(`${API}/settings`, {
-        method: 'PUT', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ key: 'pkg_installer_payload_id', value: pkgInstallerPayloadId })
-      });
-      await fetch(`${API}/settings`, {
-        method: 'PUT', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ key: 'pkg_stage_dir', value: pkgStageDir })
-      });
-      await fetch(`${API}/settings`, {
-        method: 'PUT', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ key: 'pkg_trigger_file', value: pkgTriggerFile })
-      });
-      setMessage('PKG installer saved!');
+      const data = await call();
+      if (data?.success && Array.isArray(data.devices)) {
+        setDiscoveredDevices(data.devices);
+        if (data.devices.length === 0) setMessage('Scan complete · no devices found');
+      } else if (data && !data.success) {
+        setMessage(data.error || 'Scan failed');
+      }
     } catch (err) {
-      setMessage('Failed to save: ' + err.message);
+      setMessage('Scan failed: ' + (err?.data?.error || err.message));
     }
-    setLoading(false);
+    setScanning(false);
     setTimeout(() => setMessage(''), 3000);
   };
 
-  const handleScan = async () => {
-    setScanning(true);
-    setDiscoveredDevices([]);
-    try {
-      // Pass the saved default subnet so the backend can pick the right NIC
-      // for the directed broadcast (255.255.255.255 alone often lands on a
-      // docker bridge instead of the LAN).
-      const q = defaultSubnet ? `&subnet=${encodeURIComponent(defaultSubnet)}` : '';
-      const res = await fetch(`${API}/ps5control/scan?timeout=3${q}`);
-      const data = await res.json();
-      if (data.success) setDiscoveredDevices(data.devices);
-    } catch (err) {
-      console.error('Scan error:', err);
-    }
-    setScanning(false);
+  const handleScan = () => {
+    // Pass the saved default subnet so the backend can pick the right NIC
+    // for the directed broadcast (255.255.255.255 alone often lands on a
+    // docker bridge instead of the LAN).
+    const q = defaultSubnet ? `&subnet=${encodeURIComponent(defaultSubnet)}` : '';
+    return runScan(() => api.get(`/ps5control/scan?timeout=3${q}`));
   };
 
-  const handleScanSubnet = async () => {
-    setScanning(true);
-    setDiscoveredDevices([]);
-    try {
-      const res = await fetch(`${API}/ps5control/scan-subnet`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ subnet: defaultSubnet, timeout: 3 })
-      });
-      const data = await res.json();
-      if (data.success) setDiscoveredDevices(data.devices);
-    } catch (err) {
-      console.error('Subnet scan error:', err);
-    }
-    setScanning(false);
-  };
+  const handleScanSubnet = () =>
+    runScan(() => api.post('/ps5control/scan-subnet', { subnet: defaultSubnet, timeout: 3 }));
 
   const handleScanClick = () => {
+    if (!defaultSubnet) {
+      setMessage('Please set a default subnet first (e.g. 10.0.0.0/24)');
+      setTimeout(() => setMessage(''), 3000);
+      return;
+    }
     if (scanMode === 'local') handleScan();
     else handleScanSubnet();
   };
 
   const handleAddDiscovered = async (device) => {
-    const name = device.name || `PS5-${device.ip?.split('.').pop()}`;
+    const name = device.name || `${device.type || 'PS5'}-${device.ip?.split('.').pop()}`;
     const ip = device.ip || device.hostId;
     let mac = '';
-    try {
-      await fetch(`${API}/ps5control/scan?host=${ip}&timeout=2`);
-      await new Promise(resolve => setTimeout(resolve, 500));
-      const arpRes = await fetch(`${API}/ps5control/arp?ip=${ip}`);
-      const arpData = await arpRes.json();
-      if (arpData.mac) mac = arpData.mac;
-    } catch (err) {
-      console.error('MAC lookup failed:', err);
-    }
-    onProfileCreate(name, ip, mac);
+    // Touch the host once so the kernel ARP cache has a fresh entry, then
+    // read it back from /arp. Both calls are best-effort — we still create
+    // the profile even if MAC lookup fails (user can fill it later).
+    await apiSafe.get(`/ps5control/scan?host=${ip}&timeout=2`);
+    await new Promise(resolve => setTimeout(resolve, 500));
+    const arpData = await apiSafe.get(`/ps5control/arp?ip=${ip}`);
+    if (arpData?.mac) mac = arpData.mac;
+    // Pass the discovered console type so the new profile is correctly
+    // typed (PS4 vs PS5) from the start — used by /ps5/status to pick
+    // the right reachability probe.
+    const consoleType = (device.type || '').toLowerCase() === 'ps4' ? 'ps4'
+      : (device.type || '').toLowerCase() === 'ps5' ? 'ps5'
+      : null;
+    onProfileCreate(name, ip, mac, consoleType);
   };
 
   const openAddProfile = () => {
@@ -229,7 +188,7 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
   const handleBackup = async () => {
     try {
       setBackupStatus('Creating backup...');
-      const res = await fetch(`${API}/backup`);
+      const res = await api.raw('/backup');
       if (!res.ok) throw new Error('Backup failed');
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
@@ -251,15 +210,7 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
       setBackupStatus('Restoring...');
       const arrayBuffer = await restoreFile.arrayBuffer();
       const base64 = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
-      const res = await fetch(`${API}/backup`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ zip: base64 })
-      });
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.error || 'Restore failed');
-      }
+      await api.post('/backup', { zip: base64 });
       setBackupStatus('Restore completed!');
       setTimeout(() => setBackupStatus(''), 3000);
     } catch (err) {
@@ -275,10 +226,49 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
       </div>
 
       {profiles.length === 0 && discoveredDevices.length === 0 && (
-        <div className="empty-state">
-          <div className="empty-state-icon">🎮</div>
-          <div className="empty-state-title">No profiles yet</div>
-          <div className="empty-state-text">Add a PS5 profile or scan to discover devices</div>
+        <div className="comp-card mb-md" style={{ borderLeft: '3px solid var(--blue)' }}>
+          <div className="comp-card-header">
+            <span className="comp-card-title">🚀 First-time setup</span>
+          </div>
+          <div className="comp-card-body flex-col gap-sm">
+            <div className="text-sm">
+              <strong>Step 1.</strong> Set your LAN subnet (the network where your PS4 / PS5 lives).
+              Typical values: <code>10.0.0.0/24</code>, <code>192.168.1.0/24</code>.
+            </div>
+            <div className="flex gap-sm items-center flex-wrap">
+              <input
+                className="input"
+                type="text"
+                placeholder="10.0.0.0/24"
+                value={defaultSubnet}
+                onChange={e => setDefaultSubnet(e.target.value)}
+                onBlur={saveConfigSettings}
+                style={{ maxWidth: 200 }}
+              />
+              <span className="text-xs text-muted">Saved automatically on blur</span>
+            </div>
+            <div className="text-sm">
+              <strong>Step 2.</strong> Scan the subnet for consoles, then click <em>+ Add</em>
+              next to each discovered device.
+            </div>
+            <div className="flex gap-sm items-center flex-wrap">
+              <select className="select" value={scanMode} onChange={e => setScanMode(e.target.value)} style={{ maxWidth: 160 }}>
+                <option value="local">Broadcast (fast)</option>
+                <option value="subnet">Subnet sweep (slower, more reliable)</option>
+              </select>
+              <button className="btn btn-primary" onClick={handleScanClick} disabled={scanning || !defaultSubnet}>
+                {scanning ? '⏳ Scanning…' : '🔍 Scan now'}
+              </button>
+              <button className="btn btn-ghost btn-sm" onClick={openAddProfile}>
+                or add manually
+              </button>
+            </div>
+            {message && (
+              <div className="text-sm" style={{ color: message.includes('fail') || message.includes('Please') ? 'var(--red)' : 'var(--muted)' }}>
+                {message}
+              </div>
+            )}
+          </div>
         </div>
       )}
 
@@ -302,25 +292,30 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
         </div>
       )}
 
-      <div className="flex gap-sm mb-sm flex-wrap items-center">
-        <select className="select" value={scanMode} onChange={e => setScanMode(e.target.value)} style={{ maxWidth: 130 }}>
-          <option value="local">Broadcast</option>
-          <option value="subnet">Subnet sweep</option>
-        </select>
-        <input
-          className="input"
-          type="text"
-          placeholder="10.0.0.0/24"
-          value={defaultSubnet}
-          onChange={e => setDefaultSubnet(e.target.value)}
-          onBlur={saveConfigSettings}
-          style={{ maxWidth: 170 }}
-          title="Subnet used for scanning. Saved on blur."
-        />
-        <button className="btn btn-secondary" onClick={handleScanClick} disabled={scanning}>
-          {scanning ? '⏳ Scanning...' : '🔍 Scan'}
-        </button>
-      </div>
+      {(profiles.length > 0 || discoveredDevices.length > 0) && (
+        <div className="flex gap-sm mb-sm flex-wrap items-center">
+          <select className="select" value={scanMode} onChange={e => setScanMode(e.target.value)} style={{ maxWidth: 130 }}>
+            <option value="local">Broadcast</option>
+            <option value="subnet">Subnet sweep</option>
+          </select>
+          <input
+            className="input"
+            type="text"
+            placeholder="10.0.0.0/24"
+            value={defaultSubnet}
+            onChange={e => setDefaultSubnet(e.target.value)}
+            onBlur={saveConfigSettings}
+            style={{ maxWidth: 170 }}
+            title="Subnet used for scanning. Saved on blur."
+          />
+          <button className="btn btn-secondary" onClick={handleScanClick} disabled={scanning || !defaultSubnet}>
+            {scanning ? '⏳ Scanning…' : '🔍 Scan'}
+          </button>
+          {message && profiles.length > 0 && (
+            <span className="text-xs text-muted">{message}</span>
+          )}
+        </div>
+      )}
 
       <div className="flex-col gap-sm">
         {profiles.map(profile => (

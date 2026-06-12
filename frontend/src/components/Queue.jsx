@@ -1,7 +1,6 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import useVisiblePolling from '../hooks/useVisiblePolling';
-
-const API = '/api';
+import { api, apiSafe } from '../lib/api.js';
 
 const TYPE_META = {
   download: { icon: '⬇️', label: 'Download' },
@@ -16,14 +15,14 @@ const TYPE_META = {
 // sitting in the queue), so the dropdown can render an explanatory placeholder
 // instead of hammering a 404.
 function logUrlForItem(item) {
-  if (item.type === 'download') return `${API}/downloader/${item.id}`;
-  if (item.type === 'upload') return `${API}/convert/ftp/upload/${item.id}`;
-  if (item.type === 'install') return `${API}/convert/install/${item.id}`;
+  if (item.type === 'download') return `/downloader/${item.id}`;
+  if (item.type === 'upload') return `/convert/ftp/upload/${item.id}`;
+  if (item.type === 'install') return `/convert/install/${item.id}`;
   // convert + extract use a separate jobs map keyed by job_id, which only
   // exists once the queue worker has picked the item up.
   if (!item.job_id) return null;
-  if (item.type === 'convert') return `${API}/convert/convert/${item.job_id}`;
-  if (item.type === 'extract') return `${API}/convert/extract/${item.job_id}`;
+  if (item.type === 'convert') return `/convert/convert/${item.job_id}`;
+  if (item.type === 'extract') return `/convert/extract/${item.job_id}`;
   return null;
 }
 
@@ -126,9 +125,7 @@ function QueueItem({ item, queuePaused, onRemove, onRetry, onMove, onStart, onPa
     const tick = async () => {
       if (!logUrl) { setLogText(''); setLogErr('Log will appear once this task starts running.'); return; }
       try {
-        const r = await fetch(logUrl);
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        const j = await r.json();
+        const j = await api.get(logUrl);
         if (cancelled) return;
         setLogText(j.log || '');
         setLogErr(null);
@@ -344,14 +341,11 @@ export default function Queue() {
 
   const fetchQueue = useCallback(async () => {
     try {
-      const [queueRes, downloadRes, dlState] = await Promise.all([
-        fetch(`${API}/convert/queue/all`),
-        fetch(`${API}/downloader`),
-        fetch(`${API}/downloader/queue`),
+      const [queueData, downloadData, dlQueue] = await Promise.all([
+        api.get('/convert/queue/all'),
+        api.get('/downloader'),
+        api.get('/downloader/queue'),
       ]);
-      const queueData = await queueRes.json();
-      const downloadData = await downloadRes.json();
-      const dlQueue = await dlState.json();
 
       const downloadItems = Array.isArray(downloadData)
         ? downloadData.map(job => ({
@@ -407,58 +401,52 @@ export default function Queue() {
   // directly.
   const apiPathForType = (type) => (type === 'upload' ? 'ftp/upload' : type);
 
+  // Build the canonical queue-control path for a given type.
+  // download has its own top-level routes; everything else lives under /convert/<type>/queue.
+  const queuePath = (type, suffix = '') => (
+    type === 'download'
+      ? `/downloader/queue${suffix}`
+      : `/convert/${apiPathForType(type)}/queue${suffix}`
+  );
+
   const handlePauseType = async (type) => {
-    if (type === 'download') {
-      await fetch(`${API}/downloader/queue/pause`, { method: 'POST' });
-    } else {
-      await fetch(`${API}/convert/${apiPathForType(type)}/queue/pause`, { method: 'POST' });
-    }
+    await apiSafe.post(queuePath(type, '/pause'));
     fetchQueue();
   };
 
   const handleResumeType = async (type) => {
-    if (type === 'download') {
-      await fetch(`${API}/downloader/queue/resume`, { method: 'POST' });
-    } else {
-      await fetch(`${API}/convert/${apiPathForType(type)}/queue/resume`, { method: 'POST' });
-    }
+    await apiSafe.post(queuePath(type, '/resume'));
     fetchQueue();
   };
 
   const handleClearFinished = async () => {
     await Promise.all([
-      fetch(`${API}/convert/queue/clear-finished`, { method: 'POST' }),
-      fetch(`${API}/downloader/queue/clear-finished`, { method: 'POST' }),
+      apiSafe.post('/convert/queue/clear-finished'),
+      apiSafe.post('/downloader/queue/clear-finished'),
     ]);
     fetchQueue();
   };
 
   const handleRemove = async (type, id, isActive) => {
-    if (isActive) {
-      if (!window.confirm('Cancel this running task?')) return;
-    }
-    if (type === 'download') {
-      await fetch(`${API}/downloader/${id}`, { method: 'DELETE' });
-    } else {
-      await fetch(`${API}/convert/${apiPathForType(type)}/queue/${id}`, { method: 'DELETE' });
-    }
+    if (isActive && !window.confirm('Cancel this running task?')) return;
+    await apiSafe.del(
+      type === 'download'
+        ? `/downloader/${id}`
+        : `/convert/${apiPathForType(type)}/queue/${id}`,
+    );
     fetchQueue();
   };
 
   const handleRetry = async (type, id) => {
     if (type !== 'download') {
-      await fetch(`${API}/convert/${apiPathForType(type)}/queue/${id}/retry`, { method: 'POST' });
+      await apiSafe.post(`/convert/${apiPathForType(type)}/queue/${id}/retry`);
     }
     fetchQueue();
   };
 
   const handleMove = async (type, id, direction) => {
     if (type !== 'download') {
-      await fetch(`${API}/convert/${apiPathForType(type)}/queue/${id}/move`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ direction }),
-      });
+      await apiSafe.post(`/convert/${apiPathForType(type)}/queue/${id}/move`, { direction });
     }
     fetchQueue();
   };
@@ -467,13 +455,7 @@ export default function Queue() {
   // type. The worker then picks it first.
   const handleStartItem = async (type, id) => {
     if (type !== 'download') {
-      try {
-        await fetch(`${API}/convert/${apiPathForType(type)}/queue/${id}/move`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ direction: 'top' }),
-        });
-      } catch (_) { /* best-effort move; resume below is the actual trigger */ }
+      await apiSafe.post(`/convert/${apiPathForType(type)}/queue/${id}/move`, { direction: 'top' });
     }
     await handleResumeType(type);
   };

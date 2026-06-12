@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import FolderPickerModal from './UI/FolderPickerModal';
-
-const API = '/api';
+import { api, apiSafe } from '../lib/api.js';
 
 // Compact download form. Job history / progress moved entirely to the Queue
 // tab, so this view focuses on the single task of "add a URL to the queue".
@@ -23,12 +22,10 @@ export default function Downloader({ profiles = [], onNotification, onOpenQueue 
   const [pickerOpen, setPickerOpen] = useState(false);
 
   const refreshSources = useCallback(async () => {
-    try {
-      const r = await fetch(`${API}/downloader/sources`);
-      const d = await r.json();
-      setSmbSources(d.smb || []);
-      if (!smbSourceId && d.smb && d.smb[0]) setSmbSourceId(String(d.smb[0].id));
-    } catch (_) {}
+    const d = await apiSafe.get('/downloader/sources');
+    if (!d) return;
+    setSmbSources(d.smb || []);
+    if (!smbSourceId && d.smb && d.smb[0]) setSmbSourceId(String(d.smb[0].id));
   }, [smbSourceId]);
 
   useEffect(() => { refreshSources(); }, [refreshSources]);
@@ -37,9 +34,7 @@ export default function Downloader({ profiles = [], onNotification, onOpenQueue 
   // wherever USER_DATA_DIR actually points to (useful when tests
   // override it or when running outside Docker).
   useEffect(() => {
-    fetch(`${API}/convert/paths`).then(r => r.json()).then(d => {
-      if (d?.downloads) setDestPath(d.downloads);
-    }).catch(() => {});
+    apiSafe.get('/convert/paths').then(d => { if (d?.downloads) setDestPath(d.downloads); });
   }, []);
 
   const start = async () => {
@@ -62,13 +57,7 @@ export default function Downloader({ profiles = [], onNotification, onOpenQueue 
       if (destKind === 'local') body.dest_path = destPath.trim();
       else { body.smb_source_id = smbSourceId; body.smb_subdir = smbSubdir.trim() || undefined; }
 
-      const r = await fetch(`${API}/downloader/start`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      const d = await r.json();
-      if (!r.ok) throw new Error(d.error);
+      await api.post('/downloader/start', body);
       onNotification?.('Download added to queue', 'success');
       setUrl('');
       setFilename('');

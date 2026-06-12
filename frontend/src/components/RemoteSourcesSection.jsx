@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-
-const API = '/api';
+import { api, apiSafe } from '../lib/api.js';
 
 // Standalone source manager used in Settings → Sources. Handles SMB, FTP and
 // (note-only) local PS5 paths. The backend `/api/convert/sources*`
@@ -25,14 +24,11 @@ function RemoteSourcesSection({ profiles = [] }) {
   }
 
   const load = useCallback(async () => {
-    try {
-      const r = await fetch(`${API}/convert/sources`);
-      const rows = await r.json();
-      // Remote Sources now only manages SMB and FTP. Older 'local' rows are
-      // hidden from the UI but kept in the DB so existing autoloads keep
-      // working until the user explicitly deletes them.
-      setSources(rows.filter(s => s.type === 'smb' || s.type === 'ftp'));
-    } catch (_) {}
+    const rows = await apiSafe.get('/convert/sources');
+    // Remote Sources now only manages SMB and FTP. Older 'local' rows are
+    // hidden from the UI but kept in the DB so existing autoloads keep
+    // working until the user explicitly deletes them.
+    if (Array.isArray(rows)) setSources(rows.filter(s => s.type === 'smb' || s.type === 'ftp'));
   }, []);
 
   useEffect(() => { load(); }, [load]);
@@ -63,21 +59,8 @@ function RemoteSourcesSection({ profiles = [] }) {
     if (form.type === 'ftp' && !form.ftp_host) return showMsg('FTP host required', 'error');
 
     try {
-      if (editing === 'new') {
-        const r = await fetch(`${API}/convert/sources`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(form),
-        });
-        if (!r.ok) throw new Error((await r.json()).error);
-      } else {
-        const r = await fetch(`${API}/convert/sources/${editing}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(form),
-        });
-        if (!r.ok) throw new Error((await r.json()).error);
-      }
+      if (editing === 'new') await api.post('/convert/sources', form);
+      else await api.put(`/convert/sources/${editing}`, form);
       showMsg('Saved', 'success');
       cancel();
       load();
@@ -88,15 +71,14 @@ function RemoteSourcesSection({ profiles = [] }) {
 
   const remove = async (id) => {
     if (!confirm('Delete this source?')) return;
-    await fetch(`${API}/convert/sources/${id}`, { method: 'DELETE' });
+    await apiSafe.del(`/convert/sources/${id}`);
     load();
   };
 
   const test = async (id) => {
     setBusy(true);
     try {
-      const r = await fetch(`${API}/convert/sources/${id}/test`, { method: 'POST' });
-      const d = await r.json();
+      const d = await api.post(`/convert/sources/${id}/test`);
       showMsg(d.success ? (d.message || 'Connection OK') : (d.error || 'Failed'), d.success ? 'success' : 'error');
     } catch (e) { showMsg(e.message, 'error'); }
     setBusy(false);
@@ -106,20 +88,10 @@ function RemoteSourcesSection({ profiles = [] }) {
     setBusy(true);
     setBrowseFor(src);
     try {
-      let r = await fetch(`${API}/convert/sources/${src.id}/browse`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ subPath }),
-      });
-      let d = await r.json();
+      let d = await api.post(`/convert/sources/${src.id}/browse`, { subPath });
       if (!d.success && subPath && d.smb_status === 'NT_STATUS_OBJECT_NAME_NOT_FOUND') {
         showMsg(`${d.error}. Falling back to share root.`, 'error');
-        r = await fetch(`${API}/convert/sources/${src.id}/browse`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ subPath: '' }),
-        });
-        d = await r.json();
+        d = await api.post(`/convert/sources/${src.id}/browse`, { subPath: '' });
         subPath = '';
       }
       setBrowseSubPath(subPath);
