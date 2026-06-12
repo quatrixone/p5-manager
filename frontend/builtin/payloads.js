@@ -75,32 +75,25 @@ export const ESSENTIAL_PAYLOADS = [
 
   // ===========================================================================
   // PS4 payloads — modern GoldHEN ecosystem (FW 5.05 → 11.00).
-  // All four bind to TCP 9020 (the GoldHEN payload-sender port).
-  // URLs target latest GoldHEN release assets so we always ship the
-  // newest stable binary; the periodic update-check route can re-fetch.
+  //
+  // No PS4 entries are auto-fetched right now. As of GoldHEN v2.3 the
+  // project ships a single `GoldHEN_v2.3.7z` release asset (no more
+  // individual `.bin` URLs that we used to point at:
+  //
+  //   releases/latest/download/goldhen.bin           → 404 since v2.x
+  //   releases/latest/download/kernel_debugger.bin   → 404 since v2.x
+  //   GoldHEN_Cheat_Repository releases              → never existed
+  //
+  // We do NOT add 7z extraction support just for this — the fetcher
+  // already handles .zip via AdmZip but pulling in a 7z dep for one
+  // archive would be a lot of weight, and the bundled `.bin` files
+  // change identity from release to release anyway (so even a "latest
+  // .7z" pin would still need manual curation each cycle).
+  //
+  // PS4 users instead pick up the latest GoldHEN .7z from
+  //   https://github.com/GoldHEN/GoldHEN/releases
+  // unzip it locally, then upload the .bin payloads they need through
+  // the regular Payloads → Upload UI. The Downloader tab also accepts
+  // a direct GitHub release URL (incl. .7z if extracted client-side).
   // ===========================================================================
-  {
-    filename: 'goldhen.bin',
-    url: 'https://github.com/GoldHEN/GoldHEN/releases/latest/download/goldhen.bin',
-    tag: 'community',
-    console_type: 'ps4',
-    port: 9020,
-    description: 'PS4 GoldHEN payload (modern FW 5.05–11.00)',
-  },
-  {
-    filename: 'ftp_server.bin',
-    url: 'https://github.com/GoldHEN/GoldHEN_Cheat_Repository/releases/latest/download/ftp_server.bin',
-    tag: 'community',
-    console_type: 'ps4',
-    port: 9020,
-    description: 'PS4 GoldHEN FTP server (listens on :2121 after load)',
-  },
-  {
-    filename: 'kernel_debugger.bin',
-    url: 'https://github.com/GoldHEN/GoldHEN/releases/latest/download/kernel_debugger.bin',
-    tag: 'community',
-    console_type: 'ps4',
-    port: 9020,
-    description: 'PS4 Kernel debugger helper',
-  },
 ];
