@@ -229,7 +229,14 @@ export async function ensureDefaultPayloads({ force = false } = {}) {
       const r = await downloadEntry(entry);
       summary.added.push({ filename: entry.filename, size: r.size });
     } catch (e) {
-      log('error', `Default payload ${entry.filename} failed: ${e.message}`);
+      // Default-payload download failures are not fatal — the upstream
+      // GitHub release may have been retagged, deleted or rate-limited,
+      // and the user can still upload the file by hand. Log as `warn`
+      // (not `error`) so a transient 404 doesn't pollute the "Errors"
+      // filter in the log viewer with permanent noise on every boot.
+      const msg = `Default payload ${entry.filename} unavailable: ${e.message}`;
+      if (/HTTP 4\d\d/.test(e.message)) log('warn', msg);
+      else log('error', msg);
       summary.failed.push({ filename: entry.filename, error: e.message });
     }
   }
