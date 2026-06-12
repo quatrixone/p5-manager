@@ -1,7 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import Modal from './Modal';
-
-const API = '/api';
+import { api, apiSafe } from '../../lib/api.js';
 
 // Lightweight folder-only browser used as a modal picker by the
 // Downloader and Convert tabs. Talks to the same /convert/local/browse
@@ -55,14 +54,15 @@ export default function FolderPickerModal({
 
   useEffect(() => {
     if (!open) return;
-    fetch(`${API}/convert/local/roots`).then(r => r.json()).then(d => {
+    (async () => {
+      const d = await apiSafe.get('/convert/local/roots');
+      if (!d) return;
       setRoots(d.roots || []);
-      // Fallback when no initialPath was provided.
       if (!path && d.roots?.length) {
         setPath(d.roots[0]);
         setPathInput(d.roots[0]);
       }
-    }).catch(() => {});
+    })();
   }, [open]);
 
   const browse = useCallback(async (p) => {
@@ -70,23 +70,14 @@ export default function FolderPickerModal({
     setLoading(true);
     setError(null);
     try {
-      const r = await fetch(`${API}/convert/local/browse`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: p }),
-      });
-      const d = await r.json();
-      if (!r.ok) {
-        setError(d.error || 'Browse failed');
-        setEntries([]);
-        return;
-      }
+      const d = await api.post('/convert/local/browse', { path: p });
       setPath(d.path);
       setPathInput(d.path);
       setEntries(d.files || []);
       setParent(d.parent);
     } catch (e) {
-      setError(e.message);
+      setError(e.data?.error || e.message || 'Browse failed');
+      setEntries([]);
     } finally {
       setLoading(false);
     }
@@ -108,29 +99,15 @@ export default function FolderPickerModal({
   const createFolder = async () => {
     const name = newName.trim();
     if (!name) return;
-    // Reuse /local/move's create-directory side effect would be ugly;
-    // there's no dedicated mkdir endpoint, so we piggy-back on
-    // /downloader/start's behaviour (creates dest dir recursively) by
-    // ... no, that downloads. Cleaner: synthesise an empty file move?
-    // No - simplest is to add a dedicated mkdir, but to avoid backend
-    // churn we just create the dir via /local/copy with a self-target
-    // — also ugly. Best move: use a *new* lightweight endpoint. Since
-    // adding it is one line, we call /convert/local/mkdir and rely on
-    // the matching backend route added alongside this component.
+    // Dedicated /convert/local/mkdir endpoint; backend creates intermediate dirs recursively.
     try {
-      const r = await fetch(`${API}/convert/local/mkdir`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          path: path === '/' ? `/${name}` : `${path.replace(/\/$/, '')}/${name}`,
-        }),
+      await api.post('/convert/local/mkdir', {
+        path: path === '/' ? `/${name}` : `${path.replace(/\/$/, '')}/${name}`,
       });
-      const d = await r.json();
-      if (!r.ok) throw new Error(d.error || 'mkdir failed');
       setNewName('');
       browse(path);
     } catch (e) {
-      setError(e.message);
+      setError(e.data?.error || e.message || 'mkdir failed');
     }
   };
 

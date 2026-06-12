@@ -1,8 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { usePlatform, platformMatches } from '../contexts/PlatformContext';
 import FolderPickerModal from './UI/FolderPickerModal';
-
-const API = '/api';
+import { api, apiSafe } from '../lib/api.js';
 
 // Compact 📁 button rendered next to every local-path input. Lifted out
 // of AutoloadBuilder so its identity is stable across renders (otherwise
@@ -78,28 +77,17 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
   };
 
   const fetchSequences = async () => {
-    try {
-      const res = await fetch(`${API}/sequences`);
-      const data = await res.json();
-      setSequences(data);
-    } catch (err) {
-      console.error('Failed to fetch sequences:', err);
-    }
+    const data = await apiSafe.get('/sequences');
+    if (Array.isArray(data)) setSequences(data);
   };
 
   const fetchInputScripts = async () => {
-    try {
-      const [userRes, builtinRes] = await Promise.all([
-        fetch(`${API}/input-scripts`),
-        fetch(`${API}/input-scripts/builtin`),
-      ]);
-      const userData = await userRes.json();
-      const builtinData = builtinRes.ok ? await builtinRes.json() : [];
-      setInputScripts(Array.isArray(userData) ? userData : []);
-      setBuiltinInputScripts(Array.isArray(builtinData) ? builtinData : []);
-    } catch (err) {
-      console.error('Failed to fetch input scripts:', err);
-    }
+    const [userData, builtinData] = await Promise.all([
+      apiSafe.get('/input-scripts'),
+      apiSafe.get('/input-scripts/builtin'),
+    ]);
+    setInputScripts(Array.isArray(userData) ? userData : []);
+    setBuiltinInputScripts(Array.isArray(builtinData) ? builtinData : []);
   };
 
   // Lookup helper: built-in scripts have string ids like "builtin:restart",
@@ -116,13 +104,8 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
   };
 
   const fetchTemplates = async () => {
-    try {
-      const res = await fetch(`${API}/sequences/templates/list`);
-      const data = await res.json();
-      setTemplates(Array.isArray(data) ? data : []);
-    } catch (err) {
-      console.error('Failed to fetch templates:', err);
-    }
+    const data = await apiSafe.get('/sequences/templates/list');
+    setTemplates(Array.isArray(data) ? data : []);
   };
 
   useEffect(() => {
@@ -372,18 +355,13 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
       return;
     }
     try {
-      const res = await fetch(`${API}/sequences`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          profileId: selectedProfile || null,
-          name: sequenceName,
-          steps,
-          scheduleCron: buildCron() || null,
-          scheduleEnabled: scheduleType !== 'none' && scheduleEnabled
-        })
+      const data = await api.post('/sequences', {
+        profileId: selectedProfile || null,
+        name: sequenceName,
+        steps,
+        scheduleCron: buildCron() || null,
+        scheduleEnabled: scheduleType !== 'none' && scheduleEnabled,
       });
-      const data = await res.json();
       if (data.success) {
         onNotification('Sequence saved', 'success');
         fetchSequences();
@@ -404,18 +382,13 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
       return;
     }
     try {
-      const res = await fetch(`${API}/sequences/${editSequence.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: sequenceName,
-          steps,
-          profileId: selectedProfile || null,
-          scheduleCron: buildCron() || null,
-          scheduleEnabled: scheduleType !== 'none' && scheduleEnabled
-        })
+      const data = await api.put(`/sequences/${editSequence.id}`, {
+        name: sequenceName,
+        steps,
+        profileId: selectedProfile || null,
+        scheduleCron: buildCron() || null,
+        scheduleEnabled: scheduleType !== 'none' && scheduleEnabled,
       });
-      const data = await res.json();
       if (data.success) {
         onNotification('Sequence updated', 'success');
         fetchSequences();
@@ -431,7 +404,7 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
   const deleteSequence = async (id) => {
     if (!confirm('Delete this sequence?')) return;
     try {
-      await fetch(`${API}/sequences/${id}`, { method: 'DELETE' });
+      await api.del(`/sequences/${id}`);
       onNotification('Sequence deleted', 'success');
       fetchSequences();
     } catch (err) {
@@ -441,13 +414,9 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
 
   const runSequence = async (id) => {
     try {
-      const res = await fetch(`${API}/sequences/${id}/run`, { method: 'POST' });
-      const data = await res.json();
-      if (data.success) {
-        onNotification(data.message, 'success');
-      } else {
-        onNotification(data.error, 'error');
-      }
+      const data = await api.post(`/sequences/${id}/run`);
+      if (data.success) onNotification(data.message, 'success');
+      else onNotification(data.error, 'error');
     } catch (err) {
       onNotification(err.message, 'error');
     }

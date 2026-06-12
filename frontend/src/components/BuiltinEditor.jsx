@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState, useCallback } from 'react';
-
-const API = '/api';
+import { api } from '../lib/api.js';
 
 // Hidden editor for /frontend/builtin/*.js. Reached via URL hash (#builtin)
 // — intentionally absent from the main navigation. See App.jsx for the
@@ -29,9 +28,7 @@ function BuiltinEditor({ onClose, onNotification }) {
     setLoading(true);
     setError('');
     try {
-      const res = await fetch(`${API}/builtin/files/${encodeURIComponent(name)}`);
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      const data = await api.get(`/builtin/files/${encodeURIComponent(name)}`);
       setContent(data.content);
       setDiskContent(data.content);
       setMtime(data.mtime);
@@ -44,9 +41,7 @@ function BuiltinEditor({ onClose, onNotification }) {
 
   const refreshIndex = useCallback(async (alsoLoadFirst = false) => {
     try {
-      const res = await fetch(`${API}/builtin/files`);
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      const data = await api.get('/builtin/files');
       setFiles(data.files || []);
       setDir(data.dir || '');
       if (alsoLoadFirst && data.files?.length && !selected) {
@@ -64,13 +59,7 @@ function BuiltinEditor({ onClose, onNotification }) {
     setSaving(true);
     setError('');
     try {
-      const res = await fetch(`${API}/builtin/files/${encodeURIComponent(selected)}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      const data = await api.put(`/builtin/files/${encodeURIComponent(selected)}`, { content });
       setDiskContent(content);
       setMtime(data.mtime);
       toast(`Saved ${selected}`, 'success');
@@ -93,11 +82,7 @@ function BuiltinEditor({ onClose, onNotification }) {
     if (!selected) return;
     if (!window.confirm(`Restore previous version of ${selected} from .bak?`)) return;
     try {
-      const res = await fetch(`${API}/builtin/files/${encodeURIComponent(selected)}/restore-backup`, {
-        method: 'POST',
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      await api.post(`/builtin/files/${encodeURIComponent(selected)}/restore-backup`);
       toast(`Restored ${selected} from backup`, 'success');
       await loadFile(selected);
       refreshIndex();

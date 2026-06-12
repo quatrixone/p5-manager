@@ -1,6 +1,5 @@
 import { useState, useEffect } from 'react';
-
-const API = '/api';
+import { apiSafe, putSetting } from '../lib/api.js';
 
 const DEFAULT_PAYLOADS = [
   { name: 'Kernel Logger (klogsrv)', url: 'https://github.com/ps5-payload-dev/klogsrv/releases/download/v0.8/klogsrv-ps5.elf' },
@@ -17,38 +16,20 @@ function Config() {
   const [message, setMessage] = useState('');
 
   useEffect(() => {
-    fetchSettings();
-  }, []);
-
-  const fetchSettings = async () => {
-    try {
-      const res = await fetch(`${API}/settings`);
-      const data = await res.json();
+    (async () => {
+      const data = await apiSafe.get('/settings');
+      if (!data) return;
       if (data.default_subnet) setDefaultSubnet(data.default_subnet);
-      if (data.default_payloads) {
-        setPayloadUrls(JSON.parse(data.default_payloads));
-      } else {
-        setPayloadUrls(DEFAULT_PAYLOADS);
-      }
-    } catch (err) {
-      console.error('Failed to fetch settings:', err);
-    }
-  };
+      setPayloadUrls(data.default_payloads ? JSON.parse(data.default_payloads) : DEFAULT_PAYLOADS);
+    })();
+  }, []);
 
   const saveSettings = async () => {
     setLoading(true);
     setMessage('');
     try {
-      await fetch(`${API}/settings`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ key: 'default_subnet', value: defaultSubnet })
-      });
-      await fetch(`${API}/settings`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ key: 'default_payloads', value: JSON.stringify(payloadUrls) })
-      });
+      await putSetting('default_subnet', defaultSubnet);
+      await putSetting('default_payloads', JSON.stringify(payloadUrls));
       setMessage('Settings saved!');
     } catch (err) {
       setMessage('Failed to save: ' + err.message);

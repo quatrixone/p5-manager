@@ -1,7 +1,6 @@
 import { useState, useCallback } from 'react';
 import useVisiblePolling from '../hooks/useVisiblePolling';
-
-const API = '/api';
+import { api, apiSafe } from '../lib/api.js';
 
 function LogServer({ profiles }) {
   const [status, setStatus] = useState({ running: false, port: 8080 });
@@ -9,14 +8,10 @@ function LogServer({ profiles }) {
   const [port, setPort] = useState('8080');
 
   const fetchStatus = useCallback(async () => {
-    try {
-      const res = await fetch(`${API}/logserver/status`);
-      const data = await res.json();
-      setStatus(data);
-      setLogs(data.logs || []);
-    } catch (err) {
-      console.error('Failed to fetch log server status:', err);
-    }
+    const data = await apiSafe.get('/logserver/status');
+    if (!data) return;
+    setStatus(data);
+    setLogs(data.logs || []);
   }, []);
 
   // 3 s while the LogServer tab is visible. The previous 1 s poll fired
@@ -28,52 +23,34 @@ function LogServer({ profiles }) {
 
   const handleStart = async () => {
     try {
-      // Start log server first
-      const res = await fetch(`${API}/logserver/start`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ port: parseInt(port) })
+      const data = await api.post('/logserver/start', { port: parseInt(port) });
+      if (!data.success) return;
+      fetchStatus();
+
+      // Get PS5 IP from profile and send setlogserver.lua
+      const profileIp = getProfileIp();
+      if (!profileIp) return;
+
+      const setlogserverRes = await fetch('https://raw.githubusercontent.com/Gezine/Luac0re/main/payloads/setlogserver.lua');
+      const setlogserverContent = await setlogserverRes.text();
+      // Replace LOG_SERVER IP with actual PS5 IP (server IP for receiving logs)
+      const serverIp = window.location.hostname || '127.0.0.1';
+      const modifiedContent = setlogserverContent.replace(/LOG_SERVER = ".*?"/g, `LOG_SERVER = "${serverIp}"`);
+
+      await apiSafe.post('/payloads/send-raw', {
+        ip: profileIp,
+        port: 9026,
+        name: 'setlogserver.lua',
+        data: btoa(modifiedContent),
       });
-      const data = await res.json();
-      if (data.success) {
-        fetchStatus();
-
-        // Get PS5 IP from profile and send setlogserver.lua
-        const profileIp = getProfileIp();
-        if (profileIp) {
-          // Fetch setlogserver.lua content from GitHub and send it
-          const setlogserverRes = await fetch('https://raw.githubusercontent.com/Gezine/Luac0re/main/payloads/setlogserver.lua');
-          const setlogserverContent = await setlogserverRes.text();
-
-          // Replace LOG_SERVER IP with actual PS5 IP (server IP for receiving logs)
-          const serverIp = window.location.hostname || '127.0.0.1';
-          const modifiedContent = setlogserverContent.replace(/LOG_SERVER = ".*?"/g, `LOG_SERVER = "${serverIp}"`);
-
-          // Send to PS5
-          await fetch(`${API}/payloads/send-raw`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              ip: profileIp,
-              port: 9026,
-              name: 'setlogserver.lua',
-              data: btoa(modifiedContent)
-            })
-          });
-        }
-      }
     } catch (err) {
       console.error('Failed to start log server:', err);
     }
   };
 
   const handleStop = async () => {
-    try {
-      await fetch(`${API}/logserver/stop`, { method: 'POST' });
-      fetchStatus();
-    } catch (err) {
-      console.error('Failed to stop log server:', err);
-    }
+    await apiSafe.post('/logserver/stop');
+    fetchStatus();
   };
 
   const getProfileIp = () => {

@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { api, apiSafe } from '../lib/api.js';
 
 const API = '/api/remoteplay';
+// Paths used with `api.*` are relative to /api, so the Remote Play sidecar's
+// routes are prefixed once here instead of building them inline.
+const RP = '/remoteplay';
 
 const PS5_BUTTONS = [
   { id: 'cross', label: 'X', color: 'var(--accent)' },
@@ -378,25 +382,20 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
   // instead of the SQL-backed PUT endpoint. The dropdown shows them with a
   // 🔧 prefix so the user can clearly tell them apart.
   const fetchExistingScripts = useCallback(async () => {
-    try {
-      const [userR, builtinR] = await Promise.all([
-        fetch('/api/input-scripts'),
-        fetch('/api/input-scripts/builtin'),
-      ]);
-      const userArr = userR.ok ? await userR.json() : [];
-      const builtinArr = builtinR.ok ? await builtinR.json() : [];
-      const merged = [
-        ...(Array.isArray(userArr) ? userArr.map(s => ({
-          id: String(s.id), name: s.name, script: s.script || '', kind: 'user',
-        })) : []),
-        ...(Array.isArray(builtinArr) ? builtinArr.map(s => ({
-          id: s.id, name: s.name, script: s.script || '', kind: 'builtin',
-        })) : []),
-      ];
-      setRecExistingScripts(merged);
-      return merged;
-    } catch { /* network blip */ }
-    return [];
+    const [userArr, builtinArr] = await Promise.all([
+      apiSafe.get('/input-scripts'),
+      apiSafe.get('/input-scripts/builtin'),
+    ]);
+    const merged = [
+      ...(Array.isArray(userArr) ? userArr.map(s => ({
+        id: String(s.id), name: s.name, script: s.script || '', kind: 'user',
+      })) : []),
+      ...(Array.isArray(builtinArr) ? builtinArr.map(s => ({
+        id: s.id, name: s.name, script: s.script || '', kind: 'builtin',
+      })) : []),
+    ];
+    setRecExistingScripts(merged);
+    return merged;
   }, []);
 
   // Map internal button id → script DSL identifier.
@@ -514,39 +513,18 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
     try {
       // Three save paths: built-in entry, existing user entry, or brand-new.
       if (recAppendId.startsWith('builtin:')) {
-        const pr = await fetch(`/api/input-scripts/builtin/${encodeURIComponent(recAppendId)}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ script: body }),
-        });
-        if (!pr.ok) {
-          const errBody = await pr.json().catch(() => ({}));
-          throw new Error(errBody.error || `HTTP ${pr.status} updating built-in script`);
-        }
+        await api.put(`/input-scripts/builtin/${encodeURIComponent(recAppendId)}`, { script: body });
         const dest = recExistingScripts.find(s => s.id === recAppendId);
         onNotification?.(`Updated built-in "${dest?.name || recAppendId}"`, 'success');
       } else if (recAppendId) {
         // User script: PUT replaces both name (unchanged) and script body.
         const dest = recExistingScripts.find(s => s.id === recAppendId);
-        const r = await fetch(`/api/input-scripts/${encodeURIComponent(recAppendId)}`);
-        if (!r.ok) throw new Error(`HTTP ${r.status} fetching script`);
-        const existing = await r.json();
-        const pr = await fetch(`/api/input-scripts/${encodeURIComponent(recAppendId)}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: existing.name, script: body }),
-        });
-        if (!pr.ok) throw new Error(`HTTP ${pr.status} updating script`);
+        const existing = await api.get(`/input-scripts/${encodeURIComponent(recAppendId)}`);
+        await api.put(`/input-scripts/${encodeURIComponent(recAppendId)}`, { name: existing.name, script: body });
         onNotification?.(`Updated "${dest?.name || existing.name}"`, 'success');
       } else {
         const name = (recNewName || '').trim() || `Recording ${new Date().toLocaleString()}`;
-        const pr = await fetch('/api/input-scripts', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, script: body }),
-        });
-        if (!pr.ok) throw new Error(`HTTP ${pr.status} creating script`);
-        const created = await pr.json();
+        const created = await api.post('/input-scripts', { name, script: body });
         onNotification?.(`Saved as "${name}"`, 'success');
         // Stick on the new script so the next recording can append to it.
         if (created && created.id) setRecAppendId(String(created.id));
@@ -592,7 +570,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
   }, [profiles, profileId]);
 
   useEffect(() => {
-    fetch(`${API}/health`).then(r => r.json()).then(setHealth).catch(() => setHealth({ success: false, error: 'sidecar offline' }));
+    apiSafe.get(`${RP}/health`).then(d => setHealth(d || { success: false, error: 'sidecar offline' }));
   }, []);
 
   // DDP discover - returns whether the PS5 is on/standby/unreachable plus
@@ -603,7 +581,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
     if (!profile?.ip_address) { setPs5State(null); return null; }
     if (!silent) setPs5Busy(true);
     try {
-      const r = await fetch(`${API}/discover?ip=${encodeURIComponent(profile.ip_address)}`).then(r => r.json());
+      const r = await api.get(`${RP}/discover?ip=${encodeURIComponent(profile.ip_address)}`);
       if (r.success) {
         const next = {
           status: r.status || 'Unknown',
@@ -659,7 +637,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
   const startOAuth = async () => {
     setOauthBusy(true);
     try {
-      const r = await fetch(`${API}/oauth/login-url`).then(r => r.json());
+      const r = await api.get(`${RP}/oauth/login-url`);
       if (!r.success) throw new Error(r.error);
       setLoginUrl(r.url);
       window.open(r.url, '_blank', 'noopener');
@@ -675,11 +653,10 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
     if (!profile) { onNotification?.('Pick a profile first', 'warning'); return; }
     setOauthBusy(true);
     try {
-      const r = await fetch(`${API}/oauth/exchange`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ redirect_url: redirectUrl.trim(), profile_id: profile.id }),
-      }).then(r => r.json());
+      const r = await api.post(`${RP}/oauth/exchange`, {
+        redirect_url: redirectUrl.trim(),
+        profile_id: profile.id,
+      });
       if (!r.success) throw new Error(r.error);
       onNotification?.(`Linked PSN account: ${r.online_id || r.account_id}`, 'success');
       setRedirectUrl('');
@@ -719,11 +696,11 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
     }
     setPairBusy(true);
     try {
-      const r = await fetch(`${API}/register`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ip: profile.ip_address, pin: pin.replace(/\D/g, ''), profile_id: profile.id }),
-      }).then(r => r.json());
+      const r = await api.post(`${RP}/register`, {
+        ip: profile.ip_address,
+        pin: pin.replace(/\D/g, ''),
+        profile_id: profile.id,
+      });
       if (!r.success) throw new Error(r.error);
       onNotification?.(`${pairConsoleLabel} paired for Remote Play`, 'success');
       setPin('');
@@ -748,11 +725,10 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
     setAutoPinBusy(true);
     setAutoPinResult(null);
     try {
-      const r = await fetch(`${API}/get-pin`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ip: profile.ip_address, profile_id: profile.id }),
-      }).then(r => r.json());
+      const r = await api.post(`${RP}/get-pin`, {
+        ip: profile.ip_address,
+        profile_id: profile.id,
+      });
 
       if (r.pin) {
         setPin(r.pin.replace(/\s+/g, ''));
@@ -809,11 +785,10 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
     setOffactBusy(true);
     setOffactResult(null);
     try {
-      const r = await fetch(`${API}/activate-account`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ip: profile.ip_address, profile_id: profile.id }),
-      }).then(r => r.json());
+      const r = await api.post(`${RP}/activate-account`, {
+        ip: profile.ip_address,
+        profile_id: profile.id,
+      });
 
       setOffactResult(r);
 
@@ -849,11 +824,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
     if (!profile) return;
     if (!confirm('Forget Remote Play credentials on this profile?')) return;
     try {
-      await fetch(`${API}/forget`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ profile_id: profile.id }),
-      });
+      await api.post(`${RP}/forget`, { profile_id: profile.id });
       profile.rp_user_profile = null;
       onProfilesChanged?.();
       onNotification?.('Forgotten', 'success');
@@ -875,11 +846,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
       'PSN account without re-pairing.'
     )) return;
     try {
-      const r = await fetch(`${API}/forget-account`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ profile_id: profile.id }),
-      }).then(r => r.json());
+      const r = await api.post(`${RP}/forget-account`, { profile_id: profile.id });
       if (!r.success) throw new Error(r.error || 'forget-account failed');
       profile.psn_account_id = null;
       profile.psn_online_id = null;
@@ -918,18 +885,14 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
     userStoppedRef.current = false;
     setSessionState('connecting');
     try {
-      const r = await fetch(`${API}/sessions/start`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ip: profile.ip_address,
-          profile_id: profile.id,
-          enable_video: enableVideo,
-          // Pass the user-chosen resolution. The sidecar normalises it,
-          // so out-of-range values are coerced rather than rejected.
-          resolution: rpResolution,
-        }),
-      }).then(r => r.json());
+      const r = await api.post(`${RP}/sessions/start`, {
+        ip: profile.ip_address,
+        profile_id: profile.id,
+        enable_video: enableVideo,
+        // Pass the user-chosen resolution. The sidecar normalises it,
+        // so out-of-range values are coerced rather than rejected.
+        resolution: rpResolution,
+      });
       if (!r.success) throw new Error(r.error);
       setSessionId(r.session_id);
       setSessionState('connected');
@@ -978,13 +941,9 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
     userStoppedRef.current = true;
     try {
       if (sessionId) {
-        await fetch(`${API}/sessions/${encodeURIComponent(sessionId)}/stop`, { method: 'POST' });
+        await apiSafe.post(`${RP}/sessions/${encodeURIComponent(sessionId)}/stop`);
       } else if (profile?.ip_address) {
-        await fetch(`${API}/quick-stop`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ip: profile.ip_address }),
-        });
+        await apiSafe.post(`${RP}/quick-stop`, { ip: profile.ip_address });
       }
       onNotification?.('Session stopped', 'info');
     } catch (_) {}
@@ -1008,20 +967,16 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
     if (!profile?.ip_address) return;
     setWakeBusy(true);
     try {
-      const r = await fetch(`${API}/prewarm`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ip: profile.ip_address,
-          profile_id: profile.id,
-          // Pre-warm with the same defaults the Start button will use, so
-          // the warm cache and a fresh start match — otherwise resuming
-          // from a 360p warm cache while the picker says 1080p surprises
-          // the user. Wake is always input-only — no video decoder
-          // attached so the receiver doesn't burn CPU while parked.
-          resolution: rpResolution,
-        }),
-      }).then(r => r.json());
+      const r = await api.post(`${RP}/prewarm`, {
+        ip: profile.ip_address,
+        profile_id: profile.id,
+        // Pre-warm with the same defaults the Start button will use, so
+        // the warm cache and a fresh start match — otherwise resuming
+        // from a 360p warm cache while the picker says 1080p surprises
+        // the user. Wake is always input-only — no video decoder
+        // attached so the receiver doesn't burn CPU while parked.
+        resolution: rpResolution,
+      });
       if (!r.success) throw new Error(r.error);
       if (r.already_live) {
         onNotification?.('Session is already live — open it from Start session', 'info');
@@ -1056,11 +1011,10 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
     if (!confirm(`Put ${profile.name} (${profile.ip_address}) into rest mode?`)) return;
     setStandbyBusy(true);
     try {
-      const r = await fetch(`${API}/standby`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ip: profile.ip_address, profile_id: profile.id }),
-      }).then(r => r.json());
+      const r = await api.post(`${RP}/standby`, {
+        ip: profile.ip_address,
+        profile_id: profile.id,
+      });
       if (!r.success) throw new Error(r.error);
       // Standby disconnects our session as a side-effect; reflect it locally.
       setSessionId('');
@@ -1084,11 +1038,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
     if (!confirm('Force-reset will clear ALL Remote Play sessions for this PS5 on the sidecar. If the PS5 still refuses to connect afterwards, put it into Rest Mode and back on. Continue?')) return;
     userStoppedRef.current = true;
     try {
-      const r = await fetch(`${API}/quick-stop`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ip: profile.ip_address, all: true }),
-      }).then(r => r.json());
+      const r = await api.post(`${RP}/quick-stop`, { ip: profile.ip_address, all: true });
       onNotification?.(
         `Reset: ${r.cleared_sidecar_sessions?.length || 0} session(s) cleared`,
         'success',
@@ -1121,7 +1071,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
       // the final state.
       if (state === 'connecting') return;
       try {
-        const r = await fetch(`${API}/quick-status?ip=${encodeURIComponent(profile.ip_address)}`).then(r => r.json());
+        const r = await api.get(`${RP}/quick-status?ip=${encodeURIComponent(profile.ip_address)}`);
         if (cancelled) return;
         if (!r.success) return;
 
@@ -1200,11 +1150,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
       setRecEventCount(recBufferRef.current.length);
     }
     try {
-      await fetch(`${API}/sessions/${encodeURIComponent(sessionId)}/input`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
+      await api.post(`${RP}/sessions/${encodeURIComponent(sessionId)}/input`, payload);
     } catch (e) {
       onNotification?.(`Input dropped: ${e.message}`, 'warning');
     }
@@ -1249,10 +1195,9 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
       setRecEventCount(recBufferRef.current.length);
     }
     try {
-      await fetch(`${API}/sessions/${encodeURIComponent(sessionId)}/shake`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ duration_ms: durationMs, intensity }),
+      await api.post(`${RP}/sessions/${encodeURIComponent(sessionId)}/shake`, {
+        duration_ms: durationMs,
+        intensity,
       });
     } catch (e) {
       onNotification?.(`Shake dropped: ${e.message}`, 'warning');
@@ -1272,11 +1217,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
       const body = { button: 'touchpad', action: 'tap', duration_ms: durationMs };
       if (x !== null) body.touch_x = x;
       if (y !== null) body.touch_y = y;
-      await fetch(`${API}/sessions/${encodeURIComponent(sessionId)}/input`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
+      await api.post(`${RP}/sessions/${encodeURIComponent(sessionId)}/input`, body);
     } catch (e) {
       onNotification?.(`Touchpad dropped: ${e.message}`, 'warning');
     }

@@ -4,8 +4,8 @@ import Downloader from './Downloader';
 import Queue from './Queue';
 import FileBrowser from './FileBrowser';
 import useVisiblePolling from '../hooks/useVisiblePolling';
+import { apiSafe } from '../lib/api.js';
 
-const API = '/api';
 const STORAGE_TAB = 'fileops.tab';
 
 // Counts of "in flight" items per queue type. Polled centrally here so each
@@ -20,23 +20,20 @@ function useQueueCounts() {
   });
 
   const refresh = useCallback(async () => {
-    try {
-      const [qRes, dlRes] = await Promise.all([
-        fetch(`${API}/convert/queue/all`),
-        fetch(`${API}/downloader`),
-      ]);
-      const q = qRes.ok ? await qRes.json() : {};
-      const dl = dlRes.ok ? await dlRes.json() : [];
-      const isActive = (s) => ['queued', 'running', 'starting', 'staging', 'pushing', 'unpacking'].includes(s);
-      const c = {
-        extract: (q?.extract?.items || []).filter(i => isActive(i.status)).length,
-        convert: (q?.convert?.items || []).filter(i => isActive(i.status)).length,
-        upload: (q?.upload?.items || []).filter(i => isActive(i.status)).length,
-        download: (Array.isArray(dl) ? dl : []).filter(j => isActive(j.status)).length,
-      };
-      c.total = c.extract + c.convert + c.upload + c.download;
-      setCounts(c);
-    } catch (_) { /* keep last good value */ }
+    const [q, dl] = await Promise.all([
+      apiSafe.get('/convert/queue/all'),
+      apiSafe.get('/downloader'),
+    ]);
+    if (!q && !dl) return; // network blip — keep last good values
+    const isActive = (s) => ['queued', 'running', 'starting', 'staging', 'pushing', 'unpacking'].includes(s);
+    const c = {
+      extract: (q?.extract?.items || []).filter(i => isActive(i.status)).length,
+      convert: (q?.convert?.items || []).filter(i => isActive(i.status)).length,
+      upload: (q?.upload?.items || []).filter(i => isActive(i.status)).length,
+      download: (Array.isArray(dl) ? dl : []).filter(j => isActive(j.status)).length,
+    };
+    c.total = c.extract + c.convert + c.upload + c.download;
+    setCounts(c);
   }, []);
 
   // 4 s while the File Ops shell is visible. The tab badges only need to

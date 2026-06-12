@@ -4,6 +4,7 @@ import EmptyState from './UI/EmptyState';
 import Badge from './UI/Badge';
 import ProgressBar from './UI/ProgressBar';
 import { usePlatform, platformMatches } from '../contexts/PlatformContext';
+import { api } from '../lib/api.js';
 
 function PayloadList({ payloads, profiles, onFetchUrl, onSend, onDelete, onUpdate, onUpload, onRestoreDefaults }) {
   const { mode } = usePlatform();
@@ -31,8 +32,7 @@ function PayloadList({ payloads, profiles, onFetchUrl, onSend, onDelete, onUpdat
     if (!payload.source_url || !payload.source_url.includes('github.com')) return;
     setCheckingId(payload.id);
     try {
-      const res = await fetch(`/api/payloads/${payload.id}/check-update`);
-      const data = await res.json();
+      const data = await api.get(`/payloads/${payload.id}/check-update`);
       setUpdateInfo(prev => ({
         ...prev,
         [payload.id]: {
@@ -40,8 +40,8 @@ function PayloadList({ payloads, profiles, onFetchUrl, onSend, onDelete, onUpdat
           currentVersion: data.currentVersion || payload.version,
           newVersion: data.newVersion || null,
           updateAvailable: data.updateAvailable || false,
-          error: data.error || null
-        }
+          error: data.error || null,
+        },
       }));
     } catch (err) {
       setUpdateInfo(prev => ({ ...prev, [payload.id]: { checked: true, error: err.message } }));
@@ -58,8 +58,7 @@ function PayloadList({ payloads, profiles, onFetchUrl, onSend, onDelete, onUpdat
   const handleUpdate = async (id) => {
     setUpdatingId(id);
     try {
-      const res = await fetch(`/api/payloads/${id}/update`, { method: 'PUT' });
-      const data = await res.json();
+      const data = await api.put(`/payloads/${id}/update`);
       if (data.success && data.newVersion) {
         setUpdateInfo(prev => ({
           ...prev,

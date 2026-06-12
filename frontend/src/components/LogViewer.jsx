@@ -1,8 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import Badge from './UI/Badge';
 import useVisiblePolling from '../hooks/useVisiblePolling';
-
-const API = '/api';
+import { api, apiSafe } from '../lib/api.js';
 
 function LogViewer({ logs: systemLogs, onRefresh, profiles }) {
   const [activeTab, setActiveTab] = useState('system');
@@ -18,27 +17,19 @@ function LogViewer({ logs: systemLogs, onRefresh, profiles }) {
   const logContainerRef = useRef(null);
 
   const fetchLuaStatus = async () => {
-    try {
-      const res = await fetch(`${API}/logserver/status`);
-      const data = await res.json();
-      setLuaServerStatus(data);
-      setLuaLogs(data.logs || []);
-      updatePs5Logs(data.logs || [], 'lua');
-    } catch (err) {
-      console.error('Failed to fetch log server status:', err);
-    }
+    const data = await apiSafe.get('/logserver/status');
+    if (!data) return;
+    setLuaServerStatus(data);
+    setLuaLogs(data.logs || []);
+    updatePs5Logs(data.logs || [], 'lua');
   };
 
   const fetchKernelStatus = async () => {
-    try {
-      const res = await fetch(`${API}/kernellog/status`);
-      const data = await res.json();
-      setKernelServerStatus(data);
-      setKernelLogs(data.logs || []);
-      updatePs5Logs(data.logs || [], 'kernel');
-    } catch (err) {
-      console.error('Failed to fetch kernel log server status:', err);
-    }
+    const data = await apiSafe.get('/kernellog/status');
+    if (!data) return;
+    setKernelServerStatus(data);
+    setKernelLogs(data.logs || []);
+    updatePs5Logs(data.logs || [], 'kernel');
   };
 
   const updatePs5Logs = (newLogs, source) => {
@@ -81,40 +72,27 @@ function LogViewer({ logs: systemLogs, onRefresh, profiles }) {
 
   const handleStartLuaServer = async () => {
     try {
-      const res = await fetch(`${API}/logserver/start`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ port: parseInt(port) })
+      const data = await api.post('/logserver/start', { port: parseInt(port) });
+      if (!data.success) return;
+      fetchLuaStatus();
+      const profileIp = getProfileIp();
+      if (!profileIp) return;
+      const setlogserverRes = await fetch('https://raw.githubusercontent.com/Gezine/Luac0re/main/payloads/setlogserver.lua');
+      const setlogserverContent = await setlogserverRes.text();
+      const serverIp = window.location.hostname || '127.0.0.1';
+      const modifiedContent = setlogserverContent.replace(/LOG_SERVER = ".*?"/g, `LOG_SERVER = "${serverIp}"`);
+      await apiSafe.post('/payloads/send-raw', {
+        ip: profileIp, port: 9026, name: 'setlogserver.lua', data: btoa(modifiedContent),
       });
-      const data = await res.json();
-      if (data.success) {
-        fetchLuaStatus();
-        const profileIp = getProfileIp();
-        if (profileIp) {
-          const setlogserverRes = await fetch('https://raw.githubusercontent.com/Gezine/Luac0re/main/payloads/setlogserver.lua');
-          const setlogserverContent = await setlogserverRes.text();
-          const serverIp = window.location.hostname || '127.0.0.1';
-          const modifiedContent = setlogserverContent.replace(/LOG_SERVER = ".*?"/g, `LOG_SERVER = "${serverIp}"`);
-          await fetch(`${API}/payloads/send-raw`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ip: profileIp, port: 9026, name: 'setlogserver.lua', data: btoa(modifiedContent) })
-          });
-          setPayloadsSent(prev => ({ ...prev, lua: true }));
-        }
-      }
+      setPayloadsSent(prev => ({ ...prev, lua: true }));
     } catch (err) {
       console.error('Failed to start log server:', err);
     }
   };
 
   const handleStopLuaServer = async () => {
-    try {
-      await fetch(`${API}/logserver/stop`, { method: 'POST' });
-      fetchLuaStatus();
-    } catch (err) {
-      console.error('Failed to stop log server:', err);
-    }
+    await apiSafe.post('/logserver/stop');
+    fetchLuaStatus();
   };
 
   // Kernel log flow (correct topology for ps5-payload-dev/klogsrv):
@@ -137,22 +115,14 @@ function LogViewer({ logs: systemLogs, onRefresh, profiles }) {
 
       // Locate the managed klogsrv-ps5.elf payload (auto-downloaded by the
       // backend on boot) and push it via the standard send endpoint.
-      const payloadsRes = await fetch(`${API}/payloads`);
-      const payloads = await payloadsRes.json();
-      const klogPayload = payloads.find(p =>
+      const payloads = await api.get('/payloads');
+      const klogPayload = (payloads || []).find(p =>
         (p.name || '').toLowerCase().includes('klogsrv') ||
         (p.filename || '').toLowerCase().includes('klogsrv'),
       );
-      if (!klogPayload) {
-        throw new Error('klogsrv payload not found - check Payloads tab');
-      }
+      if (!klogPayload) throw new Error('klogsrv payload not found - check Payloads tab');
 
-      const sendRes = await fetch(`${API}/payloads/send/${klogPayload.id}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ip: profileIp }),
-      });
-      const sendData = await sendRes.json();
+      const sendData = await api.post(`/payloads/send/${klogPayload.id}`, { ip: profileIp });
       if (!sendData.success) throw new Error(sendData.error || 'send failed');
       setPayloadsSent(prev => ({ ...prev, kernel: true }));
 
@@ -161,12 +131,7 @@ function LogViewer({ logs: systemLogs, onRefresh, profiles }) {
       // a guaranteed "klogsrv still binding" miss.
       await new Promise(r => setTimeout(r, 800));
 
-      const connRes = await fetch(`${API}/kernellog/connect`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ip: profileIp, port: 3232 }),
-      });
-      const connData = await connRes.json();
+      const connData = await api.post('/kernellog/connect', { ip: profileIp, port: 3232 });
       if (!connData.success) throw new Error(connData.error || 'connect failed');
       fetchKernelStatus();
     } catch (err) {
@@ -180,20 +145,15 @@ function LogViewer({ logs: systemLogs, onRefresh, profiles }) {
   };
 
   const handleDisconnectKernel = async () => {
-    try {
-      // Disconnect the TCP client to PS5:3232. We also stop the legacy local
-      // server in case it was left running by an older session. Either call
-      // succeeding is enough - we don't fail the UX if one returns an error.
-      await fetch(`${API}/kernellog/disconnect`, { method: 'POST' }).catch(() => {});
-      await fetch(`${API}/kernellog/stop`, { method: 'POST' }).catch(() => {});
-    } catch (err) {
-      console.error('Failed to stop kernel server:', err);
-    } finally {
-      // Always reset local state so the user can press Start again even when
-      // the backend connect failed and the server thinks nothing is running.
-      setPayloadsSent(prev => ({ ...prev, kernel: false }));
-      fetchKernelStatus();
-    }
+    // Disconnect the TCP client to PS5:3232. We also stop the legacy local
+    // server in case it was left running by an older session. Either call
+    // succeeding is enough - we don't fail the UX if one returns an error.
+    await apiSafe.post('/kernellog/disconnect');
+    await apiSafe.post('/kernellog/stop');
+    // Always reset local state so the user can press Start again even when
+    // the backend connect failed and the server thinks nothing is running.
+    setPayloadsSent(prev => ({ ...prev, kernel: false }));
+    fetchKernelStatus();
   };
 
   const filteredSystemLogs = logFilter === 'all'

@@ -8,9 +8,8 @@ import FileOps from './components/FileOps';
 import BuiltinEditor from './components/BuiltinEditor';
 import { PlatformProvider, usePlatform } from './contexts/PlatformContext';
 import useVisiblePolling from './hooks/useVisiblePolling';
+import { api, apiSafe } from './lib/api.js';
 import './styles.css';
-
-const API = '/api';
 
 const tabs = [
   { id: 'payloads', label: 'Payloads', icon: '📦' },
@@ -61,33 +60,18 @@ function App() {
   };
 
   const fetchPayloads = useCallback(async () => {
-    try {
-      const res = await fetch(`${API}/payloads`);
-      const data = await res.json();
-      setPayloads(data);
-    } catch (err) {
-      console.error('Failed to fetch payloads:', err);
-    }
+    const data = await apiSafe.get('/payloads');
+    if (Array.isArray(data)) setPayloads(data);
   }, []);
 
   const fetchProfiles = useCallback(async () => {
-    try {
-      const res = await fetch(`${API}/profiles`);
-      const data = await res.json();
-      setProfiles(data);
-    } catch (err) {
-      console.error('Failed to fetch profiles:', err);
-    }
+    const data = await apiSafe.get('/profiles');
+    if (Array.isArray(data)) setProfiles(data);
   }, []);
 
   const fetchLogs = useCallback(async () => {
-    try {
-      const res = await fetch(`${API}/logs?limit=50`);
-      const data = await res.json();
-      setLogs(data);
-    } catch (err) {
-      console.error('Failed to fetch logs:', err);
-    }
+    const data = await apiSafe.get('/logs?limit=50');
+    if (Array.isArray(data)) setLogs(data);
   }, []);
 
   // One-shot loads on first mount (payloads + profiles); logs use the
@@ -111,12 +95,7 @@ function App() {
 
   const fetchFromGitHub = async (repo, filePath) => {
     try {
-      const res = await fetch(`${API}/payloads/fetch`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ repo, path: filePath })
-      });
-      const data = await res.json();
+      const data = await api.post('/payloads/fetch', { repo, path: filePath });
       if (data.success) {
         showNotification(`Downloaded ${data.downloaded.length} payload(s)`, 'success');
         fetchPayloads();
@@ -131,12 +110,7 @@ function App() {
 
   const fetchFromGitHubUrl = async (url) => {
     try {
-      const res = await fetch(`${API}/payloads/fetch-url`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url })
-      });
-      const data = await res.json();
+      const data = await api.post('/payloads/fetch-url', { url });
       if (data.success) {
         showNotification(`Downloaded ${data.downloaded.length} payload(s)`, 'success');
         fetchPayloads();
@@ -159,12 +133,7 @@ function App() {
       return;
     }
     try {
-      const res = await fetch(`${API}/payloads/send/${payloadId}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ip: profile.ip_address, port: profile.port })
-      });
-      const data = await res.json();
+      const data = await api.post(`/payloads/send/${payloadId}`, { ip: profile.ip_address, port: profile.port });
       if (data.success) {
         showNotification(`Payload sent to ${profile.name}`, 'success');
       } else {
@@ -178,24 +147,23 @@ function App() {
 
   const deletePayload = async (id) => {
     try {
-      await fetch(`${API}/payloads/${id}`, { method: 'DELETE' });
+      await api.del(`/payloads/${id}`);
       showNotification('Payload deleted', 'success');
       fetchPayloads();
       fetchLogs();
-          } catch (err) {
+    } catch (err) {
       showNotification(err.message, 'error');
     }
   };
 
   const updatePayload = async (id) => {
     try {
-      const res = await fetch(`${API}/payloads/${id}/update`, { method: 'PUT' });
-      const data = await res.json();
+      const data = await api.put(`/payloads/${id}/update`);
       if (data.success) {
         showNotification('Payload updated', 'success');
         fetchPayloads();
         fetchLogs();
-              } else {
+      } else {
         showNotification(data.error || 'Update failed', 'warning');
       }
     } catch (err) {
@@ -205,8 +173,7 @@ function App() {
 
   const restoreDefaultPayloads = async (force = false) => {
     try {
-      const res = await fetch(`${API}/payloads/defaults/restore${force ? '?force=1' : ''}`, { method: 'POST' });
-      const data = await res.json();
+      const data = await api.post(`/payloads/defaults/restore${force ? '?force=1' : ''}`);
       if (data.success) {
         const a = data.added?.length || 0;
         const s = data.skipped?.length || 0;
@@ -227,12 +194,7 @@ function App() {
       const arrayBuffer = await file.arrayBuffer();
       const base64 = btoa(new Uint8Array(arrayBuffer).reduce((data, byte) => data + String.fromCharCode(byte), ''));
 
-      const res = await fetch(`${API}/payloads/upload`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: file.name, data: base64 })
-      });
-      const data = await res.json();
+      const data = await api.post('/payloads/upload', { name: file.name, data: base64 });
       if (data.success) {
         // ZIP uploads return { zip: true, extracted: [...], skipped: [...] }
         // so the user immediately sees how many payloads landed and how
@@ -259,28 +221,21 @@ function App() {
 
   const createProfile = async (name, ip, mac, consoleType) => {
     try {
-      await fetch(`${API}/profiles`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name,
-          ip_address: ip,
-          mac_address: mac,
-          // consoleType may be 'ps4' | 'ps5' | null/undefined. Backend
-          // normalises invalid values back to NULL = auto-detect, so we
-          // can pass it through verbatim.
-          console_type: consoleType ?? null,
-        })
+      // consoleType may be 'ps4' | 'ps5' | null/undefined. Backend
+      // normalises invalid values back to NULL = auto-detect.
+      await api.post('/profiles', {
+        name,
+        ip_address: ip,
+        mac_address: mac,
+        console_type: consoleType ?? null,
       });
       showNotification('Profile created', 'success');
       fetchProfiles();
       fetchLogs();
-      // If this is the first profile, set it as default
       if (profiles.length === 0) {
-        const res = await fetch(`${API}/profiles`);
-        const allProfiles = await res.json();
-        if (allProfiles.length === 1) {
-          await fetch(`${API}/profiles/${allProfiles[0].id}/set-default`, { method: 'POST' });
+        const allProfiles = await apiSafe.get('/profiles');
+        if (Array.isArray(allProfiles) && allProfiles.length === 1) {
+          await apiSafe.post(`/profiles/${allProfiles[0].id}/set-default`);
           fetchProfiles();
         }
       }
@@ -291,17 +246,13 @@ function App() {
 
   const updateProfile = async (id, name, ip, mac, consoleType) => {
     try {
-      await fetch(`${API}/profiles/${id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name,
-          ip_address: ip,
-          mac_address: mac,
-          // Pass undefined when caller didn't supply one (legacy callers)
-          // so the backend leaves the column untouched.
-          ...(consoleType !== undefined ? { console_type: consoleType } : {}),
-        })
+      // Skip console_type entirely when caller didn't supply one so the
+      // backend leaves the column untouched (legacy callers).
+      await api.put(`/profiles/${id}`, {
+        name,
+        ip_address: ip,
+        mac_address: mac,
+        ...(consoleType !== undefined ? { console_type: consoleType } : {}),
       });
       showNotification('Profile updated', 'success');
       fetchProfiles();
@@ -313,7 +264,7 @@ function App() {
 
   const setDefaultProfile = async (id) => {
     try {
-      await fetch(`${API}/profiles/${id}/set-default`, { method: 'POST' });
+      await api.post(`/profiles/${id}/set-default`);
       showNotification('Default profile set', 'success');
       fetchProfiles();
     } catch (err) {
@@ -323,7 +274,7 @@ function App() {
 
   const deleteProfile = async (id) => {
     try {
-      await fetch(`${API}/profiles/${id}`, { method: 'DELETE' });
+      await api.del(`/profiles/${id}`);
       showNotification('Profile deleted', 'success');
       fetchProfiles();
       fetchLogs();
@@ -334,8 +285,7 @@ function App() {
 
   const checkPs5Status = async (ip, port) => {
     try {
-      const res = await fetch(`${API}/ps5/status/${ip}?port=${port || 9021}`);
-      const data = await res.json();
+      const data = await api.get(`/ps5/status/${ip}?port=${port || 9021}`);
       showNotification(data.reachable ? 'PS5 is reachable' : 'PS5 not reachable', data.reachable ? 'success' : 'warning');
       fetchLogs();
       return data.reachable;
@@ -347,8 +297,7 @@ function App() {
 
   const exportBackup = async () => {
     try {
-      const res = await fetch(`${API}/backup`);
-      const data = await res.json();
+      const data = await api.get('/backup');
       const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -366,11 +315,7 @@ function App() {
     try {
       const text = await file.text();
       const data = JSON.parse(text);
-      await fetch(`${API}/backup`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ data })
-      });
+      await api.post('/backup', { data });
       showNotification('Backup imported', 'success');
       fetchProfiles();
       fetchPayloads();
@@ -394,13 +339,8 @@ function App() {
       setDefaultStatus(null);
       return;
     }
-    try {
-      const res = await fetch(`${API}/ps5/status/${defaultProfile.ip_address}?port=${defaultProfile.port || 9021}`);
-      const data = await res.json();
-      setDefaultStatus(data);
-    } catch (_) {
-      setDefaultStatus({ reachable: false });
-    }
+    const data = await apiSafe.get(`/ps5/status/${defaultProfile.ip_address}?port=${defaultProfile.port || 9021}`);
+    setDefaultStatus(data || { reachable: false });
   }, [defaultProfile?.ip_address, defaultProfile?.port]);
   useVisiblePolling(pollDefaultStatus, defaultProfile ? 15000 : 0, [defaultProfile?.ip_address, defaultProfile?.port]);
 
