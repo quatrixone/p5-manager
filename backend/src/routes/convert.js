@@ -9,7 +9,7 @@ import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import AdmZip from 'adm-zip';
 import { createRequire } from 'module';
-import { getDatabase, saveDatabase, log } from '../db/sqlite.js';
+import { getRepo, log } from '../db/sqlite.js';
 
 // archiver is CJS and doesn't expose a clean ESM default export in Node 20,
 // so we pull it in via createRequire to side-step the interop error.
@@ -79,71 +79,54 @@ const CONFIG_KEY = 'micromount_config';
 const FTP_KEY = 'micromount_ftp';
 const BROWSER_PREFS_KEY = 'micromount_browser_prefs';
 
-function loadBrowserPrefs() {
-  const db = getDatabase();
-  const stmt = db.prepare('SELECT value FROM settings WHERE key = ?');
-  stmt.bind([BROWSER_PREFS_KEY]);
-  let prefs = { local: '', smb: {} };
-  if (stmt.step()) {
-    try {
-      const saved = JSON.parse(stmt.getAsObject().value);
-      prefs = { local: saved.local || '', smb: saved.smb || {} };
-    } catch (_) {}
+// Generic JSON setting helpers (used for browser prefs / config / ftp /
+// release state). Keeping these tiny lets the rest of this file skip the
+// db.prepare / stmt.bind / stmt.free dance entirely.
+function loadJsonSetting(key, fallback) {
+  const raw = getRepo().queryScalar('SELECT value FROM settings WHERE key = ?', [key]);
+  if (raw == null) return { ...fallback };
+  try {
+    return { ...fallback, ...JSON.parse(raw) };
+  } catch (_) {
+    return { ...fallback };
   }
-  stmt.free();
-  return prefs;
+}
+
+function saveJsonSetting(key, value) {
+  getRepo().runAndSave(
+    'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)',
+    [key, JSON.stringify(value)],
+  );
+}
+
+function loadBrowserPrefs() {
+  const saved = loadJsonSetting(BROWSER_PREFS_KEY, { local: '', smb: {} });
+  return { local: saved.local || '', smb: saved.smb || {} };
 }
 
 function saveBrowserPrefs(prefs) {
-  const db = getDatabase();
   const clean = { local: String(prefs.local || ''), smb: {} };
   if (prefs.smb && typeof prefs.smb === 'object') {
     for (const [k, v] of Object.entries(prefs.smb)) clean.smb[String(k)] = String(v || '');
   }
-  db.run('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', [BROWSER_PREFS_KEY, JSON.stringify(clean)]);
-  saveDatabase();
+  saveJsonSetting(BROWSER_PREFS_KEY, clean);
   return clean;
 }
 
 function loadConfig() {
-  const db = getDatabase();
-  const stmt = db.prepare('SELECT value FROM settings WHERE key = ?');
-  stmt.bind([CONFIG_KEY]);
-  let cfg = { ...DEFAULT_CONFIG };
-  if (stmt.step()) {
-    try {
-      const saved = JSON.parse(stmt.getAsObject().value);
-      cfg = { ...DEFAULT_CONFIG, ...saved };
-    } catch (_) {}
-  }
-  stmt.free();
-  return cfg;
+  return loadJsonSetting(CONFIG_KEY, DEFAULT_CONFIG);
 }
 
 function saveConfig(cfg) {
-  const db = getDatabase();
-  db.run('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', [CONFIG_KEY, JSON.stringify(cfg)]);
-  saveDatabase();
+  saveJsonSetting(CONFIG_KEY, cfg);
 }
 
 function loadFtp() {
-  const db = getDatabase();
-  const stmt = db.prepare('SELECT value FROM settings WHERE key = ?');
-  stmt.bind([FTP_KEY]);
-  let ftp = { port: 2121, username: 'anonymous', password: '' };
-  if (stmt.step()) {
-    try {
-      ftp = { ...ftp, ...JSON.parse(stmt.getAsObject().value) };
-    } catch (_) {}
-  }
-  stmt.free();
-  return ftp;
+  return loadJsonSetting(FTP_KEY, { port: 2121, username: 'anonymous', password: '' });
 }
 
 function saveFtp(ftp) {
-  const db = getDatabase();
-  db.run('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', [FTP_KEY, JSON.stringify(ftp)]);
-  saveDatabase();
+  saveJsonSetting(FTP_KEY, ftp);
 }
 
 function buildConfigIni(cfg) {
@@ -901,11 +884,7 @@ router.post('/sources/:id/delete', async (req, res) => {
 
 router.get('/sources', (req, res) => {
   try {
-    const db = getDatabase();
-    const rows = [];
-    const stmt = db.prepare('SELECT * FROM convert_sources ORDER BY created_at DESC');
-    while (stmt.step()) rows.push(stmt.getAsObject());
-    stmt.free();
+    const rows = getRepo().queryAll('SELECT * FROM convert_sources ORDER BY created_at DESC');
     rows.forEach(r => {
       if (r.smb_password) r.smb_password = '__set__';
       if (r.ftp_password) r.ftp_password = '__set__';
@@ -934,8 +913,8 @@ router.post('/sources', (req, res) => {
       return res.status(400).json({ error: 'ftp_host required for ftp type' });
     }
 
-    const db = getDatabase();
-    db.run(
+    const repo = getRepo();
+    const id = repo.run(
       `INSERT INTO convert_sources
          (name, type, path,
           smb_host, smb_share, smb_username, smb_password, smb_domain,
@@ -948,10 +927,9 @@ router.post('/sources', (req, res) => {
         ftp_port != null && ftp_port !== '' ? parseInt(ftp_port) : null,
         ftp_username || null,
         ftp_password || null,
-      ]
+      ],
     );
-    saveDatabase();
-    const id = db.exec('SELECT last_insert_rowid()')[0].values[0][0];
+    repo.save();
     log('info', `MicroMount source added: ${name} (${type})`);
     res.json({ success: true, id });
   } catch (err) {
@@ -963,15 +941,8 @@ router.post('/sources', (req, res) => {
 router.put('/sources/:id', (req, res) => {
   try {
     const id = parseInt(req.params.id);
-    const db = getDatabase();
-    const cur = db.prepare('SELECT * FROM convert_sources WHERE id = ?');
-    cur.bind([id]);
-    if (!cur.step()) {
-      cur.free();
-      return res.status(404).json({ error: 'Not found' });
-    }
-    const existing = cur.getAsObject();
-    cur.free();
+    const existing = getRepo().queryOne('SELECT * FROM convert_sources WHERE id = ?', [id]);
+    if (!existing) return res.status(404).json({ error: 'Not found' });
 
     const next = { ...existing, ...req.body };
     // Preserve stored passwords when the frontend echoes back the "__set__"
@@ -983,7 +954,7 @@ router.put('/sources/:id', (req, res) => {
       return res.status(400).json({ error: 'type must be local, smb or ftp' });
     }
 
-    db.run(
+    getRepo().runAndSave(
       `UPDATE convert_sources
          SET name=?, type=?, path=?,
              smb_host=?, smb_share=?, smb_username=?, smb_password=?, smb_domain=?,
@@ -999,9 +970,8 @@ router.put('/sources/:id', (req, res) => {
         next.ftp_password || null,
         next.enabled ? 1 : 0,
         id,
-      ]
+      ],
     );
-    saveDatabase();
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1011,9 +981,7 @@ router.put('/sources/:id', (req, res) => {
 router.delete('/sources/:id', (req, res) => {
   try {
     const id = parseInt(req.params.id);
-    const db = getDatabase();
-    db.run('DELETE FROM convert_sources WHERE id = ?', [id]);
-    saveDatabase();
+    getRepo().runAndSave('DELETE FROM convert_sources WHERE id = ?', [id]);
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1021,13 +989,7 @@ router.delete('/sources/:id', (req, res) => {
 });
 
 function getSource(id) {
-  const db = getDatabase();
-  const stmt = db.prepare('SELECT * FROM convert_sources WHERE id = ?');
-  stmt.bind([id]);
-  let row = null;
-  if (stmt.step()) row = stmt.getAsObject();
-  stmt.free();
-  return row;
+  return getRepo().queryOne('SELECT * FROM convert_sources WHERE id = ?', [id]);
 }
 
 function runSmbClient(args, input) {
@@ -1881,21 +1843,17 @@ router.post('/local/browse', (req, res) => {
 });
 
 function loadReleaseState() {
-  const db = getDatabase();
-  const stmt = db.prepare('SELECT value FROM settings WHERE key = ?');
-  stmt.bind([RELEASE_KEY]);
-  let s = { version: null, published_at: null, checked_at: null, last_update_at: null, assets: [] };
-  if (stmt.step()) {
-    try { s = { ...s, ...JSON.parse(stmt.getAsObject().value) }; } catch (_) {}
-  }
-  stmt.free();
-  return s;
+  return loadJsonSetting(RELEASE_KEY, {
+    version: null,
+    published_at: null,
+    checked_at: null,
+    last_update_at: null,
+    assets: [],
+  });
 }
 
 function saveReleaseState(s) {
-  const db = getDatabase();
-  db.run('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', [RELEASE_KEY, JSON.stringify(s)]);
-  saveDatabase();
+  saveJsonSetting(RELEASE_KEY, s);
 }
 
 async function fetchLatestRelease() {
@@ -1926,24 +1884,20 @@ async function downloadAssetBuffer(url) {
 const PAYLOAD_EXT_REGEX = /\.(elf|lua|prx|sprx|bin)$/i;
 
 function upsertPayloadRow(name, filepath, sourceUrl, size, version) {
-  const db = getDatabase();
-  const findStmt = db.prepare('SELECT id FROM payloads WHERE name = ? OR filename = ?');
-  findStmt.bind([name, name]);
-  const exists = findStmt.step();
-  const id = exists ? findStmt.getAsObject().id : null;
-  findStmt.free();
+  const repo = getRepo();
+  const id = repo.queryScalar('SELECT id FROM payloads WHERE name = ? OR filename = ?', [name, name]);
   if (id != null) {
-    db.run(
+    repo.run(
       'UPDATE payloads SET filename = ?, filepath = ?, source_url = ?, size = ?, version = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
       [name, filepath, sourceUrl, size, version, id],
     );
   } else {
-    db.run(
+    repo.run(
       'INSERT INTO payloads (name, filename, filepath, source_url, size, version) VALUES (?, ?, ?, ?, ?, ?)',
       [name, name, filepath, sourceUrl, size, version],
     );
   }
-  saveDatabase();
+  repo.save();
 }
 
 async function downloadReleaseAssets(release) {
@@ -4082,15 +4036,8 @@ const INSTALL_DEFAULTS = {
 
 function installSettings() {
   const out = { ...INSTALL_DEFAULTS };
-  const db = getDatabase();
-  const read = (key) => {
-    const stmt = db.prepare('SELECT value FROM settings WHERE key = ?');
-    stmt.bind([key]);
-    let v = null;
-    if (stmt.step()) v = stmt.getAsObject().value;
-    stmt.free();
-    return v;
-  };
+  const repo = getRepo();
+  const read = (key) => repo.queryScalar('SELECT value FROM settings WHERE key = ?', [key]) || null;
   out.payload_id = read('pkg_installer_payload_id') || null;
   out.stage_dir  = read('pkg_stage_dir')  || INSTALL_DEFAULTS.stage_dir;
   out.trigger_file = read('pkg_trigger_file') || INSTALL_DEFAULTS.trigger_file;
@@ -4113,12 +4060,7 @@ function appendInstallLog(item, chunk) {
 // "installer payload file missing" cases.
 function resolveInstallerPayload(payloadId) {
   if (!payloadId) throw new Error('No PKG installer payload configured. Settings → Config → "PKG installer payload".');
-  const db = getDatabase();
-  const stmt = db.prepare('SELECT * FROM payloads WHERE id = ?');
-  stmt.bind([parseInt(payloadId)]);
-  let row = null;
-  if (stmt.step()) row = stmt.getAsObject();
-  stmt.free();
+  const row = getRepo().queryOne('SELECT * FROM payloads WHERE id = ?', [parseInt(payloadId)]);
   if (!row) throw new Error(`PKG installer payload #${payloadId} not found in DB`);
   let fp = row.filepath;
   if (!fs.existsSync(fp)) {

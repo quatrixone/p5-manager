@@ -27,7 +27,7 @@ import {
   mkpfsWorkDir,
   downloadsDir,
 } from './paths.js';
-import { getDatabase, saveDatabase, log } from '../db/sqlite.js';
+import { getRepo, log } from '../db/sqlite.js';
 
 function safeMkdir(dir) {
   try {
@@ -83,21 +83,17 @@ function moveTree(src, dst) {
 
 // Returns true if a row's filepath sits under the legacy prefix.
 function fixDbPathRow(legacyPrefix, newPrefix) {
-  const db = getDatabase();
+  const repo = getRepo();
   try {
-    const rows = [];
-    const stmt = db.prepare('SELECT id, filepath FROM payloads WHERE filepath LIKE ?');
-    stmt.bind([`${legacyPrefix}%`]);
-    while (stmt.step()) rows.push(stmt.getAsObject());
-    stmt.free();
+    const rows = repo.queryAll('SELECT id, filepath FROM payloads WHERE filepath LIKE ?', [`${legacyPrefix}%`]);
     let updated = 0;
     for (const row of rows) {
       const next = newPrefix + row.filepath.slice(legacyPrefix.length);
-      db.run('UPDATE payloads SET filepath = ? WHERE id = ?', [next, row.id]);
+      repo.run('UPDATE payloads SET filepath = ? WHERE id = ?', [next, row.id]);
       updated++;
     }
     if (updated > 0) {
-      saveDatabase();
+      repo.save();
       log('info', `[migrate-paths] DB: updated ${updated} payloads.filepath rows`);
     }
     return updated;

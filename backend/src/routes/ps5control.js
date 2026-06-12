@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import dgram from 'dgram';
-import { getDatabase } from '../db/sqlite.js';
+import { getRepo } from '../db/sqlite.js';
 
 const router = Router();
 
@@ -35,12 +35,7 @@ const SRCH_PACKET = Buffer.from(
 function getBroadcastAddress(explicitSubnet) {
   let subnet = explicitSubnet;
   if (!subnet) {
-    try {
-      const db = getDatabase();
-      const stmt = db.prepare("SELECT value FROM settings WHERE key='default_subnet'");
-      if (stmt.step()) subnet = stmt.getAsObject().value;
-      stmt.free();
-    } catch (_) {}
+    try { subnet = getRepo().queryScalar("SELECT value FROM settings WHERE key='default_subnet'"); } catch (_) {}
   }
   if (!subnet) return '255.255.255.255';
   const [baseIp, prefixStr] = subnet.split('/');

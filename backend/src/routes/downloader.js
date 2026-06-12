@@ -8,7 +8,7 @@ import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-import { getDatabase, log } from '../db/sqlite.js';
+import { log } from '../db/sqlite.js';
 import { buildSmbArgs, runSmbClient, smbClientError, getSmbSource, listSmbSources, uploadDirToSmb } from '../lib/smb.js';
 import { mkpfsWorkDir } from '../lib/paths.js';
 
@@ -107,9 +107,7 @@ function sanitizeName(name) {
 
 router.get('/sources', (req, res) => {
   try {
-    const db = getDatabase();
-    const sources = listSmbSources(db);
-    res.json({ smb: sources });
+    res.json({ smb: listSmbSources() });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -392,8 +390,7 @@ router.post('/start', async (req, res) => {
       if (!fs.statSync(localDestDir).isDirectory()) return res.status(400).json({ error: 'dest_path must be a directory' });
     } else {
       if (!smb_source_id) return res.status(400).json({ error: 'smb_source_id required' });
-      const db = getDatabase();
-      smbSource = getSmbSource(db, parseInt(smb_source_id));
+      smbSource = getSmbSource(parseInt(smb_source_id));
       if (!smbSource) return res.status(404).json({ error: 'SMB source not found' });
       localDestDir = fs.mkdtempSync(path.join(getDlScratch(), 'dl-'));
     }

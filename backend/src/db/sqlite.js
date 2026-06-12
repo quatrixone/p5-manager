@@ -259,6 +259,80 @@ export function saveDatabase() {
   fs.writeFileSync(dbPath, buffer);
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+// Repository facade — wraps the bare sql.js handle in three high-level
+// helpers (queryOne / queryAll / run) so route handlers no longer have to
+// write out the prepare → bind → step → getAsObject → free dance for every
+// single query. Reduces ~5 LOC per query to 1.
+//
+// The raw sql.js handle is still reachable via getDatabase() for the rare
+// callers that need cursor-style iteration (currently only the migration
+// path in initDatabase()).
+// ───────────────────────────────────────────────────────────────────────────
+export class DatabaseRepo {
+  constructor(handle) { this._db = handle; }
+
+  // Fetch a single row, or null if the query yields nothing.
+  queryOne(sql, params = []) {
+    const stmt = this._db.prepare(sql);
+    try {
+      if (params && params.length) stmt.bind(params);
+      return stmt.step() ? stmt.getAsObject() : null;
+    } finally {
+      stmt.free();
+    }
+  }
+
+  // Fetch every row matching the query.
+  queryAll(sql, params = []) {
+    const stmt = this._db.prepare(sql);
+    try {
+      if (params && params.length) stmt.bind(params);
+      const out = [];
+      while (stmt.step()) out.push(stmt.getAsObject());
+      return out;
+    } finally {
+      stmt.free();
+    }
+  }
+
+  // Project a single scalar column (e.g. `COUNT(*)` or a single value lookup).
+  // Returns undefined when the result set is empty.
+  queryScalar(sql, params = []) {
+    const row = this.queryOne(sql, params);
+    if (!row) return undefined;
+    const keys = Object.keys(row);
+    return keys.length ? row[keys[0]] : undefined;
+  }
+
+  // Fire-and-forget statement (INSERT / UPDATE / DELETE / DDL). Returns
+  // the auto-increment id for INSERTs (or 0 when not applicable).
+  run(sql, params = []) {
+    this._db.run(sql, params);
+    const r = this.queryOne('SELECT last_insert_rowid() AS id');
+    return r ? r.id : 0;
+  }
+
+  // Persist the in-memory db image back to disk. sql.js keeps everything
+  // in RAM until export()d, so any mutation that has to survive a restart
+  // must call this.
+  save() { saveDatabase(); }
+
+  // Run sql + immediately flush. Convenience for the dozens of routes that
+  // INSERT/UPDATE one row and then call saveDatabase() right after.
+  runAndSave(sql, params = []) {
+    const id = this.run(sql, params);
+    saveDatabase();
+    return id;
+  }
+}
+
+let _repo = null;
+export function getRepo() {
+  if (!_repo) _repo = new DatabaseRepo(getDatabase());
+  return _repo;
+}
+
 export function log(level, message) {
   console.log(`[${level.toUpperCase()}] ${message}`);
   if (!db) return;
@@ -268,14 +342,7 @@ export function log(level, message) {
 
 export function getLogs(limit = 100) {
   if (!db) return [];
-  const stmt = db.prepare('SELECT * FROM logs ORDER BY timestamp DESC LIMIT ?');
-  stmt.bind([limit]);
-  const results = [];
-  while (stmt.step()) {
-    results.push(stmt.getAsObject());
-  }
-  stmt.free();
-  return results;
+  return getRepo().queryAll('SELECT * FROM logs ORDER BY timestamp DESC LIMIT ?', [limit]);
 }
 
 export function clearLogs() {

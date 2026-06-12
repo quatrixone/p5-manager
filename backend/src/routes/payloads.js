@@ -4,7 +4,7 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import fetch from 'node-fetch';
 import AdmZip from 'adm-zip';
-import { getDatabase, saveDatabase, log } from '../db/sqlite.js';
+import { getRepo, log } from '../db/sqlite.js';
 import { ensureDefaultPayloads, getEssentialPayloads, scanPayloadsDir } from '../lib/defaultPayloads.js';
 import { pushKernelLogEntry } from './kernelLogServer.js';
 import { payloadsDir } from '../lib/paths.js';
@@ -54,15 +54,7 @@ router.get('/', (req, res) => {
     // scanPayloadsDir() is idempotent and bails out fast when nothing
     // new is on disk, so calling it on every list-request is cheap.
     try { scanPayloadsDir(); } catch (e) { log('error', `scanPayloadsDir failed: ${e.message}`); }
-
-    const db = getDatabase();
-    const results = [];
-    const stmt = db.prepare('SELECT * FROM payloads ORDER BY created_at DESC');
-    while (stmt.step()) {
-      results.push(stmt.getAsObject());
-    }
-    stmt.free();
-    res.json(results);
+    res.json(getRepo().queryAll('SELECT * FROM payloads ORDER BY created_at DESC'));
   } catch (error) {
     log('error', `Failed to get payloads: ${error.message}`);
     res.status(500).json({ error: error.message });
@@ -107,15 +99,9 @@ router.post('/fetch-url', async (req, res) => {
     }
 
     ensurePayloadsDir();
+    const repo = getRepo();
 
-    const db = getDatabase();
-
-    // Check if payload with this URL already exists
-    const existingStmt = db.prepare('SELECT id FROM payloads WHERE source_url = ?');
-    existingStmt.bind([url]);
-    const exists = existingStmt.step();
-    existingStmt.free();
-    if (exists) {
+    if (repo.queryOne('SELECT id FROM payloads WHERE source_url = ?', [url])) {
       return res.json({ success: true, downloaded: [], message: 'Payload already exists' });
     }
 
@@ -163,11 +149,10 @@ router.post('/fetch-url', async (req, res) => {
 
                   fs.writeFileSync(filepath, entryBuffer);
                   const consoleType = detectConsoleTypeFromHints({ filename, url: downloadUrl });
-                  db.run(
+                  const lastId = repo.run(
                     'INSERT INTO payloads (name, filename, filepath, source_url, size, version, console_type) VALUES (?, ?, ?, ?, ?, ?, ?)',
-                    [filename, filename, filepath, downloadUrl, entryBuffer.length, version, consoleType]
+                    [filename, filename, filepath, downloadUrl, entryBuffer.length, version, consoleType],
                   );
-                  const lastId = db.exec('SELECT last_insert_rowid()')[0].values[0][0];
                   results.push({ id: lastId, name: filename, size: entryBuffer.length, version, console_type: consoleType });
                   log('info', `Extracted from ZIP ${version}: ${entry.entryName}`);
                 }
@@ -181,18 +166,17 @@ router.post('/fetch-url', async (req, res) => {
 
             fs.writeFileSync(filepath, buffer);
             const consoleType = detectConsoleTypeFromHints({ filename, url: downloadUrl });
-            db.run(
+            const lastId = repo.run(
               'INSERT INTO payloads (name, filename, filepath, source_url, size, version, console_type) VALUES (?, ?, ?, ?, ?, ?, ?)',
-              [filename, filename, filepath, downloadUrl, buffer.length, version, consoleType]
+              [filename, filename, filepath, downloadUrl, buffer.length, version, consoleType],
             );
-            const lastId = db.exec('SELECT last_insert_rowid()')[0].values[0][0];
             results.push({ id: lastId, name: filename, size: buffer.length, version, console_type: consoleType });
             log('info', `Downloaded from release ${version}: ${asset.name}`);
           }
         }
       }
 
-      saveDatabase();
+      repo.save();
       if (results.length === 0) {
         return res.json({ success: true, downloaded: [], message: 'No .lua or .elf files found in release' });
       }
@@ -224,26 +208,16 @@ router.post('/fetch-url', async (req, res) => {
       }
 
       if (filename.endsWith('.lua') || filename.endsWith('.elf') || filename.endsWith('.bin')) {
-        // Check if already exists
-        const checkStmt = db.prepare('SELECT id FROM payloads WHERE source_url = ?');
-        checkStmt.bind([url]);
-        if (checkStmt.step()) {
-          checkStmt.free();
+        if (repo.queryOne('SELECT id FROM payloads WHERE source_url = ?', [url])) {
           return res.json({ success: true, downloaded: [], message: 'Payload already exists' });
         }
-        checkStmt.free();
-
         const filepath = path.join(payloadsDir, filename);
         fs.writeFileSync(filepath, buffer);
-
         const consoleType = detectConsoleTypeFromHints({ filename, url });
-        db.run(
+        const lastId = repo.runAndSave(
           'INSERT INTO payloads (name, filename, filepath, source_url, size, console_type) VALUES (?, ?, ?, ?, ?, ?)',
-          [filename, filename, filepath, url, buffer.length, consoleType]
+          [filename, filename, filepath, url, buffer.length, consoleType],
         );
-        const lastId = db.exec('SELECT last_insert_rowid()')[0].values[0][0];
-        saveDatabase();
-
         log('info', `Downloaded: ${filename} (${buffer.length} bytes)`);
         return res.json({ success: true, downloaded: [{ id: lastId, name: filename, size: buffer.length, console_type: consoleType }] });
       }
@@ -269,26 +243,16 @@ router.post('/fetch-url', async (req, res) => {
         return res.status(400).json({ error: 'Only .lua, .elf and .bin files are supported' });
       }
 
-      // Check if already exists
-      const checkStmt = db.prepare('SELECT id FROM payloads WHERE source_url = ?');
-      checkStmt.bind([url]);
-      if (checkStmt.step()) {
-        checkStmt.free();
+      if (repo.queryOne('SELECT id FROM payloads WHERE source_url = ?', [url])) {
         return res.json({ success: true, downloaded: [], message: 'Payload already exists' });
       }
-      checkStmt.free();
-
       const filepath = path.join(payloadsDir, filename);
       fs.writeFileSync(filepath, buffer);
-
       const consoleType = detectConsoleTypeFromHints({ filename, url });
-      db.run(
+      const lastId = repo.runAndSave(
         'INSERT INTO payloads (name, filename, filepath, source_url, size, console_type) VALUES (?, ?, ?, ?, ?, ?)',
-        [filename, filename, filepath, url, buffer.length, consoleType]
+        [filename, filename, filepath, url, buffer.length, consoleType],
       );
-      const lastId = db.exec('SELECT last_insert_rowid()')[0].values[0][0];
-      saveDatabase();
-
       log('info', `Downloaded: ${filename}`);
       return res.json({ success: true, downloaded: [{ id: lastId, name: filename, size: buffer.length, console_type: consoleType }] });
     }
@@ -314,7 +278,7 @@ router.post('/upload', (req, res) => {
     ensurePayloadsDir();
 
     const buffer = Buffer.from(data, 'base64');
-    const db = getDatabase();
+    const repo = getRepo();
     const isZip = name.toLowerCase().endsWith('.zip');
 
     // ZIP path: walk every entry, keep only the supported payload
@@ -357,11 +321,10 @@ router.post('/upload', (req, res) => {
           ? console_type
           : detected;
 
-        db.run(
+        const lastId = repo.run(
           'INSERT INTO payloads (name, filename, filepath, size, console_type) VALUES (?, ?, ?, ?, ?)',
-          [filename, filename, filepath, entryBuffer.length, finalConsoleType]
+          [filename, filename, filepath, entryBuffer.length, finalConsoleType],
         );
-        const lastId = db.exec('SELECT last_insert_rowid()')[0].values[0][0];
         extracted.push({
           id: lastId,
           name: filename,
@@ -378,7 +341,7 @@ router.post('/upload', (req, res) => {
         });
       }
 
-      saveDatabase();
+      repo.save();
       return res.json({
         success: true,
         zip: true,
@@ -403,13 +366,10 @@ router.post('/upload', (req, res) => {
       ? console_type
       : detected;
 
-    db.run(
+    const lastId = repo.runAndSave(
       'INSERT INTO payloads (name, filename, filepath, size, console_type) VALUES (?, ?, ?, ?, ?)',
-      [name, name, filepath, buffer.length, finalConsoleType]
+      [name, name, filepath, buffer.length, finalConsoleType],
     );
-
-    const lastId = db.exec('SELECT last_insert_rowid()')[0].values[0][0];
-    saveDatabase();
 
     log('info', `Uploaded payload: ${name}${finalConsoleType ? ` (${finalConsoleType})` : ''}`);
 
@@ -429,9 +389,7 @@ router.put('/:id/console-type', (req, res) => {
     if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid id' });
     const raw = req.body?.console_type;
     const consoleType = (raw === 'ps4' || raw === 'ps5') ? raw : null;
-    const db = getDatabase();
-    db.run('UPDATE payloads SET console_type = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [consoleType, id]);
-    saveDatabase();
+    getRepo().runAndSave('UPDATE payloads SET console_type = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [consoleType, id]);
     res.json({ success: true, id, console_type: consoleType });
   } catch (error) {
     log('error', `Update payload console_type failed: ${error.message}`);
@@ -490,15 +448,7 @@ router.post('/send/:id', async (req, res) => {
     const { id } = req.params;
     const { ip } = req.body;
 
-    const db = getDatabase();
-    const stmt = db.prepare('SELECT * FROM payloads WHERE id = ?');
-    stmt.bind([parseInt(id)]);
-    let payload = null;
-    if (stmt.step()) {
-      payload = stmt.getAsObject();
-    }
-    stmt.free();
-
+    const payload = getRepo().queryOne('SELECT * FROM payloads WHERE id = ?', [parseInt(id)]);
     if (!payload) {
       return res.status(404).json({ error: 'Payload not found' });
     }
@@ -611,20 +561,11 @@ router.post('/send/:id', async (req, res) => {
 router.put('/:id/update', async (req, res) => {
   try {
     const { id } = req.params;
-
-    const db = getDatabase();
-    const stmt = db.prepare('SELECT * FROM payloads WHERE id = ?');
-    stmt.bind([parseInt(id)]);
-    let payload = null;
-    if (stmt.step()) {
-      payload = stmt.getAsObject();
-    }
-    stmt.free();
-
+    const repo = getRepo();
+    const payload = repo.queryOne('SELECT * FROM payloads WHERE id = ?', [parseInt(id)]);
     if (!payload) {
       return res.status(404).json({ error: 'Payload not found' });
     }
-
     if (!payload.source_url) {
       return res.status(400).json({ error: 'Payload has no source URL' });
     }
@@ -737,11 +678,10 @@ router.put('/:id/update', async (req, res) => {
     }
     fs.writeFileSync(filepath, buffer);
 
-    db.run(
+    repo.runAndSave(
       'UPDATE payloads SET filename = ?, filepath = ?, size = ?, source_url = ?, version = COALESCE(?, version), updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-      [resolvedFilename, filepath, buffer.length, url, newVersion, parseInt(id)]
+      [resolvedFilename, filepath, buffer.length, url, newVersion, parseInt(id)],
     );
-    saveDatabase();
 
     log('info', `Updated payload: ${payload.name}${newVersion ? ` -> ${newVersion}` : ''}`);
     res.json({ success: true, message: 'Payload updated', newVersion });
@@ -754,23 +694,12 @@ router.put('/:id/update', async (req, res) => {
 router.delete('/:id', (req, res) => {
   try {
     const { id } = req.params;
-
-    const db = getDatabase();
-    const stmt = db.prepare('SELECT * FROM payloads WHERE id = ?');
-    stmt.bind([parseInt(id)]);
-    let payload = null;
-    if (stmt.step()) {
-      payload = stmt.getAsObject();
-    }
-    stmt.free();
-
+    const repo = getRepo();
+    const payload = repo.queryOne('SELECT * FROM payloads WHERE id = ?', [parseInt(id)]);
     if (payload && fs.existsSync(payload.filepath)) {
       fs.unlinkSync(payload.filepath);
     }
-
-    db.run('DELETE FROM payloads WHERE id = ?', [parseInt(id)]);
-    saveDatabase();
-
+    repo.runAndSave('DELETE FROM payloads WHERE id = ?', [parseInt(id)]);
     log('info', `Deleted payload ID: ${id}`);
 
     res.json({ success: true });
@@ -783,20 +712,10 @@ router.delete('/:id', (req, res) => {
 router.get('/:id/check-update', async (req, res) => {
   try {
     const { id } = req.params;
-
-    const db = getDatabase();
-    const stmt = db.prepare('SELECT * FROM payloads WHERE id = ?');
-    stmt.bind([parseInt(id)]);
-    let payload = null;
-    if (stmt.step()) {
-      payload = stmt.getAsObject();
-    }
-    stmt.free();
-
+    const payload = getRepo().queryOne('SELECT * FROM payloads WHERE id = ?', [parseInt(id)]);
     if (!payload) {
       return res.status(404).json({ error: 'Payload not found' });
     }
-
     if (!payload.source_url) {
       return res.json({ success: false, error: 'No source URL' });
     }

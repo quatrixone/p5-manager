@@ -1,6 +1,7 @@
 import { spawn } from 'child_process';
 import path from 'path';
 import fs from 'fs';
+import { getRepo } from '../db/sqlite.js';
 
 export function buildSmbArgs(src) {
   const target = `//${src.smb_host}/${src.smb_share}`;
@@ -44,21 +45,14 @@ export function smbClientError(out, code) {
   return null;
 }
 
-export function getSmbSource(db, id) {
-  const stmt = db.prepare('SELECT * FROM convert_sources WHERE id = ? AND type = ?');
-  stmt.bind([id, 'smb']);
-  let row = null;
-  if (stmt.step()) row = stmt.getAsObject();
-  stmt.free();
-  return row;
+export function getSmbSource(id) {
+  return getRepo().queryOne('SELECT * FROM convert_sources WHERE id = ? AND type = ?', [id, 'smb']);
 }
 
-export function listSmbSources(db) {
-  const stmt = db.prepare("SELECT id, name, type, path, smb_host, smb_share, smb_username, smb_domain, enabled FROM convert_sources WHERE type = 'smb' ORDER BY name");
-  const rows = [];
-  while (stmt.step()) rows.push(stmt.getAsObject());
-  stmt.free();
-  return rows;
+export function listSmbSources() {
+  return getRepo().queryAll(
+    "SELECT id, name, type, path, smb_host, smb_share, smb_username, smb_domain, enabled FROM convert_sources WHERE type = 'smb' ORDER BY name",
+  );
 }
 
 export function uploadDirToSmb(src, localDir, smbDir, logFn = () => {}) {

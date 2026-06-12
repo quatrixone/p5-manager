@@ -1,6 +1,6 @@
 import express from 'express';
 import net from 'net';
-import { getDatabase, saveDatabase, log } from '../db/sqlite.js';
+import { getRepo, log } from '../db/sqlite.js';
 import { loadBuiltin } from '../lib/builtinLoader.js';
 
 const router = express.Router();
@@ -69,19 +69,12 @@ function runLog(run, line) {
 
 router.get('/', (req, res) => {
   try {
-    const db = getDatabase();
-    const stmt = db.prepare(`
+    res.json(getRepo().queryAll(`
       SELECT s.*, p.name as profile_name, p.ip_address
       FROM autoload_sequences s
       LEFT JOIN profiles p ON s.profile_id = p.id
       ORDER BY s.created_at DESC
-    `);
-    const results = [];
-    while (stmt.step()) {
-      results.push(stmt.getAsObject());
-    }
-    stmt.free();
-    res.json(results);
+    `));
   } catch (error) {
     log('error', `Failed to get sequences: ${error.message}`);
     res.status(500).json({ error: error.message });
@@ -90,17 +83,8 @@ router.get('/', (req, res) => {
 
 router.get('/:id', (req, res) => {
   try {
-    const db = getDatabase();
-    const stmt = db.prepare('SELECT * FROM autoload_sequences WHERE id = ?');
-    stmt.bind([parseInt(req.params.id)]);
-    let sequence = null;
-    if (stmt.step()) {
-      sequence = stmt.getAsObject();
-    }
-    stmt.free();
-    if (!sequence) {
-      return res.status(404).json({ error: 'Sequence not found' });
-    }
+    const sequence = getRepo().queryOne('SELECT * FROM autoload_sequences WHERE id = ?', [parseInt(req.params.id)]);
+    if (!sequence) return res.status(404).json({ error: 'Sequence not found' });
     res.json(sequence);
   } catch (error) {
     log('error', `Failed to get sequence: ${error.message}`);
@@ -111,18 +95,11 @@ router.get('/:id', (req, res) => {
 router.post('/', (req, res) => {
   try {
     const { profileId, name, steps, scheduleCron, scheduleEnabled } = req.body;
-    if (!name || !steps) {
-      return res.status(400).json({ error: 'name and steps required' });
-    }
-
-    const db = getDatabase();
-    db.run(
+    if (!name || !steps) return res.status(400).json({ error: 'name and steps required' });
+    const lastId = getRepo().runAndSave(
       'INSERT INTO autoload_sequences (profile_id, name, steps, schedule_cron, schedule_enabled) VALUES (?, ?, ?, ?, ?)',
-      [profileId ? parseInt(profileId) : null, name, JSON.stringify(steps), scheduleCron || null, scheduleEnabled ? 1 : 0]
+      [profileId ? parseInt(profileId) : null, name, JSON.stringify(steps), scheduleCron || null, scheduleEnabled ? 1 : 0],
     );
-    const lastId = db.exec('SELECT last_insert_rowid()')[0].values[0][0];
-    saveDatabase();
-
     log('info', `Created sequence: ${name}`);
     res.json({ success: true, id: lastId });
   } catch (error) {
@@ -134,22 +111,14 @@ router.post('/', (req, res) => {
 router.put('/:id', (req, res) => {
   try {
     const { name, steps, scheduleCron, scheduleEnabled, profileId } = req.body;
-    const db = getDatabase();
-
-    const existing = db.prepare('SELECT id FROM autoload_sequences WHERE id = ?');
-    existing.bind([parseInt(req.params.id)]);
-    if (!existing.step()) {
-      existing.free();
+    const repo = getRepo();
+    if (!repo.queryOne('SELECT id FROM autoload_sequences WHERE id = ?', [parseInt(req.params.id)])) {
       return res.status(404).json({ error: 'Sequence not found' });
     }
-    existing.free();
-
-    db.run(
+    repo.runAndSave(
       'UPDATE autoload_sequences SET name = ?, steps = ?, profile_id = ?, schedule_cron = ?, schedule_enabled = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-      [name, JSON.stringify(steps), profileId ? parseInt(profileId) : null, scheduleCron || null, scheduleEnabled ? 1 : 0, parseInt(req.params.id)]
+      [name, JSON.stringify(steps), profileId ? parseInt(profileId) : null, scheduleCron || null, scheduleEnabled ? 1 : 0, parseInt(req.params.id)],
     );
-    saveDatabase();
-
     log('info', `Updated sequence: ${name}`);
     res.json({ success: true });
   } catch (error) {
@@ -160,10 +129,7 @@ router.put('/:id', (req, res) => {
 
 router.delete('/:id', (req, res) => {
   try {
-    const db = getDatabase();
-    db.run('DELETE FROM autoload_sequences WHERE id = ?', [parseInt(req.params.id)]);
-    saveDatabase();
-
+    getRepo().runAndSave('DELETE FROM autoload_sequences WHERE id = ?', [parseInt(req.params.id)]);
     log('info', `Deleted sequence ${req.params.id}`);
     res.json({ success: true });
   } catch (error) {
@@ -273,7 +239,7 @@ async function execWol(step, ctx) {
 }
 
 function findPayloadIdByName(name) {
-  const db = getDatabase();
+  const repo = getRepo();
   // Try exact name first, then filename, then case-insensitive match.
   const queries = [
     'SELECT id FROM payloads WHERE name = ? LIMIT 1',
@@ -282,12 +248,8 @@ function findPayloadIdByName(name) {
     'SELECT id FROM payloads WHERE LOWER(filename) = LOWER(?) LIMIT 1',
   ];
   for (const q of queries) {
-    const stmt = db.prepare(q);
-    stmt.bind([name]);
-    let id = null;
-    if (stmt.step()) id = stmt.getAsObject().id;
-    stmt.free();
-    if (id) return id;
+    const row = repo.queryOne(q, [name]);
+    if (row?.id) return row.id;
   }
   return null;
 }
@@ -593,17 +555,12 @@ async function executeSequence(run, sequence, profile, steps) {
 
 router.post('/:id/run', async (req, res) => {
   try {
-    const db = getDatabase();
-    const stmt = db.prepare(`
+    const sequence = getRepo().queryOne(`
       SELECT s.*, p.name as profile_name, p.ip_address, p.port, p.mac_address
       FROM autoload_sequences s
       LEFT JOIN profiles p ON s.profile_id = p.id
       WHERE s.id = ?
-    `);
-    stmt.bind([parseInt(req.params.id)]);
-    let sequence = null;
-    if (stmt.step()) sequence = stmt.getAsObject();
-    stmt.free();
+    `, [parseInt(req.params.id)]);
 
     if (!sequence) return res.status(404).json({ error: 'Sequence not found' });
     const steps = JSON.parse(sequence.steps || '[]');
