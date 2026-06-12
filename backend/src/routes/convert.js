@@ -1387,10 +1387,30 @@ function getInstalledMkpfsVersion() {
 
 function newJobId() { return crypto.randomBytes(8).toString('hex'); }
 
+// Hard byte cap as a safety net on top of MAX_LOG_LINES. Tools like
+// mkpfs / 7z / rsync print progress with `\r` (carriage return) instead
+// of `\n`, so a naive split-on-newline trim never fires — a 39 %-stuck
+// progress bar with `\r123 / 456 MB\r124 / 456 MB\r...` was observed to
+// grow the in-memory log to 70+ MB and OOM the 192 MB-capped container
+// nine times in a row during a Crimson Desert pack-file job. Capping at
+// 512 KiB keeps tail-the-end log views snappy and means even a chatty
+// 1 GiB stdout fits comfortably inside our heap.
+const MAX_LOG_BYTES = 512 * 1024;
+
 function appendLog(job, chunk) {
   const text = chunk.toString();
+  // Treat CR like LF for line-count and progress purposes: this is what
+  // makes tools that overwrite a single "line" with `\r` (mkpfs, 7z, dd,
+  // rsync --info=progress2, …) actually get their old progress lines
+  // trimmed when the cap fires, instead of accumulating forever.
   job.log += text;
-  const lines = job.log.split('\n');
+  if (job.log.length > MAX_LOG_BYTES) {
+    // Hard byte truncation first — drops the head, keeps the recent tail
+    // which is what the UI shows.
+    job.log = job.log.slice(-MAX_LOG_BYTES);
+  }
+  const normalised = job.log.replace(/\r/g, '\n');
+  const lines = normalised.split('\n');
   if (lines.length > MAX_LOG_LINES) {
     job.log = lines.slice(-MAX_LOG_LINES).join('\n');
   }
