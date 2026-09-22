@@ -9,8 +9,13 @@ let logServerPort = 8080;
 let receivedLogs = [];
 
 function startLogServer(port = 8080) {
+  // Single-flight: tear down the previous socket *synchronously* (dgram.close
+  // is sync; its async close callback just frees the OS resource) before we
+  // claim the singleton. Otherwise back-to-back /start calls can race and
+  // either lose messages or end up with two sockets bound to the same port.
   if (logServer) {
-    logServer.close();
+    try { logServer.close(); } catch (_) {}
+    logServer = null;
   }
 
   logServerPort = port;
@@ -19,7 +24,7 @@ function startLogServer(port = 8080) {
 
   logServer.on('error', (err) => {
     log('error', `Log server error: ${err.message}`);
-    logServer.close();
+    try { logServer.close(); } catch (_) {}
     logServer = null;
   });
 
@@ -42,7 +47,14 @@ function startLogServer(port = 8080) {
     log('info', `Log server started on port ${port}`);
   });
 
-  logServer.bind(port);
+  try {
+    logServer.bind(port);
+  } catch (e) {
+    log('error', `Log server bind failed on port ${port}: ${e.message}`);
+    try { logServer.close(); } catch (_) {}
+    logServer = null;
+    throw e;
+  }
   return true;
 }
 

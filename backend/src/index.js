@@ -1,5 +1,4 @@
 import express from 'express';
-import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
@@ -27,8 +26,68 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-app.use(cors());
-app.use(express.json({ limit: '50mb' }));
+// CORS: in dev the Vite proxy already strips the cross-origin header
+// for us, but in production this stack serves the SPA from the same
+// host as the API (host networking, single port). The right policy is
+// "same-origin as this server" - any browser tab opened against
+// http://<this-host>:<this-port> is the legitimate UI. We honour three
+// things:
+//
+//   1. No Origin header at all (curl, server-to-server, same-origin
+//      fetch from the SPA on the same host:port) - always allowed.
+//   2. Origin whose host:port matches the request's Host header - the
+//      classic "I am being asked from myself" case. This covers
+//      localhost, the LAN IP (10.0.0.187, …), Docker hostnames, and
+//      whatever else the user resolves the box as.
+//   3. An explicit P5M_ALLOWED_ORIGINS env var (comma-separated) for
+//      the rare case where the user puts the app behind a reverse
+//      proxy with a different origin (e.g. https://p5.example.com →
+//      http://10.0.0.5:3001).
+//
+// Anything else (e.g. a third-party webpage trying to call the REST
+// API) is rejected.
+const EXPLICIT_ORIGINS = (process.env.P5M_ALLOWED_ORIGINS
+  ? process.env.P5M_ALLOWED_ORIGINS.split(',').map(s => s.trim()).filter(Boolean)
+  : []);
+
+// Hand-rolled CORS middleware: the `cors` package's origin callback
+// doesn't receive `req`, but we need the Host header to recognise a
+// same-origin request from a LAN IP. We set the right CORS headers
+// directly and short-circuit the preflight.
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  let allowed = !origin;                            // no Origin → always OK
+  if (!allowed && EXPLICIT_ORIGINS.includes(origin)) allowed = true;
+  if (!allowed) {
+    try {
+      const u = new URL(origin);
+      if (`${u.host}` === req.headers.host) allowed = true;
+    } catch (_) { /* malformed origin */ }
+  }
+  if (allowed) {
+    if (origin) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Vary', 'Origin');
+    }
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  }
+  if (req.method === 'OPTIONS') {
+    // Preflight: respond 204 with the headers above. The browser will
+    // not actually call the route, so we don't need to do anything else.
+    return res.status(204).end();
+  }
+  // The 'cors' package would normally also attach the header. We no
+  // longer call app.use(cors()) — this middleware replaces it. We
+  // still let it through for non-CORS requests (curl, server-to-server).
+  return next();
+});
+// 16 MB is enough for any normal payload upload (POST /payloads/upload
+// takes the whole file base64-encoded in the body). 12 MB binary
+// inflates to ~16 MB base64 + JSON overhead. Larger files have to go
+// through the file-browser's upload-to-tmp-then-import flow or the
+// /fetch-url endpoint, which never round-trips through this body.
+app.use(express.json({ limit: '16mb' }));
 
 // Suppress the most chatty polling endpoints from the access log - the UI
 // hits ps5/status, remoteplay/health and remoteplay/quick-status every few

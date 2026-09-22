@@ -52,11 +52,18 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
         if (data.pkg_stage_dir) setPkgStageDir(data.pkg_stage_dir);
         if (data.pkg_trigger_file) setPkgTriggerFile(data.pkg_trigger_file);
       }
-      // Only show ELF payloads in the "PKG installer payload" picker — .lua and
-      // .bin won't be sent to port 9021 by sendInstallerPayload, so listing them
-      // would let the user save a non-functional config.
+      // Auto-bind the PKG installer to the payload literally named
+      // `pkg-install.elf` instead of making the user pick it from a
+      // dropdown — there's only ever one correct choice (sendInstallerPayload
+      // only works with .elf on port 9021), so a manual picker was just an
+      // extra step that could be pointed at the wrong file.
       const list = await apiSafe.get('/payloads');
-      if (Array.isArray(list)) setAvailablePayloads(list.filter(p => /\.elf$/i.test(p.name || '')));
+      if (Array.isArray(list)) {
+        const elfs = list.filter(p => /\.elf$/i.test(p.name || ''));
+        setAvailablePayloads(elfs);
+        const installer = elfs.find(p => (p.name || '').toLowerCase() === 'pkg-install.elf');
+        if (installer) setPkgInstallerPayloadId(String(installer.id));
+      }
     })();
   }, []);
 
@@ -470,20 +477,13 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
           </div>
           <div className="mb-md">
             <label className="text-sm text-muted mb-sm" style={{ display: 'block' }}>Installer payload (ELF)</label>
-            <select
-              className="select"
-              value={pkgInstallerPayloadId}
-              onChange={e => setPkgInstallerPayloadId(e.target.value)}
-              style={{ maxWidth: 420 }}
-            >
-              <option value="">— select an installer ELF —</option>
-              {availablePayloads.map(p => (
-                <option key={p.id} value={p.id}>{p.name}</option>
-              ))}
-            </select>
-            {availablePayloads.length === 0 && (
-              <div className="text-xs text-muted mt-sm">
-                No ELF payloads found. Upload <code>pkg-install.elf</code> in the Payloads tab first.
+            {pkgInstallerPayloadId ? (
+              <div className="text-sm">
+                ✅ Bound to <code>pkg-install.elf</code>
+              </div>
+            ) : (
+              <div className="text-xs text-muted">
+                No <code>pkg-install.elf</code> found. Upload it in the Payloads tab — it's picked up automatically.
               </div>
             )}
           </div>

@@ -14,6 +14,60 @@ const __dirname = path.dirname(__filename);
 
 const router = express.Router();
 
+// Whitelist of hosts the /fetch-url SSRF endpoint is allowed to talk to.
+// A malicious or compromised GitHub release could redirect us to a private
+// IP (e.g. http://169.254.169.254/... for AWS metadata). We allow only the
+// public GitHub domains and reject anything else.
+const FETCH_URL_ALLOWED_HOSTS = new Set([
+  'api.github.com',
+  'github.com',
+  'raw.githubusercontent.com',
+  'objects.githubusercontent.com',
+  // GitHub migrated release-asset redirects off objects.githubusercontent.com
+  // onto this dedicated CDN host sometime in 2026; without it every
+  // "Fetch from URL" against a release asset 404s on the redirect check.
+  'release-assets.githubusercontent.com',
+  'codeload.github.com',
+]);
+
+// Hard caps for ZIPs dropped on the /upload and /fetch-url endpoints.
+// A malicious or corrupted archive with millions of small entries would
+// otherwise OOM the process; a single multi-GB archive would do the same
+// once we tried to decompress it. These are not "supported" sizes — payloads
+// in practice are a few hundred KB — they're just kill-switches.
+//
+// /upload is bound by the express.json() body limit (currently 16 MB -
+// see backend/src/index.js). base64 inflates binary by 4/3, so a 12 MB
+// binary buffer is the practical ceiling for /upload; we cap at 8 MB
+// to leave room for JSON envelope overhead. /fetch-url has no body
+// limit and the GitHub-API-side checks below are advisory - those
+// downloads already have the SSRF host whitelist protecting us.
+const ZIP_MAX_BYTES = 8 * 1024 * 1024;          // 8 MB compressed size
+const ZIP_MAX_ENTRIES = 1024;                    // never extract more than this many
+const ZIP_MAX_UNCOMPRESSED_BYTES = 64 * 1024 * 1024; // 64 MB across all entries
+
+function assertAllowedFetchUrl(rawUrl) {
+  let parsed;
+  try { parsed = new URL(rawUrl); } catch (_) { return 'Invalid URL'; }
+  if (parsed.protocol !== 'https:') return 'Only https URLs are allowed';
+  const host = parsed.hostname.toLowerCase();
+  if (!FETCH_URL_ALLOWED_HOSTS.has(host)) return `Host not allowed: ${host}`;
+  return null;
+}
+
+// Like fetch(), but refuses to follow a redirect onto a non-allow-listed
+// host. A compromised GitHub release returning Location: http://169.254.../
+// would otherwise pivot us into the cloud metadata service.
+async function safeFetch(rawUrl, opts = {}) {
+  const urlErr = assertAllowedFetchUrl(rawUrl);
+  if (urlErr) throw new Error(urlErr);
+  const res = await fetch(rawUrl, { ...opts, redirect: 'follow' });
+  const finalUrl = res.url || rawUrl;
+  const finalErr = assertAllowedFetchUrl(finalUrl);
+  if (finalErr) throw new Error(`Redirect to disallowed host blocked: ${finalErr}`);
+  return res;
+}
+
 function ensurePayloadsDir() {
   if (!fs.existsSync(payloadsDir)) {
     fs.mkdirSync(payloadsDir, { recursive: true });
@@ -47,13 +101,13 @@ function detectConsoleTypeFromHints({ filename, url } = {}) {
   return null;
 }
 
-router.get('/', (req, res) => {
+router.get('/', async (req, res) => {
   try {
     // Pick up any .lua/.elf/.bin files dropped into data/payloads/ by
     // means other than the UI (FTP, SCP, file-browser, host volume).
     // scanPayloadsDir() is idempotent and bails out fast when nothing
     // new is on disk, so calling it on every list-request is cheap.
-    try { scanPayloadsDir(); } catch (e) { log('error', `scanPayloadsDir failed: ${e.message}`); }
+    try { await scanPayloadsDir(); } catch (e) { log('error', `scanPayloadsDir failed: ${e.message}`); }
     res.json(getRepo().queryAll('SELECT * FROM payloads ORDER BY created_at DESC'));
   } catch (error) {
     log('error', `Failed to get payloads: ${error.message}`);
@@ -97,6 +151,8 @@ router.post('/fetch-url', async (req, res) => {
     if (!url) {
       return res.status(400).json({ error: 'URL required' });
     }
+    const urlErr = assertAllowedFetchUrl(url);
+    if (urlErr) return res.status(400).json({ error: urlErr });
 
     ensurePayloadsDir();
     const repo = getRepo();
@@ -108,12 +164,17 @@ router.post('/fetch-url', async (req, res) => {
     // Check if it's a releases URL
     const releasesMatch = url.match(/github\.com\/([^\/]+)\/([^\/]+)\/releases(?:\/tag\/([^\/\?#]+))?/i);
     if (releasesMatch) {
-      const [, owner, repo, tag] = releasesMatch;
-      log('info', `Fetching releases: ${owner}/${repo} (tag: ${tag || 'latest'})`);
+      // NOTE: destructured as `repoName`, not `repo` — this block is nested
+      // inside the same function as `const repo = getRepo()` above, and a
+      // `repo` here would shadow the DB handle for the rest of the block,
+      // breaking every repo.run()/repo.save() call below with
+      // "repo.run is not a function".
+      const [, owner, repoName, tag] = releasesMatch;
+      log('info', `Fetching releases: ${owner}/${repoName} (tag: ${tag || 'latest'})`);
 
       const apiUrl = tag
-        ? `https://api.github.com/repos/${owner}/${repo}/releases/tags/${tag}`
-        : `https://api.github.com/repos/${owner}/${repo}/releases/latest`;
+        ? `https://api.github.com/repos/${owner}/${repoName}/releases/tags/${tag}`
+        : `https://api.github.com/repos/${owner}/${repoName}/releases/latest`;
 
       const response = await fetch(apiUrl, { headers: { 'Accept': 'application/vnd.github.v3+json' } });
 
@@ -132,19 +193,41 @@ router.post('/fetch-url', async (req, res) => {
 
         if (isLuaOrElf || isZip) {
           const downloadUrl = asset.browser_download_url;
-          const fileResponse = await fetch(downloadUrl);
+          const fileResponse = await safeFetch(downloadUrl);
           const buffer = await fileResponse.arrayBuffer().then(ab => Buffer.from(ab));
 
           if (isZip) {
+            if (buffer.length > ZIP_MAX_BYTES) {
+              log('warn', `Skipping ZIP ${asset.name}: ${buffer.length} > ${ZIP_MAX_BYTES}`);
+              continue;
+            }
             try {
               const zip = new AdmZip(buffer);
               const zipEntries = zip.getEntries();
-
+              if (zipEntries.length > ZIP_MAX_ENTRIES) {
+                log('warn', `Skipping ZIP ${asset.name}: ${zipEntries.length} entries > ${ZIP_MAX_ENTRIES}`);
+                continue;
+              }
+              let uncompressed = 0;
               for (const entry of zipEntries) {
+                if (entry.isDirectory) continue;
                 const entryName = entry.entryName.toLowerCase();
                 if (entryName.endsWith('.lua') || entryName.endsWith('.elf') || entryName.endsWith('.bin')) {
+                  // path.basename collapses both "../" and "..\\" segments
+                  // AND any nested "Release/" prefix in a single shot, so
+                  // a malicious entry like "../../etc/passwd" or
+                  // "..\\..\\evil.lua" can never escape payloadsDir.
+                  const filename = path.basename(entry.entryName);
+                  if (!filename || filename === '.' || filename === '..' || /[\\/]/.test(filename)) {
+                    log('warn', `Skipping suspicious ZIP entry: ${entry.entryName}`);
+                    continue;
+                  }
                   const entryBuffer = entry.getData();
-                  const filename = entry.entryName.split('/').pop();
+                  uncompressed += entryBuffer.length;
+                  if (uncompressed > ZIP_MAX_UNCOMPRESSED_BYTES) {
+                    log('warn', `Skipping remaining entries in ${asset.name}: uncompressed > ${ZIP_MAX_UNCOMPRESSED_BYTES}`);
+                    break;
+                  }
                   const filepath = path.join(payloadsDir, filename);
 
                   fs.writeFileSync(filepath, entryBuffer);
@@ -186,14 +269,13 @@ router.post('/fetch-url', async (req, res) => {
     // Check if it's a direct blob URL - convert to raw
     const blobMatch = url.match(/github\.com\/([^\/]+)\/([^\/]+)\/blob\/([^\s?#]+)/i);
     if (blobMatch) {
-      const [, owner, repo, filePath] = blobMatch;
+      const [, owner, repoName, filePath] = blobMatch;
       const decodedPath = decodeURIComponent(filePath);
-      const rawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${decodedPath}`;
+      const rawUrl = `https://raw.githubusercontent.com/${owner}/${repoName}/${decodedPath}`;
       log('info', `Fetching raw: ${rawUrl}`);
 
-      const response = await fetch(rawUrl, {
+      const response = await safeFetch(rawUrl, {
         headers: { 'Accept': 'application/octet-stream' },
-        redirect: 'follow'
       });
 
       if (!response.ok) {
@@ -226,12 +308,12 @@ router.post('/fetch-url', async (req, res) => {
     // Check for raw URL
     const rawMatch = url.match(/raw\.githubusercontent\.com\/([^\/]+)\/([^\/]+)\/([^\/\?#]+)\/(.+)/i);
     if (rawMatch) {
-      const [, owner, repo, branch, ...pathParts] = rawMatch;
+      const [, owner, repoName, branch, ...pathParts] = rawMatch;
       const filePath = pathParts.join('/');
-      const rawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${filePath}`;
+      const rawUrl = `https://raw.githubusercontent.com/${owner}/${repoName}/${branch}/${filePath}`;
       log('info', `Fetching raw: ${rawUrl}`);
 
-      const response = await fetch(rawUrl);
+      const response = await safeFetch(rawUrl);
       if (!response.ok) {
         throw new Error(`Failed to fetch: ${response.status}`);
       }
@@ -288,23 +370,38 @@ router.post('/upload', (req, res) => {
     // and the user can send / update them independently. The original
     // archive is not retained on disk - it has no use once unpacked.
     if (isZip) {
+      if (buffer.length > ZIP_MAX_BYTES) {
+        return res.status(413).json({ error: `ZIP too large: ${buffer.length} > ${ZIP_MAX_BYTES} bytes` });
+      }
       let zip;
       try {
         zip = new AdmZip(buffer);
       } catch (zipErr) {
         return res.status(400).json({ error: `Invalid ZIP file: ${zipErr.message}` });
       }
+      const zipEntries = zip.getEntries();
+      if (zipEntries.length > ZIP_MAX_ENTRIES) {
+        return res.status(413).json({ error: `ZIP has too many entries: ${zipEntries.length} > ${ZIP_MAX_ENTRIES}` });
+      }
 
       const SUPPORTED_EXT = ['.lua', '.elf', '.bin'];
       const extracted = [];
       const skipped = [];
+      let uncompressed = 0;
 
-      for (const entry of zip.getEntries()) {
+      for (const entry of zipEntries) {
         if (entry.isDirectory) continue;
-        // Take the basename so nested paths like "Release/foo.elf"
-        // collapse to "foo.elf" - mirrors how /fetch-url handles ZIPs.
-        const filename = entry.entryName.split('/').pop();
+        // path.basename strips both forward- and back-slashes, so
+        // "Release/foo.elf" collapses to "foo.elf" and a hostile
+        // entry like "../../../etc/passwd" becomes literally that
+        // string (rejected below) instead of escaping payloadsDir.
+        const filename = path.basename(entry.entryName);
         if (!filename) continue;
+        if (filename === '.' || filename === '..' || /[\\/]/.test(filename)) {
+          skipped.push(entry.entryName);
+          log('warn', `Skipping suspicious ZIP entry: ${entry.entryName}`);
+          continue;
+        }
         const lc = filename.toLowerCase();
 
         if (!SUPPORTED_EXT.some(ext => lc.endsWith(ext))) {
@@ -313,6 +410,10 @@ router.post('/upload', (req, res) => {
         }
 
         const entryBuffer = entry.getData();
+        uncompressed += entryBuffer.length;
+        if (uncompressed > ZIP_MAX_UNCOMPRESSED_BYTES) {
+          return res.status(413).json({ error: `ZIP uncompressed size exceeds ${ZIP_MAX_UNCOMPRESSED_BYTES} bytes` });
+        }
         const filepath = path.join(payloadsDir, filename);
         fs.writeFileSync(filepath, entryBuffer);
 

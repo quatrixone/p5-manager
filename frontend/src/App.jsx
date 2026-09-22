@@ -191,8 +191,17 @@ function App() {
 
   const uploadPayload = async (file) => {
     try {
-      const arrayBuffer = await file.arrayBuffer();
-      const base64 = btoa(new Uint8Array(arrayBuffer).reduce((data, byte) => data + String.fromCharCode(byte), ''));
+      // FileReader's native base64 encoding, not a byte-by-byte
+      // String.fromCharCode reduce() — that approach blocks the main
+      // thread for seconds on multi-MB payloads (SpectrumLibrary is
+      // ~5 MB) and on some browsers looks like the upload silently did
+      // nothing at all.
+      const base64 = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result.split(',')[1] || '');
+        reader.onerror = () => reject(reader.error || new Error('Failed to read file'));
+        reader.readAsDataURL(file);
+      });
 
       const data = await api.post('/payloads/upload', { name: file.name, data: base64 });
       if (data.success) {
