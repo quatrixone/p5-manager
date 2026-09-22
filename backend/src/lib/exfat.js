@@ -257,66 +257,69 @@ export async function createExfatImage(job, helpers, src, out, opts = {}) {
     return { code: -1, error: e.message };
   }
 
-  // 5. Mount.
-  job.phase = 'mounting';
-  job.progress = 30;
+  // Steps 5-6 share a loop+mount+copy that must clean up on ANY failure
+  // path (including throws from appendLog or unexpected runtime errors).
+  // The finally block below guarantees we always release the loop device
+  // and the mountpoint, even if a future refactor adds a new throwsite.
+  // mountDir is declared outside try so the finally block can pass it to
+  // cleanupLoop for the umount.
   let mountDir = null;
   try {
-    fs.mkdirSync(MOUNT_ROOT, { recursive: true });
-    mountDir = fs.mkdtempSync(path.join(MOUNT_ROOT, 'job-'));
-    // uid/gid=1000 so the rsync copy ends up owned by the runtime user
-    // (matching the rest of /data). Without this the mount root is
-    // root-owned and rsync from a non-root process fails.
-    const mountRes = await spawnLogged(job, helpers, SUDO, sudoArgs('mount', ['-t', 'exfat', '-o', 'rw,uid=1000,gid=1000', loopDev, mountDir]));
-    if (mountRes.code !== 0) {
-      appendLog(job, `[manager] mount failed (code=${mountRes.code}).\n`);
-      await cleanupLoop(job, helpers, loopDev, mountDir, false);
-      return { code: mountRes.code, error: 'mount failed' };
+    // 5. Mount.
+    job.phase = 'mounting';
+    job.progress = 30;
+    try {
+      fs.mkdirSync(MOUNT_ROOT, { recursive: true });
+      mountDir = fs.mkdtempSync(path.join(MOUNT_ROOT, 'job-'));
+      // uid/gid=1000 so the rsync copy ends up owned by the runtime user
+      // (matching the rest of /data). Without this the mount root is
+      // root-owned and rsync from a non-root process fails.
+      const mountRes = await spawnLogged(job, helpers, SUDO, sudoArgs('mount', ['-t', 'exfat', '-o', 'rw,uid=1000,gid=1000', loopDev, mountDir]));
+      if (mountRes.code !== 0) {
+        appendLog(job, `[manager] mount failed (code=${mountRes.code}).\n`);
+        return { code: mountRes.code, error: 'mount failed' };
+      }
+    } catch (e) {
+      appendLog(job, `[manager] mount error: ${e.message}\n`);
+      return { code: -1, error: e.message };
     }
-  } catch (e) {
-    appendLog(job, `[manager] mount error: ${e.message}\n`);
-    await cleanupLoop(job, helpers, loopDev, mountDir, false);
-    return { code: -1, error: e.message };
-  }
 
-  // 6. Copy payload in. rsync -a preserves attrs, --info=progress2 prints
-  //    a single overall % so updateProgressFromText can drive the bar.
-  job.phase = 'copying';
-  job.progress = 40;
-  try {
-    let copyRes;
-    if (srcStat.isDirectory()) {
-      // Trailing slash on the source so rsync copies the *contents* of the
-      // dir, not the dir itself. PS5 ShadowMount+ wants game files at the
-      // image root, not nested under a wrapper directory.
-      const srcWithSlash = src.endsWith('/') ? src : src + '/';
-      copyRes = await spawnLogged(job, helpers, 'rsync', ['-a', '--no-owner', '--no-group', '--info=progress2', srcWithSlash, mountDir + '/']);
-    } else {
-      // Single file: copy as-is into the mount root.
-      const destFile = path.join(mountDir, path.basename(src));
-      copyRes = await spawnLogged(job, helpers, 'rsync', ['-a', '--no-owner', '--no-group', '--info=progress2', src, destFile]);
+    // 6. Copy payload in. rsync -a preserves attrs, --info=progress2 prints
+    //    a single overall % so updateProgressFromText can drive the bar.
+    job.phase = 'copying';
+    job.progress = 40;
+    try {
+      let copyRes;
+      if (srcStat.isDirectory()) {
+        // Trailing slash on the source so rsync copies the *contents* of the
+        // dir, not the dir itself. PS5 ShadowMount+ wants game files at the
+        // image root, not nested under a wrapper directory.
+        const srcWithSlash = src.endsWith('/') ? src : src + '/';
+        copyRes = await spawnLogged(job, helpers, 'rsync', ['-a', '--no-owner', '--no-group', '--info=progress2', srcWithSlash, mountDir + '/']);
+      } else {
+        // Single file: copy as-is into the mount root.
+        const destFile = path.join(mountDir, path.basename(src));
+        copyRes = await spawnLogged(job, helpers, 'rsync', ['-a', '--no-owner', '--no-group', '--info=progress2', src, destFile]);
+      }
+      if (copyRes.code !== 0) {
+        appendLog(job, `[manager] rsync failed (code=${copyRes.code}).\n`);
+        return { code: copyRes.code, error: 'rsync failed' };
+      }
+    } catch (e) {
+      appendLog(job, `[manager] copy error: ${e.message}\n`);
+      return { code: -1, error: e.message };
     }
-    if (copyRes.code !== 0) {
-      appendLog(job, `[manager] rsync failed (code=${copyRes.code}).\n`);
-      await cleanupLoop(job, helpers, loopDev, mountDir, true);
-      return { code: copyRes.code, error: 'rsync failed' };
-    }
-  } catch (e) {
-    appendLog(job, `[manager] copy error: ${e.message}\n`);
+
+    job.phase = 'finalizing';
+    job.progress = 95;
+    return { code: 0 };
+  } finally {
+    // Always release the loop + mount, success or failure. cleanupLoop is
+    // best-effort: it logs its own errors and never throws.
     await cleanupLoop(job, helpers, loopDev, mountDir, true);
-    return { code: -1, error: e.message };
+    job.progress = 100;
+    job.phase = null;
   }
-
-  // 7. Flush + unmount + detach. We always try this, even on the success
-  //    path, so the loop device is returned to the pool and the mountpoint
-  //    cleaned up immediately. Errors here are logged but don't fail the
-  //    job — the image on disk is already good.
-  job.phase = 'finalizing';
-  job.progress = 95;
-  await cleanupLoop(job, helpers, loopDev, mountDir, true);
-  job.progress = 100;
-  job.phase = null;
-  return { code: 0 };
 }
 
 // Best-effort: sync (when flushFs=true) + umount + losetup -d + rmdir.

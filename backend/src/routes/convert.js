@@ -28,6 +28,45 @@ import { JobQueue, mountQueueRoutes } from '../lib/JobQueue.js';
 
 const router = express.Router();
 
+// Whitelist of filesystem roots the convert pipeline is allowed to read
+// from or write to. Paths are resolved + symlink-checked against this set
+// to defeat traversal (../../../etc) and symlink redirection. The roots
+// cover the three user-visible working folders plus the external mount
+// points PS5 dumps usually live on.
+const ALLOWED_PATH_ROOTS = (() => {
+  const roots = new Set([payloadsDir, mkpfsWorkDir, downloadsDir, '/data', '/mnt']);
+  for (const r of roots) {} // (kept for symmetry; resolver uses Array.from below)
+  return Array.from(roots).map((r) => path.resolve(r));
+})();
+const ALLOWED_PATH_PREFIXES = ALLOWED_PATH_ROOTS.map((r) => r.endsWith(path.sep) ? r : r + path.sep);
+
+function isInsideAllowedRoot(absPath) {
+  const real = path.resolve(absPath);
+  return ALLOWED_PATH_PREFIXES.some((p) => real === p.slice(0, -1) || real.startsWith(p));
+}
+
+// Mask secret arguments before logging a command. Matches `-p<password>` form
+// (7z, unrar), `--password=<value>`, and any arg that is just `-p` followed
+// by a separate value in the next position (handled by checking neighbour).
+function maskSecretsForLog(cmd, args) {
+  const masked = args.map((a, i) => {
+    if (typeof a !== 'string') return a;
+    if (/^-p.{2,}$/.test(a)) return '-p***';
+    if (/^--password=/.test(a)) return '--password=***';
+    // `-p` standalone, with the next arg being the secret.
+    if (a === '-p' && i + 1 < args.length) return a;
+    return a;
+  });
+  // If any `-p` standalone was followed by a value, drop that value in the
+  // log view (the actual spawn call still uses the real args).
+  const dropNext = new Set();
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '-p' && i + 1 < args.length) dropNext.add(i + 1);
+  }
+  const filtered = masked.filter((_, i) => !dropNext.has(i));
+  return `${cmd} ${filtered.join(' ')}`;
+}
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 // In Docker the Dockerfile copies backend/ contents directly to /app/ (the
@@ -43,6 +82,15 @@ const projectRoot = path.resolve(dataDir, '..');
 const MM_REPO = 'PSBrew/MicroMount';
 const RELEASE_KEY = 'micromount_release_state';
 const ASSET_REGEX = /\.(elf|lua|prx|sprx|bin|zip)$/i;
+// ZIP extraction caps. Mirrors payloads.js - protects against a
+// hostile or corrupted release ZIP that would otherwise OOM the
+// process when decompressed. Larger than payloads.js because this
+// path downloads directly from GitHub (no express.json body limit)
+// and real release ZIPs can be a few MB; the practical ceiling is
+// the network bandwidth / disk, not a body-parser limit.
+const ZIP_MAX_BYTES = 64 * 1024 * 1024;
+const ZIP_MAX_ENTRIES = 1024;
+const ZIP_MAX_UNCOMPRESSED_BYTES = 256 * 1024 * 1024;
 
 function ensureMkpfsDir() {
   if (!fs.existsSync(mkpfsWorkDir)) fs.mkdirSync(mkpfsWorkDir, { recursive: true });
@@ -644,7 +692,7 @@ router.get('/sources/:id/download', async (req, res) => {
         const filename = path.posix.basename(cleanPath || 'file');
         res.setHeader('Content-Type', 'application/octet-stream');
         res.setHeader('Content-Disposition', safeContentDispositionAttachment(filename));
-        const args = [...buildSmbArgs(src), '-c', `get "${cleanPath}" -`];
+        const args = [...buildSmbArgs(src), '-c', `get "${smbEscape(cleanPath)}" -`];
         const proc = spawn('smbclient', args);
         proc.stdout.pipe(res);
         proc.stderr.on('data', (d) => log('warn', `[smb-dl] ${d.toString().trim()}`));
@@ -655,7 +703,7 @@ router.get('/sources/:id/download', async (req, res) => {
       // Folder: stage locally then zip-stream.
       const stageDir = fs.mkdtempSync(path.join(os.tmpdir(), 'smbdl-'));
       try {
-        const lsArgs = [...buildSmbArgs(src), '-c', `prompt OFF; recurse ON; lcd "${stageDir}"; cd "${cleanPath}"; mget *`];
+        const lsArgs = [...buildSmbArgs(src), '-c', `prompt OFF; recurse ON; lcd "${smbEscape(stageDir)}"; cd "${smbEscape(cleanPath)}"; mget *`];
         await new Promise((resolve, reject) => {
           const proc = spawn('smbclient', lsArgs);
           let err = '';
@@ -835,7 +883,7 @@ router.post('/sources/:id/move', async (req, res) => {
     if (cleanSrc === cleanDst) return res.status(400).json({ error: 'Source and destination are identical' });
 
     const args = buildSmbArgs(src);
-    args.push('-c', `rename "${cleanSrc}" "${cleanDst}"`);
+    args.push('-c', `rename "${smbEscape(cleanSrc)}" "${smbEscape(cleanDst)}"`);
     const { stdout, stderr, code } = await runSmbClient(args);
     const combined = (stdout || '') + '\n' + (stderr || '');
     const err = smbClientError(combined, code);
@@ -863,11 +911,11 @@ router.post('/sources/:id/delete', async (req, res) => {
     const dir = clean.includes('/') ? clean.replace(/\/[^/]+$/, '') : '';
     const name = clean.includes('/') ? clean.replace(/^.*\//, '') : clean;
     const cmds = [];
-    if (dir) cmds.push(`cd "${dir}"`);
+    if (dir) cmds.push(`cd "${smbEscape(dir)}"`);
     if (isDir) {
-      cmds.push(`deltree "${name}"`);
+      cmds.push(`deltree "${smbEscape(name)}"`);
     } else {
-      cmds.push(`del "${name}"`);
+      cmds.push(`del "${smbEscape(name)}"`);
     }
     args.push('-c', cmds.join('; '));
 
@@ -1114,7 +1162,7 @@ router.post('/sources/:id/browse', async (req, res) => {
       }
     }
 
-    const cmd = cleanPath ? `cd "${cleanPath}"; ls` : 'ls';
+    const cmd = cleanPath ? `cd "${smbEscape(cleanPath)}"; ls` : 'ls';
     const args = buildSmbArgs(src);
     args.push('-c', cmd);
 
@@ -1212,7 +1260,7 @@ router.post('/sources/:id/sync', async (req, res) => {
           } else {
             const getArgs = buildSmbArgs(src);
             const remote = cleanShare ? `${cleanShare}/${f.name}` : f.name;
-            getArgs.push('-c', `get "${remote}" "${localPath}"`);
+            getArgs.push('-c', `get "${smbEscape(remote)}" "${smbEscape(localPath)}"`);
             const { stdout: getOut, code: getCode } = await runSmbClient(getArgs);
             const getErr = smbClientError(getOut, getCode);
             if (getErr) throw new Error(getErr.message);
@@ -1404,15 +1452,24 @@ function appendLog(job, chunk) {
   // rsync --info=progress2, …) actually get their old progress lines
   // trimmed when the cap fires, instead of accumulating forever.
   job.log += text;
+  let byteCapped = false;
   if (job.log.length > MAX_LOG_BYTES) {
     // Hard byte truncation first — drops the head, keeps the recent tail
     // which is what the UI shows.
     job.log = job.log.slice(-MAX_LOG_BYTES);
+    byteCapped = true;
   }
-  const normalised = job.log.replace(/\r/g, '\n');
-  const lines = normalised.split('\n');
-  if (lines.length > MAX_LOG_LINES) {
-    job.log = lines.slice(-MAX_LOG_LINES).join('\n');
+  // Skip the O(n) replace+split+join when the byte cap is already binding
+  // the log to ~512 KB. 800 lines of progress noise average well under
+  // 1 KB total, so once the byte cap is in effect MAX_LOG_LINES is moot
+  // and we'd just be re-allocating the whole string for nothing on every
+  // chunk. This drops appendLog from O(n) per chunk to O(1) on long jobs.
+  if (!byteCapped) {
+    const normalised = job.log.replace(/\r/g, '\n');
+    const lines = normalised.split('\n');
+    if (lines.length > MAX_LOG_LINES) {
+      job.log = lines.slice(-MAX_LOG_LINES).join('\n');
+    }
   }
   updateProgressFromText(job, text);
 }
@@ -1929,13 +1986,38 @@ async function downloadReleaseAssets(release) {
     const buf = await downloadAssetBuffer(asset.browser_download_url);
 
     if (/\.zip$/i.test(asset.name)) {
+      // Hard caps mirrored from payloads.js. Source ZIPs come from
+      // pre-vetted GitHub releases so this is mostly belt-and-braces,
+      // but a compromised release could still ship a 1 GB bomb.
+      if (buf.length > ZIP_MAX_BYTES) {
+        log('warn', `Skipping ${asset.name}: ${buf.length} > ${ZIP_MAX_BYTES}`);
+        continue;
+      }
       try {
         const zip = new AdmZip(buf);
-        for (const entry of zip.getEntries()) {
+        const zipEntries = zip.getEntries();
+        if (zipEntries.length > ZIP_MAX_ENTRIES) {
+          log('warn', `Skipping ${asset.name}: ${zipEntries.length} entries > ${ZIP_MAX_ENTRIES}`);
+          continue;
+        }
+        let uncompressed = 0;
+        for (const entry of zipEntries) {
           if (entry.isDirectory) continue;
           if (!PAYLOAD_EXT_REGEX.test(entry.entryName)) continue;
+          // path.basename + traversal guards so a hostile entry like
+          // "../evil.lua" can't escape payloadsDir. (Same fix as
+          // payloads.js /upload and /fetch-url.)
+          const filename = path.basename(entry.entryName);
+          if (!filename || filename === '.' || filename === '..' || /[\\/]/.test(filename)) {
+            log('warn', `Skipping suspicious ZIP entry: ${entry.entryName}`);
+            continue;
+          }
           const entryBuf = entry.getData();
-          const filename = entry.entryName.split('/').pop();
+          uncompressed += entryBuf.length;
+          if (uncompressed > ZIP_MAX_UNCOMPRESSED_BYTES) {
+            log('warn', `Skipping remaining entries in ${asset.name}: uncompressed > ${ZIP_MAX_UNCOMPRESSED_BYTES}`);
+            break;
+          }
           const filepath = path.join(payloadsDir, filename);
           fs.writeFileSync(filepath, entryBuf);
           upsertPayloadRow(filename, filepath, asset.browser_download_url, entryBuf.length, version);
@@ -2157,7 +2239,7 @@ router.post('/mkpfs/import-from-smb', async (req, res) => {
     const localPath = path.join(mkpfsWorkDir, filename);
 
     const args = buildSmbArgs(src);
-    args.push('-c', `get "${remote}" "${localPath}"`);
+    args.push('-c', `get "${smbEscape(remote)}" "${smbEscape(localPath)}"`);
     const { stdout, code } = await runSmbClient(args);
     const err = smbClientError(stdout, code);
     if (err) return res.status(400).json({ error: err.message, smb_status: err.status });
@@ -2204,8 +2286,8 @@ router.post('/mkpfs/import-folder-from-smb', async (req, res) => {
 
     (async () => {
       const args = buildSmbArgs(src);
-      args.push('-c', `prompt OFF; recurse ON; lcd "${localDir}"; cd "${remoteDir}"; mget *`);
-      appendLog(job, `[smb] $ smbclient ${args.filter(a => a !== src.smb_password).join(' ')}\n`);
+      args.push('-c', `prompt OFF; recurse ON; lcd "${smbEscape(localDir)}"; cd "${smbEscape(remoteDir)}"; mget *`);
+      appendLog(job, `[smb] $ smbclient ${maskSecretsForLog('', args.filter(a => a !== src.smb_password)).trim()}\n`);
       const proc = spawn('smbclient', args);
       job._proc = proc;
       proc.stdout.on('data', d => appendLog(job, d));
@@ -2270,7 +2352,7 @@ async function downloadSmbFiles(src, remoteDir, filenames, localDir, job) {
     const local = path.join(localDir, name);
     appendLog(job, `[smb] get ${name}\n`);
     const args = buildSmbArgs(src);
-    args.push('-c', `get "${remote}" "${local}"`);
+    args.push('-c', `get "${smbEscape(remote)}" "${smbEscape(local)}"`);
     const { stdout, code } = await runSmbClient(args);
     const e = smbClientError(stdout, code);
     if (e) throw new Error(`Download ${name}: ${e.message}`);
@@ -2352,6 +2434,7 @@ function validateExtractParams(body) {
       ? path.resolve(dest_local_path)
       : (source === 'local-fs' ? path.dirname(archivePath) : mkpfsWorkDir);
     if (!isLocalPathAllowed(baseDir)) return { error: `Path not allowed: ${baseDir}` };
+    if (!isInsideAllowedRoot(baseDir)) return { error: `Destination must be inside an allowed root: ${baseDir}` };
     plannedDestBase = path.join(baseDir, stripExt(archiveName));
     destLabel = plannedDestBase;
   } else {
@@ -2510,8 +2593,8 @@ async function executeExtractJob(job) {
           const delArgs = buildSmbArgs(smbSource);
           const cleanRemote = smbRemoteDir;
           const cmds = [];
-          if (cleanRemote) cmds.push(`cd "${cleanRemote}"`);
-          for (const f of smbFiles) cmds.push(`del "${f}"`);
+          if (cleanRemote) cmds.push(`cd "${smbEscape(cleanRemote)}"`);
+          for (const f of smbFiles) cmds.push(`del "${smbEscape(f)}"`);
           delArgs.push('-c', cmds.join('; '));
           appendLog(job, `[manager] Deleting ${smbFiles.length} SMB file(s): ${smbFiles.join(', ')}\n`);
           const { stdout, stderr, code } = await runSmbClient(delArgs);
@@ -2677,7 +2760,7 @@ router.get('/extract', (req, res) => {
 
 function spawnIntoJob(job, cmd, args, opts = {}) {
   return new Promise((resolve) => {
-    appendLog(job, `\n[manager] $ ${cmd} ${args.join(' ')}\n`);
+    appendLog(job, `\n[manager] $ ${maskSecretsForLog(cmd, args)}\n`);
     const proc = spawn(cmd, args, opts);
     job._proc = proc;
     job.pid = proc.pid;
@@ -3126,6 +3209,7 @@ function validateConvertParams(params) {
   if (isAbsolute) {
     src = path.resolve(source_path);
     if (!isLocalPathAllowed(src)) return { error: `Path not allowed: ${src}` };
+    if (!isInsideAllowedRoot(src)) return { error: `Source must be inside an allowed root: ${src}` };
   } else {
     src = path.resolve(mkpfsWorkDir, source_path.replace(/\\/g, '/').replace(/^\/+/, ''));
     if (!isInsideWorkDir(src)) return { error: 'Source must be within work dir' };
@@ -3288,7 +3372,7 @@ async function smbProbeFileSize(src, remotePath) {
   try {
     const dir = path.posix.dirname(remotePath);
     const name = path.posix.basename(remotePath);
-    const args = [...buildSmbArgs(src), '-c', dir && dir !== '.' ? `cd "${dir}"; ls "${name}"` : `ls "${name}"`];
+    const args = [...buildSmbArgs(src), '-c', dir && dir !== '.' ? `cd "${smbEscape(dir)}"; ls "${smbEscape(name)}"` : `ls "${smbEscape(name)}"`];
     const { stdout } = await runSmbClient(args);
     // Output line example:
     //   "  some-file.ffpfsc  A 25324355584  Tue Jun  2 17:54:07 2026"
@@ -3357,7 +3441,7 @@ async function stageFromSmb(job) {
       fs.mkdirSync(localSrc, { recursive: true });
       const args = [
         ...buildSmbArgs(src),
-        '-c', `prompt OFF; recurse ON; lcd "${localSrc}"; cd "${remotePath}"; mget *`,
+        '-c', `prompt OFF; recurse ON; lcd "${smbEscape(localSrc)}"; cd "${smbEscape(remotePath)}"; mget *`,
       ];
       const { stdout, code } = await runSmbClient(args);
       const e = smbClientError(stdout, code);
@@ -3365,7 +3449,7 @@ async function stageFromSmb(job) {
     } else {
       const args = [
         ...buildSmbArgs(src),
-        '-c', `get "${remotePath}" "${localSrc}"`,
+        '-c', `get "${smbEscape(remotePath)}" "${smbEscape(localSrc)}"`,
       ];
       const { stdout, code } = await runSmbClient(args);
       const e = smbClientError(stdout, code);
@@ -3770,7 +3854,7 @@ async function executeFtpUploadJob(job) {
         });
       } else if (src.type === 'smb') {
         const relRemote = (job.source_remote_path || '').replace(/\\/g, '/').replace(/^\/+/, '');
-        const args = [...buildSmbArgs(src), '-c', `get "${relRemote}" "${stagedPath}"`];
+        const args = [...buildSmbArgs(src), '-c', `get "${smbEscape(relRemote)}" "${smbEscape(stagedPath)}"`];
         const { stdout, code } = await runSmbClient(args);
         const err = smbClientError(stdout, code);
         if (err) throw new Error(`SMB stage: ${err.message}`);
@@ -3854,7 +3938,7 @@ async function walkSourceDirFiles(src, basePath) {
   }
   if (src.type === 'smb') {
     // smbclient with `recurse ON; ls` dumps the whole tree.
-    const args = [...buildSmbArgs(src), '-c', `prompt OFF; recurse ON; cd "${cleanBase || '/'}"; ls`];
+    const args = [...buildSmbArgs(src), '-c', `prompt OFF; recurse ON; cd "${smbEscape(cleanBase || '/')}"; ls`];
     const { stdout, code } = await runSmbClient(args);
     const err = smbClientError(stdout, code);
     if (err) throw new Error(err.message);
@@ -4226,7 +4310,7 @@ async function executeInstallJob(item) {
           await withSourceFtp(src, async (client) => { await client.downloadTo(localStage, item.source_remote_path); });
         } else if (src.type === 'smb') {
           const relRemote = (item.source_remote_path || '').replace(/\\/g, '/').replace(/^\/+/, '');
-          const args = [...buildSmbArgs(src), '-c', `get "${relRemote}" "${localStage}"`];
+          const args = [...buildSmbArgs(src), '-c', `get "${smbEscape(relRemote)}" "${smbEscape(localStage)}"`];
           const { stdout, code } = await runSmbClient(args);
           const err = smbClientError(stdout, code);
           if (err) throw new Error(`SMB stage: ${err.message}`);

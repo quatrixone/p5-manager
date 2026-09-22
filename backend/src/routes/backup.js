@@ -119,9 +119,20 @@ router.post('/', (req, res) => {
     }
 
     if (data.payloads && data.payloads.length > 0) {
+      const payloadsRoot = path.resolve(payloadsDir) + path.sep;
       repo.run('DELETE FROM payloads');
       for (const payload of data.payloads) {
-        const filepath = path.join(payloadsDir, payload.filename);
+        // Reject path-traversal filenames before any FS touch. A backup
+        // payload.filename is user-controlled (it's inside the ZIP) and
+        // must be a bare filename inside payloadsDir.
+        const safeName = path.basename(String(payload.filename || ''));
+        if (!safeName || safeName === '.' || safeName === '..' || /[\\/\0]/.test(safeName)) {
+          return res.status(400).json({ error: `Invalid payload filename: ${payload.filename}` });
+        }
+        const filepath = path.resolve(payloadsDir, safeName);
+        if (!filepath.startsWith(payloadsRoot)) {
+          return res.status(400).json({ error: `Invalid payload path: ${payload.filename}` });
+        }
 
         if (payloadFiles[payload.filename]) {
           fs.writeFileSync(filepath, payloadFiles[payload.filename]);
@@ -134,7 +145,7 @@ router.post('/', (req, res) => {
         const size = fs.existsSync(filepath) ? fs.statSync(filepath).size : payload.size;
         repo.run(
           'INSERT INTO payloads (name, filename, filepath, source_url, version, size) VALUES (?, ?, ?, ?, ?, ?)',
-          [payload.name, payload.filename, filepath, payload.source_url || null, payload.version || null, size],
+          [payload.name, safeName, filepath, payload.source_url || null, payload.version || null, size],
         );
       }
     }

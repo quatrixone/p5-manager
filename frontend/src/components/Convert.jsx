@@ -221,7 +221,9 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
   useEffect(() => {
     const id = localStorage.getItem('mm.job.convert');
     if (!id) return;
+    let cancelled = false;
     apiSafe.get(`/convert/convert/${id}`).then(d => {
+      if (cancelled) return;
       if (d && d.id) {
         setJob(d);
         if (d.status === 'running' || d.status === 'pushing') setRunning(true);
@@ -229,6 +231,7 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
         localStorage.removeItem('mm.job.convert');
       }
     });
+    return () => { cancelled = true; };
   }, []);
 
   useEffect(() => {
@@ -297,10 +300,13 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
   useEffect(() => {
     const id = localStorage.getItem('mm.job.folderImport');
     if (!id) return;
+    let cancelled = false;
     apiSafe.get(`/convert/mkpfs/import-folder-from-smb/${id}`).then(d => {
+      if (cancelled) return;
       if (d && d.id) setFolderImportJob(d);
       else localStorage.removeItem('mm.job.folderImport');
     });
+    return () => { cancelled = true; };
   }, []);
 
   useEffect(() => {

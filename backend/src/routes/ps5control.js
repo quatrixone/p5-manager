@@ -1,5 +1,7 @@
 import { Router } from 'express';
 import dgram from 'dgram';
+import net from 'net';
+import { spawn } from 'child_process';
 import { getRepo } from '../db/sqlite.js';
 
 const router = Router();
@@ -297,16 +299,25 @@ router.get('/arp', async (req, res) => {
     if (!ip) {
       return res.status(400).json({ success: false, error: 'IP required' });
     }
+    if (net.isIP(String(ip)) === 0) {
+      return res.status(400).json({ success: false, error: 'Invalid IP address' });
+    }
 
-    // Ping to populate ARP
-    const { exec } = await import('child_process');
+    // Ping to populate ARP. Use spawn with arg-array - the user-supplied ip
+    // must never reach a shell.
     await new Promise((resolve) => {
-      exec(`ping -c 1 -W 1 ${ip}`, () => resolve());
+      const p = spawn('ping', ['-c', '1', '-W', '1', String(ip)]);
+      p.on('exit', () => resolve());
+      p.on('error', () => resolve());
     });
 
-    // Read ARP table
+    // Read ARP table (also via spawn, never via exec of a string).
     const arpOutput = await new Promise((resolve) => {
-      exec(`ip neigh show ${ip}`, (err, stdout) => resolve(err ? '' : stdout));
+      const p = spawn('ip', ['neigh', 'show', String(ip)]);
+      let out = '';
+      p.stdout.on('data', (d) => { out += d.toString(); });
+      p.on('exit', () => resolve(out));
+      p.on('error', () => resolve(''));
     });
 
     const macMatch = arpOutput.match(/lladdr\s+([0-9a-f:]+)/i);

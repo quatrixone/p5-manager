@@ -1,8 +1,13 @@
 import express from 'express';
 import fs from 'fs';
+import path from 'path';
+import net from 'net';
 import { getRepo, log } from '../db/sqlite.js';
+import { payloadsDir } from '../lib/paths.js';
 
 const router = express.Router();
+
+const PAYLOADS_ROOT = path.resolve(payloadsDir) + path.sep;
 
 // pyremoteplay sidecar URL (host-networked in compose). Used as a
 // fallback for the /status probe: TCP payload ports (lua/elf listeners
@@ -68,18 +73,35 @@ router.post('/send', async (req, res) => {
     if (!ip || !filepath) {
       return res.status(400).json({ error: 'IP and filepath required' });
     }
+    if (net.isIP(String(ip)) === 0) {
+      return res.status(400).json({ error: 'Invalid IP address' });
+    }
 
-    if (!fs.existsSync(filepath)) {
+    // Whitelist filepath to payloadsDir - never accept arbitrary host paths.
+    // Resolve symlinks too, so a malicious symlink in payloadsDir cannot
+    // escape the whitelist at read time.
+    let safeFilepath;
+    try {
+      const real = fs.realpathSync(String(filepath));
+      if (!real.startsWith(PAYLOADS_ROOT)) {
+        return res.status(400).json({ error: 'filepath must be inside payloadsDir' });
+      }
+      safeFilepath = real;
+    } catch (_) {
+      return res.status(400).json({ error: 'Invalid filepath' });
+    }
+
+    if (!fs.existsSync(safeFilepath)) {
       return res.status(404).json({ error: 'File not found' });
     }
 
-    const fileData = fs.readFileSync(filepath);
+    const fileData = fs.readFileSync(safeFilepath);
     const targetPort = port || 9021;
 
     log('info', `Sending payload to ${ip}:${targetPort}`);
 
-    const net = await import('net');
-    const client = new net.Socket();
+    const netmod = await import('net');
+    const client = new netmod.Socket();
 
     await new Promise((resolve, reject) => {
       client.connect(targetPort, ip, () => {

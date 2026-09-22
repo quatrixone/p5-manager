@@ -3,6 +3,21 @@ import { usePlatform, platformMatches } from '../contexts/PlatformContext';
 import FolderPickerModal from './UI/FolderPickerModal';
 import { api, apiSafe } from '../lib/api.js';
 
+// Stable per-step React key. Steps arrive from the backend as plain
+// JSON with no identifier (they're just an ordered list inside
+// autoload_sequences.steps), and the user can reorder/duplicate them
+// freely. Using `key={index}` would cause React to reuse the same DOM
+// node for two completely different steps whenever the list is
+// shuffled, which in turn drops focus, blurs the active input mid-
+// edit, and resets local form state. _localId is added once when the
+// step enters our state (load from server, append, duplicate, ...) and
+// then travels with the step through every mutation.
+let _localIdCounter = 1;
+function withLocalId(step) {
+  if (step && step._localId) return step;
+  return { ...step, _localId: `s${_localIdCounter++}` };
+}
+
 // Compact 📁 button rendered next to every local-path input. Lifted out
 // of AutoloadBuilder so its identity is stable across renders (otherwise
 // React would unmount/remount the button on every keystroke in the
@@ -140,10 +155,12 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
     }
   };
 
+  const appendStep = (step) => setSteps([...steps, withLocalId(step)]);
+
   const addStep = (payloadId) => {
     const payload = payloads.find(p => p.id === payloadId);
     if (!payload) return;
-    setSteps([...steps, { type: 'payload', payloadId, name: payload.name }]);
+    appendStep({ type: 'payload', payloadId, name: payload.name });
   };
 
   const addWolStep = () => {
@@ -151,36 +168,36 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
     // warm cache, which holds the PS5 awake for the full TTL (180s) without
     // promoting it to the live SESSIONS pool. The next input_script /
     // rp_session step transparently resumes from the warm cache.
-    setSteps([...steps, { type: 'wol', name: 'Wake / Pre-warm', keep_session: false }]);
+    appendStep({ type: 'wol', name: 'Wake / Pre-warm', keep_session: false });
   };
 
   const addCheckPortStep = () => {
     const fromStep = parseInt(portRetryFrom) || 1;
     const toStep = parseInt(portRetryTo) || 3;
-    setSteps([...steps, {
+    appendStep({
       type: 'check_port',
       port: parseInt(targetPort) || 9021,
       retryFromStep: fromStep,
       retryToStep: toStep,
       name: `Check port ${targetPort} (repeat steps ${fromStep}-${toStep} on fail)`
-    }]);
+    });
   };
 
   const addKlogReadStep = () => {
-    setSteps([...steps, {
+    appendStep({
       type: 'klog_read',
       pattern: klogPattern,
       successMode: klogSuccessMode,
       name: `Read klog ${klogSuccessMode ? 'success' : 'failure'}: "${klogPattern}"`
-    }]);
+    });
   };
 
   const addLuaLogReadStep = () => {
-    setSteps([...steps, {
+    appendStep({
       type: 'lua_log_read',
       pattern: luaLogPattern,
       name: `Read Lua log: "${luaLogPattern}"`
-    }]);
+    });
   };
 
   const addInputScriptStep = (scriptId) => {
@@ -189,24 +206,24 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
     // Embed the literal script content so the step keeps working even if the
     // user later renames/removes the source script (built-ins are stable, but
     // the backend prefers `step.script` over `scriptId` anyway).
-    setSteps([...steps, {
+    appendStep({
       type: 'input_script',
       scriptId: script.id,
       scriptName: script.name,
       script: script.script,
       builtin: typeof script.id === 'string' && script.id.startsWith('builtin:'),
       name: `Input: ${script.name}`
-    }]);
+    });
   };
 
   const addWaitStep = () => {
     const ms = humanToMs(waitTime, waitUnit);
     if (ms <= 0) return;
-    setSteps([...steps, { type: 'wait', duration: ms, name: `Wait ${waitTime} ${waitUnit}` }]);
+    appendStep({ type: 'wait', duration: ms, name: `Wait ${waitTime} ${waitUnit}` });
   };
 
   const addRpSessionStep = (action = 'start') => {
-    setSteps([...steps, {
+    appendStep({
       type: 'rp_session',
       action,
       name: action === 'standby'
@@ -214,26 +231,26 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
         : action === 'stop'
         ? 'Stop Remote Play session'
         : 'Start Remote Play session',
-    }]);
+    });
   };
 
   const addDownloadStep = () => {
     if (!dlUrl.trim()) return;
-    setSteps([...steps, {
+    appendStep({
       type: 'download',
       url: dlUrl.trim(),
       filename: dlFilename.trim() || undefined,
       dest_kind: 'local',
       dest_path: dlDestPath.trim() || '/data/mkpfs',
       name: `Download ${dlFilename || dlUrl.split('/').pop() || dlUrl}`,
-    }]);
+    });
     setDlUrl('');
     setDlFilename('');
   };
 
   const addExtractStep = () => {
     if (!extractLocalPath.trim()) return;
-    setSteps([...steps, {
+    appendStep({
       type: 'extract',
       source: 'local-fs',
       local_path: extractLocalPath.trim(),
@@ -242,35 +259,35 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
       password: extractPwd || '',
       delete_archive_after: extractDeleteAfter,
       name: `Extract ${extractLocalPath.split('/').pop()}`,
-    }]);
+    });
   };
 
   const addFtpUploadStep = () => {
     if (!ftpLocalPath.trim()) return;
-    setSteps([...steps, {
+    appendStep({
       type: 'ftp_upload',
       local_path: ftpLocalPath.trim(),
       dest_path: ftpDestPath.trim() || '/data/homebrew',
       name: `Upload ${ftpLocalPath.split('/').pop()} → ${ftpDestPath || '/data/homebrew'}`,
-    }]);
+    });
   };
 
   const addConvertStep = () => {
     if (!convSourcePath.trim()) return;
-    setSteps([...steps, {
+    appendStep({
       type: 'convert',
       mode: convMode,
       source_path: convSourcePath.trim(),
       output_name: convOutputName.trim() || undefined,
       name: `Convert (${convMode}) ${convSourcePath.split('/').pop()}`,
-    }]);
+    });
   };
 
   const loadTemplate = (tpl) => {
     setEditSequence(null);
     setSequenceName(tpl.name);
     setSelectedProfile(profiles.find(p => p.is_default)?.id?.toString() || profiles[0]?.id?.toString() || '');
-    setSteps(tpl.steps.map(s => ({ ...s })));
+    setSteps(tpl.steps.map(s => withLocalId({ ...s })));
     setScheduleType('none');
     setScheduleEnabled(false);
     setActiveView('create');
@@ -426,7 +443,10 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
     setEditSequence(seq);
     setSequenceName(seq.name);
     setSelectedProfile(seq.profile_id);
-    setSteps(JSON.parse(seq.steps || '[]'));
+    let parsed = [];
+    try { parsed = JSON.parse(seq.steps || '[]'); }
+    catch (_) { parsed = []; onNotification(`Steps for "${seq.name}" contained invalid JSON; starting with empty steps`, 'warn'); }
+    setSteps(parsed.map(withLocalId));
     parseCronToState(seq.schedule_cron);
     setScheduleEnabled(seq.schedule_enabled === 1);
     setActiveView('edit');
@@ -597,7 +617,7 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
                     <div className="flex-1" style={{ minWidth: 0 }}>
                       <div className="font-medium" style={{ wordBreak: 'break-word', fontSize: '0.88rem' }}>{seq.name}</div>
                       <div className="text-muted" style={{ fontSize: '0.72rem', lineHeight: 1.3 }}>
-                        {seq.profile_name || 'Unknown'} • {JSON.parse(seq.steps || '[]').length} steps
+                        {seq.profile_name || 'Unknown'} • {(() => { try { return JSON.parse(seq.steps || '[]').length; } catch (_) { return 0; } })()} steps
                       </div>
                       {seq.schedule_cron && (
                         <div style={{ fontSize: '0.7rem', lineHeight: 1.3, color: seq.schedule_enabled ? 'var(--green)' : 'var(--muted)' }}>
@@ -1172,7 +1192,7 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
                   {steps.map((step, index) => {
                     const editable = ['wait','input_script','payload','check_port','rp_session','download','extract','convert','ftp_upload'].includes(step.type);
                     return (
-                      <div key={index} className="step-card">
+                      <div key={step._localId || index} className="step-card">
                         <div className="step-card-head">
                           <span className="badge" style={{ background: 'var(--panel)', minWidth: 28, textAlign: 'center' }}>
                             {index + 1}

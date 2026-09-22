@@ -84,6 +84,32 @@ const SESSION_REUSE_MS = 5 * 60 * 1000;
 // sidecar before its lock is acquired.
 const inFlightStarts = new Map(); // ip -> Promise<{session_id, ip, ...}>
 
+// Periodic GC for the two Maps above. Entries in ipToSession are valid
+// for SESSION_REUSE_MS (5 min) - we refresh `started` on every hit so
+// the *active* ones never expire, but a console that goes offline
+// silently leaves a stale entry that the next user restart would
+// needlessly try to reuse. Likewise an inFlightStarts entry whose
+// promise was never awaited (e.g. caller crashed mid-handshake) is
+// a permanent dead row. Sweep both every 60 s.
+const SWEEP_INTERVAL_MS = 60 * 1000;
+const sweepTimer = setInterval(() => {
+  const now = Date.now();
+  for (const [ip, v] of ipToSession.entries()) {
+    if (now - v.started > SESSION_REUSE_MS) ipToSession.delete(ip);
+  }
+  // inFlightStarts entries are promises - the .then/.finally inside
+  // ensureSessionForIp() removes them on settlement, so anything still
+  // here after the handshake finished is leaked state (we never
+  // resolved the deferred). Drop them so a future caller can start a
+  // fresh handshake.
+  for (const [ip, p] of inFlightStarts.entries()) {
+    // A settled promise has a non-undefined _settled flag set below.
+    if (p._settled) inFlightStarts.delete(ip);
+  }
+}, SWEEP_INTERVAL_MS);
+// Unref so the sweep timer never keeps the event loop alive on its own.
+if (typeof sweepTimer.unref === 'function') sweepTimer.unref();
+
 async function sidecar(method, urlPath, body, { timeout = 30000 } = {}) {
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), timeout);
@@ -258,12 +284,16 @@ async function ensureSessionForIp(ip, opts = {}) {
   })();
 
   // Tag the in-flight promise with its media mode so a concurrent caller
-  // asking for a superset skips the dedupe.
+  // asking for a superset skips the dedupe. _settled is checked by the
+  // periodic sweep above so a leaked promise (e.g. the original caller
+  // crashed and we never made it to the finally) doesn't pin the entry
+  // forever.
   work._enableVideo = enableVideo;
   inFlightStarts.set(ip, work);
   try {
     return await work;
   } finally {
+    work._settled = true;
     inFlightStarts.delete(ip);
   }
 }

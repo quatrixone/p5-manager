@@ -141,10 +141,15 @@ function detectConsoleTypeFromFilename(name) {
 // upload them through the UI. Idempotent: re-running the scan only adds
 // rows for unknown filenames, every known file is left alone.
 //
+// Files that happen to match an ESSENTIAL_PAYLOADS filename get that
+// entry's `url` stamped in as source_url, so a file that was already on
+// disk (e.g. restored from a volume) still gets the Check/Update buttons
+// in the UI instead of looking like a manual upload with no known origin.
+//
 // Returns the list of newly-registered filenames so the caller (typically
 // the GET /api/payloads route) can log a single "auto-registered N files"
 // line at boot or on first request.
-export function scanPayloadsDir() {
+export async function scanPayloadsDir() {
   const added = [];
   if (!fs.existsSync(payloadsDir)) return added;
 
@@ -168,6 +173,15 @@ export function scanPayloadsDir() {
     return added;
   }
 
+  const essentialByFilename = new Map();
+  try {
+    for (const entry of await getEssentialPayloads()) {
+      if (entry.filename) essentialByFilename.set(entry.filename, entry);
+    }
+  } catch (e) {
+    log('error', `scanPayloadsDir: getEssentialPayloads failed: ${e.message}`);
+  }
+
   for (const ent of entries) {
     if (!ent.isFile()) continue;
     const name = ent.name;
@@ -181,15 +195,17 @@ export function scanPayloadsDir() {
       size = fs.statSync(filepath).size;
     } catch (_) { /* keep size null */ }
 
+    const essential = essentialByFilename.get(name);
+
     try {
       insertPayload({
         name,
         filename: name,
         filepath,
-        source_url: null,
+        source_url: essential?.url || null,
         size,
         version: null,
-        console_type: detectConsoleTypeFromFilename(name),
+        console_type: essential?.console_type || detectConsoleTypeFromFilename(name),
       });
       added.push(name);
     } catch (e) {
@@ -216,7 +232,7 @@ export async function ensureDefaultPayloads({ force = false } = {}) {
   // restarted on top of a populated `data/payloads/` volume — without
   // this, every essential payload was being re-downloaded into the
   // already-present file (wasteful but otherwise harmless).
-  try { scanPayloadsDir(); } catch (e) { log('error', `scanPayloadsDir at boot failed: ${e.message}`); }
+  try { await scanPayloadsDir(); } catch (e) { log('error', `scanPayloadsDir at boot failed: ${e.message}`); }
 
   const list = await getEssentialPayloads();
   for (const entry of list) {

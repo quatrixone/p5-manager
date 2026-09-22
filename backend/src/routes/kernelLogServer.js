@@ -10,6 +10,12 @@ let clients = [];
 let receivedLogs = [];
 let ps5Connection = null;
 let ps5Ip = null;
+// Per-IP connect promise queue. connectToPs5Once destroys the old socket
+// before opening a new one, but if two HTTP requests race, both can create
+// a fresh socket before either has called destroy() — leaking the first.
+// Serialising on this promise makes the second caller wait for the first
+// to settle, then check whether the desired IP is already connected.
+const connectLock = { current: null };
 
 function startKernelLogServer(port = 3232) {
   if (kernelServer) {
@@ -76,8 +82,16 @@ function stopKernelLogServer() {
 
 function connectToPs5Once(ip, port = 3232) {
   return new Promise((resolve, reject) => {
+    // If a connect is already in flight or succeeded for the same IP, the
+    // second caller can short-circuit. This races the destroy() below but
+    // is harmless — destroy() simply becomes a no-op on a settled socket.
+    if (ps5Connection && ps5Ip === ip) {
+      resolve(true);
+      return;
+    }
     if (ps5Connection) {
       try { ps5Connection.destroy(); } catch (_) {}
+      ps5Connection = null;
     }
 
     ps5Ip = ip;
@@ -133,21 +147,39 @@ function connectToPs5Once(ip, port = 3232) {
   });
 }
 
+// Serialize concurrent connect attempts. Two /connect calls in quick
+// succession would otherwise race in connectToPs5Once (the second would
+// destroy the first's socket mid-handshake). The second caller awaits the
+// first, then the if-already-connected check inside the lock short-circuits.
+async function connectToPs5(ip, port = 3232, maxAttempts = 6) {
+  if (connectLock.current) {
+    try { await connectLock.current; } catch (_) { /* swallow previous error */ }
+  }
+  const task = (async () => {
+    let lastErr;
+    for (let i = 1; i <= maxAttempts; i++) {
+      try {
+        return await connectToPs5Once(ip, port);
+      } catch (err) {
+        lastErr = err;
+        log('info', `Kernel log connect attempt ${i}/${maxAttempts} failed: ${err.message}`);
+        if (i < maxAttempts) await new Promise(r => setTimeout(r, 1500));
+      }
+    }
+    throw lastErr || new Error('kernel log connect failed');
+  })();
+  connectLock.current = task;
+  try {
+    return await task;
+  } finally {
+    if (connectLock.current === task) connectLock.current = null;
+  }
+}
+
 // Wraps the single-shot connect with bounded retries so we tolerate klogsrv
 // still booting up after the elfldr send completes (typically takes 1-3 s).
-async function connectToPs5(ip, port = 3232, maxAttempts = 6) {
-  let lastErr;
-  for (let i = 1; i <= maxAttempts; i++) {
-    try {
-      return await connectToPs5Once(ip, port);
-    } catch (err) {
-      lastErr = err;
-      log('info', `Kernel log connect attempt ${i}/${maxAttempts} failed: ${err.message}`);
-      if (i < maxAttempts) await new Promise(r => setTimeout(r, 1500));
-    }
-  }
-  throw lastErr || new Error('kernel log connect failed');
-}
+// (Implementation above; the connectLock serialises concurrent callers so
+// only one TCP handshake is ever in flight.)
 
 function disconnectFromPs5() {
   if (ps5Connection) {

@@ -271,6 +271,16 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
   // declared yet at this point of the function body.
   const [profileId, setProfileId] = useState('');
   const profile = useMemo(() => profiles.find(p => String(p.id) === String(profileId)) || null, [profiles, profileId]);
+  // Optimistic overlay on top of the parent's profile object. Pair/OAuth/
+  // forget flows used to mutate `profile` in place, which is a React
+  // anti-pattern (it bypasses setState and corrupts the parent's
+  // `profiles` array). Instead we hold an overlay here that is reset
+  // whenever the profile id changes, and patch it from the action handlers.
+  // `profileView` (renamed from `view` to avoid clashing with the
+  // component's `view` prop) is what the rest of the component reads.
+  const [localProfile, setLocalProfile] = useState(null);
+  useEffect(() => { setLocalProfile(null); }, [profile?.id]);
+  const profileView = localProfile ? { ...profile, ...localProfile } : profile;
 
   const [health, setHealth] = useState(null);
   const [loginUrl, setLoginUrl] = useState('');
@@ -376,6 +386,17 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
     const id = setInterval(() => setRecElapsed(Date.now() - recStartRef.current), 250);
     return () => clearInterval(id);
   }, [recording]);
+
+  // On unmount, drop any in-flight recording state. Without this, a quick
+  // tab switch while holding a button would leave `recording` true (the
+  // pill still rendered) and the buffer would keep growing for any late
+  // sendInput invocations before React finally tears the component down.
+  useEffect(() => {
+    return () => {
+      recBufferRef.current = [];
+      setRecording(false);
+    };
+  }, []);
 
   // Fetch BOTH user-saved scripts and built-in macros. Built-in entries are
   // tagged so the save flow can route them to /api/input-scripts/builtin/:id
@@ -613,8 +634,8 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profile?.ip_address]);
 
-  const accountLinked = !!profile?.psn_account_id;
-  const paired = !!profile?.rp_user_profile;
+  const accountLinked = !!profileView?.psn_account_id;
+  const paired = !!profileView?.rp_user_profile;
   const liveSession = sessionState === 'connected';
 
   // Setup steps (1 PSN link, 2 PIN pair) collapse once both are done so the
@@ -660,10 +681,10 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
       if (!r.success) throw new Error(r.error);
       onNotification?.(`Linked PSN account: ${r.online_id || r.account_id}`, 'success');
       setRedirectUrl('');
-      // Mutate local snapshot for immediate UI feedback, then ask the parent
-      // to refetch profiles so the new field reaches the rest of the tree.
-      profile.psn_account_id = r.account_id;
-      profile.psn_online_id = r.online_id;
+      // Optimistic overlay — let `view` reflect the linked state immediately,
+      // then ask the parent to refetch profiles so the new field reaches the
+      // rest of the tree and our overlay resets cleanly on the next render.
+      setLocalProfile((prev) => ({ ...(prev || profile), psn_account_id: r.account_id, psn_online_id: r.online_id }));
       onProfilesChanged?.();
     } catch (e) {
       onNotification?.(`OAuth exchange failed: ${e.message}`, 'error');
@@ -678,7 +699,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
   // path to the Link Device screen ("Settings → Remote Play Connection
   // Settings → Add Device") and the PIN is also 8 digits but lives in a
   // different sub-menu — we surface both so the user can't get lost.
-  const isPs4Profile = profile?.console_type === 'ps4';
+  const isPs4Profile = profileView?.console_type === 'ps4';
   // rp-get-pin.elf is a PS5-only payload (ptrace path uses PS5 SDK + 12.70
   // kernel offsets), so the Auto-fetch PIN button only appears on PS5
   // profiles. PS4 profiles still get the manual 8-digit PIN entry below.
@@ -704,7 +725,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
       if (!r.success) throw new Error(r.error);
       onNotification?.(`${pairConsoleLabel} paired for Remote Play`, 'success');
       setPin('');
-      profile.rp_user_profile = JSON.stringify(r.profile);
+      setLocalProfile((prev) => ({ ...(prev || profile), rp_user_profile: JSON.stringify(r.profile) }));
       onProfilesChanged?.();
     } catch (e) {
       onNotification?.(`Pair failed: ${e.message}`, 'error');
@@ -735,11 +756,16 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
         setAutoPinResult({ pin: r.pin, account_id: r.account_id, online_id: r.online_id, log: r.log });
         // Backend now persists account_id + online_id onto the profile when
         // the PS5 is PSN-signed-in (rp-get-pin reads them straight from
-        // regmgr). Mirror them on the local profile object so the "PSN
+        // regmgr). Mirror them in the optimistic overlay so the "PSN
         // Activated" step ticks immediately without waiting for the next
         // profiles refresh, then trigger a refresh so other tabs see it.
-        if (r.account_id) profile.psn_account_id = r.account_id;
-        if (r.online_id) profile.psn_online_id = r.online_id;
+        if (r.account_id || r.online_id) {
+          setLocalProfile((prev) => ({
+            ...(prev || profile),
+            ...(r.account_id ? { psn_account_id: r.account_id } : {}),
+            ...(r.online_id ? { psn_online_id: r.online_id } : {}),
+          }));
+        }
         if (r.account_id) onProfilesChanged?.();
         const who = r.online_id || (r.account_id ? `${r.account_id.slice(0, 12)}…` : null);
         onNotification?.(
@@ -793,10 +819,15 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
       setOffactResult(r);
 
       if (r.success) {
-        // Reflect the new account locally so the rest of the UI updates
-        // without waiting for the parent's profile refetch.
-        if (r.account_id) profile.psn_account_id = r.account_id;
-        if (r.user) profile.psn_online_id = r.user;
+        // Optimistic overlay so the rest of the UI updates without waiting
+        // for the parent's profile refetch.
+        if (r.account_id || r.user) {
+          setLocalProfile((prev) => ({
+            ...(prev || profile),
+            ...(r.account_id ? { psn_account_id: r.account_id } : {}),
+            ...(r.user ? { psn_online_id: r.user } : {}),
+          }));
+        }
         onProfilesChanged?.();
 
         const verb = r.activated === 'already' ? 'already activated' : 'activated';
@@ -825,7 +856,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
     if (!confirm('Forget Remote Play credentials on this profile?')) return;
     try {
       await api.post(`${RP}/forget`, { profile_id: profile.id });
-      profile.rp_user_profile = null;
+      setLocalProfile((prev) => ({ ...(prev || profile), rp_user_profile: null }));
       onProfilesChanged?.();
       onNotification?.('Forgotten', 'success');
     } catch (e) {
@@ -848,8 +879,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
     try {
       const r = await api.post(`${RP}/forget-account`, { profile_id: profile.id });
       if (!r.success) throw new Error(r.error || 'forget-account failed');
-      profile.psn_account_id = null;
-      profile.psn_online_id = null;
+      setLocalProfile((prev) => ({ ...(prev || profile), psn_account_id: null, psn_online_id: null }));
       onProfilesChanged?.();
       onNotification?.('PSN account forgotten', 'success');
     } catch (e) {
@@ -1627,7 +1657,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
         {profile && (
           <div className="flex items-center justify-between flex-wrap gap-sm">
             <div className="text-xs text-muted">
-              PSN: {profile.psn_online_id || profile.psn_account_id || <em>not linked</em>}
+              PSN: {profileView?.psn_online_id || profileView?.psn_account_id || <em>not linked</em>}
               {' · '}
               RP: {paired ? <span style={{ color: 'var(--green)' }}>paired</span> : <em>not paired</em>}
             </div>
@@ -1784,7 +1814,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
         <Section
           title={accountLinked ? '1 · PSN account ✓' : '1 · Link PSN account'}
           hint={accountLinked
-            ? `Linked as ${profile?.psn_online_id || profile?.psn_account_id}. Re-link below if you switch PSN accounts. (Step 0 fills this automatically when it succeeds.)`
+            ? `Linked as ${profileView?.psn_online_id || profileView?.psn_account_id}. Re-link below if you switch PSN accounts. (Step 0 fills this automatically when it succeeds.)`
             : "Sony OAuth → opens in a new tab. Sign in, then when the page goes blank or to a 'redirect' URL, copy the FULL URL from the browser address bar and paste below. (You can skip this if step 0 already captured a PSN-signed-in console.)"}
         >
           <div className="flex gap-sm flex-wrap">
@@ -1921,7 +1951,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
 
           {accountLinked && (
             <div className="text-sm" style={{ color: 'var(--muted)' }}>
-              ✓ Linked PSN: <b>{profile?.psn_online_id || profile?.psn_account_id}</b>
+              ✓ Linked PSN: <b>{profileView?.psn_online_id || profileView?.psn_account_id}</b>
               {' · '}
               <button
                 type="button"

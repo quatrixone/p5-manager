@@ -40,7 +40,11 @@ export class JobQueue {
     this.name = opts.name;
     this.log = opts.log || ((lvl, msg) => (console[lvl] || console.log)(msg));
     this.scheduleSave = opts.scheduleSave || (() => {});
-    this.tickIntervalMs = opts.tickIntervalMs ?? 2000;
+    const tickInterval = opts.tickIntervalMs ?? 2000;
+    if (!Number.isFinite(tickInterval) || tickInterval <= 0) {
+      throw new Error(`tickIntervalMs must be a positive finite number, got ${tickInterval}`);
+    }
+    this.tickIntervalMs = tickInterval;
     this.pickIntervalMs = opts.pickIntervalMs ?? 100;
     this.failIntervalMs = opts.failIntervalMs ?? 50;
     this.liveStatuses = new Set(opts.liveStatuses || ['running']);
@@ -73,18 +77,30 @@ export class JobQueue {
     this._workerRunning = false;
     this._workerStartedAt = 0;
     this._interval = null;
+    // Set of pending setTimeout handles from _scheduleTick so we can clear
+    // them on stop() (otherwise they keep the queue + event loop alive).
+    this._tickTimers = new Set();
+    // Reentrancy guard: tick() can be entered from setInterval and from
+    // _endTick's setTimeout at the same time. We want only one to run.
+    this._ticking = false;
+    this._stopped = false;
   }
 
   start() {
+    if (this._stopped) return;
     if (this._interval) return;
     this._interval = setInterval(() => this.tick(), this.tickIntervalMs);
     if (typeof this._interval.unref === 'function') this._interval.unref();
   }
 
   stop() {
-    if (!this._interval) return;
-    clearInterval(this._interval);
-    this._interval = null;
+    this._stopped = true;
+    if (this._interval) {
+      clearInterval(this._interval);
+      this._interval = null;
+    }
+    for (const t of this._tickTimers) clearTimeout(t);
+    this._tickTimers.clear();
   }
 
   // Re-arms the per-queue setInterval ticker; same scheduling shape as the old
@@ -92,7 +108,13 @@ export class JobQueue {
   // delivered by `setTimeout` so the worker fires from a microtask-clean
   // stack.
   _scheduleTick(delay) {
-    setTimeout(() => this.tick(), delay);
+    if (this._stopped) return;
+    const t = setTimeout(() => {
+      this._tickTimers.delete(t);
+      this.tick();
+    }, delay);
+    if (typeof t.unref === 'function') t.unref();
+    this._tickTimers.add(t);
   }
 
   _runWatchdog() {
@@ -119,81 +141,87 @@ export class JobQueue {
   }
 
   tick() {
-    this._runWatchdog();
-    if (this._workerRunning) return;
-    if (this.paused) return;
-    if (this.items.length === 0) return;
-    if (this.shouldBlockRun(this)) return;
-
-    const next = this.items.find(q => q.status === 'queued');
-    if (!next) return;
-
-    this._workerRunning = true;
-    this._workerStartedAt = Date.now();
-    if (this.startingStatus) next.status = this.startingStatus;
-
-    let prep;
+    if (this._ticking) return;
+    this._ticking = true;
     try {
-      prep = this.validate(next.params || next);
-    } catch (err) {
-      next.status = 'failed';
-      next.error = err.message;
-      next.finished_at = new Date().toISOString();
-      this._endTick(this.failIntervalMs);
-      return;
-    }
-    if (prep && prep.error) {
-      next.status = 'failed';
-      next.error = prep.error;
-      next.finished_at = new Date().toISOString();
-      this._endTick(this.failIntervalMs);
-      return;
-    }
+      this._runWatchdog();
+      if (this._workerRunning) return;
+      if (this.paused) return;
+      if (this.items.length === 0) return;
+      if (this.shouldBlockRun(this)) return;
 
-    let job = null;
-    try {
-      if (this.buildJob) {
-        job = this.buildJob(next.params || next, prep || {});
-        if (this.jobsMap) this.jobsMap.set(job.id, job);
-        next.status = this.runningStatus;
-        next.job_id = job.id;
-        next.started_at = job.started_at;
-        next._job = job;
-      } else {
-        next.status = this.runningStatus;
-        next.started_at = new Date().toISOString();
-      }
-    } catch (err) {
-      next.status = 'failed';
-      next.error = err.message;
-      next.finished_at = new Date().toISOString();
-      this._endTick(this.failIntervalMs);
-      return;
-    }
+      const next = this.items.find(q => q.status === 'queued');
+      if (!next) return;
 
-    const target = job || next;
-    let p;
-    try {
-      p = this.execute(target);
-    } catch (err) {
-      next.status = 'failed';
-      next.error = err.message;
-      next.finished_at = new Date().toISOString();
-      this._endTick(this.failIntervalMs);
-      return;
-    }
-    Promise.resolve(p)
-      .then(() => {
-        if (job && this.finalize) this.finalize(next, job);
-      })
-      .catch(err => {
+      this._workerRunning = true;
+      this._workerStartedAt = Date.now();
+      if (this.startingStatus) next.status = this.startingStatus;
+
+      let prep;
+      try {
+        prep = this.validate(next.params || next);
+      } catch (err) {
         next.status = 'failed';
         next.error = err.message;
         next.finished_at = new Date().toISOString();
-      })
-      .finally(() => {
-        this._endTick(this.pickIntervalMs);
-      });
+        this._endTick(this.failIntervalMs);
+        return;
+      }
+      if (prep && prep.error) {
+        next.status = 'failed';
+        next.error = prep.error;
+        next.finished_at = new Date().toISOString();
+        this._endTick(this.failIntervalMs);
+        return;
+      }
+
+      let job = null;
+      try {
+        if (this.buildJob) {
+          job = this.buildJob(next.params || next, prep || {});
+          if (this.jobsMap) this.jobsMap.set(job.id, job);
+          next.status = this.runningStatus;
+          next.job_id = job.id;
+          next.started_at = job.started_at;
+          next._job = job;
+        } else {
+          next.status = this.runningStatus;
+          next.started_at = new Date().toISOString();
+        }
+      } catch (err) {
+        next.status = 'failed';
+        next.error = err.message;
+        next.finished_at = new Date().toISOString();
+        this._endTick(this.failIntervalMs);
+        return;
+      }
+
+      const target = job || next;
+      let p;
+      try {
+        p = this.execute(target);
+      } catch (err) {
+        next.status = 'failed';
+        next.error = err.message;
+        next.finished_at = new Date().toISOString();
+        this._endTick(this.failIntervalMs);
+        return;
+      }
+      Promise.resolve(p)
+        .then(() => {
+          if (job && this.finalize) this.finalize(next, job);
+        })
+        .catch(err => {
+          next.status = 'failed';
+          next.error = err.message;
+          next.finished_at = new Date().toISOString();
+        })
+        .finally(() => {
+          this._endTick(this.pickIntervalMs);
+        });
+    } finally {
+      this._ticking = false;
+    }
   }
 
   _endTick(delay) {
