@@ -1,0 +1,22 @@
+[
+  {
+    "id": "builtin:close-game",
+    "name": "Close current game",
+    "description": "Open Control Center, navigate to the running game card and pick Close Game.",
+    "script": "ps\nwait 400\ndown\nwait 400\nright\nwait 400\ncross\nwait 400\ncross\nwait 400\ndown\nwait 400\ndown\nwait 400\ncross\nwait 2500\nps\nwait 400\ndown\nwait 400\nleft\nwait 400\ncross"
+  },
+  {
+    "id": "builtin:open-user-guide",
+    "name": "Open User's Guide",
+    "description": "Home → Settings → Guide & Tips, Health and Safety, and Other Information → User's Guide. Verified live via Remote Play preview.",
+    "notes": "Home → Settings (gear icon, top-right) → \"Guide & Tips, Health and Safety, and Other Information\" → User's Guide.\n\nVerified live on real hardware via Remote Play (input + MJPEG preview, one step at a time) on FW 12.70 - not dead-reckoned:\n  ps              -> Home\n  up, cross       -> opens Settings directly (gear icon was already reachable/focused from Home's top-right strip; no extra navigation needed to reach it)\n  up, up          -> from Settings' 3rd item (Network) up to the 1st item, \"Guide & Tips, Health and Safety, and Other Information\"\n  cross           -> opens that submenu (left column: Guide and Tips / Health and Safety / Legal Information; right column starts on \"User's Guide\")\n  right, cross    -> moves into the right column and opens User's Guide\n\nNote: on a jailbroken console the User's Guide webview may be redirected to a local/hosted loader page instead of Sony's actual documentation (a common homebrew setup) - that's expected, not a sign this script landed wrong.",
+    "script": "ps\nwait 800\ndown\nwait 400\ncross\nwait 1000\nup\nwait 400\nright 3x\nwait 400\ncross\nwait 800\nup 2x\nwait 400\ncross\nwait 400\nright\ncross\ndown 3x\ncross\nup 2x\ncross"
+  },
+  {
+    "id": "builtin:restart-ps5",
+    "name": "Restart PS5",
+    "description": "Long-press PS to open the Power menu, then Restart PS5.",
+    "notes": "Holding PS for ~1500 ms opens the PS5 Power overlay, where the default highlighted option is \"Enter Rest Mode\". From there:\n  one  down + cross  -> Restart PS5\n  just       cross    -> Enter Rest Mode\n  two  down + cross  -> Turn Off PS5\nTweak the `ps` hold duration or the `wait`s if your console reacts faster or slower - a hold that's too short just opens Control Center instead of the Power overlay.",
+    "script": "ps 1500\nwait 800\ndown\nwait 400\ncross\nwait 2000"
+  }
+]

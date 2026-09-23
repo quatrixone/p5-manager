@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, apiSafe } from '../lib/api.js';
+import { usePs5Status } from '../contexts/Ps5StatusContext';
+import { parseLine, buildOskInputs, AVAILABLE_COMMANDS } from '../lib/inputScriptDsl.js';
+import ScriptRunner from './ScriptRunner';
 
 const API = '/api/remoteplay';
 // Paths used with `api.*` are relative to /api, so the Remote Play sidecar's
@@ -255,7 +258,7 @@ function AnalogStick({ side, onChange, size = 130, showLabel = true, compact = f
  * stays visible in every view because it's identity context — without it
  * the rest of the UI doesn't know which PS5 it's talking to.
  */
-export default function RemotePlay({ profiles, onNotification, onProfilesChanged, onScriptsChange, view = 'all' }) {
+export default function RemotePlay({ profiles, onNotification, onProfilesChanged, onScriptsChange, scripts, view = 'all' }) {
   // Derived flags for which slices of the UI tree to actually render.
   // Doing it once up here keeps the JSX below readable.
   const showMainBlock  = view === 'all' || view === 'main';
@@ -338,6 +341,45 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
   // browser to actually re-open the stream instead of using the cached
   // connection. Bumped on every successful start.
   const [videoNonce, setVideoNonce] = useState(0);
+
+  // ─── Input Scripts tab (script list/editor + step-by-step runner) ──────
+  // Lives inside the Live Session card, sharing the SAME video img/session
+  // as the Control tab - see the sessionViewTab switch below. ScriptRunner
+  // is rendered as a direct child here (not a sibling anymore), so its
+  // "👣 Step" buttons call openStepMode() directly via the onRequestStep
+  // prop - no more lifting state up through PS5Control.
+  const [sessionViewTab, setSessionViewTab] = useState('control'); // 'control' | 'scripts' | 'payloads'
+  const [stepPanel, setStepPanel] = useState(null); // { name, steps, index } | null
+  const [stepBusy, setStepBusy] = useState(false);
+  // DOM node per step row (keyed by index), so the current step can be
+  // scrolled into view + focused automatically whenever the cursor moves
+  // (Next / Prev / Restart / Replay all just change stepPanel.index).
+  const stepLineRefs = useRef([]);
+  useEffect(() => {
+    if (!stepPanel) return;
+    const el = stepLineRefs.current[stepPanel.index];
+    if (el) {
+      el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      el.focus?.({ preventScroll: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stepPanel?.index]);
+  const [stepMobileTab, setStepMobileTab] = useState('video');
+  const [editingStepIdx, setEditingStepIdx] = useState(null);
+  const [stepDraftText, setStepDraftText] = useState('');
+  const [stepDraftError, setStepDraftError] = useState('');
+  const [addAfterIdx, setAddAfterIdx] = useState(null); // -1 = top, else step index, null = closed
+  const [addDraftText, setAddDraftText] = useState('');
+  const [addDraftError, setAddDraftError] = useState('');
+
+  // ─── Payloads tab ───────────────────────────────────────────────────────
+  // Send a payload to the console without leaving PS Remote Play. Mirrors
+  // PayloadList.jsx's send action (POST /payloads/send/:id) but scoped to
+  // whatever profile this Remote Play view is already talking to.
+  const [payloadsList, setPayloadsList] = useState([]);
+  const [payloadsLoaded, setPayloadsLoaded] = useState(false);
+  const [sendingPayloadId, setSendingPayloadId] = useState(null);
+
   // Fullscreen video + touch-controls overlay. `fsActive` is the *user
   // intent* (toggled by the button). We also listen to fullscreenchange so
   // Esc / browser back / OS gestures collapse the overlay cleanly.
@@ -480,15 +522,53 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
     fetchExistingScripts();
   };
 
-  // Open the review modal in "edit only" mode (no recording). Used by the
-  // ✎ button so the user can tweak built-in or saved scripts in place
-  // without having to leave the Remote Play tab.
-  const openEditOnly = async () => {
-    const scripts = await fetchExistingScripts();
-    setRecRecordedBody('');
-    setRecScriptText(buildReviewBody(recAppendId, scripts, ''));
-    setRecReviewOpen(true);
+  // ─── Run-script picker (▶ button) ───────────────────────────────────────
+  // Lists every saved + built-in script; picking one hands off to the
+  // existing step-through runner (openStepMode, defined below) so playback
+  // against the live session/video is the one already-tested code path -
+  // no separate "auto-run a whole script" engine duplicated here.
+  const [runPickerOpen, setRunPickerOpen] = useState(false);
+  const openRunPicker = async () => {
+    await fetchExistingScripts();
+    setRunPickerOpen(true);
   };
+  const closeRunPicker = () => setRunPickerOpen(false);
+  const runPickedScript = (s) => {
+    setRunPickerOpen(false);
+    openStepMode(s.script, s.name, false, { id: s.id, kind: s.kind });
+  };
+
+  // ─── Auto-hiding video overlay controls ─────────────────────────────────
+  // The REC/▶ cluster sitting on top of the video shrinks to a small dot
+  // after a few seconds of no interaction so it doesn't permanently
+  // obscure the preview; hovering (desktop) or tapping the dot (mobile)
+  // brings the full row back for another few seconds. Never hides while
+  // actively recording - the elapsed-time HUD needs to stay legible.
+  const [controlsVisible, setControlsVisible] = useState(true);
+  const controlsHideTimerRef = useRef(null);
+  const showControls = () => {
+    setControlsVisible(true);
+    if (controlsHideTimerRef.current) clearTimeout(controlsHideTimerRef.current);
+    if (!recording) {
+      controlsHideTimerRef.current = setTimeout(() => setControlsVisible(false), 3000);
+    }
+  };
+  useEffect(() => {
+    showControls();
+    return () => { if (controlsHideTimerRef.current) clearTimeout(controlsHideTimerRef.current); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  // Force the row back open the moment recording starts, and resume the
+  // auto-hide countdown the moment it stops.
+  useEffect(() => {
+    if (recording) {
+      setControlsVisible(true);
+      if (controlsHideTimerRef.current) clearTimeout(controlsHideTimerRef.current);
+    } else {
+      showControls();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [recording]);
 
   const stopRecording = async () => {
     setRecording(false);
@@ -571,16 +651,55 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
   const [warmCache, setWarmCache] = useState(null); // { ttl_s, video } | null
   const [wakeBusy, setWakeBusy] = useState(false);
 
+  // Shared status (see Ps5StatusContext.jsx): the topbar and PS5 Control
+  // used to run two independent pollers asking two different questions
+  // about the same console, which is what made the topbar dot flash red
+  // the instant "Wake PS5" was clicked even though the console really was
+  // waking up. The provider is scoped to the app's DEFAULT profile (same
+  // one the topbar shows); when this component's own profile picker (see
+  // `profileId` state, below) is pointed at that same profile - the
+  // common case - we read the shared state instead of polling again
+  // ourselves. If the user picked a *different* profile here, the shared
+  // state doesn't apply to it, so we fall back to a local one-off check
+  // (ps5StatusCtx.profileId won't match `profile.id` in that case).
+  const ps5StatusCtx = usePs5Status();
+  const usingSharedStatus = ps5StatusCtx.profileId != null && profile?.id === ps5StatusCtx.profileId;
+
   // Last DDP discover snapshot for the current profile. Lets us show the
   // user *why* a Start failed (PS5 in standby? offline?) and pick the right
   // recovery suggestion without them having to read the sidecar logs.
   //   { status: 'Ok' | 'Standby', code, runningApp, hostName } | { error }
-  const [ps5State, setPs5State] = useState(null);
+  const [localPs5State, setLocalPs5State] = useState(null);
   const [ps5Busy, setPs5Busy] = useState(false);
+
+  const ps5State = usingSharedStatus
+    ? (ps5StatusCtx.ddp?.success
+        ? {
+            status: ps5StatusCtx.ddp.status || 'Unknown',
+            code: ps5StatusCtx.ddp.status_code,
+            runningApp: ps5StatusCtx.ddp.running_app || null,
+            hostName: ps5StatusCtx.ddp.host_name || null,
+          }
+        : (ps5StatusCtx.ddp ? { error: ps5StatusCtx.ddp.error || 'unreachable' } : null))
+    : localPs5State;
   // Ref mirrors so the polling effect always sees the latest values without
   // having to re-subscribe (which would reset the interval timer).
   const sessionStateRef = useRef('idle');
   const userStoppedRef = useRef(false);
+  // Countdown shown on the Start button while /sessions/start is stuck in
+  // the sidecar's 45 s post-disconnect-lock retry (see retryStatus poll
+  // effect below). null when not currently retrying.
+  const [retryStatus, setRetryStatus] = useState(null);
+  // Timestamp until which the quick-status poll (tick(), below) should
+  // ignore an "active" response instead of re-adopting it. Without this,
+  // clicking Stop races the next poll tick: the soft-stop call on the
+  // sidecar hasn't fully propagated yet, quick-status still reports the
+  // old session as active, tick() re-adopts it and flips sessionState
+  // back to 'connected' - which then permanently disables the Wake
+  // button (disabled whenever liveSession is true) until something else
+  // clears it. Reproduced via repeated automated Rest/Wake/Start/Stop
+  // cycling: ~50% of cycles hit this race with the bare 6 s poll interval.
+  const stoppedUntilRef = useRef(0);
   useEffect(() => { sessionStateRef.current = sessionState; }, [sessionState]);
 
   useEffect(() => {
@@ -599,7 +718,8 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
   // timeout up to 8 s when the console is unreachable, so we never poll it
   // tightly: only on profile change and after session lifecycle events.
   const refreshPs5State = async (silent = true) => {
-    if (!profile?.ip_address) { setPs5State(null); return null; }
+    if (usingSharedStatus) return ps5StatusCtx.refresh(silent);
+    if (!profile?.ip_address) { setLocalPs5State(null); return null; }
     if (!silent) setPs5Busy(true);
     try {
       const r = await api.get(`${RP}/discover?ip=${encodeURIComponent(profile.ip_address)}`);
@@ -610,29 +730,29 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
           runningApp: r.running_app || null,
           hostName: r.host_name || null,
         };
-        setPs5State(next);
+        setLocalPs5State(next);
         return next;
       }
       const err = { error: r.error || 'unreachable' };
-      setPs5State(err);
+      setLocalPs5State(err);
       return err;
     } catch (e) {
       const err = { error: e.message };
-      setPs5State(err);
+      setLocalPs5State(err);
       return err;
     } finally {
       if (!silent) setPs5Busy(false);
     }
   };
 
-  // Pull a fresh DDP snapshot whenever the active profile changes. Running
-  // it in an effect (rather than inside the profile-picker handler) means
-  // it also fires on first mount once the parent has hydrated profiles.
+  // Pull a fresh DDP snapshot whenever the active profile changes, but only
+  // for the local fallback path - the shared context already polls itself.
   useEffect(() => {
+    if (usingSharedStatus) return;
     if (profile?.ip_address) refreshPs5State(true);
-    else setPs5State(null);
+    else setLocalPs5State(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [profile?.ip_address]);
+  }, [profile?.ip_address, usingSharedStatus]);
 
   const accountLinked = !!profileView?.psn_account_id;
   const paired = !!profileView?.rp_user_profile;
@@ -711,6 +831,10 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
 
   const pair = async () => {
     if (!profile) return;
+    if (liveSession) {
+      onNotification?.('Stop the live Remote Play session before pairing - registering a new PIN while the console is already connected can knock out the active session.', 'warning');
+      return;
+    }
     if (pin.replace(/\D/g, '').length < 8) {
       onNotification?.(`PIN must be 8 digits (shown on ${pairMenuPath})`, 'warning');
       return;
@@ -743,6 +867,10 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
   // from what OAuth captured the user probably wants to know.
   const autoFetchPin = async () => {
     if (!profile) return;
+    if (liveSession) {
+      onNotification?.('Stop the live Remote Play session before fetching a PIN - rp-get-pin.elf attaches to SceShellUI and can interrupt an active session.', 'warning');
+      return;
+    }
     setAutoPinBusy(true);
     setAutoPinResult(null);
     try {
@@ -910,7 +1038,12 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
     return '';
   };
 
-  const startSession = async () => {
+  // `forceVideo` lets a caller (the step-by-step Input Scripts tab) demand
+  // video without going through the checkbox - setEnableVideo(true) then
+  // immediately calling startSession() would still read the OLD value of
+  // `enableVideo` via closure (React state updates aren't synchronous), so
+  // this is a real parameter, not a stale-read workaround-by-convention.
+  const startSession = async (forceVideo = false) => {
     if (!profile) return false;
     userStoppedRef.current = false;
     setSessionState('connecting');
@@ -918,7 +1051,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
       const r = await api.post(`${RP}/sessions/start`, {
         ip: profile.ip_address,
         profile_id: profile.id,
-        enable_video: enableVideo,
+        enable_video: forceVideo || enableVideo,
         // Pass the user-chosen resolution. The sidecar normalises it,
         // so out-of-range values are coerced rather than rejected.
         resolution: rpResolution,
@@ -969,6 +1102,11 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
     //     cache because /quick-stop's "no local cache → stop-all" fallback
     //     fires right after /sessions/:sid/stop emptied the Node cache.
     userStoppedRef.current = true;
+    // Set BEFORE the await so even a tick() already in flight when Stop
+    // was clicked (racing the soft-stop call itself) discards its stale
+    // "active" response instead of re-adopting the session we're in the
+    // middle of stopping.
+    stoppedUntilRef.current = Date.now() + 5000;
     try {
       if (sessionId) {
         await apiSafe.post(`${RP}/sessions/${encodeURIComponent(sessionId)}/stop`);
@@ -995,6 +1133,11 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
   // and burned 60-90 s on the post-disconnect lock anyway.
   const wakePs5 = async () => {
     if (!profile?.ip_address) return;
+    // Optimistic "waking" state on the shared status (topbar dot included)
+    // the instant the click happens - only when this profile is the one
+    // the shared context tracks, so waking a non-default profile here
+    // never mislabels the topbar's own console.
+    if (usingSharedStatus) ps5StatusCtx.markWaking();
     setWakeBusy(true);
     try {
       const r = await api.post(`${RP}/prewarm`, {
@@ -1104,6 +1247,11 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
         const r = await api.get(`${RP}/quick-status?ip=${encodeURIComponent(profile.ip_address)}`);
         if (cancelled) return;
         if (!r.success) return;
+        // Discard a stale "active" reading that raced our own Stop click -
+        // see stoppedUntilRef's declaration for why. A "not active" reading
+        // is still honoured below (that's the outcome Stop wants), only the
+        // adopt-as-connected branch is suppressed.
+        if (r.active && Date.now() < stoppedUntilRef.current) return;
 
         const sidecarSid = r.session_id || '';
         if (r.active) {
@@ -1163,6 +1311,30 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profile?.ip_address]);
+
+  // While a Start is in flight, poll whether the sidecar fell into its 45 s
+  // post-disconnect-lock retry so the button can show a countdown instead
+  // of a "Starting..." spinner that looks identical whether it's 2 s or
+  // 40 s from finishing. Only polls during 'connecting' - cheap the rest
+  // of the time since the effect just re-mounts its interval on that
+  // transition.
+  useEffect(() => {
+    if (sessionState !== 'connecting' || !profile?.ip_address) {
+      setRetryStatus(null);
+      return undefined;
+    }
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const r = await api.get(`${RP}/retry-status?ip=${encodeURIComponent(profile.ip_address)}`);
+        if (cancelled) return;
+        setRetryStatus(r.waiting ? { remainingS: r.remaining_s, totalS: r.total_s, reason: r.reason } : null);
+      } catch (_) { /* transient - keep whatever we last showed */ }
+    };
+    poll();
+    const id = setInterval(poll, 1500);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [sessionState, profile?.ip_address]);
 
   const sendInput = async (payload) => {
     if (!sessionId) return;
@@ -1251,6 +1423,437 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
     } catch (e) {
       onNotification?.(`Touchpad dropped: ${e.message}`, 'warning');
     }
+  };
+
+  // ─── Input Scripts tab: step-by-step execution ─────────────────────────
+  // Sends via sendInput() - the SAME RP-session input channel the touch
+  // controller overlay uses - rather than the older /ps5control/input
+  // payload-injection path ScriptRunner used before this moved here. One
+  // real session, one real input channel, for both the touch overlay and
+  // scripted playback.
+  const stepSendCommand = async (cmd, params = '') => {
+    const duration = parseInt(params, 10) || 80;
+    await sendInput({ button: cmd, action: 'tap', duration_ms: duration });
+  };
+
+  // Quick action for the step editor's manual pad: PS -> Down -> Cross,
+  // which backs out of whatever's running to the Home screen. Reuses the
+  // same tap semantics as scripted playback (stepSendCommand) so it
+  // behaves identically to typing "ps\ndown\ncross" into a script.
+  const resetToMainScreen = async () => {
+    await stepSendCommand('ps');
+    await new Promise(r => setTimeout(r, 400));
+    await stepSendCommand('down');
+    await new Promise(r => setTimeout(r, 400));
+    await stepSendCommand('cross');
+  };
+
+  const executeStepLine = async (parsed) => {
+    if (parsed.cmd === 'wait') {
+      await new Promise(resolve => setTimeout(resolve, parsed.params));
+      return;
+    }
+    if (parsed.cmd === 'text') {
+      const inputs = buildOskInputs(parsed.text || '');
+      for (const ev of inputs) {
+        await stepSendCommand(ev.button);
+        await new Promise(r => setTimeout(r, ev.commit ? 140 : 90));
+      }
+      return;
+    }
+    const reps = Math.max(1, parsed.count || 1);
+    for (let r = 0; r < reps; r++) {
+      await stepSendCommand(parsed.cmd, parsed.params);
+      if (reps > 1 && r < reps - 1) await new Promise(resolve => setTimeout(resolve, 120));
+    }
+  };
+
+  const parseScriptToSteps = (scriptText) => {
+    const steps = [];
+    (scriptText || '').split('\n').forEach((raw, i) => {
+      const parsed = parseLine(raw);
+      if (parsed) steps.push({ raw: raw.trim(), lineNum: i + 1, parsed });
+    });
+    return steps;
+  };
+
+  // `source` tracks where the script came from - { id, kind: 'builtin'|'user' }
+  // or null for a blank "New script" session - so saveStepScript() below
+  // knows whether to overwrite the original (built-in source file or the
+  // saved-script row) instead of always creating a brand-new saved copy.
+  const openStepMode = async (scriptText, name, allowEmpty = false, source = null) => {
+    const steps = parseScriptToSteps(scriptText);
+    setSessionViewTab('scripts');
+    if (steps.length === 0 && !allowEmpty) {
+      onNotification?.('Nothing to step through - script has no executable lines', 'warning');
+      return;
+    }
+    if (!liveSession || !sessionHasVideo) {
+      const ok = await startSession(true); // forceVideo
+      if (!ok) return;
+    }
+    setStepMobileTab('video');
+    setStepPanel({ name, steps, index: 0, source });
+  };
+
+  // Shared video block for the Input Scripts and Payloads tabs, so the
+  // video genuinely stays put (same img, not re-mounted) whether you're
+  // browsing scripts, stepping through one, or sending a payload - only
+  // the Control tab has its own separate video (deeply woven into its
+  // touch-controller grid layout, left alone here).
+  // DualSense-style inline pad. No analog sticks here on purpose - precise
+  // stick input is available in the fullscreen overlay (tap ⛶ on the
+  // video). Layout mirrors a real PS5 controller:
+  //
+  //   ┌─────────────────────────────────────┐
+  //   │  L2  L1                    R1  R2   │ shoulder strip
+  //   │                                     │
+  //   │      ↑                       △      │
+  //   │    ← + →                   □   ○    │  D-pad   |  face
+  //   │      ↓                       X      │
+  //   │                                     │
+  //   │      Share  Touchpad  Options       │
+  //   │           PS    L3    R3            │  center row
+  //   └─────────────────────────────────────┘
+  //
+  // IDs come from the existing PS5_BUTTONS array so the press/release
+  // semantics stay identical everywhere it's used. Extracted to its own
+  // function (rather than inlined once) so it can render both in the
+  // Control tab (inside .rp-live-layout, where CSS reflows it into the
+  // desktop 3-column layout - see the .rp-live-layout rules in
+  // styles.css) AND in the Scripts tab above the step panel, where it
+  // renders with its own standalone base styling (flex/grid, no
+  // .rp-live-layout ancestor) so the user can press real buttons while
+  // building/running a script live.
+  const renderManualPad = () => {
+    const byId = Object.fromEntries(PS5_BUTTONS.map(b => [b.id, b]));
+    const Btn = ({ id, className = '', style = {} }) => {
+      const b = byId[id];
+      if (!b) return null;
+      // Touchpad gets a dedicated tap path (see sendTouchpadTap):
+      // the PS5 touchpad subsystem needs a noticeably longer hold
+      // than the regular d-pad/face buttons. Other buttons keep
+      // press/release semantics so the user can "hold" them.
+      if (id === 'touchpad') {
+        return (
+          <button
+            type="button"
+            className={`btn btn-sm ${className}`.trim()}
+            style={{
+              background: b.color || 'var(--panel2)',
+              color: b.color ? '#fff' : undefined,
+              ...style,
+            }}
+            onPointerDown={(e) => { e.preventDefault(); sendTouchpadTap(500); }}
+          >
+            {b.label}
+          </button>
+        );
+      }
+      return (
+        <button
+          type="button"
+          className={`btn btn-sm ${className}`.trim()}
+          style={{
+            background: b.color || 'var(--panel2)',
+            color: b.color ? '#fff' : undefined,
+            ...style,
+          }}
+          onPointerDown={(e) => { e.preventDefault(); sendInput({ button: b.id, action: 'press' }); }}
+          onPointerUp={() => sendInput({ button: b.id, action: 'release' })}
+          onPointerCancel={() => sendInput({ button: b.id, action: 'release' })}
+          onPointerLeave={(e) => { if (e.buttons) sendInput({ button: b.id, action: 'release' }); }}
+        >
+          {b.label}
+        </button>
+      );
+    };
+    return (
+      <div className="rp-pad">
+        <div className="rp-pad-shoulders">
+          <div className="rp-pad-shoulders-side">
+            <Btn id="l2" /><Btn id="l1" />
+          </div>
+          <div className="rp-pad-shoulders-side rp-pad-shoulders-side-right">
+            <Btn id="r1" /><Btn id="r2" />
+          </div>
+        </div>
+
+        <div className="rp-pad-main">
+          <div className="rp-dpad">
+            <div className="rp-dpad-up"><Btn id="up" /></div>
+            <div className="rp-dpad-left"><Btn id="left" /></div>
+            <div className="rp-dpad-right"><Btn id="right" /></div>
+            <div className="rp-dpad-down"><Btn id="down" /></div>
+          </div>
+          <div className="rp-face">
+            <div className="rp-face-triangle"><Btn id="triangle" /></div>
+            <div className="rp-face-square"><Btn id="square" /></div>
+            <div className="rp-face-circle"><Btn id="circle" /></div>
+            <div className="rp-face-cross"><Btn id="cross" /></div>
+          </div>
+        </div>
+
+        <div className="rp-pad-center rp-pad-center-main">
+          <Btn id="share" />
+          <Btn id="touchpad" />
+          <Btn id="options" />
+          <Btn id="ps" />
+          <Btn id="l3" />
+          <Btn id="r3" />
+          {/* Motion-burst gesture. Same one-shot semantics as the
+              touchpad tap — see sendShake() for the wiring. */}
+          <button
+            type="button"
+            className="btn btn-sm"
+            style={{ background: 'rgba(245, 166, 35, 0.45)', color: '#fff', minWidth: 64 }}
+            onPointerDown={(e) => { e.preventDefault(); sendShake(700, 0.85); }}
+            title="Shake the controller (~700 ms motion burst)"
+          >
+            🤝 Shake
+          </button>
+        </div>
+
+        {/* PS2 Classics / SNK BC fighter compatibility row. Those
+            games ignore the Options button *and* the touchpad click
+            — they look for a finger landing on the LEFT or RIGHT
+            half of the touchpad SURFACE (X≈400 = Select; X≈1500 =
+            Start, per Brook UFB documentation). The patched
+            touchpad_click in pyremoteplay_patches.py emits the
+            correct chiaki surface-down → click → surface-up
+            sequence at the requested pixel; the standard "Tch"
+            button above stays at centre (960×471) so existing
+            touchpad-menu games are unaffected. */}
+        <div
+          className="rp-pad-center rp-pad-center-ps2"
+          style={{
+            marginTop: 6,
+            opacity: 0.85,
+            borderTop: '1px dashed var(--border)',
+            paddingTop: 6,
+          }}
+          title="PS2 Classics & SNK BC fighters: use these instead of Options."
+        >
+          <button
+            type="button"
+            className="btn btn-sm"
+            style={{ background: 'var(--panel2)', minWidth: 64 }}
+            onPointerDown={(e) => { e.preventDefault(); sendTouchpadTap(500, 400, 471); }}
+            title="Touchpad LEFT zone — Select in PS2 Classics"
+          >
+            ◀ Sel
+          </button>
+          <button
+            type="button"
+            className="btn btn-sm"
+            style={{ background: 'var(--panel2)', minWidth: 64 }}
+            onPointerDown={(e) => { e.preventDefault(); sendTouchpadTap(500, 1500, 471); }}
+            title="Touchpad RIGHT zone — Start in PS2 Classics"
+          >
+            Str ▶
+          </button>
+        </div>
+
+        <p className="text-xs text-muted rp-controller-hint">
+          Hold for repeat; release to lift. Tap ⛶ on the video for analog sticks.
+          <br />
+          <span className="text-xs">
+            PS2/SNK: use <b>◀ Sel</b> / <b>Str ▶</b> instead of Options.
+          </span>
+        </p>
+      </div>
+    );
+  };
+
+  const renderTabVideo = () => (
+    sessionHasVideo && sessionId ? (
+      <img
+        key={videoNonce}
+        src={`${API}/sessions/${encodeURIComponent(sessionId)}/video.mjpeg?fps=15&nonce=${videoNonce}`}
+        alt="PS5 preview"
+        style={{ width: '100%', borderRadius: 8, display: 'block', background: '#000' }}
+        onError={() => onNotification?.('Video stream dropped - try 🔄 restarting the session', 'warning')}
+      />
+    ) : (
+      <div className="text-muted text-sm">No video session yet - hit Start session above.</div>
+    )
+  );
+
+  const stepNext = async () => {
+    if (!stepPanel || stepBusy) return;
+    const step = stepPanel.steps[stepPanel.index];
+    if (!step) return;
+    setStepBusy(true);
+    try {
+      await executeStepLine(step.parsed);
+    } catch (e) {
+      onNotification?.(`Step failed: ${e.message}`, 'error');
+    }
+    setStepPanel(p => (p ? { ...p, index: p.index + 1 } : p));
+    setStepBusy(false);
+  };
+
+  // Navigation-only - moves the cursor back a step without re-sending
+  // anything. There's no "undo" for a physical button press, so Previous
+  // just lets the user re-mark a step as not-yet-done (e.g. after
+  // clicking Next by mistake), it never un-presses a button.
+  const stepPrev = () => {
+    if (!stepPanel || stepBusy || stepPanel.index === 0) return;
+    setStepPanel(p => (p ? { ...p, index: Math.max(0, p.index - 1) } : p));
+  };
+
+  const stepRestart = () => {
+    if (!stepPanel) return;
+    setStepPanel(p => (p ? { ...p, index: 0 } : p));
+  };
+
+  // "Replay to step N": runs forward from the CURRENT position through
+  // step N (1-based, matching the line numbers shown in the list) and
+  // stops. Deliberately continues from wherever the cursor already is
+  // rather than rewinding to step 1 first - re-sending already-executed
+  // presses could double-toggle a menu that's already open on the
+  // console. If the target is behind the current position there's
+  // nothing to do (no way to "un-press" a button), so it's a no-op.
+  const [replayTarget, setReplayTarget] = useState('');
+  const stepReplayTo = async () => {
+    if (!stepPanel || stepBusy) return;
+    const targetLine = parseInt(replayTarget, 10);
+    if (!Number.isFinite(targetLine) || targetLine < 1) return;
+    const targetIdx = Math.min(targetLine, stepPanel.steps.length) - 1;
+    if (targetIdx < stepPanel.index) return;
+
+    setStepBusy(true);
+    try {
+      let idx = stepPanel.index;
+      while (idx <= targetIdx) {
+        const step = stepPanel.steps[idx];
+        if (!step) break;
+        await executeStepLine(step.parsed);
+        idx++;
+        setStepPanel(p => (p ? { ...p, index: idx } : p));
+        if (idx <= targetIdx) await new Promise(r => setTimeout(r, 100));
+      }
+    } catch (e) {
+      onNotification?.(`Step failed: ${e.message}`, 'error');
+    }
+    setStepBusy(false);
+  };
+
+  const closeStepPanel = () => {
+    // Leaves the session running - Stop session above still works normally.
+    setStepPanel(null);
+    setEditingStepIdx(null);
+    setAddAfterIdx(null);
+  };
+
+  // Persists whatever's currently in the step panel (including any live
+  // edits/additions made via ＋). When the panel was opened FROM a
+  // built-in or an existing saved script (stepPanel.source), this
+  // overwrites that same entry - previously it always POSTed a brand-new
+  // saved script regardless of origin, so editing a built-in through the
+  // step editor silently forked it instead of updating the built-in
+  // source file. A blank "New script" session (source === null) still
+  // prompts for a name and creates one, then promotes the panel to point
+  // at it so a second Save updates rather than prompting again.
+  const saveStepScript = async () => {
+    if (!stepPanel || stepPanel.steps.length === 0) return;
+    const scriptText = stepPanel.steps.map(s => s.raw).join('\n');
+    const source = stepPanel.source;
+    try {
+      if (source?.kind === 'builtin') {
+        await api.put(`/input-scripts/builtin/${encodeURIComponent(source.id)}`, { script: scriptText });
+        onNotification?.(`Updated built-in "${stepPanel.name}"`, 'success');
+      } else if (source?.kind === 'user') {
+        await api.put(`/input-scripts/${encodeURIComponent(source.id)}`, { name: stepPanel.name, script: scriptText });
+        onNotification?.(`Updated "${stepPanel.name}"`, 'success');
+      } else {
+        const defaultName = stepPanel.name === 'New script' ? '' : stepPanel.name;
+        const name = window.prompt('Save as script name:', defaultName);
+        if (!name || !name.trim()) return;
+        const data = await api.post('/input-scripts', { name: name.trim(), script: scriptText });
+        if (!data.success) {
+          onNotification?.(`Save failed: ${data.error}`, 'error');
+          return;
+        }
+        onNotification?.('Script saved', 'success');
+        setStepPanel(p => (p ? { ...p, name: name.trim(), source: { id: data.id, kind: 'user' } } : p));
+      }
+      onScriptsChange?.();
+    } catch (e) {
+      onNotification?.(`Save failed: ${e.message}`, 'error');
+    }
+  };
+
+  // Loads lazily (only when the Payloads tab is first opened) rather than
+  // on mount - most sessions never touch this tab.
+  const fetchPayloadsList = async () => {
+    const list = await apiSafe.get('/payloads');
+    if (Array.isArray(list)) setPayloadsList(list);
+    setPayloadsLoaded(true);
+  };
+
+  const sendPayload = async (payload) => {
+    if (!profile) return;
+    setSendingPayloadId(payload.id);
+    try {
+      const data = await api.post(`/payloads/send/${payload.id}`, {
+        ip: profile.ip_address,
+        port: profile.port,
+      });
+      if (data.success) {
+        onNotification?.(`Sent ${payload.name}`, 'success');
+      } else {
+        onNotification?.(`Send failed: ${data.error}`, 'error');
+      }
+    } catch (e) {
+      onNotification?.(`Send failed: ${e.message}`, 'error');
+    }
+    setSendingPayloadId(null);
+  };
+
+  const renumberSteps = (steps) => steps.map((s, i) => ({ ...s, lineNum: i + 1 }));
+
+  const startEditStep = (i) => {
+    setEditingStepIdx(i);
+    setStepDraftText(stepPanel.steps[i].raw);
+    setStepDraftError('');
+  };
+  const cancelEditStep = () => { setEditingStepIdx(null); setStepDraftError(''); };
+  const saveEditStep = () => {
+    const text = stepDraftText.trim();
+    const parsed = parseLine(text);
+    if (!parsed) { setStepDraftError('Not a recognised command.'); return; }
+    setStepPanel(p => {
+      const steps = [...p.steps];
+      steps[editingStepIdx] = { ...steps[editingStepIdx], raw: text, parsed };
+      return { ...p, steps };
+    });
+    setEditingStepIdx(null);
+    setStepDraftError('');
+  };
+  const deleteStepRow = (i) => {
+    setStepPanel(p => {
+      const steps = renumberSteps(p.steps.filter((_, idx) => idx !== i));
+      const index = i < p.index ? p.index - 1 : p.index;
+      return { ...p, steps, index };
+    });
+    if (editingStepIdx === i) cancelEditStep();
+  };
+  const openAddForm = (afterIdx) => { setAddAfterIdx(afterIdx); setAddDraftText(''); setAddDraftError(''); };
+  const cancelAddForm = () => { setAddAfterIdx(null); setAddDraftError(''); };
+  const confirmAddStep = () => {
+    const text = addDraftText.trim();
+    const parsed = parseLine(text);
+    if (!parsed) { setAddDraftError('Not a recognised command.'); return; }
+    setStepPanel(p => {
+      const steps = [...p.steps];
+      steps.splice(addAfterIdx + 1, 0, { raw: text, lineNum: 0, parsed });
+      const index = addAfterIdx + 1 <= p.index ? p.index + 1 : p.index;
+      return { ...p, steps: renumberSteps(steps), index };
+    });
+    setAddAfterIdx(null);
+    setAddDraftText('');
+    setAddDraftError('');
   };
 
   // ─── Fullscreen video + touch controls ───────────────────────────────────
@@ -1643,10 +2246,10 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
             type="button"
             className="btn btn-ghost btn-sm"
             onClick={() => refreshPs5State(false)}
-            disabled={!profile || ps5Busy}
+            disabled={!profile || (usingSharedStatus ? ps5StatusCtx.busy : ps5Busy)}
             title="Re-query PS5 power state (DDP discover)"
           >
-            {ps5Busy ? '⏳' : '🔄'}
+            {(usingSharedStatus ? ps5StatusCtx.busy : ps5Busy) ? '⏳' : '🔄'}
           </button>
         </div>
         {profile && ps5State?.runningApp && !ps5State.error && (
@@ -1744,13 +2347,15 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
         {isPs5Profile && (
           <Section
             title={autoPinResult?.pin ? '0 · Auto-fetch PIN ✓' : '0 · Auto-fetch PIN'}
-            hint="⚡ Sends rp-get-pin.elf to elfldr (port 9021) and captures the PIN + PSN account from its stdout. If the PS5 is PSN-signed-in this also auto-fills step 1 — no manual Sony OAuth needed."
+            hint={liveSession
+              ? '⛔ A Remote Play session is live - stop it first (Control tab above) before fetching a PIN, otherwise rp-get-pin.elf attaching to SceShellUI can knock the session out.'
+              : '⚡ Sends rp-get-pin.elf to elfldr (port 9021) and captures the PIN + PSN account from its stdout. If the PS5 is PSN-signed-in this also auto-fills step 1 — no manual Sony OAuth needed.'}
           >
             <div className="flex gap-sm flex-wrap items-center">
               <button
                 type="button"
                 className="btn btn-primary"
-                disabled={autoPinBusy || !profile?.ip_address}
+                disabled={autoPinBusy || !profile?.ip_address || liveSession}
                 onClick={autoFetchPin}
                 title="Send rp-get-pin.elf to the PS5 and read PIN + Account ID from its stdout"
               >
@@ -1876,7 +2481,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
           <div className="flex gap-sm flex-wrap">
             <button
               className="btn btn-success"
-              disabled={!accountLinked || pairBusy || pin.replace(/\D/g, '').length < 8}
+              disabled={!accountLinked || pairBusy || pin.replace(/\D/g, '').length < 8 || liveSession}
               onClick={pair}
             >
               {pairBusy ? '⏳ Pairing…' : paired ? '🔄 Re-pair' : '🤝 Pair'}
@@ -2066,18 +2671,20 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
         <Section
           title={paired ? `2 · Auto-fetch PIN & Pair ${pairConsoleLabel} ✓` : `2 · Auto-fetch PIN & Pair ${pairConsoleLabel}`}
           hint={
-            paired
-              ? 'Already paired. Re-pair below with a fresh PIN if you swap PSN accounts, or click Forget pairing to start over.'
-              : offactResult?.success
-                ? 'PSN id is on the console — click Auto-fetch PIN to grab one via rp-get-pin.elf, then Pair.'
-                : 'Run step 1 first so the console has a PSN-linked user; rp-get-pin.elf needs that to generate a PIN.'
+            liveSession
+              ? '⛔ A Remote Play session is live - stop it first (Control tab above) before fetching a PIN or pairing, otherwise rp-get-pin.elf attaching to SceShellUI can knock the session out.'
+              : paired
+                ? 'Already paired. Re-pair below with a fresh PIN if you swap PSN accounts, or click Forget pairing to start over.'
+                : offactResult?.success
+                  ? 'PSN id is on the console — click Auto-fetch PIN to grab one via rp-get-pin.elf, then Pair.'
+                  : 'Run step 1 first so the console has a PSN-linked user; rp-get-pin.elf needs that to generate a PIN.'
           }
         >
           <div className="flex gap-sm flex-wrap items-center">
             <button
               type="button"
               className="btn btn-primary"
-              disabled={autoPinBusy || !profile?.ip_address}
+              disabled={autoPinBusy || !profile?.ip_address || liveSession}
               onClick={autoFetchPin}
               title="Send rp-get-pin.elf to the PS5 and read PIN + Account ID from its stdout"
             >
@@ -2137,7 +2744,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
           <div className="flex gap-sm flex-wrap">
             <button
               className="btn btn-success"
-              disabled={!accountLinked || pairBusy || pin.replace(/\D/g, '').length < 8}
+              disabled={!accountLinked || pairBusy || pin.replace(/\D/g, '').length < 8 || liveSession}
               onClick={pair}
             >
               {pairBusy ? '⏳ Pairing…' : paired ? '🔄 Re-pair' : '🤝 Pair'}
@@ -2215,7 +2822,9 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
             onClick={() => startSession()}
           >
             {sessionState === 'connecting'
-              ? '⏳ Starting…'
+              ? (retryStatus
+                  ? `🔒 PS5 locked, retrying in ${Math.ceil(retryStatus.remainingS)}s…`
+                  : '⏳ Starting…')
               : enableVideo ? '▶ Start session + video'
               : '▶ Start session'}
           </button>
@@ -2268,6 +2877,37 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
               : undefined
           }
         >
+        {/* Control (touch overlay) / Input Scripts (list + editor + step
+            runner) / Payloads (send without leaving this view) - Control
+            and Input Scripts share the same video/session, never two
+            MJPEG streams at once since only one tab's markup is mounted
+            at a time. */}
+        <div className="tabs mb-sm" style={{ maxWidth: 460 }}>
+          <button
+            type="button"
+            className={`tab-item ${sessionViewTab === 'control' ? 'active' : ''}`}
+            onClick={() => setSessionViewTab('control')}
+          >
+            🎮 Control
+          </button>
+          <button
+            type="button"
+            className={`tab-item ${sessionViewTab === 'scripts' ? 'active' : ''}`}
+            onClick={() => setSessionViewTab('scripts')}
+          >
+            ⌨️ Input Scripts
+          </button>
+          <button
+            type="button"
+            className={`tab-item ${sessionViewTab === 'payloads' ? 'active' : ''}`}
+            onClick={() => { setSessionViewTab('payloads'); if (!payloadsLoaded) fetchPayloadsList(); }}
+          >
+            📦 Payloads
+          </button>
+        </div>
+
+        {sessionViewTab === 'control' && (
+        <>
         {/* rp-live-layout: on mobile this is just a vertical flex stack
             (chips → video → pad). On desktop (≥1024px) CSS reflows it
             into a 3-column grid where the D-pad sits to the LEFT of the
@@ -2355,65 +2995,87 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
                   {fsActive ? '✕' : '⛶'}
                 </button>
 
-                {/* ─── Record + Edit toggles (inline preview only) ─────────
+                {/* ─── Record + Run toggles (inline preview only) ──────────
                     Sit next to the ⛶ fullscreen toggle. REC pulses red
                     while active and expands into a tiny HUD with elapsed
-                    seconds + captured event count. ✎ opens the review
-                    modal in edit-only mode so the user can tweak any
-                    saved or built-in script without leaving Remote Play.
-                    In fullscreen mode only the REC button is shown (inside
-                    renderFullscreenOverlay() at a known-clear spot). */}
+                    seconds + captured event count. ▶ opens a picker so the
+                    user can run any saved or built-in script against the
+                    live session without leaving Remote Play. Auto-hides to
+                    a single small dot after a few seconds of no
+                    interaction (never while actively recording) so the
+                    cluster doesn't permanently cover the video - hover or
+                    tap it to bring the full row back. */}
                 {!fsActive && (
-                  <>
-                    <button
-                      type="button"
-                      onClick={recording ? stopRecording : startRecording}
-                      aria-label={recording ? 'Stop recording inputs' : 'Record inputs'}
-                      title={recording ? 'Stop recording' : 'Record inputs to a script'}
-                      className={recording ? 'rp-rec-btn rp-rec-active' : 'rp-rec-btn'}
-                      style={{
-                        position: 'absolute',
-                        top: 8,
-                        right: recording ? 60 : 112,
-                        height: 44, minWidth: 44,
-                        padding: recording ? '0 10px' : 0,
-                        borderRadius: 8,
-                        background: recording ? 'rgba(220, 50, 50, 0.85)' : 'rgba(0,0,0,0.55)',
-                        color: '#fff', border: '1px solid rgba(255,255,255,0.3)',
-                        fontSize: recording ? 13 : 18, fontWeight: 700, cursor: 'pointer',
-                        display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
-                        touchAction: 'none', userSelect: 'none',
-                      }}
-                    >
-                      <span className={recording ? 'rp-rec-dot rp-rec-dot-active' : 'rp-rec-dot'} />
-                      {recording && (
-                        <span style={{ fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>
-                          REC {Math.floor(recElapsed / 1000)}s · {recEventCount}
-                        </span>
-                      )}
-                    </button>
-                    {!recording && (
+                  controlsVisible || recording ? (
+                    <div onMouseEnter={showControls} onMouseLeave={showControls}>
                       <button
                         type="button"
-                        onClick={openEditOnly}
-                        aria-label="Edit saved or built-in scripts"
-                        title="Edit saved or built-in scripts"
+                        onClick={recording ? stopRecording : startRecording}
+                        aria-label={recording ? 'Stop recording inputs' : 'Record inputs'}
+                        title={recording ? 'Stop recording' : 'Record inputs to a script'}
+                        className={recording ? 'rp-rec-btn rp-rec-active' : 'rp-rec-btn'}
                         style={{
                           position: 'absolute',
                           top: 8,
-                          right: 60,
-                          width: 44, height: 44, borderRadius: 8,
-                          background: 'rgba(0,0,0,0.55)',
+                          right: recording ? 60 : 112,
+                          height: 44, minWidth: 44,
+                          padding: recording ? '0 10px' : 0,
+                          borderRadius: 8,
+                          background: recording ? 'rgba(220, 50, 50, 0.85)' : 'rgba(0,0,0,0.55)',
                           color: '#fff', border: '1px solid rgba(255,255,255,0.3)',
-                          fontSize: 18, fontWeight: 700, cursor: 'pointer',
-                          display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          fontSize: recording ? 13 : 18, fontWeight: 700, cursor: 'pointer',
+                          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
                           touchAction: 'none', userSelect: 'none',
                         }}
                       >
-                        ✎
+                        <span className={recording ? 'rp-rec-dot rp-rec-dot-active' : 'rp-rec-dot'} />
+                        {recording && (
+                          <span style={{ fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>
+                            REC {Math.floor(recElapsed / 1000)}s · {recEventCount}
+                          </span>
+                        )}
                       </button>
-                    )}
-                  </>
+                      {!recording && (
+                        <button
+                          type="button"
+                          onClick={openRunPicker}
+                          aria-label="Run a script"
+                          title="Run a saved or built-in script"
+                          style={{
+                            position: 'absolute',
+                            top: 8,
+                            right: 60,
+                            width: 44, height: 44, borderRadius: 8,
+                            background: 'rgba(0,0,0,0.55)',
+                            color: '#fff', border: '1px solid rgba(255,255,255,0.3)',
+                            fontSize: 18, fontWeight: 700, cursor: 'pointer',
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            touchAction: 'none', userSelect: 'none',
+                          }}
+                        >
+                          ▶
+                        </button>
+                      )}
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={showControls}
+                      onMouseEnter={showControls}
+                      aria-label="Show recording and script controls"
+                      title="Show controls"
+                      style={{
+                        position: 'absolute',
+                        top: 8,
+                        right: 60,
+                        width: 20, height: 20, borderRadius: '50%',
+                        background: 'rgba(0,0,0,0.5)',
+                        border: '1px solid rgba(255,255,255,0.35)',
+                        padding: 0, cursor: 'pointer',
+                        touchAction: 'none',
+                      }}
+                    />
+                  )
                 )}
 
                 {fsActive && renderFullscreenOverlay()}
@@ -2421,169 +3083,357 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
             </>
           )}
 
-          {/* DualSense-style inline pad. No analog sticks here on purpose —
-              precise stick input is available in the fullscreen overlay (tap
-              ⛶ on the video). Layout mirrors a real PS5 controller:
-
-                ┌─────────────────────────────────────┐
-                │  L2  L1                    R1  R2   │ shoulder strip
-                │                                     │
-                │      ↑                       △      │
-                │    ← + →                   □   ○    │  D-pad   |  face
-                │      ↓                       X      │
-                │                                     │
-                │      Share  Touchpad  Options       │
-                │           PS    L3    R3            │  center row
-                └─────────────────────────────────────┘
-
-              IDs come from the existing PS5_BUTTONS array so the press/release
-              semantics stay identical to the old flat 6-column grid. */}
-          {(() => {
-            const byId = Object.fromEntries(PS5_BUTTONS.map(b => [b.id, b]));
-            const Btn = ({ id, className = '', style = {} }) => {
-              const b = byId[id];
-              if (!b) return null;
-              // Touchpad gets a dedicated tap path (see sendTouchpadTap):
-              // the PS5 touchpad subsystem needs a noticeably longer hold
-              // than the regular d-pad/face buttons. Other buttons keep
-              // press/release semantics so the user can "hold" them.
-              if (id === 'touchpad') {
-                return (
-                  <button
-                    type="button"
-                    className={`btn btn-sm ${className}`.trim()}
-                    style={{
-                      background: b.color || 'var(--panel2)',
-                      color: b.color ? '#fff' : undefined,
-                      ...style,
-                    }}
-                    onPointerDown={(e) => { e.preventDefault(); sendTouchpadTap(500); }}
-                  >
-                    {b.label}
-                  </button>
-                );
-              }
-              return (
-                <button
-                  type="button"
-                  className={`btn btn-sm ${className}`.trim()}
-                  style={{
-                    background: b.color || 'var(--panel2)',
-                    color: b.color ? '#fff' : undefined,
-                    ...style,
-                  }}
-                  onPointerDown={(e) => { e.preventDefault(); sendInput({ button: b.id, action: 'press' }); }}
-                  onPointerUp={() => sendInput({ button: b.id, action: 'release' })}
-                  onPointerCancel={() => sendInput({ button: b.id, action: 'release' })}
-                  onPointerLeave={(e) => { if (e.buttons) sendInput({ button: b.id, action: 'release' }); }}
-                >
-                  {b.label}
-                </button>
-              );
-            };
-            return (
-              <div className="rp-pad">
-                <div className="rp-pad-shoulders">
-                  <div className="rp-pad-shoulders-side">
-                    <Btn id="l2" /><Btn id="l1" />
-                  </div>
-                  <div className="rp-pad-shoulders-side rp-pad-shoulders-side-right">
-                    <Btn id="r1" /><Btn id="r2" />
-                  </div>
-                </div>
-
-                <div className="rp-pad-main">
-                  <div className="rp-dpad">
-                    <div className="rp-dpad-up"><Btn id="up" /></div>
-                    <div className="rp-dpad-left"><Btn id="left" /></div>
-                    <div className="rp-dpad-right"><Btn id="right" /></div>
-                    <div className="rp-dpad-down"><Btn id="down" /></div>
-                  </div>
-                  <div className="rp-face">
-                    <div className="rp-face-triangle"><Btn id="triangle" /></div>
-                    <div className="rp-face-square"><Btn id="square" /></div>
-                    <div className="rp-face-circle"><Btn id="circle" /></div>
-                    <div className="rp-face-cross"><Btn id="cross" /></div>
-                  </div>
-                </div>
-
-                <div className="rp-pad-center rp-pad-center-main">
-                  <Btn id="share" />
-                  <Btn id="touchpad" />
-                  <Btn id="options" />
-                  <Btn id="ps" />
-                  <Btn id="l3" />
-                  <Btn id="r3" />
-                  {/* Motion-burst gesture. Same one-shot semantics as the
-                      touchpad tap — see sendShake() for the wiring. */}
-                  <button
-                    type="button"
-                    className="btn btn-sm"
-                    style={{ background: 'rgba(245, 166, 35, 0.45)', color: '#fff', minWidth: 64 }}
-                    onPointerDown={(e) => { e.preventDefault(); sendShake(700, 0.85); }}
-                    title="Shake the controller (~700 ms motion burst)"
-                  >
-                    🤝 Shake
-                  </button>
-                </div>
-
-                {/* PS2 Classics / SNK BC fighter compatibility row. Those
-                    games ignore the Options button *and* the touchpad click
-                    — they look for a finger landing on the LEFT or RIGHT
-                    half of the touchpad SURFACE (X≈400 = Select; X≈1500 =
-                    Start, per Brook UFB documentation). The patched
-                    touchpad_click in pyremoteplay_patches.py emits the
-                    correct chiaki surface-down → click → surface-up
-                    sequence at the requested pixel; the standard "Tch"
-                    button above stays at centre (960×471) so existing
-                    touchpad-menu games are unaffected. */}
-                <div
-                  className="rp-pad-center rp-pad-center-ps2"
-                  style={{
-                    marginTop: 6,
-                    opacity: 0.85,
-                    borderTop: '1px dashed var(--border)',
-                    paddingTop: 6,
-                  }}
-                  title="PS2 Classics & SNK BC fighters: use these instead of Options."
-                >
-                  <button
-                    type="button"
-                    className="btn btn-sm"
-                    style={{ background: 'var(--panel2)', minWidth: 64 }}
-                    onPointerDown={(e) => { e.preventDefault(); sendTouchpadTap(500, 400, 471); }}
-                    title="Touchpad LEFT zone — Select in PS2 Classics"
-                  >
-                    ◀ Sel
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-sm"
-                    style={{ background: 'var(--panel2)', minWidth: 64 }}
-                    onPointerDown={(e) => { e.preventDefault(); sendTouchpadTap(500, 1500, 471); }}
-                    title="Touchpad RIGHT zone — Start in PS2 Classics"
-                  >
-                    Str ▶
-                  </button>
-                </div>
-
-                <p className="text-xs text-muted rp-controller-hint">
-                  Hold for repeat; release to lift. Tap ⛶ on the video for analog sticks.
-                  <br />
-                  <span className="text-xs">
-                    PS2/SNK: use <b>◀ Sel</b> / <b>Str ▶</b> instead of Options.
-                  </span>
-                </p>
-              </div>
-            );
-          })()}
+          {renderManualPad()}
         </div>{/* /rp-live-layout */}
+        </>
+        )}
+
+        {sessionViewTab === 'scripts' && (
+          <div>
+            {/* Backs the add/edit step inputs' `list` attribute: a native
+                searchable dropdown (type to filter) that still lets the
+                user type anything free-form (params like "wait 500" or
+                "left 10x" aren't in this list and wouldn't match, but the
+                input accepts them anyway - <datalist> only suggests). */}
+            <datalist id="script-cmd-datalist">
+              {AVAILABLE_COMMANDS.map(({ cmd, desc }) => (
+                <option key={cmd} value={cmd}>{desc}</option>
+              ))}
+            </datalist>
+            {stepPanel ? (
+              <>
+                <div className="flex items-center justify-between mb-sm" style={{ flexWrap: 'wrap', gap: 6 }}>
+                  <span className="font-bold" style={{ fontSize: '0.9rem' }}>👣 {stepPanel.name}</span>
+                  <div className="flex gap-sm">
+                    <button className="btn btn-ghost btn-sm" onClick={closeStepPanel}>✕ Close</button>
+                  </div>
+                </div>
+
+                {/* Manual controls above the video/step grid - lets the user
+                    press real buttons while building or running a script
+                    live, same pad + press/release wiring as the Control
+                    tab (see renderManualPad above). */}
+                <div className="mb-sm rp-pad-compact">
+                  {renderManualPad()}
+                </div>
+
+                <div className="tabs mobile-only" style={{ marginBottom: 10 }}>
+                  <button
+                    type="button"
+                    className={`tab-item ${stepMobileTab === 'video' ? 'active' : ''}`}
+                    onClick={() => setStepMobileTab('video')}
+                  >
+                    📺 Video
+                  </button>
+                  <button
+                    type="button"
+                    className={`tab-item ${stepMobileTab === 'steps' ? 'active' : ''}`}
+                    onClick={() => setStepMobileTab('steps')}
+                  >
+                    📋 Steps
+                  </button>
+                </div>
+
+                <div className="step-panel-grid">
+                  <div className={`step-video ${stepMobileTab === 'video' ? '' : 'mobile-hidden'}`}>
+                    {renderTabVideo()}
+                  </div>
+
+                  <div className={`step-list ${stepMobileTab === 'steps' ? '' : 'mobile-hidden'}`}>
+                    {/* Reset + Save, above the Prev/Next/Restart/Replay row -
+                        moved out of the manual pad and the panel header
+                        respectively so every step-editor action lives in
+                        one place. */}
+                    <div className="flex items-center gap-sm mb-sm" style={{ flexWrap: 'wrap' }}>
+                      <button
+                        type="button"
+                        className="btn btn-secondary btn-sm"
+                        onClick={resetToMainScreen}
+                        title="PS, then Down, then Cross - back out to the Home screen"
+                      >
+                        🏠 Reset to main screen
+                      </button>
+                      <button
+                        className="btn btn-secondary btn-sm"
+                        onClick={saveStepScript}
+                        disabled={stepPanel.steps.length === 0}
+                        title={
+                          stepPanel.source?.kind === 'builtin' ? 'Save the current steps back into this built-in script'
+                            : stepPanel.source?.kind === 'user' ? 'Save the current steps back into this saved script'
+                              : 'Save the current steps (including any live edits/additions) as a new saved script'
+                        }
+                      >
+                        💾 {
+                          stepPanel.source?.kind === 'builtin' ? 'Save to built-in'
+                            : stepPanel.source?.kind === 'user' ? 'Update script'
+                              : 'Save as script'
+                        }
+                      </button>
+                    </div>
+
+                    {/* Step navigation - pinned above the scrolling list
+                        (not below the whole video+list grid like before)
+                        so it stays reachable without scrolling past a long
+                        script. Next/Prev/Restart just move the cursor;
+                        "Replay to" runs forward from wherever the cursor
+                        already is through the chosen step number. */}
+                    <div className="flex items-center gap-sm mb-sm" style={{ flexWrap: 'wrap' }}>
+                      <button
+                        className="btn btn-ghost btn-sm"
+                        onClick={stepPrev}
+                        disabled={stepBusy || stepPanel.steps.length === 0 || stepPanel.index === 0}
+                      >
+                        ◀ Prev
+                      </button>
+                      <button
+                        className="btn btn-primary btn-sm"
+                        onClick={stepNext}
+                        disabled={stepBusy || stepPanel.steps.length === 0 || stepPanel.index >= stepPanel.steps.length}
+                      >
+                        {stepBusy
+                          ? '⏳ Executing…'
+                          : stepPanel.steps.length === 0
+                            ? '▶ Next'
+                            : stepPanel.index >= stepPanel.steps.length
+                              ? '✅ Done'
+                              : `▶ Next (${stepPanel.index + 1}/${stepPanel.steps.length})`}
+                      </button>
+                      <button className="btn btn-ghost btn-sm" onClick={stepRestart} disabled={stepBusy || stepPanel.steps.length === 0}>
+                        ↺ Restart
+                      </button>
+                      <div className="flex items-center gap-xs" style={{ marginLeft: 'auto' }}>
+                        <span className="text-xs text-muted">Replay to</span>
+                        <input
+                          type="number"
+                          className="input"
+                          style={{ width: 60, minHeight: 28, padding: '2px 6px', fontSize: '0.78rem' }}
+                          min={1}
+                          max={stepPanel.steps.length}
+                          placeholder="#"
+                          value={replayTarget}
+                          onChange={e => setReplayTarget(e.target.value)}
+                          onKeyDown={e => { if (e.key === 'Enter') stepReplayTo(); }}
+                        />
+                        <button
+                          className="btn btn-secondary btn-sm"
+                          onClick={stepReplayTo}
+                          disabled={stepBusy || !replayTarget || stepPanel.steps.length === 0}
+                          title="Run forward from the current step through the chosen step number"
+                        >
+                          ▶▶ Go
+                        </button>
+                      </div>
+                    </div>
+                    {stepPanel.index < stepPanel.steps.length && (
+                      <div className="text-xs text-muted mb-sm">
+                        Next line: <code>{stepPanel.steps[stepPanel.index].raw}</code>
+                      </div>
+                    )}
+
+                    <div className="step-list-scroll">
+                      {addAfterIdx === -1 ? (
+                        <div className="step-add-row">
+                          <input
+                            autoFocus
+                            className="input font-mono"
+                            style={{ fontSize: '0.78rem', padding: '4px 8px' }}
+                            value={addDraftText}
+                            onChange={e => setAddDraftText(e.target.value)}
+                            onKeyDown={e => { if (e.key === 'Enter') confirmAddStep(); if (e.key === 'Escape') cancelAddForm(); }}
+                            list="script-cmd-datalist"
+                            placeholder="e.g. cross, wait 500, left 10x"
+                          />
+                          <button className="btn btn-success btn-sm btn-icon" onClick={confirmAddStep} title="Add">✓</button>
+                          <button className="btn btn-ghost btn-sm btn-icon" onClick={cancelAddForm} title="Cancel">✕</button>
+                        </div>
+                      ) : (
+                        <button className="step-add-toggle" onClick={() => openAddForm(-1)} title="Insert a command here">＋</button>
+                      )}
+                      {addAfterIdx === -1 && addDraftError && (
+                        <div className="text-xs" style={{ color: 'var(--red)' }}>{addDraftError}</div>
+                      )}
+
+                      {stepPanel.steps.length === 0 && (
+                        <div className="text-sm text-muted" style={{ padding: '8px 0' }}>
+                          No commands yet - use the ＋ above to add the first one.
+                        </div>
+                      )}
+
+                      {stepPanel.steps.map((s, i) => (
+                        <div key={i}>
+                          <div
+                            ref={el => { stepLineRefs.current[i] = el; }}
+                            tabIndex={-1}
+                            className={`step-line ${i === stepPanel.index ? 'current' : i < stepPanel.index ? 'done' : ''}`}
+                          >
+                            <span className="step-line-num">{s.lineNum}</span>
+                            {editingStepIdx === i ? (
+                              <>
+                                <input
+                                  autoFocus
+                                  className="input font-mono"
+                                  style={{ fontSize: '0.78rem', padding: '4px 8px', flex: 1 }}
+                                  value={stepDraftText}
+                                  onChange={e => setStepDraftText(e.target.value)}
+                                  onKeyDown={e => { if (e.key === 'Enter') saveEditStep(); if (e.key === 'Escape') cancelEditStep(); }}
+                                  list="script-cmd-datalist"
+                                />
+                                <button className="btn btn-success btn-sm btn-icon" onClick={saveEditStep} title="Save">✓</button>
+                                <button className="btn btn-ghost btn-sm btn-icon" onClick={cancelEditStep} title="Cancel">✕</button>
+                              </>
+                            ) : (
+                              <>
+                                <span className="step-line-text font-mono">{s.raw}</span>
+                                {i < stepPanel.index && <span className="step-line-check">✓</span>}
+                                <button className="btn btn-ghost btn-sm btn-icon step-line-action" onClick={() => startEditStep(i)} title="Edit this step">✏️</button>
+                                <button className="btn btn-ghost btn-sm btn-icon step-line-action" onClick={() => deleteStepRow(i)} title="Delete this step">🗑</button>
+                              </>
+                            )}
+                          </div>
+                          {editingStepIdx === i && stepDraftError && (
+                            <div className="text-xs" style={{ color: 'var(--red)', margin: '2px 0 4px' }}>{stepDraftError}</div>
+                          )}
+
+                          {addAfterIdx === i ? (
+                            <div className="step-add-row">
+                              <input
+                                autoFocus
+                                className="input font-mono"
+                                style={{ fontSize: '0.78rem', padding: '4px 8px' }}
+                                value={addDraftText}
+                                onChange={e => setAddDraftText(e.target.value)}
+                                onKeyDown={e => { if (e.key === 'Enter') confirmAddStep(); if (e.key === 'Escape') cancelAddForm(); }}
+                                list="script-cmd-datalist"
+                            placeholder="e.g. cross, wait 500, left 10x"
+                              />
+                              <button className="btn btn-success btn-sm btn-icon" onClick={confirmAddStep} title="Add">✓</button>
+                              <button className="btn btn-ghost btn-sm btn-icon" onClick={cancelAddForm} title="Cancel">✕</button>
+                            </div>
+                          ) : (
+                            <button className="step-add-toggle" onClick={() => openAddForm(i)} title="Insert a command here">＋</button>
+                          )}
+                          {addAfterIdx === i && addDraftError && (
+                            <div className="text-xs" style={{ color: 'var(--red)' }}>{addDraftError}</div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <div className="step-panel-grid">
+                <div className="step-video">{renderTabVideo()}</div>
+                <div className="step-list" style={{ overflowY: 'visible' }}>
+                  <div className="flex-col gap-md">
+                    <button
+                      className="btn btn-info btn-sm"
+                      style={{ alignSelf: 'flex-start' }}
+                      onClick={() => openStepMode('', 'New script', true)}
+                      title="Build a script live, one command at a time, while watching video"
+                    >
+                      🆕 New script (live)
+                    </button>
+                    <ScriptRunner
+                      ip={profile?.ip_address}
+                      liveSession={liveSession}
+                      onStartSession={() => startSession(true)}
+                      sendCommand={stepSendCommand}
+                      scripts={scripts}
+                      onScriptsChange={onScriptsChange}
+                      onRequestStep={(scriptText, name, source) => openStepMode(scriptText, name, false, source)}
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {sessionViewTab === 'payloads' && (
+          <div className="step-panel-grid">
+            <div className="step-video">{renderTabVideo()}</div>
+            <div className="step-list" style={{ overflowY: 'visible' }}>
+              <p className="text-sm text-muted mb-sm">
+                Send a payload to <b>{profile?.name}</b> ({profile?.ip_address}) without leaving Remote Play.
+                Manage the full library (add / update / delete) in the Payloads tab.
+              </p>
+              {!payloadsLoaded ? (
+                <div className="text-sm text-muted">Loading…</div>
+              ) : payloadsList.length === 0 ? (
+                <div className="text-sm text-muted">No payloads yet - add some in the Payloads tab.</div>
+              ) : (
+                <div className="flex-col" style={{ gap: 6, maxHeight: 420, overflowY: 'auto' }}>
+                  {payloadsList.map(p => (
+                    <div key={p.id} className="list-item" style={{ marginBottom: 0 }}>
+                      <div className="flex-1 truncate" title={p.name}>
+                        <span className="truncate" style={{ fontWeight: 600 }}>{p.name}</span>
+                        {p.console_type && (
+                          <span className="console-type-badge" style={{ marginLeft: 6 }}>{p.console_type.toUpperCase()}</span>
+                        )}
+                      </div>
+                      <div className="list-item-actions">
+                        <button
+                          className="btn btn-success btn-sm btn-icon"
+                          onClick={() => sendPayload(p)}
+                          disabled={sendingPayloadId === p.id}
+                          title="Send"
+                        >
+                          {sendingPayloadId === p.id ? '⏳' : '📤'}
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
         </Section>
       )}
 
       {health?.success === false && (
         <div className="text-xs text-muted">
           Sidecar error: {health.error}. Check the <code>pyremoteplay</code> container logs.
+        </div>
+      )}
+
+      {/* ─── Run-script picker ─────────────────────────────────────────────
+          Opened by the ▶ button next to REC. Lists saved + built-in
+          scripts; picking one hands off to the step-through runner so it
+          plays against the live session/video. */}
+      {runPickerOpen && (
+        <div
+          className="rp-rec-modal-backdrop"
+          onClick={(e) => { if (e.target === e.currentTarget) closeRunPicker(); }}
+        >
+          <div className="rp-rec-modal">
+            <div className="rp-rec-modal-header">
+              <span>▶ Run a script</span>
+              <button type="button" className="btn btn-sm btn-ghost" onClick={closeRunPicker} aria-label="Close">✕</button>
+            </div>
+            <div className="rp-rec-modal-body">
+              {recExistingScripts.length === 0 ? (
+                <div className="text-sm text-muted">
+                  No scripts yet - record one (● above) or create one in the Scripts tab.
+                </div>
+              ) : (
+                <div className="flex-col" style={{ gap: 6, maxHeight: 320, overflowY: 'auto' }}>
+                  {recExistingScripts.map(s => (
+                    <button
+                      key={s.id}
+                      type="button"
+                      className="btn btn-secondary btn-block"
+                      style={{ justifyContent: 'flex-start', textAlign: 'left' }}
+                      onClick={() => runPickedScript(s)}
+                    >
+                      {s.kind === 'builtin' ? '🔧 ' : ''}{s.name}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       )}
 

@@ -28,6 +28,13 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
   // current default profile at submit time (legacy behaviour).
   const [uploadTargetIp, setUploadTargetIp] = useState('');
   const [uploadTargetPath, setUploadTargetPath] = useState('/data/homebrew');
+  // Anonymous FTP control port the console's FTP payload listens on.
+  // Used by the offact.elf trigger-file upload (see routes/remoteplay.js
+  // getFtpControlPort()). ftpsrv defaults to 2121; zftpd (faster
+  // alternative) defaults to 2120 - configurable here instead of
+  // hardcoded so swapping FTP payloads doesn't silently break offline
+  // account activation.
+  const [ftpControlPort, setFtpControlPort] = useState('2121');
   // PKG installer settings. The install queue stages .pkg files to
   // `pkg_stage_dir` on the PS5 via FTP, drops a trigger file with the path
   // at `pkg_trigger_file`, then sends `pkg_installer_payload_id` over the
@@ -51,6 +58,7 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
         if (data.pkg_installer_payload_id) setPkgInstallerPayloadId(String(data.pkg_installer_payload_id));
         if (data.pkg_stage_dir) setPkgStageDir(data.pkg_stage_dir);
         if (data.pkg_trigger_file) setPkgTriggerFile(data.pkg_trigger_file);
+        if (data.ftp_control_port) setFtpControlPort(String(data.ftp_control_port));
       }
       // Auto-bind the PKG installer to the payload literally named
       // `pkg-install.elf` instead of making the user pick it from a
@@ -91,6 +99,10 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
     ['upload_target_ip', uploadTargetIp],
     ['upload_target_path', uploadTargetPath],
   ], 'Upload target saved!');
+
+  const saveFtpControlPort = () => saveSettingsKeys([
+    ['ftp_control_port', ftpControlPort],
+  ], 'FTP port saved!');
 
   // Three keys in one button so the user always saves a consistent install
   // setup: empty payload id is allowed (clears the binding so the install
@@ -424,6 +436,31 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
             {loading ? '⏳ Saving...' : '💾 Save Settings'}
           </button>
           {message && <div className="mt-sm text-sm" style={{ color: message.includes('Failed') ? 'var(--red)' : 'var(--green)' }}>{message}</div>}
+        </div>
+      </div>
+
+      <div className="comp-card">
+        <div className="comp-card-body">
+          <div className="font-bold mb-sm">Anonymous FTP control port</div>
+          <div className="text-xs text-muted mb-md">
+            Port the console's FTP payload listens on. Used to upload the offline-activation
+            trigger file for <code>offact.elf</code>. <code>ftpsrv</code> defaults to <b>2121</b>,
+            <code> zftpd</code> (faster alternative) defaults to <b>2120</b> — update this if you
+            switch which FTP payload you run.
+          </div>
+          <div className="mb-md">
+            <input
+              className="input"
+              type="number"
+              value={ftpControlPort}
+              onChange={e => setFtpControlPort(e.target.value)}
+              placeholder="2121"
+              style={{ maxWidth: 140 }}
+            />
+          </div>
+          <button className="btn btn-primary" onClick={saveFtpControlPort} disabled={loading}>
+            {loading ? '⏳ Saving...' : '💾 Save FTP Port'}
+          </button>
         </div>
       </div>
 

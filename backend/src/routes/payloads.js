@@ -74,6 +74,80 @@ function ensurePayloadsDir() {
   }
 }
 
+// Downloads one release asset (plain payload or ZIP), inserting a payloads
+// row per extracted file, and returns the inserted entries. Shared by the
+// auto-download-everything /releases path and the /fetch-assets endpoint
+// (the picker the user confirms after seeing multiple candidates for a
+// bare repo URL) so the ZIP-extraction / size-cap logic lives once.
+async function downloadReleaseAsset(asset, version, repo) {
+  const results = [];
+  const lc = asset.name.toLowerCase();
+  const isZip = lc.endsWith('.zip');
+  const downloadUrl = asset.browser_download_url;
+  const fileResponse = await safeFetch(downloadUrl);
+  const buffer = await fileResponse.arrayBuffer().then(ab => Buffer.from(ab));
+
+  if (isZip) {
+    if (buffer.length > ZIP_MAX_BYTES) {
+      log('warn', `Skipping ZIP ${asset.name}: ${buffer.length} > ${ZIP_MAX_BYTES}`);
+      return results;
+    }
+    let zip;
+    try {
+      zip = new AdmZip(buffer);
+    } catch (zipError) {
+      log('error', `Failed to extract ZIP ${asset.name}: ${zipError.message}`);
+      return results;
+    }
+    const zipEntries = zip.getEntries();
+    if (zipEntries.length > ZIP_MAX_ENTRIES) {
+      log('warn', `Skipping ZIP ${asset.name}: ${zipEntries.length} entries > ${ZIP_MAX_ENTRIES}`);
+      return results;
+    }
+    let uncompressed = 0;
+    for (const entry of zipEntries) {
+      if (entry.isDirectory) continue;
+      const entryName = entry.entryName.toLowerCase();
+      if (!(entryName.endsWith('.lua') || entryName.endsWith('.elf') || entryName.endsWith('.bin'))) continue;
+      // path.basename collapses both "../" and "..\\" segments AND any
+      // nested "Release/" prefix in a single shot, so a malicious entry
+      // like "../../etc/passwd" can never escape payloadsDir.
+      const filename = path.basename(entry.entryName);
+      if (!filename || filename === '.' || filename === '..' || /[\\/]/.test(filename)) {
+        log('warn', `Skipping suspicious ZIP entry: ${entry.entryName}`);
+        continue;
+      }
+      const entryBuffer = entry.getData();
+      uncompressed += entryBuffer.length;
+      if (uncompressed > ZIP_MAX_UNCOMPRESSED_BYTES) {
+        log('warn', `Skipping remaining entries in ${asset.name}: uncompressed > ${ZIP_MAX_UNCOMPRESSED_BYTES}`);
+        break;
+      }
+      const filepath = path.join(payloadsDir, filename);
+      fs.writeFileSync(filepath, entryBuffer);
+      const consoleType = detectConsoleTypeFromHints({ filename, url: downloadUrl });
+      const lastId = repo.run(
+        'INSERT INTO payloads (name, filename, filepath, source_url, size, version, console_type) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [filename, filename, filepath, downloadUrl, entryBuffer.length, version, consoleType],
+      );
+      results.push({ id: lastId, name: filename, size: entryBuffer.length, version, console_type: consoleType });
+      log('info', `Extracted from ZIP ${version}: ${entry.entryName}`);
+    }
+  } else {
+    const filename = asset.name;
+    const filepath = path.join(payloadsDir, filename);
+    fs.writeFileSync(filepath, buffer);
+    const consoleType = detectConsoleTypeFromHints({ filename, url: downloadUrl });
+    const lastId = repo.run(
+      'INSERT INTO payloads (name, filename, filepath, source_url, size, version, console_type) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [filename, filename, filepath, downloadUrl, buffer.length, version, consoleType],
+    );
+    results.push({ id: lastId, name: filename, size: buffer.length, version, console_type: consoleType });
+    log('info', `Downloaded from release ${version}: ${asset.name}`);
+  }
+  return results;
+}
+
 // Heuristic platform detection from filename + URL. Used for any payload
 // the user adds (GitHub fetch, file upload) that doesn't already carry an
 // explicit console_type. PS4 GoldHEN-ecosystem payloads are .bin and
@@ -192,70 +266,8 @@ router.post('/fetch-url', async (req, res) => {
         const isZip = name.endsWith('.zip');
 
         if (isLuaOrElf || isZip) {
-          const downloadUrl = asset.browser_download_url;
-          const fileResponse = await safeFetch(downloadUrl);
-          const buffer = await fileResponse.arrayBuffer().then(ab => Buffer.from(ab));
-
-          if (isZip) {
-            if (buffer.length > ZIP_MAX_BYTES) {
-              log('warn', `Skipping ZIP ${asset.name}: ${buffer.length} > ${ZIP_MAX_BYTES}`);
-              continue;
-            }
-            try {
-              const zip = new AdmZip(buffer);
-              const zipEntries = zip.getEntries();
-              if (zipEntries.length > ZIP_MAX_ENTRIES) {
-                log('warn', `Skipping ZIP ${asset.name}: ${zipEntries.length} entries > ${ZIP_MAX_ENTRIES}`);
-                continue;
-              }
-              let uncompressed = 0;
-              for (const entry of zipEntries) {
-                if (entry.isDirectory) continue;
-                const entryName = entry.entryName.toLowerCase();
-                if (entryName.endsWith('.lua') || entryName.endsWith('.elf') || entryName.endsWith('.bin')) {
-                  // path.basename collapses both "../" and "..\\" segments
-                  // AND any nested "Release/" prefix in a single shot, so
-                  // a malicious entry like "../../etc/passwd" or
-                  // "..\\..\\evil.lua" can never escape payloadsDir.
-                  const filename = path.basename(entry.entryName);
-                  if (!filename || filename === '.' || filename === '..' || /[\\/]/.test(filename)) {
-                    log('warn', `Skipping suspicious ZIP entry: ${entry.entryName}`);
-                    continue;
-                  }
-                  const entryBuffer = entry.getData();
-                  uncompressed += entryBuffer.length;
-                  if (uncompressed > ZIP_MAX_UNCOMPRESSED_BYTES) {
-                    log('warn', `Skipping remaining entries in ${asset.name}: uncompressed > ${ZIP_MAX_UNCOMPRESSED_BYTES}`);
-                    break;
-                  }
-                  const filepath = path.join(payloadsDir, filename);
-
-                  fs.writeFileSync(filepath, entryBuffer);
-                  const consoleType = detectConsoleTypeFromHints({ filename, url: downloadUrl });
-                  const lastId = repo.run(
-                    'INSERT INTO payloads (name, filename, filepath, source_url, size, version, console_type) VALUES (?, ?, ?, ?, ?, ?, ?)',
-                    [filename, filename, filepath, downloadUrl, entryBuffer.length, version, consoleType],
-                  );
-                  results.push({ id: lastId, name: filename, size: entryBuffer.length, version, console_type: consoleType });
-                  log('info', `Extracted from ZIP ${version}: ${entry.entryName}`);
-                }
-              }
-            } catch (zipError) {
-              log('error', `Failed to extract ZIP ${asset.name}: ${zipError.message}`);
-            }
-          } else {
-            const filename = asset.name;
-            const filepath = path.join(payloadsDir, filename);
-
-            fs.writeFileSync(filepath, buffer);
-            const consoleType = detectConsoleTypeFromHints({ filename, url: downloadUrl });
-            const lastId = repo.run(
-              'INSERT INTO payloads (name, filename, filepath, source_url, size, version, console_type) VALUES (?, ?, ?, ?, ?, ?, ?)',
-              [filename, filename, filepath, downloadUrl, buffer.length, version, consoleType],
-            );
-            results.push({ id: lastId, name: filename, size: buffer.length, version, console_type: consoleType });
-            log('info', `Downloaded from release ${version}: ${asset.name}`);
-          }
+          const entries = await downloadReleaseAsset(asset, version, repo);
+          results.push(...entries);
         }
       }
 
@@ -339,9 +351,97 @@ router.post('/fetch-url', async (req, res) => {
       return res.json({ success: true, downloaded: [{ id: lastId, name: filename, size: buffer.length, console_type: consoleType }] });
     }
 
+    // Bare repo URL (owner/repo, no /releases, /blob/ or raw path) - the
+    // three checks above already claimed anything more specific, so if we
+    // get here the URL is exactly "github.com/owner/repo[/]". Look up the
+    // latest release ourselves: one matching asset downloads straight
+    // away like today, but a repo that ships several builds per release
+    // (PS4 + PS5 variants, debug + release, ...) would otherwise silently
+    // dump all of them - so with more than one match we hand the list
+    // back to the UI and let the user pick via POST /fetch-assets.
+    const bareRepoMatch = url.match(/^https?:\/\/(?:www\.)?github\.com\/([^\/]+)\/([^\/?#]+)\/?(?:[?#].*)?$/i);
+    if (bareRepoMatch) {
+      const [, owner, repoName] = bareRepoMatch;
+      log('info', `Fetching latest release for bare repo URL: ${owner}/${repoName}`);
+
+      const apiUrl = `https://api.github.com/repos/${owner}/${repoName}/releases/latest`;
+      const response = await fetch(apiUrl, { headers: { 'Accept': 'application/vnd.github.v3+json' } });
+      if (!response.ok) {
+        throw new Error(`GitHub API error: ${response.status}`);
+      }
+
+      const release = await response.json();
+      const version = release.tag_name || 'latest';
+      const candidates = (release.assets || []).filter(asset => {
+        const name = asset.name.toLowerCase();
+        return name.endsWith('.lua') || name.endsWith('.elf') || name.endsWith('.bin') || name.endsWith('.zip');
+      });
+
+      if (candidates.length === 0) {
+        return res.json({ success: true, downloaded: [], message: 'No .lua, .elf, .bin or .zip files found in the latest release' });
+      }
+
+      if (candidates.length === 1) {
+        const results = await downloadReleaseAsset(candidates[0], version, repo);
+        repo.save();
+        return res.json({ success: true, downloaded: results });
+      }
+
+      return res.json({
+        success: true,
+        needsSelection: true,
+        version,
+        assets: candidates.map(asset => ({ name: asset.name, size: asset.size, download_url: asset.browser_download_url })),
+      });
+    }
+
     throw new Error('Invalid GitHub URL');
   } catch (error) {
     log('error', `Fetch URL failed: ${error.message}`);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Downloads specific release assets the user picked from the
+// needsSelection list returned by /fetch-url for a bare repo URL.
+router.post('/fetch-assets', async (req, res) => {
+  try {
+    const { assets, version } = req.body;
+    if (!Array.isArray(assets) || assets.length === 0) {
+      return res.status(400).json({ error: 'assets array required' });
+    }
+
+    ensurePayloadsDir();
+    const repo = getRepo();
+    const results = [];
+
+    for (const asset of assets) {
+      if (!asset || typeof asset.name !== 'string' || typeof asset.download_url !== 'string') continue;
+
+      const urlErr = assertAllowedFetchUrl(asset.download_url);
+      if (urlErr) {
+        log('warn', `Skipping asset with disallowed URL: ${asset.download_url}`);
+        continue;
+      }
+      if (repo.queryOne('SELECT id FROM payloads WHERE source_url = ?', [asset.download_url])) {
+        continue;
+      }
+
+      const entries = await downloadReleaseAsset(
+        { name: asset.name, browser_download_url: asset.download_url },
+        version || 'latest',
+        repo,
+      );
+      results.push(...entries);
+    }
+
+    repo.save();
+    if (results.length === 0) {
+      return res.json({ success: true, downloaded: [], message: 'No new payloads downloaded' });
+    }
+    return res.json({ success: true, downloaded: results });
+  } catch (error) {
+    log('error', `Fetch assets failed: ${error.message}`);
     res.status(500).json({ error: error.message });
   }
 });

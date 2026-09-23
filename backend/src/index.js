@@ -82,12 +82,14 @@ app.use((req, res, next) => {
   // still let it through for non-CORS requests (curl, server-to-server).
   return next();
 });
-// 16 MB is enough for any normal payload upload (POST /payloads/upload
-// takes the whole file base64-encoded in the body). 12 MB binary
-// inflates to ~16 MB base64 + JSON overhead. Larger files have to go
-// through the file-browser's upload-to-tmp-then-import flow or the
-// /fetch-url endpoint, which never round-trips through this body.
-app.use(express.json({ limit: '16mb' }));
+// 64 MB covers any payload we've seen in practice (POST /payloads/upload
+// takes the whole file base64-encoded in the body). ~48 MB binary inflates
+// to ~64 MB base64 + JSON overhead - 16 MB was too tight and real uploads
+// (multi-MB .elf builds, small ZIPs) were hitting Express's built-in 413.
+// Even larger files still have to go through the file-browser's
+// upload-to-tmp-then-import flow or the /fetch-url endpoint, which never
+// round-trips through this body.
+app.use(express.json({ limit: '64mb' }));
 
 // Suppress the most chatty polling endpoints from the access log - the UI
 // hits ps5/status, remoteplay/health and remoteplay/quick-status every few
