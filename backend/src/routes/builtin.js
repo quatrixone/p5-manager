@@ -1,10 +1,11 @@
-// Editor API for /frontend/builtin/*.js.
+// Editor API for /frontend/builtin/*.
 //
 // Lets the hidden UI editor (frontend BuiltinEditor.jsx) read and write the
 // three built-in source files. Edits are:
 //   * restricted to a fixed allow-list of filenames,
-//   * validated by attempting a dynamic import of a temp copy — a syntax
-//     error or runtime throw aborts the save without touching the real file,
+//   * validated before touching the real file - JS files by attempting a
+//     dynamic import of a temp copy (a syntax error or runtime throw
+//     aborts the save), JSON files (inputScripts.json) by JSON.parse,
 //   * atomic (write to tmp, fsync, rename),
 //   * backed up — previous version goes to `<file>.bak` next to it,
 //   * cache-invalidated so loadBuiltin() picks the new file up immediately.
@@ -36,18 +37,17 @@ const EDITABLE_FILES = [
     expectsExport: 'DEFAULT_TEMPLATES',
   },
   {
-    name: 'inputScripts.js',
+    name: 'inputScripts.json',
     title: 'Built-in Input Scripts',
-    description: 'Script Runner macros (Restart PS5, Rest Mode, …).',
-    expectsExport: 'BUILTIN_INPUT_SCRIPTS',
+    description: 'Script Runner macros (Restart PS5, Rest Mode, …). Plain JSON array, not a JS module.',
+    format: 'json',
   },
 ];
-const ALLOWED_NAMES = new Set(EDITABLE_FILES.map(f => f.name));
-
 const MAX_BYTES = 256 * 1024; // 256 KB is plenty for these data files
 
 function resolveBuiltinFile(name) {
-  if (!ALLOWED_NAMES.has(name)) {
+  const meta = EDITABLE_FILES.find(f => f.name === name);
+  if (!meta) {
     const err = new Error(`File not editable: ${name}`);
     err.status = 400;
     throw err;
@@ -61,7 +61,7 @@ function resolveBuiltinFile(name) {
     err.status = 400;
     throw err;
   }
-  return { dir, filePath };
+  return { dir, filePath, meta };
 }
 
 router.get('/files', (req, res) => {
@@ -109,7 +109,7 @@ router.get('/files/:name', (req, res) => {
 router.put('/files/:name', async (req, res) => {
   let tmpPath = null;
   try {
-    const { filePath } = resolveBuiltinFile(req.params.name);
+    const { filePath, meta } = resolveBuiltinFile(req.params.name);
     const { content } = req.body || {};
     if (typeof content !== 'string') {
       return res.status(400).json({ error: '`content` must be a string' });
@@ -118,20 +118,36 @@ router.put('/files/:name', async (req, res) => {
       return res.status(413).json({ error: `File exceeds ${MAX_BYTES} bytes` });
     }
 
-    // Validate by importing a sibling tmp copy. Same directory so any sibling
-    // imports (none today, but future-proof) and relative URLs behave the
-    // same. Bust Node's ESM cache with a unique query string each time.
-    tmpPath = `${filePath}.tmp-${Date.now()}-${process.pid}.js`;
-    fs.writeFileSync(tmpPath, content, 'utf8');
-    try {
-      const url = pathToFileURL(tmpPath).href + `?v=${Date.now()}`;
-      await import(url);
-    } catch (err) {
-      try { fs.unlinkSync(tmpPath); } catch (_) {}
-      tmpPath = null;
-      return res.status(400).json({
-        error: `Script failed validation: ${err.message}`,
-      });
+    // Validate by writing a tmp sibling first and only replacing the real
+    // file if that validates clean. JSON files (inputScripts.json) just
+    // need JSON.parse to succeed - importing them as a module would force
+    // a `.js` extension on the tmp file and validate the wrong thing
+    // entirely. JS files keep the dynamic-import check (same directory so
+    // any sibling imports and relative URLs behave the same; the query
+    // string busts Node's ESM cache each time).
+    if (meta.format === 'json') {
+      tmpPath = `${filePath}.tmp-${Date.now()}-${process.pid}.json`;
+      fs.writeFileSync(tmpPath, content, 'utf8');
+      try {
+        JSON.parse(content);
+      } catch (err) {
+        try { fs.unlinkSync(tmpPath); } catch (_) {}
+        tmpPath = null;
+        return res.status(400).json({ error: `Invalid JSON: ${err.message}` });
+      }
+    } else {
+      tmpPath = `${filePath}.tmp-${Date.now()}-${process.pid}.js`;
+      fs.writeFileSync(tmpPath, content, 'utf8');
+      try {
+        const url = pathToFileURL(tmpPath).href + `?v=${Date.now()}`;
+        await import(url);
+      } catch (err) {
+        try { fs.unlinkSync(tmpPath); } catch (_) {}
+        tmpPath = null;
+        return res.status(400).json({
+          error: `Script failed validation: ${err.message}`,
+        });
+      }
     }
 
     // Backup current version (best effort) then atomically replace.

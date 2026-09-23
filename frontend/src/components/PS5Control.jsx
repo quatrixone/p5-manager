@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback } from 'react';
-import ScriptRunner from './ScriptRunner';
 import RemotePlay from './RemotePlay';
 import useVisiblePolling from '../hooks/useVisiblePolling';
 // BT Virtual DualShock 4 emulator (host-side BlueZ HID device) moved to
@@ -15,6 +14,7 @@ import useVisiblePolling from '../hooks/useVisiblePolling';
 // filter because PS5 sees a wired Sony-signed HID gamepad.
 import Badge from './UI/Badge';
 import { api, apiSafe } from '../lib/api.js';
+import { usePs5Status } from '../contexts/Ps5StatusContext';
 
 // P5 Control top-level sub-tabs. 'control' is the default and contains
 // the live RP playback path (Start session, video preview, controller,
@@ -35,7 +35,12 @@ const readInitialSubTab = () => {
 };
 
 function PS5Control({ profiles, onNotification, onProfilesChanged }) {
-  const [status, setStatus] = useState(null);
+  // Shared with the topbar and RemotePlay.jsx (see Ps5StatusContext.jsx) -
+  // used to be its own 6 s /ps5/status poll here, a second one in the
+  // topbar, and a third one inside RemotePlay.jsx, all disagreeing with
+  // each other whenever the console was DDP-reachable but the payload
+  // host wasn't loaded (e.g. right after Wake). One shared poll now.
+  const ps5Status = usePs5Status();
   const [waking, setWaking] = useState(false);
   const [standbyBusy, setStandbyBusy] = useState(false);
   const [stoppingSession, setStoppingSession] = useState(false);
@@ -73,20 +78,14 @@ function PS5Control({ profiles, onNotification, onProfilesChanged }) {
 
   useEffect(() => { fetchScripts(); }, []);
 
-  // NOTE: `fetchStatus` and `pollRpSession` are declared with `const`, so they
-  // MUST be defined before any code that references them at render time
-  // (i.e. before the useVisiblePolling calls below). Putting the useVisiblePolling
-  // calls above these `const` declarations triggers a Temporal Dead Zone
-  // ReferenceError on every render → blank PS5 Control tab.
-  const fetchStatus = useCallback(async () => {
-    if (!defaultProfile) return;
-    try {
-      const data = await api.get(`/ps5/status/${defaultProfile.ip_address}`);
-      setStatus(data);
-    } catch (err) {
-      setStatus({ status: 'unreachable', error: err.message });
-    }
-  }, [defaultProfile?.ip_address]);
+  // NOTE: `pollRpSession` is declared with `const`, so it MUST be defined
+  // before any code that references it at render time (i.e. before the
+  // useVisiblePolling call below). Putting useVisiblePolling above this
+  // `const` declaration triggers a Temporal Dead Zone ReferenceError on
+  // every render → blank PS5 Control tab.
+  //
+  // The old per-component `fetchStatus` (/ps5/status poll) lived here;
+  // replaced by the shared ps5Status context (see its declaration above).
 
   // 4 s for the RP session state badge (was 3 s). Lower-priority signal
   // than the user actively pressing Start/Stop (those mutate the badge
@@ -112,11 +111,6 @@ function PS5Control({ profiles, onNotification, onProfilesChanged }) {
   // 6 s for the legacy DDP / TCP port poll. Was 5 s; visibility-gated so a
   // backgrounded P5 Control tab stops sending the port probe entirely.
   useVisiblePolling(
-    fetchStatus,
-    defaultProfile ? 6000 : 0,
-    [defaultProfile?.ip_address, defaultProfile?.port],
-  );
-  useVisiblePolling(
     pollRpSession,
     defaultProfile ? 4000 : 0,
     [defaultProfile?.ip_address],
@@ -134,6 +128,12 @@ function PS5Control({ profiles, onNotification, onProfilesChanged }) {
   // dangling that the user had to remember to stop).
   const handleWake = async () => {
     if (!defaultProfile) return;
+    // Optimistic "waking" on the shared status - the topbar dot and this
+    // tab's own badge both update immediately instead of the badge
+    // sitting on "Offline" until the next poll catches up (or forever,
+    // if the payload host never gets reloaded - that's expected after
+    // standby, not a bug, but it shouldn't render as a hard error).
+    ps5Status.markWaking();
     setWaking(true);
     try {
       const data = await api.post('/remoteplay/prewarm', { profile_id: defaultProfile.id });
@@ -143,7 +143,7 @@ function PS5Control({ profiles, onNotification, onProfilesChanged }) {
         else if (data.resumed) msg = `Pre-warmed (resumed from cache, ${data.warm_cache_ttl_s}s ready)`;
         else msg = `Pre-warmed (${data.warm_cache_ttl_s}s ready) — Start session will resume instantly`;
         showToast(msg, 'success');
-        setTimeout(fetchStatus, 1500);
+        setTimeout(() => ps5Status.refresh(true), 1500);
       } else {
         showToast('Wake failed: ' + (data.error || 'Unknown error'), 'error');
       }
@@ -165,7 +165,7 @@ function PS5Control({ profiles, onNotification, onProfilesChanged }) {
       if (data.success) {
         if (data.already_standby) showToast('PS5 already in rest mode', 'info');
         else showToast(`Rest mode sent (${data.via || 'ok'})`, 'success');
-        setTimeout(fetchStatus, 4000);
+        setTimeout(() => ps5Status.refresh(true), 4000);
       } else {
         showToast('Rest mode failed: ' + (data.error || 'Unknown error'), 'error');
       }
@@ -176,19 +176,29 @@ function PS5Control({ profiles, onNotification, onProfilesChanged }) {
   };
 
   const getStatusBadge = () => {
-    if (!status) return <Badge variant="muted">Unknown</Badge>;
-    if (!status.reachable) return <Badge variant="danger">Offline</Badge>;
-    // Payload-listener mapping (the old badge mislabelled 9020 as "LUA"
-    // - 9020 is actually PS4 GoldHEN, 9026 is the real Lua listener).
-    //   9021 → PS5 ELF payload host
-    //   9026 → PS5 Lua exploit chain
-    //   9020 → PS4 GoldHEN payload host
-    if (status.openPort === 9021) return <Badge variant="success">ELF Active</Badge>;
-    if (status.openPort === 9026) return <Badge variant="success">LUA Active</Badge>;
-    if (status.openPort === 9020) return <Badge variant="warning">PS4 Payload</Badge>;
-    if (status.openPort === 8080 || status.openPort === 6970)
-      return <Badge variant="info">Active</Badge>;
-    return <Badge variant="info">Rest mode</Badge>;
+    switch (ps5Status.state) {
+      case 'online': {
+        // Payload-listener mapping (the old badge mislabelled 9020 as
+        // "LUA" - 9020 is actually PS4 GoldHEN, 9026 is the real Lua
+        // listener).
+        //   9021 → PS5 ELF payload host
+        //   9026 → PS5 Lua exploit chain
+        //   9020 → PS4 GoldHEN payload host
+        const port = ps5Status.portStatus?.openPort;
+        if (port === 9021) return <Badge variant="success">ELF Active</Badge>;
+        if (port === 9026) return <Badge variant="success">LUA Active</Badge>;
+        if (port === 9020) return <Badge variant="warning">PS4 Payload</Badge>;
+        return <Badge variant="info">Active</Badge>;
+      }
+      case 'waking':
+        return <Badge variant="info">Waking…</Badge>;
+      case 'standby':
+        return <Badge variant="info">Rest mode</Badge>;
+      case 'offline':
+        return <Badge variant="danger">Offline</Badge>;
+      default:
+        return <Badge variant="muted">Unknown</Badge>;
+    }
   };
 
   // RP-session-specific badge. Decoupled from the legacy port status above
@@ -293,7 +303,7 @@ function PS5Control({ profiles, onNotification, onProfilesChanged }) {
               {getRpBadge()}
             </div>
             <div className="text-muted">{defaultProfile.ip_address}</div>
-            {status?.openPort && <div className="text-xs text-muted">Port: {status.openPort}</div>}
+            {ps5Status.portStatus?.openPort && <div className="text-xs text-muted">Port: {ps5Status.portStatus.openPort}</div>}
             {rpSession.sessionId && (
               <div className="text-xs text-muted font-mono">
                 session {rpSession.sessionId.slice(0, 12)}
@@ -330,7 +340,7 @@ function PS5Control({ profiles, onNotification, onProfilesChanged }) {
             </button>
             <button
               className="btn btn-ghost"
-              onClick={fetchStatus}
+              onClick={() => { ps5Status.refresh(false); pollRpSession(); }}
               title="Refresh PS5 status (DDP discover + RP session probe)"
             >
               🔄
@@ -398,53 +408,31 @@ function PS5Control({ profiles, onNotification, onProfilesChanged }) {
       </div>
 
       {/* Control sub-tab: Start session + live preview + controllers +
-          fullscreen + Input Scripts. RemotePlay.view="main" hides the
-          OAuth / Pair sections so they don't reappear here. */}
+          Input Scripts (list/editor + step runner) + Payloads, all as tabs
+          inside RemotePlay's Live Session card - see its sessionViewTab.
+          RemotePlay.view="main" hides the OAuth / Pair sections so they
+          don't reappear here. */}
       {subTab === 'control' && (
-        <>
-          <div className="comp-card mb-md">
-            <div className="comp-card-header">
-              <span className="comp-card-title">🕹️ PS Remote Play</span>
-            </div>
-            <div className="comp-card-body">
-              <RemotePlay
-                profiles={profiles}
-                onNotification={showToast}
-                onProfilesChanged={onProfilesChanged}
-                onScriptsChange={fetchScripts}
-                view="main"
-              />
-            </div>
+        <div className="comp-card mb-md">
+          <div className="comp-card-header">
+            <span className="comp-card-title">🕹️ PS Remote Play</span>
           </div>
-
-          {/* Input Scripts wrapper. ScriptRunner already renders its own nested
-              comp-cards (RP session bar, Built-in scripts, Saved scripts, etc.),
-              so on mobile we collapse the outer body padding and hide the
-              contextual hint to avoid double-padding the nested cards. The
-              built-in scripts card itself uses .builtin-scripts-compact for
-              additional mobile shrinking. */}
-          <div className="comp-card mb-md ps5control-scripts-wrap">
-            <div className="comp-card-header">
-              <span className="comp-card-title">⌨️ Input Scripts</span>
-            </div>
-            <div className="comp-card-body">
-              <p className="text-sm text-muted mb-sm desktop-only">
-                Scripts play back via the Remote Play sidecar above. Pair the PS5 first.
-              </p>
-              <ScriptRunner
-                ip={defaultProfile.ip_address}
-                scripts={scripts}
-                onScriptsChange={fetchScripts}
-              />
-            </div>
+          <div className="comp-card-body">
+            <RemotePlay
+              profiles={profiles}
+              onNotification={showToast}
+              onProfilesChanged={onProfilesChanged}
+              onScriptsChange={fetchScripts}
+              scripts={scripts}
+              view="main"
+            />
           </div>
-        </>
+        </div>
       )}
 
       {/* Settings sub-tab: setup-only slice of RemotePlay - Sony OAuth
-          link + PIN pairing + offline activation. ScriptRunner is
-          intentionally NOT here; Input Scripts are a runtime concern
-          and stay on the Control sub-tab. */}
+          link + PIN pairing + offline activation. Input Scripts / Payloads
+          are runtime concerns and stay on the Control sub-tab. */}
       {subTab === 'settings' && (
         <div className="comp-card mb-md">
           <div className="comp-card-header">

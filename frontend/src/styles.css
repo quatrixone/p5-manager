@@ -303,6 +303,11 @@ pre,
   animation: pulse 2.4s ease-in-out infinite;
 }
 .app-status .dot.standby { background: var(--amber); box-shadow: 0 0 0 4px var(--amber-dim); }
+.app-status .dot.waking {
+  background: var(--blue);
+  box-shadow: 0 0 0 4px var(--blue-dim);
+  animation: pulse 1.2s ease-in-out infinite;
+}
 .app-status .dot.offline { background: var(--red); }
 .app-status .ip {
   font-family: 'JetBrains Mono', monospace;
@@ -650,6 +655,16 @@ pre,
   border-color: rgba(255, 93, 122, 0.42);
 }
 
+.btn-info {
+  background: var(--blue-dim);
+  color: var(--blue);
+  border-color: rgba(125, 223, 245, 0.28);
+}
+.btn-info:hover:not(:disabled) {
+  background: rgba(125, 223, 245, 0.22);
+  border-color: rgba(125, 223, 245, 0.42);
+}
+
 .btn-ghost {
   background: transparent;
   color: var(--muted);
@@ -714,6 +729,22 @@ textarea.input {
   background-repeat: no-repeat;
   background-position: right 12px center;
   cursor: pointer;
+}
+
+/* The <select> element itself picks up the dark theme fine (background/
+   color set above), but its dropdown POPUP is rendered by the OS/browser,
+   not by our CSS box model - Chromium still applies the select's `color`
+   to each <option> while leaving the popup's own background at its
+   native default (white on most desktop Linux browsers), so every
+   dropdown across the app (Autoload's step pickers included) rendered as
+   near-white text on a white popup. Options need their own explicit
+   background/color; this can't be inherited from `.select`. Applies to
+   every <select> in the app, not just ones using the `.select` class
+   (e.g. Convert.jsx's inline-styled one), since option popup styling
+   isn't scoped by className the way the closed control is. */
+select option, select optgroup {
+  background: var(--bg-elev-2);
+  color: var(--text);
 }
 
 /* ---------- badges ---------- */
@@ -1677,6 +1708,19 @@ pre { padding: 12px; overflow-x: auto; }
   .rp-controller-hint { font-size: 0.7rem; margin-top: 2px; }
 }
 
+/* Smaller pad for the Scripts tab (above the step editor) - it's a
+   convenience for manual presses while building/running a script, not
+   the main event the way it is on the Control tab, so it doesn't need
+   full size there. */
+.rp-pad-compact .rp-pad { gap: var(--space-xs); }
+.rp-pad-compact .rp-pad-main { gap: var(--space-sm); }
+.rp-pad-compact .rp-pad-shoulders-side > button { min-width: 40px; height: 28px; font-size: 0.68rem; padding: 0 6px; }
+.rp-pad-compact .rp-dpad, .rp-pad-compact .rp-face { width: clamp(80px, 22vw, 110px); gap: 3px; }
+.rp-pad-compact .rp-dpad > div > button, .rp-pad-compact .rp-face > div > button { font-size: 0.85rem; }
+.rp-pad-compact .rp-face > div > button { font-size: 0.9rem; }
+.rp-pad-compact .rp-pad-center > button { min-width: 44px; height: 28px; font-size: 0.68rem; padding: 0 6px; }
+.rp-pad-compact .rp-controller-hint { font-size: 0.68rem; margin-top: 2px; }
+
 /* ---------- Live-session layout ----------
    On mobile/tablet (<1024px) this is just a vertical stack: chips →
    video → pad. The pad keeps its own internal layout (shoulders/main/
@@ -1785,6 +1829,148 @@ pre { padding: 12px; overflow-x: auto; }
   .builtin-scripts-compact .builtin-name { font-size: 0.82rem; }
   .builtin-scripts-compact .tab-item { padding: 6px 8px; font-size: 0.78rem; }
 }
+
+/* Step-by-step script runner: video left, step list right on desktop;
+   the two collapse into a mobile-only tab switcher (.step-panel-grid
+   itself stays a column and .mobile-hidden hides whichever half isn't
+   the active tab). */
+.step-panel-grid { display: flex; gap: 16px; align-items: flex-start; }
+.step-video, .step-list { flex: 1 1 50%; min-width: 0; }
+.step-list-scroll {
+  max-height: 360px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-right: 4px;
+}
+.step-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  font-size: 0.78rem;
+  /* Idle steps get a faint background + border so each row reads as its
+     own item instead of blending into the card - previously fully
+     transparent, which made not-yet-run steps nearly invisible against
+     the card background. */
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border);
+}
+/* Programmatically focused (see stepLineRefs in RemotePlay.jsx) when the
+   step cursor moves via Next/Prev/Restart/Replay, so it's scrolled into
+   view even when its own .current highlight isn't visually distinct
+   enough on its own. Suppress the default focus ring - the highlight
+   background above already marks it. */
+.step-line:focus { outline: none; }
+.step-line.current { background: var(--blue-dim); border-color: rgba(125, 223, 245, 0.4); }
+.step-line.done { background: transparent; border-color: transparent; opacity: 0.55; }
+.step-line-num { color: var(--text-soft); min-width: 22px; text-align: right; font-size: 0.68rem; flex-shrink: 0; }
+.step-line-text { flex: 1; word-break: break-all; }
+.step-line-check { color: var(--accent); flex-shrink: 0; }
+.step-line-action { opacity: 0.5; padding: 2px 6px !important; min-height: 24px !important; }
+.step-line-action:hover:not(:disabled) { opacity: 1; }
+.step-add-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 28px;
+  background: none;
+  border: 1px dashed transparent;
+  border-radius: 6px;
+  color: var(--muted-2);
+  font-size: 0.78rem;
+  cursor: pointer;
+  padding: 6px 8px;
+  margin: 0;
+  box-sizing: border-box;
+}
+.step-add-toggle:hover { border-color: var(--border-strong); color: var(--accent); background: rgba(255, 255, 255, 0.03); }
+.step-add-row { display: flex; align-items: center; gap: 6px; padding: 3px 0; }
+.step-add-row .input { min-height: 28px; }
+
+@media (max-width: 768px) {
+  .step-panel-grid { display: block; }
+  .step-panel-grid .mobile-hidden { display: none !important; }
+}
+
+/* ---------- Manual controls: gamepad-shaped layout ----------
+   Mirrors a real DualSense: shoulder triggers on top, D-pad bottom-left,
+   system cluster (touchpad/PS/options/sticks) in the middle, face buttons
+   (△□○✕) bottom-right, colored the way Sony colors them. Sized in px
+   (not %) so the cross/diamond grids keep their shape at any width; the
+   three clusters together stay under ~330px, comfortably inside a 400px
+   viewport without horizontal scroll. */
+.gamepad-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 34px;
+  min-height: 34px;
+  padding: 0 6px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev-2);
+  color: var(--text);
+  font-size: 0.8rem;
+  font-family: inherit;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease, transform 0.1s ease;
+}
+.gamepad-btn:hover:not(:disabled) { border-color: var(--border-strong); background: var(--bg-elev-3); }
+.gamepad-btn:active:not(:disabled) { transform: scale(0.93); }
+.gamepad-btn:disabled { opacity: 0.5; cursor: default; }
+
+.gamepad { display: flex; flex-direction: column; gap: 10px; align-items: flex-start; }
+.gamepad-triggers { display: flex; align-items: center; gap: 6px; width: 100%; }
+.gamepad-trigger { min-width: 44px; font-size: 0.72rem; font-family: 'JetBrains Mono', monospace; border-radius: 6px 6px 3px 3px; }
+.gamepad-spacer { flex: 1; }
+
+.gamepad-body { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
+
+.gamepad-dpad {
+  display: grid;
+  grid-template-columns: 36px 36px 36px;
+  grid-template-rows: 36px 36px 36px;
+  gap: 3px;
+}
+.dpad-up { grid-column: 2; grid-row: 1; }
+.dpad-left { grid-column: 1; grid-row: 2; }
+.dpad-right { grid-column: 3; grid-row: 2; }
+.dpad-down { grid-column: 2; grid-row: 3; }
+
+.gamepad-center {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+.gamepad-center-btn { min-width: 40px; font-size: 0.68rem; }
+.gamepad-ps-btn { color: var(--blue); font-weight: 700; }
+.gamepad-stick-btn { font-size: 0.62rem; opacity: 0.85; }
+
+.gamepad-face {
+  display: grid;
+  grid-template-columns: 36px 36px 36px;
+  grid-template-rows: 36px 36px 36px;
+  gap: 3px;
+}
+.face-up { grid-column: 2; grid-row: 1; }
+.face-left { grid-column: 1; grid-row: 2; }
+.face-right { grid-column: 3; grid-row: 2; }
+.face-down { grid-column: 2; grid-row: 3; }
+/* Sony's own face-button colors, applied to the glyph only - background
+   stays the same dark chip as every other control so the grid doesn't
+   turn into a toy. */
+.face-triangle { color: #7ce0b3; }
+.face-square { color: #f28bd6; }
+.face-circle { color: #ff8a8a; }
+.face-cross { color: #7bb8ff; }
+
+.gamepad-extra { padding-top: 2px; }
+.gamepad-extra-btn { min-width: auto; font-size: 0.68rem; padding: 0 10px; opacity: 0.7; }
 
 /* ---------- PS5 Control: Input Scripts wrapper (avoid double-padded nested cards) ---------- */
 

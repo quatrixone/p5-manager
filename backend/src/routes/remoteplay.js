@@ -14,9 +14,19 @@ const router = express.Router();
 // linked yet. Matches TRIGGER_PATH in p5managerclient/offact/main.c.
 const OFFACT_TRIGGER_DEFAULT = '/data/.p5manager-offact';
 
-// Anonymous PS5 ftpsrv on GoldHEN listens on 2121 by default. We keep
-// the trigger upload self-contained instead of going through convert.js'
-// withFtp helper because /activate-account is a small one-shot path.
+// Anonymous PS5 FTP control port. ps5-payload-dev's ftpsrv defaults to
+// 2121; zftpd (a faster alternative some users run instead) defaults to
+// 2120. Configurable via Settings ("ftp_control_port") instead of
+// hardcoded so switching FTP payloads doesn't silently break this.
+function getFtpControlPort() {
+  const raw = getRepo().queryScalar("SELECT value FROM settings WHERE key = 'ftp_control_port'");
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : 2121;
+}
+
+// We keep the trigger upload self-contained instead of going through
+// convert.js' withFtp helper because /activate-account is a small
+// one-shot path.
 async function writeOffactTrigger(ip, triggerPath, accountIdB64, onlineId) {
   const tmp = path.join(os.tmpdir(), `offact-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`);
   const body =
@@ -28,7 +38,7 @@ async function writeOffactTrigger(ip, triggerPath, accountIdB64, onlineId) {
     const client = new FtpClient(10_000);
     client.ftp.verbose = false;
     try {
-      await client.access({ host: ip, port: 2121, user: 'anonymous', password: '', secure: false });
+      await client.access({ host: ip, port: getFtpControlPort(), user: 'anonymous', password: '', secure: false });
       const remoteDir = path.posix.dirname(triggerPath);
       const remoteName = path.posix.basename(triggerPath);
       if (remoteDir && remoteDir !== '/' && remoteDir !== '.') {
@@ -54,7 +64,7 @@ async function deleteOffactTrigger(ip, triggerPath) {
     const client = new FtpClient(8_000);
     client.ftp.verbose = false;
     try {
-      await client.access({ host: ip, port: 2121, user: 'anonymous', password: '', secure: false });
+      await client.access({ host: ip, port: getFtpControlPort(), user: 'anonymous', password: '', secure: false });
       await client.remove(triggerPath);
     } finally {
       try { client.close(); } catch (_) {}
@@ -471,6 +481,20 @@ router.get('/discover', async (req, res) => {
     const ip = req.query.ip;
     if (!ip) return res.status(400).json({ success: false, error: 'ip required' });
     const data = await sidecar('GET', `/discover?ip=${encodeURIComponent(ip)}`, undefined, { timeout: 8000 });
+    res.json({ success: true, ...data });
+  } catch (err) {
+    res.status(err.status || 502).json({ success: false, error: err.message });
+  }
+});
+
+// Polled by the frontend while its own /sessions/start call is in flight,
+// so it can show "PS5 locked, retrying in Xs" during the sidecar's 45 s
+// quiet-wait instead of a spinner that gives no indication of progress.
+router.get('/retry-status', async (req, res) => {
+  try {
+    const ip = req.query.ip;
+    if (!ip) return res.status(400).json({ success: false, error: 'ip required' });
+    const data = await sidecar('GET', `/retry-status?ip=${encodeURIComponent(ip)}`, undefined, { timeout: 5000 });
     res.json({ success: true, ...data });
   } catch (err) {
     res.status(err.status || 502).json({ success: false, error: err.message });
@@ -1277,11 +1301,11 @@ router.post('/prewarm', async (req, res) => {
 // helper so callers can't accidentally diverge.
 router.post('/quick-start', async (req, res) => {
   try {
-    const { ip: rawIp, profile_id } = req.body || {};
+    const { ip: rawIp, profile_id, enable_video } = req.body || {};
     let ip = rawIp;
     if (!ip && profile_id) ip = loadProfileById(profile_id)?.ip_address;
     if (!ip) return res.status(400).json({ success: false, error: 'ip or profile_id required' });
-    const data = await ensureSessionForIp(ip, { forceNew: !!req.body?.force_new });
+    const data = await ensureSessionForIp(ip, { forceNew: !!req.body?.force_new, enableVideo: !!enable_video });
     res.json({ success: true, ...data });
   } catch (err) {
     res.status(err.status || 502).json({ success: false, error: err.message });
@@ -1298,12 +1322,27 @@ router.post('/quick-stop', async (req, res) => {
     if (!ip) return res.status(400).json({ success: false, error: 'ip or profile_id required' });
 
     let cachedStopped = false;
-    const cached = ipToSession.get(ip);
-    if (cached) {
+    let sidToStop = ipToSession.get(ip)?.sid;
+
+    // No local mapping doesn't mean no session - the frontend's own
+    // sessionId can go stale (e.g. the periodic quick-status poll racing
+    // a fresh Start and clearing it) and fall back to calling this route
+    // with nothing but the IP. Ask the sidecar directly rather than
+    // silently no-op'ing: a genuinely live session left un-stopped here
+    // stays live forever, which then permanently disables the Wake
+    // button (quick-status keeps reporting it as active on every poll).
+    if (!sidToStop) {
+      try {
+        const w = await sidecar('GET', `/warm-status?ip=${encodeURIComponent(ip)}`, undefined, { timeout: 5000 });
+        if (w.live || w.warm) sidToStop = w.session_id;
+      } catch (_) {}
+    }
+
+    if (sidToStop) {
       // Soft stop (no force=true) - the sidecar parks the session in its
       // PAUSED_SESSIONS warm cache so the next Start resumes instantly
       // instead of fighting the PS5 post-disconnect session lock.
-      try { await sidecar('POST', `/sessions/${encodeURIComponent(cached.sid)}/stop`, {}, { timeout: 20000 }); } catch (_) {}
+      try { await sidecar('POST', `/sessions/${encodeURIComponent(sidToStop)}/stop`, {}, { timeout: 20000 }); } catch (_) {}
       ipToSession.delete(ip);
       cachedStopped = true;
     }

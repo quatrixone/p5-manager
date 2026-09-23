@@ -1,4 +1,4 @@
-import { useState, useRef, useMemo } from 'react';
+import { useState, useRef, useMemo, useEffect } from 'react';
 import Modal from './UI/Modal';
 import EmptyState from './UI/EmptyState';
 import Badge from './UI/Badge';
@@ -6,15 +6,72 @@ import ProgressBar from './UI/ProgressBar';
 import { usePlatform, platformMatches } from '../contexts/PlatformContext';
 import { api } from '../lib/api.js';
 
-function PayloadList({ payloads, profiles, onFetchUrl, onSend, onDelete, onUpdate, onUpload, onRestoreDefaults }) {
+// Filenames the app itself depends on by name, outside the auto-fetched
+// ESSENTIAL_PAYLOADS list (those come from GET /payloads/defaults below).
+// These three are vendored/self-built (p5managerclient), not GitHub
+// releases, so they can't live in that download-oriented list - but
+// removing/renaming them breaks a specific feature just the same:
+//   rp-get-pin.elf  - Remote Play PIN auto-fetch (routes/remoteplay.js)
+//   offact.elf      - offline PSN account activation (routes/remoteplay.js)
+//   pkg-install.elf - PKG installer, auto-bound in Settings
+const VENDORED_REQUIRED_FILENAMES = ['rp-get-pin.elf', 'offact.elf', 'pkg-install.elf'];
+
+function PayloadList({ payloads, profiles, onFetchUrl, onSend, onDelete, onUpdate, onUpload, onRestoreDefaults, assetPicker, onConfirmAssetPicker, onCancelAssetPicker }) {
   const { mode } = usePlatform();
   const [githubUrl, setGitHubUrl] = useState('');
+  const [selectedAssets, setSelectedAssets] = useState(new Set());
+
+  // Default to "all checked" whenever a new picker list arrives, and clear
+  // the selection once it closes - keeps stale checks from leaking into
+  // the next repo's picker.
+  useEffect(() => {
+    if (assetPicker) {
+      setSelectedAssets(new Set(assetPicker.assets.map(a => a.name)));
+    } else {
+      setSelectedAssets(new Set());
+    }
+  }, [assetPicker]);
+
+  const toggleAsset = (name) => {
+    setSelectedAssets(prev => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name); else next.add(name);
+      return next;
+    });
+  };
+
+  const confirmAssetPicker = () => {
+    if (!assetPicker) return;
+    const chosen = assetPicker.assets.filter(a => selectedAssets.has(a.name));
+    if (chosen.length === 0) return;
+    onConfirmAssetPicker(chosen, assetPicker.version);
+  };
   const [updateInfo, setUpdateInfo] = useState({});
   const [checkingId, setCheckingId] = useState(null);
   const [expandedId, setExpandedId] = useState(null);
   const [multiSelect, setMultiSelect] = useState(false);
   const [selected, setSelected] = useState(new Set());
   const [showAddModal, setShowAddModal] = useState(false);
+  const [activeTab, setActiveTab] = useState('all'); // 'all' | 'builtin'
+  const [requiredFilenames, setRequiredFilenames] = useState(new Set(VENDORED_REQUIRED_FILENAMES));
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const list = await api.get('/payloads/defaults');
+        if (cancelled || !Array.isArray(list)) return;
+        // Only 'log' and 'template' entries are actual app dependencies
+        // (Log viewer, the p2jb template). 'community' entries (kstuff,
+        // ps5-backpork, micromount) are pre-curated convenience downloads -
+        // nothing in the app breaks without them, so they belong in All,
+        // not Built-in.
+        const required = list.filter(p => p.tag === 'log' || p.tag === 'template');
+        setRequiredFilenames(new Set([...VENDORED_REQUIRED_FILENAMES, ...required.map(p => p.filename)]));
+      } catch (_) { /* keep the vendored-only fallback */ }
+    })();
+    return () => { cancelled = true; };
+  }, []);
   // Ref-driven hidden file input. The previous label+display:none pattern
   // worked on desktop but iOS Safari (especially in standalone PWA mode)
   // refuses to honour the synthetic click on a `display: none` input —
@@ -130,11 +187,23 @@ function PayloadList({ payloads, profiles, onFetchUrl, onSend, onDelete, onUpdat
 
   // Filter by active platform mode. Untagged payloads pass through every
   // filter so legacy uploads remain visible regardless of mode.
-  const visiblePayloads = useMemo(
+  const platformFiltered = useMemo(
     () => payloads.filter(p => platformMatches(mode, p.console_type)),
     [payloads, mode]
   );
-  const hiddenCount = payloads.length - visiblePayloads.length;
+  const builtinPayloads = useMemo(
+    () => platformFiltered.filter(p => requiredFilenames.has(p.filename)),
+    [platformFiltered, requiredFilenames]
+  );
+  // "All" means everything EXCEPT built-ins - those live only under the
+  // Built-in tab, kept out of the main list so it doesn't get cluttered
+  // with payloads the user never picks to Send by hand.
+  const nonBuiltinPayloads = useMemo(
+    () => platformFiltered.filter(p => !requiredFilenames.has(p.filename)),
+    [platformFiltered, requiredFilenames]
+  );
+  const visiblePayloads = activeTab === 'builtin' ? builtinPayloads : nonBuiltinPayloads;
+  const hiddenCount = payloads.length - platformFiltered.length;
 
   const renderPayloadCard = (payload) => {
     const info = updateInfo[payload.id];
@@ -313,12 +382,37 @@ function PayloadList({ payloads, profiles, onFetchUrl, onSend, onDelete, onUpdat
         </div>
       </div>
 
+      <div className="tabs mb-sm" style={{ fontSize: '0.8rem' }}>
+        <button
+          type="button"
+          className={`tab-item ${activeTab === 'all' ? 'active' : ''}`}
+          onClick={() => setActiveTab('all')}
+        >
+          All
+        </button>
+        <button
+          type="button"
+          className={`tab-item ${activeTab === 'builtin' ? 'active' : ''}`}
+          onClick={() => setActiveTab('builtin')}
+          title="Payloads the app itself depends on by name - required for the Log viewer, Remote Play PIN pairing, offline account activation, the p2jb template, and the PKG installer. Deleting one breaks that feature."
+        >
+          🧷 Built-in{builtinPayloads.length > 0 ? ` (${builtinPayloads.length})` : ''}
+        </button>
+      </div>
+
       {payloads.length === 0 ? (
         <EmptyState
           icon="📦"
           title="No payloads yet"
           text="Add payloads to send to your console"
           action={<button className="btn btn-primary" onClick={() => setShowAddModal(true)}>+ Add Payload</button>}
+        />
+      ) : activeTab === 'builtin' && builtinPayloads.length === 0 ? (
+        <EmptyState
+          icon="🧷"
+          title="No built-in payloads present"
+          text="None of the app-required payloads (log viewer, PIN pairing, offline activation, p2jb, PKG installer) are on disk yet. Hit ✨ Defaults to fetch the ones that come from GitHub, or upload the vendored ones (rp-get-pin.elf, offact.elf, pkg-install.elf) manually."
+          action={onRestoreDefaults && <button className="btn btn-primary" onClick={() => onRestoreDefaults(false)}>✨ Defaults</button>}
         />
       ) : visiblePayloads.length === 0 ? (
         <EmptyState
@@ -399,6 +493,49 @@ function PayloadList({ payloads, profiles, onFetchUrl, onSend, onDelete, onUpdat
             filename and can be changed later from the payload card.
           </div>
         </div>
+      </Modal>
+
+      <Modal
+        isOpen={!!assetPicker}
+        onClose={onCancelAssetPicker}
+        title="Choose files to download"
+        footer={
+          <>
+            <button className="btn btn-ghost" onClick={onCancelAssetPicker}>Cancel</button>
+            <button
+              className="btn btn-primary"
+              onClick={confirmAssetPicker}
+              disabled={selectedAssets.size === 0}
+            >
+              Download {selectedAssets.size > 0 ? `(${selectedAssets.size})` : ''}
+            </button>
+          </>
+        }
+      >
+        {assetPicker && (
+          <div className="flex-col gap-md">
+            <div className="text-sm text-muted">
+              The latest release ({assetPicker.version}) has multiple matching files — pick which one(s) to download.
+            </div>
+            <div className="flex-col gap-sm">
+              {assetPicker.assets.map(asset => (
+                <label
+                  key={asset.name}
+                  className="flex items-center gap-sm"
+                  style={{ cursor: 'pointer' }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={selectedAssets.has(asset.name)}
+                    onChange={() => toggleAsset(asset.name)}
+                  />
+                  <span style={{ flex: 1 }}>{asset.name}</span>
+                  <span className="text-xs text-muted">{formatSize(asset.size)}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+        )}
       </Modal>
     </div>
   );

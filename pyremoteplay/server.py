@@ -123,6 +123,12 @@ WARM_CACHE_TTL_S = 180.0
 # waits for (and reuses) the first one's result.
 START_LOCKS: Dict[str, asyncio.Lock] = {}
 
+# Surfaces the 45 s quiet-wait retry (below, in session_start) to the
+# frontend so it can show a countdown instead of a stuck "Starting..."
+# spinner. Indexed by IP; set right before the sleep, cleared when the
+# retry loop exits (success or final failure) via a try/finally.
+RETRY_STATUS: Dict[str, Dict[str, Any]] = {}
+
 
 # ─── Video receiver ───────────────────────────────────────────────────────────
 #
@@ -427,6 +433,41 @@ def _to_user_rpid(account_id: str) -> str:
     return aid
 
 
+def _prime_device_mac(device, profiles, name: str, host_type_hint: Optional[str] = None) -> None:
+    """Seed device._mac_address and device._host_type from the paired
+    profile when the console isn't answering live DDP status queries.
+
+    This is the whole reason /wake and the reconnect paths exist - a console
+    that's fully off or deep-asleep won't respond to get_status(), so both
+    device.mac_address and device.host_type stay None/empty.
+
+    mac_address: RPDevice.wakeup() looks up the RegistKey via
+    get_profile() -> get_users(), and get_users() bails out immediately when
+    mac_address is unset ("Device ID is unknown") - silently, no exception
+    raised, so wakeup() just no-ops and every caller (which only checks for
+    a raised exception) thinks it succeeded. We already have the MAC as the
+    key of the single `hosts` entry from pairing, so use that instead of
+    waiting on a status response we may never get.
+
+    host_type: wakeup() passes device.host_type straight into the module
+    ddp.wakeup(..., host_type=...) call with no fallback, so a None here
+    raises ValueError("Invalid host type: None") instead of silently
+    no-oping. Seed it from whatever the caller already knows (the paired
+    profile's console_type) and fall back to PS5, matching the default used
+    elsewhere in this file (_send_ddp_launch).
+    """
+    if not device.host_type:
+        device._host_type = (host_type_hint or "PS5").upper()
+    if device.mac_address:
+        return
+    try:
+        hosts = (profiles.get(name) or {}).get("hosts") or {}
+    except Exception:  # noqa: BLE001
+        hosts = {}
+    if hosts:
+        device._mac_address = next(iter(hosts))
+
+
 def _build_profiles(name: str, account_id: str, hosts: Optional[Dict[str, Any]] = None) -> "Profiles":
     """Create an in-memory Profiles map with a single user entry.
 
@@ -546,7 +587,7 @@ async def _safe_disconnect(device) -> None:
         log.debug("disconnect error: %s", e)
 
 
-async def _prime_rp_control_port(device, ip: str, name: str, profiles, aid: str, was_standby: bool) -> None:
+async def _prime_rp_control_port(device, ip: str, name: str, profiles, aid: str, was_standby: bool, host_type_hint: Optional[str] = None) -> None:
     """Send the wakeup + DDP launch + re-arm sequence that makes the PS5
     Remote Play control port (9295) actually accept a fresh HTTP connect.
 
@@ -556,6 +597,7 @@ async def _prime_rp_control_port(device, ip: str, name: str, profiles, aid: str,
     refused"). Sending wakeup + DDP launch + a small settle wait fixes it.
     Used by both /sessions/start and /standby (cold path).
     """
+    _prime_device_mac(device, profiles, name, host_type_hint=host_type_hint)
     try:
         device.wakeup(name, profiles=profiles)
         if was_standby:
@@ -654,6 +696,7 @@ async def _try_connect_once(device, name: str, profiles, receiver=None,
 
 @app.post("/sessions/start")
 async def session_start(req: StartSessionReq):
+    RETRY_STATUS.pop(req.ip, None)
     if not PYREMOTEPLAY_OK:
         raise HTTPException(503, f"pyremoteplay unavailable: {PYREMOTEPLAY_ERR}")
 
@@ -790,6 +833,16 @@ async def _session_start_impl(req: StartSessionReq):
             await _safe_disconnect(paused_device)
         except Exception:  # noqa: BLE001
             pass
+        # Tried a short settle delay here (waiting for the PS5's own "Host
+        # Disconnected" notice before reconnecting) on the theory that the
+        # 45 s quiet-wait retry below was just recovering from us
+        # reconnecting too early. Measured: the PS5 still answers "Another
+        # Remote Play session is connected to host" even when we wait past
+        # that notice, and the delay didn't shorten anything, only added
+        # dead weight to every warm-cache-mismatch reconnect. Left out -
+        # see the video-flag fix in wakePs5() (frontend) instead, which
+        # avoids the mismatch (and therefore this discard+reconnect path)
+        # in the first place for the common case.
 
     device = RPDevice(req.ip)
     # Initial status check is best-effort: when the PS5 is mid-transition into
@@ -868,7 +921,7 @@ async def _session_start_impl(req: StartSessionReq):
     # out of standby if it's there) and DDP LAUNCH (to dismiss the "Press PS
     # button" account-picker that appears on a freshly woken console).
     # Skipping this breaks every cold start.
-    await _prime_rp_control_port(device, req.ip, name, profiles, aid, was_standby)
+    await _prime_rp_control_port(device, req.ip, name, profiles, aid, was_standby, host_type_hint=req.host_type)
 
     # Build the media receiver up-front if video was requested. It has to
     # be passed to create_session() (we can't attach it later), and
@@ -957,12 +1010,19 @@ async def _session_start_impl(req: StartSessionReq):
             wait_s = 45.0
             log.info("PS5 %s transient (%s) on attempt %d - quiet wait %ds + re-prime",
                      req.ip, "lock" if is_lock else "refused", attempt + 1, int(wait_s))
+            RETRY_STATUS[req.ip] = {
+                "reason": "lock" if is_lock else "refused",
+                "wait_started": time.monotonic(),
+                "wait_s": wait_s,
+            }
             await _safe_disconnect(device)
             await asyncio.sleep(wait_s)
+            RETRY_STATUS.pop(req.ip, None)
             device = RPDevice(req.ip)
             try: await device.async_get_status()
             except Exception:  # noqa: BLE001
                 pass
+            _prime_device_mac(device, profiles, name, host_type_hint=req.host_type)
             # Fresh DDP LAUNCH right before the next attempt - dismisses any
             # stray "Press PS button" account picker and re-arms the RP
             # service state machine.
@@ -1294,6 +1354,28 @@ async def session_prewarm(req: StartSessionReq):
     }
 
 
+@app.get("/retry-status")
+async def session_retry_status(ip: str):
+    """Report whether /sessions/start is mid-way through the 45 s quiet-wait
+    retry for `ip` (see RETRY_STATUS), and how many seconds remain.
+
+    Polled by the frontend while its own /sessions/start request is still
+    in flight, so it can show "PS5 locked, retrying in Xs" instead of a
+    spinner that looks the same whether it's about to finish in 2 s or 40 s.
+    """
+    r = RETRY_STATUS.get(ip)
+    if not r:
+        return {"waiting": False}
+    elapsed = time.monotonic() - r["wait_started"]
+    remaining = max(0.0, r["wait_s"] - elapsed)
+    return {
+        "waiting": True,
+        "reason": r["reason"],
+        "remaining_s": round(remaining, 1),
+        "total_s": r["wait_s"],
+    }
+
+
 @app.get("/warm-status")
 async def session_warm_status(ip: str):
     """Report whether the sidecar holds a usable RP session for `ip`.
@@ -1436,6 +1518,12 @@ async def wake(req: WakeReq):
         profiles[name] = {"id": data["id"], "hosts": data.get("hosts") or {}}
     else:
         profiles = _build_profiles(name, req.account_id)
+
+    # async_get_status() above silently no-ops (no exception) when the
+    # console doesn't answer - exactly the deep-standby/off case /wake is
+    # for - so device.mac_address is still None here. Prime it from the
+    # stored profile or wakeup() below quietly does nothing 3 times.
+    _prime_device_mac(device, profiles, name, host_type_hint=req.host_type)
 
     sent = 0
     last_err = None
@@ -1671,7 +1759,7 @@ async def standby(req: StartSessionReq):
     # was recently primed by a wake + DDP LAUNCH sequence. Use the same
     # priming helper as /sessions/start so cold standby works after the
     # console has been idle for a while.
-    await _prime_rp_control_port(device, req.ip, name, profiles, aid, was_standby=False)
+    await _prime_rp_control_port(device, req.ip, name, profiles, aid, was_standby=False, host_type_hint=req.host_type)
 
     try:
         await _try_connect_once(device, name, profiles)

@@ -7,6 +7,7 @@ import Settings from './components/Settings';
 import FileOps from './components/FileOps';
 import BuiltinEditor from './components/BuiltinEditor';
 import { PlatformProvider, usePlatform } from './contexts/PlatformContext';
+import { Ps5StatusProvider, usePs5Status } from './contexts/Ps5StatusContext';
 import useVisiblePolling from './hooks/useVisiblePolling';
 import { api, apiSafe } from './lib/api.js';
 import './styles.css';
@@ -53,6 +54,10 @@ function App() {
   const [profiles, setProfiles] = useState([]);
   const [logs, setLogs] = useState([]);
   const [notification, setNotification] = useState(null);
+  // Set when /fetch-url resolves a bare repo URL to a release with more
+  // than one matching asset - PayloadList renders a picker modal off this
+  // instead of the backend silently downloading everything.
+  const [assetPicker, setAssetPicker] = useState(null);
 
   const showNotification = (message, type = 'info') => {
     setNotification({ message, type });
@@ -111,6 +116,10 @@ function App() {
   const fetchFromGitHubUrl = async (url) => {
     try {
       const data = await api.post('/payloads/fetch-url', { url });
+      if (data.needsSelection) {
+        setAssetPicker({ assets: data.assets, version: data.version });
+        return;
+      }
       if (data.success) {
         showNotification(`Downloaded ${data.downloaded.length} payload(s)`, 'success');
         fetchPayloads();
@@ -120,6 +129,26 @@ function App() {
       }
     } catch (err) {
       showNotification(err.message, 'error');
+    }
+  };
+
+  // Confirms the user's choice from the asset picker opened above.
+  // `assets` is the subset of { name, size, download_url } the user
+  // checked; the backend downloads exactly those and nothing else.
+  const fetchSelectedAssets = async (assets, version) => {
+    try {
+      const data = await api.post('/payloads/fetch-assets', { assets, version });
+      if (data.success) {
+        showNotification(`Downloaded ${data.downloaded.length} payload(s)`, 'success');
+        fetchPayloads();
+        fetchLogs();
+      } else {
+        showNotification(data.error, 'error');
+      }
+    } catch (err) {
+      showNotification(err.message, 'error');
+    } finally {
+      setAssetPicker(null);
     }
   };
 
@@ -335,37 +364,6 @@ function App() {
   };
 
   const defaultProfile = profiles.find(p => p.is_default) || profiles[0];
-  const [defaultStatus, setDefaultStatus] = useState(null); // { reachable, openPort }
-
-  // Lightweight status poll for the topbar status pill. Mirrors PS5Control's
-  // own poll so the indicator always reflects the default console, no matter
-  // which tab the user is on. Visibility-gated + a 15 s cadence (was 10 s):
-  // the pill is a "is the console online" affordance, not a precision
-  // sensor — a few extra seconds of latency is invisible to users and
-  // saves a /api/ps5/status call every 5 s for every backgrounded tab.
-  const pollDefaultStatus = useCallback(async () => {
-    if (!defaultProfile) {
-      setDefaultStatus(null);
-      return;
-    }
-    const data = await apiSafe.get(`/ps5/status/${defaultProfile.ip_address}?port=${defaultProfile.port || 9021}`);
-    setDefaultStatus(data || { reachable: false });
-  }, [defaultProfile?.ip_address, defaultProfile?.port]);
-  useVisiblePolling(pollDefaultStatus, defaultProfile ? 15000 : 0, [defaultProfile?.ip_address, defaultProfile?.port]);
-
-  const statusDot = (() => {
-    if (!defaultProfile) return 'offline';
-    if (!defaultStatus) return 'offline';
-    if (!defaultStatus.reachable) return 'offline';
-    // Any open payload listener (ELF 9021, Lua 9026, PS4 GoldHEN 9020,
-    // PS4 web exploit 8080, etaHEN 6970) means the console is awake and
-    // running a payload host - never report "standby" in that case.
-    // Anything else came from the DDP discover fallback (UDP-visible
-    // but no TCP listener), which is what "standby" actually represents.
-    const PAYLOAD_PORTS = new Set([9021, 9026, 9020, 8080, 6970]);
-    if (PAYLOAD_PORTS.has(defaultStatus.openPort)) return 'online';
-    return 'standby';
-  })();
 
   const sidebar = (
     <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} />
@@ -377,18 +375,11 @@ function App() {
 
   return (
     <PlatformProvider activeProfile={defaultProfile}>
+    <Ps5StatusProvider profile={defaultProfile}>
     <>
       <header className="app-topbar">
         <PlatformAwareBrand />
-
-        {defaultProfile && (
-          <div className="app-status" title={defaultProfile.name}>
-            <span className={`dot ${statusDot}`} />
-            <span className="truncate">{defaultProfile.name}</span>
-            <ConsoleTypeBadge consoleType={defaultStatus?.console_type || defaultProfile.console_type} />
-            <span className="ip">{defaultProfile.ip_address}</span>
-          </div>
-        )}
+        {defaultProfile && <TopbarPs5Status profile={defaultProfile} />}
       </header>
 
       {notification && (
@@ -422,6 +413,9 @@ function App() {
               onUpdate={updatePayload}
               onUpload={uploadPayload}
               onRestoreDefaults={restoreDefaultPayloads}
+              assetPicker={assetPicker}
+              onConfirmAssetPicker={fetchSelectedAssets}
+              onCancelAssetPicker={() => setAssetPicker(null)}
             />
           )}
           {!showBuiltinEditor && activeTab === 'autoload' && (
@@ -450,12 +444,36 @@ function App() {
 
       {mobileNav}
     </>
+    </Ps5StatusProvider>
     </PlatformProvider>
   );
 }
 
 // Brand + mode-aware subtitle. "PS4 mode" / "PS5 mode" / "PS4 / PS5" so
 // the user always sees which content the rest of the UI is filtered to.
+// Reads the shared Ps5StatusContext instead of polling on its own - see
+// Ps5StatusContext.jsx for why this used to be a second, conflicting
+// poller (a TCP payload-port check independent of PS5 Control's DDP
+// check, which made the dot flash red right when "Wake PS5" was clicked
+// even though the console really was waking up).
+function TopbarPs5Status({ profile }) {
+  const { state, portStatus } = usePs5Status();
+  const label = {
+    online: 'Payload host up',
+    waking: 'Console awake, payload host not loaded',
+    standby: 'In rest mode',
+    offline: 'Unreachable',
+  }[state];
+  return (
+    <div className="app-status" title={`${profile.name} — ${label}`}>
+      <span className={`dot ${state}`} />
+      <span className="truncate">{profile.name}</span>
+      <ConsoleTypeBadge consoleType={portStatus?.console_type || profile.console_type} />
+      <span className="ip">{profile.ip_address}</span>
+    </div>
+  );
+}
+
 function PlatformAwareBrand() {
   const { mode } = usePlatform();
   const subtitle = mode === 'ps4' ? 'PS4 mode'

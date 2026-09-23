@@ -1,282 +1,158 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
+import Modal from './UI/Modal';
 import { api, apiSafe } from '../lib/api.js';
+import { AVAILABLE_COMMANDS, buildOskInputs, parseLine } from '../lib/inputScriptDsl.js';
 
-const AVAILABLE_COMMANDS = [
-  { cmd: 'left', desc: 'D-pad left' },
-  { cmd: 'right', desc: 'D-pad right' },
-  { cmd: 'up', desc: 'D-pad up' },
-  { cmd: 'down', desc: 'D-pad down' },
-  { cmd: 'x', desc: 'X button' },
-  { cmd: 'cross', desc: 'Cross button' },
-  { cmd: 'circle', desc: 'Circle button' },
-  { cmd: 'square', desc: 'Square button' },
-  { cmd: 'triangle', desc: 'Triangle button' },
-  { cmd: 'ps', desc: 'PS button' },
-  { cmd: 'options', desc: 'Options button' },
-  { cmd: 'touchpad', desc: 'Touchpad click' },
-  { cmd: 'L1', desc: 'L1 trigger' },
-  { cmd: 'R1', desc: 'R1 trigger' },
-  { cmd: 'L2', desc: 'L2 trigger' },
-  { cmd: 'R2', desc: 'R2 trigger' },
-  { cmd: 'L3', desc: 'L3 stick press' },
-  { cmd: 'R3', desc: 'R3 stick press' },
-  { cmd: 'wait', desc: 'Wait X ms (e.g. wait 1000)' },
-  { cmd: 'text', desc: 'Type text on PS5 on-screen keyboard (e.g. text Revenge)' },
-];
-
-// Note: append "Nx" / "xN" / "*N" to any button line to repeat it N times.
-//   e.g. `left 10x`  -> presses left 10 times
-//   e.g. `cross 5x 120` -> 5 taps, each 120 ms long
-//
-// `text <string>` simulates typing on the PS5 software keyboard by walking
-// the d-pad and tapping cross for each letter (a-z, space).
-
-const OSK_KEY_COORDS = (() => {
-  const map = {};
-  const rows = ['qwertyuiop', 'asdfghjkl', 'zxcvbnm'];
-  rows.forEach((row, r) => {
-    for (let c = 0; c < row.length; c++) map[row[c]] = [c, r];
-  });
-  map[' '] = [3, 3];
-  return map;
-})();
-
-function buildOskInputs(text) {
-  const events = [];
-  let curCol = 0, curRow = 0;
-  for (let i = 0; i < 4; i++) events.push({ button: 'up' });
-  for (let i = 0; i < 10; i++) events.push({ button: 'left' });
-  events.push({ button: 'down' });
-  for (const ch0 of String(text)) {
-    const ch = ch0.toLowerCase();
-    const coords = OSK_KEY_COORDS[ch];
-    if (!coords) continue;
-    const [tc, tr] = coords;
-    const dr = tr - curRow;
-    const dc = tc - curCol;
-    if (dr > 0) for (let i = 0; i < dr; i++) events.push({ button: 'down' });
-    else if (dr < 0) for (let i = 0; i < -dr; i++) events.push({ button: 'up' });
-    if (dc > 0) for (let i = 0; i < dc; i++) events.push({ button: 'right' });
-    else if (dc < 0) for (let i = 0; i < -dc; i++) events.push({ button: 'left' });
-    events.push({ button: 'cross', commit: true });
-    curCol = tc; curRow = tr;
-  }
-  return events;
-}
-
-function ScriptRunner({ ip, onSendInput, scripts, onScriptsChange }) {
-  const [scriptName, setScriptName] = useState('');
-  const [script, setScript] = useState('');
-  const [editingId, setEditingId] = useState(null);
+// Script list + editor, embedded inside RemotePlay's "Input Scripts" tab.
+// Deliberately has NO session of its own - it used to run its own
+// Start/Stop + a 4 s /quick-status poll, which just duplicated whatever
+// RemotePlay's Live Session card already tracked for the exact same IP
+// (same sidecar session underneath, ensureSessionForIp() is keyed by IP).
+// The caller (RemotePlay) passes down the live session + a `sendCommand`
+// that goes through the RP session's own input channel, so "▶ Run" here
+// and the step-by-step "👣 Step" mode both ultimately press buttons the
+// same way as the on-screen touch controller.
+function ScriptRunner({ ip, liveSession, onStartSession, sendCommand, scripts, onScriptsChange, onRequestStep }) {
   const [output, setOutput] = useState([]);
-  const [isRunning, setIsRunning] = useState(false);
+  const [manualBusy, setManualBusy] = useState(null); // cmd currently in flight, or null
+  const [isRunning, setIsRunning] = useState(null); // holds the id/key of the script currently running, or null
   const [stopRequested, setStopRequested] = useState(false);
-  // sessionState transitions:
-  //   idle      → no RP session anywhere on the sidecar for this IP
-  //   warm      → sidecar holds a paused session that can be resumed in O(ms)
-  //   connecting → user clicked Start, handshake in progress
-  //   connected  → live session ready, button events will flow immediately
-  //   stopping   → user clicked Stop, waiting for sidecar to park the session
-  //
-  // `warm` is what the sidecar reports when /quick-stop was a soft-stop (the
-  // default for the Stop button) or when /prewarm was used. From the user's
-  // perspective the next Start click is basically free, so we surface this
-  // explicitly instead of lumping it under idle.
-  const [sessionState, setSessionState] = useState('idle');
-  const [sessionId, setSessionId] = useState('');
-  // Last warm-cache snapshot from /quick-status. Lets the badge show
-  // "warm · 12s ago, 168s TTL" so it's obvious whether Start will be
-  // instant (warm) or whether the user is about to pay the cold-start
-  // cost (idle).
-  const [warmInfo, setWarmInfo] = useState(null); // { ageS, ttlS } | null
-  // PS5 power state (DDP). Lets us swap "Start session" for "PS5 offline"
-  // when there's nothing on the other end - the input button still works
-  // but at least the user knows why nothing's happening.
-  const [ps5Online, setPs5Online] = useState(null); // true | false | null=unknown
-  // Built-in scripts ship with the app (source: /frontend/builtin/inputScripts.js).
+  // Built-in scripts ship with the app (source: /frontend/builtin/inputScripts.json).
   // Fetched once on mount via /api/input-scripts/builtin; rendered above the
-  // user-saved list in their own card so they can't be deleted/edited in place.
+  // user-saved list in their own card. Editable in place via the edit modal
+  // below (PUT /input-scripts/builtin/:id rewrites the source file).
   const [builtinScripts, setBuiltinScripts] = useState([]);
 
-  // Single combined "Scripts" card has two tabs: built-in (curated, read-only)
-  // and saved (user-created in this DB). We default to built-in because most
-  // first-time users have nothing saved yet — once a script is saved we don't
-  // auto-switch (would steal focus while typing in the editor).
+  // Single combined "Scripts" card has two tabs: built-in (curated) and
+  // saved (user-created in this DB). We default to built-in because most
+  // first-time users have nothing saved yet.
   const [scriptsTab, setScriptsTab] = useState('builtin');
 
-  // Command reference is collapsed by default — most users insert commands by
-  // typing or by forking a built-in. Toggle reveals the chip palette.
-  const [showCommands, setShowCommands] = useState(false);
-  useEffect(() => {
-    let cancelled = false;
+  // Editing happens in a modal instead of a permanently-visible editor
+  // card, so the list stays the focus and there's no dangling "New
+  // Script" form taking up space when nobody's writing one.
+  //   kind: 'saved' | 'builtin'
+  //   id:   numeric input_scripts id (saved) or 'builtin:xxx' (builtin) — null when creating new
+  //   isNew: true for the create-a-saved-script flow (Save always POSTs)
+  const [editModal, setEditModal] = useState(null);
+  const [savingModal, setSavingModal] = useState(false);
+  const [modalError, setModalError] = useState('');
+
+  const fetchBuiltinScripts = () => {
     apiSafe.get('/input-scripts/builtin').then(list => {
-      if (!cancelled && Array.isArray(list)) setBuiltinScripts(list);
+      if (Array.isArray(list)) setBuiltinScripts(list);
     });
-    return () => { cancelled = true; };
-  }, []);
-  // Mirror the latest state into a ref so the polling closure always reads
-  // the truth without re-creating the interval on every render.
-  const sessionStateRef = useRef('idle');
-  useEffect(() => { sessionStateRef.current = sessionState; }, [sessionState]);
+  };
 
-  // Poll the cached RP session status for this IP every 4 s. Single source
-  // of truth: the sidecar. If the sidecar says a session exists for this IP
-  // (regardless of who opened it - this component, RemotePlay tab, Autoload,
-  // etc.) we adopt it and show "connected". When the sidecar reports no
-  // active session and we're not mid-transition we drop back to "idle"
-  // (or "warm" if the sidecar still has the session in its PAUSED cache).
   useEffect(() => {
-    if (!ip) return;
-    let cancelled = false;
-    const tick = async () => {
-      // Use the same unified endpoint the top-right header badge uses
-      // (TCP port scan + pyremoteplay discover fallback). /api/ps5/status
-      // normalises DDP discover + port probe into a single `reachable`
-      // boolean — one source of truth across the app.
-      const [r, statusRes] = await Promise.all([
-        apiSafe.get(`/remoteplay/quick-status?ip=${encodeURIComponent(ip)}`),
-        apiSafe.get(`/ps5/status/${encodeURIComponent(ip)}`),
-      ]);
-      if (cancelled || !r) return;
-      if (statusRes && typeof statusRes.reachable === 'boolean') {
-        setPs5Online(statusRes.reachable);
-      } else {
-        setPs5Online(null);
-      }
-      const cur = sessionStateRef.current;
-      if (r.success && r.active) {
-        if (cur !== 'connected') setSessionState('connected');
-        if (r.session_id) setSessionId(r.session_id);
-        setWarmInfo(null);
-        return;
-      }
-      if (r.success && r.warm) {
-        setWarmInfo({
-          ageS: Math.round(r.warm_age_s || 0),
-          ttlS: Math.round(r.warm_ttl_remaining_s || 0),
-        });
-        if (cur === 'connecting' || cur === 'stopping') return;
-        if (cur !== 'warm') setSessionState('warm');
-        if (sessionId) setSessionId('');
-        return;
-      }
-      setWarmInfo(null);
-      // Inactive - only flip to idle when we're not actively starting or
-      // stopping the session ourselves.
-      if (cur === 'connecting' || cur === 'stopping') return;
-      if (cur !== 'idle') setSessionState('idle');
-      if (sessionId) setSessionId('');
-    };
-    tick();
-    const id = setInterval(tick, 4000);
-    return () => { cancelled = true; clearInterval(id); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ip]);
-
-  const startSession = async () => {
-    if (!ip) return;
-    setSessionState('connecting');
-    try {
-      const r = await api.post('/remoteplay/quick-start', { ip });
-      if (!r.success) throw new Error(r.error);
-      setSessionId(r.session_id || '');
-      setSessionState('connected');
-      addOutput(`▶ Session started (${r.session_id})`, 'success');
-    } catch (e) {
-      setSessionState('idle');
-      addOutput(`Session start failed: ${e.message}`, 'error');
-    }
-  };
-
-  const stopSession = async () => {
-    if (!ip) return;
-    setSessionState('stopping');
-    try {
-      await api.post('/remoteplay/quick-stop', { ip });
-      addOutput('⏹ Session stopped', 'info');
-    } catch (e) {
-      addOutput(`Session stop error: ${e.message}`, 'warning');
-    }
-    setSessionState('idle');
-    setSessionId('');
-  };
+    fetchBuiltinScripts();
+  }, []);
 
   const addOutput = (msg, type = 'info') => {
     setOutput(prev => [...prev, { msg, type, time: new Date().toLocaleTimeString() }]);
   };
 
-  const sendCommand = async (cmd, params = '') => {
-    if (!ip) {
-      addOutput('No IP address', 'error');
+  const runCommand = async (cmd, params = '') => {
+    if (!liveSession) {
+      addOutput('No live Remote Play session - hit Start session above first', 'error');
       return false;
     }
-
     try {
-      const data = await api.post('/ps5control/input', { ip, button: cmd, param: params });
-      if (data.success) {
-        addOutput(`✓ ${cmd}${params ? ' ' + params : ''}`, 'success');
-        return true;
-      }
-      addOutput(`✗ ${cmd} - ${data.error}`, 'error');
-      return false;
+      await sendCommand(cmd, params);
+      addOutput(`✓ ${cmd}${params ? ' ' + params : ''}`, 'success');
+      return true;
     } catch (err) {
       addOutput(`✗ ${cmd} - ${err.message}`, 'error');
       return false;
     }
   };
 
-  const parseRepeatToken = (tok) => {
-    if (!tok) return null;
-    const m = /^(?:x(\d+)|(\d+)x|\*(\d+))$/i.exec(tok);
-    if (!m) return null;
-    const n = parseInt(m[1] || m[2] || m[3], 10);
-    return Number.isFinite(n) && n > 0 ? Math.min(n, 1000) : null;
-  };
-
-  const parseLine = (line) => {
-    line = line.trim();
-    if (!line || line.startsWith('//') || line.startsWith('#')) return null;
-
-    const parts = line.split(/\s+/);
-    const cmd = parts[0].toLowerCase();
-
-    if (cmd === 'wait' || cmd === 'sleep') {
-      const ms = parseInt(parts[1]) || 1000;
-      return { cmd: 'wait', params: ms };
-    }
-
-    if (cmd === 'text' || cmd === 'type') {
-      return { cmd: 'text', text: line.replace(/^\S+\s+/, '') };
-    }
-
-    if (AVAILABLE_COMMANDS.find(c => c.cmd === cmd)) {
-      // Extract optional repeat token (10x / x10 / *10) and remaining
-      // params (typically a duration in ms).
-      let count = 1;
-      const rest = [];
-      for (let i = 1; i < parts.length; i++) {
-        const rep = parseRepeatToken(parts[i]);
-        if (rep != null) { count = rep; continue; }
-        rest.push(parts[i]);
+  // Manual controls: a single tap, auto-starting a (video) session first
+  // if nothing's live yet, unlike runCommand() (used by ▶ Run / 👣 Step,
+  // which assume the caller already ensured a session).
+  const manualPress = async (cmd) => {
+    setManualBusy(cmd);
+    try {
+      if (!liveSession) {
+        const ok = await onStartSession?.();
+        if (!ok) { addOutput('Could not start a Remote Play session', 'error'); return; }
       }
-      return { cmd, params: rest.join(' '), count };
+      await sendCommand(cmd);
+      addOutput(`✓ ${cmd}`, 'success');
+    } catch (err) {
+      addOutput(`✗ ${cmd} - ${err.message}`, 'error');
     }
-
-    return null;
+    setManualBusy(null);
   };
+
+  const commandDesc = Object.fromEntries(AVAILABLE_COMMANDS.map(({ cmd, desc }) => [cmd, desc]));
+
+  // One gamepad-shaped button: same manualPress() plumbing as the old flat
+  // grid, just laid out (and glyphed) to read as a physical controller.
+  const GamepadButton = ({ cmd, label, className = '' }) => (
+    <button
+      onClick={() => manualPress(cmd)}
+      disabled={manualBusy === cmd}
+      title={commandDesc[cmd] || cmd}
+      className={`gamepad-btn ${className}`}
+    >
+      {manualBusy === cmd ? '⏳' : (label ?? cmd)}
+    </button>
+  );
 
   const stopScript = () => {
     setStopRequested(true);
     addOutput('⏹ Stop requested...', 'warning');
   };
 
-  const runScript = async (scriptToRun) => {
+  // Executes one already-parsed line (parseLine's output, from the shared
+  // inputScriptDsl module - also used by RemotePlay.jsx's step-by-step
+  // "Input Scripts" tab, so the two execution paths can never drift apart
+  // on what a given command actually does).
+  const executeParsedLine = async (parsed, lineNum, checkStop = () => false) => {
+    if (parsed.cmd === 'wait') {
+      addOutput(`⏳ Wait ${parsed.params}ms...`, 'info');
+      await new Promise(resolve => setTimeout(resolve, parsed.params));
+      return;
+    }
+
+    if (parsed.cmd === 'text') {
+      addOutput(`⌨ Type "${parsed.text}"`, 'info');
+      const inputs = buildOskInputs(parsed.text || '');
+      for (const ev of inputs) {
+        if (checkStop()) break;
+        await runCommand(ev.button);
+        await new Promise(r => setTimeout(r, ev.commit ? 140 : 90));
+      }
+      return;
+    }
+
+    const reps = Math.max(1, parsed.count || 1);
+    if (reps > 1) addOutput(`↻ ${parsed.cmd} ×${reps}`, 'info');
+    for (let r = 0; r < reps; r++) {
+      if (checkStop()) break;
+      const success = await runCommand(parsed.cmd, parsed.params);
+      if (!success) {
+        addOutput(`Line ${lineNum}: Command failed, continuing...`, 'warning');
+      }
+      // Short pause so each press is registered separately by PS5 menus.
+      if (reps > 1 && r < reps - 1) {
+        await new Promise(resolve => setTimeout(resolve, 120));
+      }
+    }
+  };
+
+  const runScript = async (scriptToRun, key = 'script') => {
     if (!ip) {
       addOutput('No PS5 IP address configured', 'error');
       return;
     }
+    if (!liveSession) {
+      const ok = await onStartSession?.();
+      if (!ok) { addOutput('Could not start a Remote Play session', 'error'); return; }
+    }
 
-    setIsRunning(true);
+    setIsRunning(key);
     setStopRequested(false);
     setOutput([]);
     addOutput('▶ Starting script...', 'info');
@@ -300,86 +176,84 @@ function ScriptRunner({ ip, onSendInput, scripts, onScriptsChange }) {
         continue;
       }
 
-      if (parsed.cmd === 'wait') {
-        addOutput(`⏳ Wait ${parsed.params}ms...`, 'info');
-        await new Promise(resolve => setTimeout(resolve, parsed.params));
-        continue;
-      }
-
-      if (parsed.cmd === 'text') {
-        addOutput(`⌨ Type "${parsed.text}"`, 'info');
-        const inputs = buildOskInputs(parsed.text || '');
-        for (const ev of inputs) {
-          if (stopRequested) break;
-          await sendCommand(ev.button);
-          await new Promise(r => setTimeout(r, ev.commit ? 140 : 90));
-        }
-        continue;
-      }
-
-      const reps = Math.max(1, parsed.count || 1);
-      if (reps > 1) addOutput(`↻ ${parsed.cmd} ×${reps}`, 'info');
-      for (let r = 0; r < reps; r++) {
-        if (stopRequested) break;
-        const success = await sendCommand(parsed.cmd, parsed.params);
-        if (!success) {
-          addOutput(`Line ${lineNum}: Command failed, continuing...`, 'warning');
-        }
-        // Short pause so each press is registered separately by PS5 menus.
-        if (reps > 1 && r < reps - 1) {
-          await new Promise(resolve => setTimeout(resolve, 120));
-        }
-      }
-
+      await executeParsedLine(parsed, lineNum, () => stopRequested);
       await new Promise(resolve => setTimeout(resolve, 100));
     }
 
-    setIsRunning(false);
+    setIsRunning(null);
     setStopRequested(false);
     addOutput('✅ Script complete', 'success');
   };
 
-  const insertCommand = (cmd) => {
-    setScript(prev => prev + (prev ? '\n' : '') + cmd);
+  // ─── Edit modal ──────────────────────────────────────────────────────────
+  // Opens the shared editor modal for one of three flows:
+  //   • new saved script (blank)
+  //   • editing an existing saved script
+  //   • forking a built-in into a new saved script (prefilled, still a POST)
+  const openNewScript = () => {
+    setModalError('');
+    setEditModal({ kind: 'saved', id: null, name: '', script: '', isNew: true });
   };
 
-  const saveScript = async () => {
-    if (!scriptName.trim() || !script.trim()) {
-      addOutput('Name and script required', 'error');
+  const openEditSaved = (s) => {
+    setModalError('');
+    setEditModal({ kind: 'saved', id: s.id, name: s.name, script: s.script, isNew: false });
+  };
+
+  const openForkBuiltin = (b) => {
+    setModalError('');
+    setEditModal({ kind: 'saved', id: null, name: `${b.name} (copy)`, script: b.script, isNew: true });
+  };
+
+  // Built-in scripts have no editable name (it lives alongside the id in
+  // the source file) - only the script body is sent to PUT /builtin/:id.
+  const openEditBuiltin = (b) => {
+    setModalError('');
+    setEditModal({ kind: 'builtin', id: b.id, name: b.name, script: b.script, isNew: false });
+  };
+
+  const closeEditModal = () => {
+    if (savingModal) return;
+    setEditModal(null);
+    setModalError('');
+  };
+
+  const updateModalField = (field, value) => {
+    setEditModal(prev => (prev ? { ...prev, [field]: value } : prev));
+  };
+
+  const saveEditModal = async () => {
+    if (!editModal) return;
+    if (editModal.kind === 'saved' && !editModal.name.trim()) {
+      setModalError('Name is required');
+      return;
+    }
+    if (!editModal.script.trim()) {
+      setModalError('Script is required');
       return;
     }
 
+    setSavingModal(true);
+    setModalError('');
     try {
-      const data = editingId
-        ? await api.put(`/input-scripts/${editingId}`, { name: scriptName, script })
-        : await api.post('/input-scripts', { name: scriptName, script });
-      if (data.success) {
-        addOutput(editingId ? 'Script updated' : 'Script saved', 'success');
-        setScriptName('');
-        setScript('');
-        setEditingId(null);
+      if (editModal.kind === 'builtin') {
+        await api.put(`/input-scripts/builtin/${editModal.id}`, { script: editModal.script });
+        addOutput(`Built-in script updated: ${editModal.name}`, 'success');
+        fetchBuiltinScripts();
+      } else if (editModal.isNew) {
+        await api.post('/input-scripts', { name: editModal.name, script: editModal.script });
+        addOutput('Script saved', 'success');
+        onScriptsChange();
+      } else {
+        await api.put(`/input-scripts/${editModal.id}`, { name: editModal.name, script: editModal.script });
+        addOutput('Script updated', 'success');
         onScriptsChange();
       }
+      setEditModal(null);
     } catch (err) {
-      addOutput(err.message, 'error');
+      setModalError(err.message);
     }
-  };
-
-  const loadScript = (scriptToLoad) => {
-    setScriptName(scriptToLoad.name);
-    setScript(scriptToLoad.script);
-    setEditingId(scriptToLoad.id);
-    addOutput(`Loaded: ${scriptToLoad.name}`, 'info');
-  };
-
-  // Fork a built-in into the editor as a new (unsaved) user copy. We strip
-  // the editing id so saveScript() does a POST (new row), not a PUT (which
-  // would 404 since builtin:* ids don't exist in the DB).
-  const forkBuiltin = (b) => {
-    setScriptName(`${b.name} (copy)`);
-    setScript(b.script);
-    setEditingId(null);
-    addOutput(`Forked built-in: ${b.name} — edit & save to keep your changes`, 'info');
+    setSavingModal(false);
   };
 
   const deleteScript = async (id) => {
@@ -388,46 +262,12 @@ function ScriptRunner({ ip, onSendInput, scripts, onScriptsChange }) {
       await api.del(`/input-scripts/${id}`);
       addOutput('Script deleted', 'success');
       onScriptsChange();
-      if (editingId === id) {
-        setScriptName('');
-        setScript('');
-        setEditingId(null);
-      }
     } catch (err) {
       addOutput(err.message, 'error');
     }
   };
 
-  const clearForm = () => {
-    setScriptName('');
-    setScript('');
-    setEditingId(null);
-  };
-
   const clearOutput = () => setOutput([]);
-
-  // Variant drives the badge colour. `warm` is intentionally surfaced as
-  // success-tinted (almost-ready) so users learn it's basically the same
-  // as connected from a "will Start be instant?" perspective.
-  const sessionVariant = sessionState === 'connected' ? 'success'
-    : sessionState === 'warm' ? 'info'
-    : sessionState === 'connecting' ? 'warning'
-    : sessionState === 'stopping' ? 'warning' : 'muted';
-
-  // One-line, human-friendly description of the session+console state.
-  // Goes right after the dot so the user gets the full picture at a glance.
-  const sessionLabel = (() => {
-    if (sessionState === 'connected') return 'connected';
-    if (sessionState === 'connecting') return 'connecting…';
-    if (sessionState === 'stopping') return 'stopping…';
-    if (sessionState === 'warm' && warmInfo) {
-      return `warm cache · resume ready (age ${warmInfo.ageS}s, TTL ${warmInfo.ttlS}s)`;
-    }
-    if (sessionState === 'warm') return 'warm cache · resume ready';
-    if (ps5Online === false) return 'idle · PS5 offline';
-    if (ps5Online === null) return 'idle';
-    return 'idle';
-  })();
 
   const outputColor = (type) => type === 'error' ? 'var(--red)'
     : type === 'success' ? 'var(--accent)'
@@ -435,61 +275,9 @@ function ScriptRunner({ ip, onSendInput, scripts, onScriptsChange }) {
 
   return (
     <div className="flex-col gap-md">
-      {/* Remote Play session control */}
-      <div className="comp-card">
-        <div className="comp-card-body flex items-center gap-sm flex-wrap">
-          <span className={`badge badge-${sessionVariant}`}>
-            <span style={{
-              width: 6, height: 6, borderRadius: 999,
-              background: 'currentColor',
-              boxShadow: sessionState === 'connected' ? '0 0 0 4px var(--accent-dim)' : 'none',
-            }} />
-            RP session · {sessionLabel}
-          </span>
-          {ps5Online === false && (
-            <span className="badge badge-danger" title="DDP discover failed. The PS5 is off or out of network reach.">
-              ● PS5 offline
-            </span>
-          )}
-          {sessionId && (
-            <span className="font-mono text-xs text-muted">{sessionId.slice(0, 12)}</span>
-          )}
-          <div style={{ marginLeft: 'auto', display: 'flex', gap: 'var(--space-sm)' }}>
-            {sessionState !== 'connected' ? (
-              <button
-                className="btn btn-success btn-sm"
-                onClick={startSession}
-                disabled={!ip || sessionState === 'connecting'}
-                title={
-                  sessionState === 'warm'
-                    ? 'Resume from warm cache — should be ~instant.'
-                    : ps5Online === false
-                    ? 'PS5 appears offline — Start will try to wake it but may take a while.'
-                    : 'Open a Remote Play session for input scripts.'
-                }
-              >
-                {sessionState === 'connecting'
-                  ? '⏳ Starting…'
-                  : sessionState === 'warm'
-                  ? '⚡ Resume session'
-                  : '▶ Start session'}
-              </button>
-            ) : (
-              <button
-                className="btn btn-danger btn-sm"
-                onClick={stopSession}
-                disabled={sessionState === 'stopping'}
-                title="Soft stop — session is parked in the sidecar warm cache so the next Start is instant."
-              >
-                ⏹ Stop session
-              </button>
-            )}
-          </div>
-        </div>
-      </div>
-
       {/* Combined Scripts card with two tabs:
-            • Built-in — curated, read-only (source: /frontend/builtin/inputScripts.js)
+            • Built-in — curated (source: /frontend/builtin/inputScripts.json),
+              editable in place via ✏️
             • Saved   — user-created entries from the local DB
           Tabs save vertical space on mobile (single header instead of two
           stacked cards) and group the related "pick something to run" actions.
@@ -515,10 +303,8 @@ function ScriptRunner({ ip, onSendInput, scripts, onScriptsChange }) {
               <span className="badge badge-muted" style={{ marginLeft: 6 }}>{scripts?.length || 0}</span>
             </button>
           </div>
-          {scriptsTab === 'builtin' && (
-            <span className="text-xs text-muted builtin-edit-hint">
-              Edit in <code>frontend/builtin/inputScripts.js</code>
-            </span>
+          {scriptsTab === 'saved' && (
+            <button className="btn btn-primary btn-sm" onClick={openNewScript}>＋ New</button>
           )}
         </div>
         <div className="comp-card-body">
@@ -536,7 +322,7 @@ function ScriptRunner({ ip, onSendInput, scripts, onScriptsChange }) {
                     <div
                       className="flex-1"
                       style={{ cursor: 'pointer', minWidth: 0 }}
-                      onClick={() => forkBuiltin(b)}
+                      onClick={() => openEditBuiltin(b)}
                       title={b.description || b.name}
                     >
                       <div className="truncate builtin-name">
@@ -555,15 +341,27 @@ function ScriptRunner({ ip, onSendInput, scripts, onScriptsChange }) {
                     <div className="list-item-actions">
                       <button
                         className="btn btn-success btn-sm btn-icon"
-                        onClick={() => runScript(b.script)}
-                        disabled={isRunning}
+                        onClick={() => runScript(b.script, b.id)}
+                        disabled={!!isRunning}
                         title="Run"
                       >▶</button>
                       <button
+                        className="btn btn-info btn-sm btn-icon"
+                        onClick={() => onRequestStep?.(b.script, b.name, { id: b.id, kind: 'builtin' })}
+                        disabled={!!isRunning}
+                        title="Step through with video preview"
+                      >👣</button>
+                      <button
                         className="btn btn-secondary btn-sm btn-icon"
-                        onClick={() => forkBuiltin(b)}
-                        disabled={isRunning}
-                        title="Use as template (fork into editor)"
+                        onClick={() => openEditBuiltin(b)}
+                        disabled={!!isRunning}
+                        title="Edit"
+                      >✏️</button>
+                      <button
+                        className="btn btn-secondary btn-sm btn-icon"
+                        onClick={() => openForkBuiltin(b)}
+                        disabled={!!isRunning}
+                        title="Save as a new script"
                       >📋</button>
                     </div>
                   </div>
@@ -575,27 +373,28 @@ function ScriptRunner({ ip, onSendInput, scripts, onScriptsChange }) {
           {scriptsTab === 'saved' && (
             !scripts || scripts.length === 0 ? (
               <div className="text-sm text-muted">
-                No saved scripts yet. Use the editor below to create one and press <b>💾 Save</b>.
+                No saved scripts yet. Press <b>＋ New</b> above to create one.
               </div>
             ) : (
               <div className="flex-col" style={{ gap: 6, maxHeight: 260, overflowY: 'auto' }}>
                 {scripts.map(s => (
                   <div
                     key={s.id}
-                    className={`list-item ${editingId === s.id ? 'file-card-selected' : ''}`}
+                    className="list-item"
                     style={{ marginBottom: 0, padding: '10px 12px' }}
                   >
                     <span
                       className="flex-1 truncate"
                       style={{ cursor: 'pointer', fontSize: '0.9rem' }}
-                      onClick={() => loadScript(s)}
+                      onClick={() => openEditSaved(s)}
                       title={s.name}
                     >
                       {s.name}
                     </span>
                     <div className="list-item-actions">
-                      <button className="btn btn-success btn-sm btn-icon" onClick={() => runScript(s.script)} disabled={isRunning} title="Run">▶</button>
-                      <button className="btn btn-secondary btn-sm btn-icon" onClick={() => loadScript(s)} disabled={isRunning} title="Edit">✏️</button>
+                      <button className="btn btn-success btn-sm btn-icon" onClick={() => runScript(s.script, s.id)} disabled={!!isRunning} title="Run">▶</button>
+                      <button className="btn btn-info btn-sm btn-icon" onClick={() => onRequestStep?.(s.script, s.name, { id: s.id, kind: 'user' })} disabled={!!isRunning} title="Step through with video preview">👣</button>
+                      <button className="btn btn-secondary btn-sm btn-icon" onClick={() => openEditSaved(s)} disabled={!!isRunning} title="Edit">✏️</button>
                       <button className="btn btn-danger btn-sm btn-icon" onClick={() => deleteScript(s.id)} title="Delete">🗑</button>
                     </div>
                   </div>
@@ -606,106 +405,57 @@ function ScriptRunner({ ip, onSendInput, scripts, onScriptsChange }) {
         </div>
       </div>
 
-      {/* Command Reference — collapsed by default; just a toggle link until
-          the user clicks. Cuts a full card+chip-grid worth of vertical noise
-          from the typical mobile viewport. */}
+      {/* Manual controls — real button presses (not text insertion), for
+          testing a button by hand while watching the video, or nudging the
+          console mid-script without writing a whole line for it. Uses the
+          same sendCommand the ▶ Run / 👣 Step paths use, so a manual press
+          here behaves identically to a scripted one. Auto-starts a session
+          (with video) on first press if nothing's live yet. */}
       <div className="comp-card">
         <div className="comp-card-header" style={{ alignItems: 'center' }}>
-          <button
-            type="button"
-            className="btn btn-ghost btn-sm"
-            onClick={() => setShowCommands(v => !v)}
-            style={{ padding: '4px 8px', minHeight: 0 }}
-            title={showCommands ? 'Hide commands reference' : 'Show commands reference'}
-          >
-            <span style={{ marginRight: 6 }}>{showCommands ? '▾' : '▸'}</span>
-            🎛️ Available Commands
-            <span className="badge badge-muted" style={{ marginLeft: 8 }}>{AVAILABLE_COMMANDS.length}</span>
-          </button>
+          <span className="comp-card-title" style={{ fontSize: '0.85rem' }}>🎮 Manual controls</span>
+          {!liveSession && <span className="text-xs text-muted">Tap a button to start a session</span>}
         </div>
-        {showCommands && (
-          <div className="comp-card-body">
-            <div className="flex flex-wrap" style={{ gap: 6 }}>
-              {AVAILABLE_COMMANDS.map(({ cmd, desc }) => (
-                <button
-                  key={cmd}
-                  onClick={() => insertCommand(cmd)}
-                  disabled={isRunning}
-                  title={desc}
-                  className="btn btn-secondary btn-sm font-mono"
-                  style={{ minHeight: 32, padding: '4px 10px' }}
-                >
-                  {cmd}
-                </button>
-              ))}
+        <div className="comp-card-body">
+          <div className="gamepad">
+            <div className="gamepad-triggers">
+              <GamepadButton cmd="L2" className="gamepad-trigger" />
+              <GamepadButton cmd="L1" className="gamepad-trigger" />
+              <span className="gamepad-spacer" />
+              <GamepadButton cmd="R1" className="gamepad-trigger" />
+              <GamepadButton cmd="R2" className="gamepad-trigger" />
             </div>
-            <p className="text-xs text-muted mt-sm">
-              Append <code>10x</code>, <code>x10</code>, or <code>*10</code> to repeat. Use <code>text &lt;string&gt;</code> to type on the PS5 on-screen keyboard.
-            </p>
+            <div className="gamepad-body">
+              <div className="gamepad-dpad">
+                <GamepadButton cmd="up" label="▲" className="dpad-up" />
+                <GamepadButton cmd="left" label="◀" className="dpad-left" />
+                <GamepadButton cmd="right" label="▶" className="dpad-right" />
+                <GamepadButton cmd="down" label="▼" className="dpad-down" />
+              </div>
+              <div className="gamepad-center">
+                <GamepadButton cmd="touchpad" label="▭" className="gamepad-center-btn" />
+                <GamepadButton cmd="ps" label="PS" className="gamepad-center-btn gamepad-ps-btn" />
+                <GamepadButton cmd="options" label="≡" className="gamepad-center-btn" />
+                <GamepadButton cmd="L3" label="L3" className="gamepad-center-btn gamepad-stick-btn" />
+                <GamepadButton cmd="R3" label="R3" className="gamepad-center-btn gamepad-stick-btn" />
+              </div>
+              <div className="gamepad-face">
+                <GamepadButton cmd="triangle" label="△" className="face-up face-triangle" />
+                <GamepadButton cmd="square" label="□" className="face-left face-square" />
+                <GamepadButton cmd="circle" label="○" className="face-right face-circle" />
+                <GamepadButton cmd="cross" label="✕" className="face-down face-cross" />
+              </div>
+            </div>
+            {/* `x` is a DSL alias of `cross` (PS4-style naming for the same
+                physical button) - kept as a small chip outside the diamond
+                so it stays available without a second face slot. */}
+            <div className="gamepad-extra">
+              <GamepadButton cmd="x" label="X (alias of ✕)" className="gamepad-extra-btn" />
+            </div>
           </div>
-        )}
-      </div>
-
-      {/* Script Editor */}
-      <div className="comp-card">
-        <div className="comp-card-header">
-          <span className="comp-card-title">
-            <span>{editingId ? '✏️' : '＋'}</span>
-            {editingId ? `Editing: ${scriptName}` : 'New Script'}
-          </span>
-          <div className="flex gap-sm">
-            <button className="btn btn-ghost btn-sm" onClick={clearForm} disabled={isRunning}>Clear</button>
-            <button
-              className="btn btn-success btn-sm"
-              onClick={saveScript}
-              disabled={isRunning || !scriptName.trim() || !script.trim()}
-            >
-              💾 Save
-            </button>
-            <button
-              className="btn btn-primary btn-sm"
-              onClick={() => runScript(script)}
-              disabled={isRunning || !script.trim()}
-            >
-              {isRunning ? 'Running…' : '▶ Run'}
-            </button>
-            {isRunning && (
-              <button className="btn btn-danger btn-sm" onClick={stopScript}>⏹ Stop</button>
-            )}
-          </div>
-        </div>
-        <div className="comp-card-body flex-col gap-sm">
-          <input
-            type="text"
-            className="input"
-            placeholder="Script name"
-            value={scriptName}
-            onChange={e => setScriptName(e.target.value)}
-            disabled={isRunning}
-          />
-          <textarea
-            className="input font-mono"
-            value={script}
-            onChange={e => setScript(e.target.value)}
-            disabled={isRunning}
-            spellCheck={false}
-            placeholder={`// Enter commands, one per line:
-//   left              tap once
-//   left 120          hold for 120 ms
-//   left 10x          tap 10 times (also: x10 or *10)
-//   left 10x 120      10 taps, each 120 ms
-//   wait 500          sleep 500 ms
-//   text Revenge      type on PS5 on-screen keyboard (a-z + space)
-left
-wait 500
-text revenge
-cross 120
-circle`}
-            style={{ minHeight: 180, padding: 12, lineHeight: 1.55, resize: 'vertical' }}
-          />
-          <div className="text-xs text-muted">
-            Use <code>//</code> for comments, <code>wait X</code> for a delay in milliseconds.
-          </div>
+          <p className="text-xs text-muted mt-sm">
+            Append <code>10x</code>, <code>x10</code>, or <code>*10</code> to repeat. Use <code>text &lt;string&gt;</code> to type on the PS5 on-screen keyboard.
+          </p>
         </div>
       </div>
 
@@ -715,7 +465,12 @@ circle`}
           <span className="comp-card-title">
             <span>›_</span> Output Console
           </span>
-          <button className="btn btn-ghost btn-sm" onClick={clearOutput}>Clear</button>
+          <div className="flex gap-sm">
+            {isRunning && (
+              <button className="btn btn-danger btn-sm" onClick={stopScript}>⏹ Stop</button>
+            )}
+            <button className="btn btn-ghost btn-sm" onClick={clearOutput}>Clear</button>
+          </div>
         </div>
         <div
           className="font-mono"
@@ -742,6 +497,68 @@ circle`}
           )}
         </div>
       </div>
+
+      {/* Edit modal — shared by "＋ New" (saved), "✏️ Edit" (saved or
+          built-in) and "📋 Save as a new script" (fork a built-in). Built-in
+          entries hide the name field since the backend only lets the
+          script body be rewritten, not the id/name in the source file. */}
+      <Modal
+        isOpen={!!editModal}
+        onClose={closeEditModal}
+        title={
+          editModal?.kind === 'builtin' ? `✏️ Edit built-in: ${editModal.name}`
+            : editModal?.isNew ? '＋ New Script'
+              : `✏️ Edit: ${editModal?.name || ''}`
+        }
+        footer={
+          <>
+            <button className="btn btn-ghost" onClick={closeEditModal} disabled={savingModal}>Cancel</button>
+            <button className="btn btn-success" onClick={saveEditModal} disabled={savingModal}>
+              💾 {savingModal ? 'Saving…' : 'Save'}
+            </button>
+          </>
+        }
+      >
+        {editModal && (
+          <div className="flex-col gap-sm">
+            {editModal.kind === 'saved' && (
+              <input
+                type="text"
+                className="input"
+                placeholder="Script name"
+                value={editModal.name}
+                onChange={e => updateModalField('name', e.target.value)}
+                autoFocus
+              />
+            )}
+            <textarea
+              className="input font-mono"
+              value={editModal.script}
+              onChange={e => updateModalField('script', e.target.value)}
+              spellCheck={false}
+              placeholder={`// Enter commands, one per line:
+//   left              tap once
+//   left 120          hold for 120 ms
+//   left 10x          tap 10 times (also: x10 or *10)
+//   left 10x 120      10 taps, each 120 ms
+//   wait 500          sleep 500 ms
+//   text Revenge      type on PS5 on-screen keyboard (a-z + space)
+left
+wait 500
+text revenge
+cross 120
+circle`}
+              style={{ minHeight: 220, padding: 12, lineHeight: 1.55, resize: 'vertical' }}
+            />
+            <div className="text-xs text-muted">
+              Use <code>//</code> for comments, <code>wait X</code> for a delay in milliseconds.
+            </div>
+            {modalError && (
+              <div className="text-xs" style={{ color: 'var(--red)' }}>{modalError}</div>
+            )}
+          </div>
+        )}
+      </Modal>
     </div>
   );
 }
