@@ -1978,3 +1978,146 @@ pre { padding: 12px; overflow-x: auto; }
   .ps5control-scripts-wrap > .comp-card-body { padding: 8px; }
   .ps5control-scripts-wrap > .comp-card-header { padding: 10px 12px; }
 }
+
+/* ---------- FileBrowser: selection bar, mobile sheet, full-bleed phone layout ---------- */
+
+/* Long-press selects the row on touch screens - keep the OS text-selection
+   / callout out of the way there, but leave mouse users able to copy names. */
+@media (pointer: coarse) {
+  .file-card { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+}
+.file-card-cut { opacity: 0.45; }
+
+.fb-has-bar { margin-bottom: 76px; }
+
+.fb-actionbar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: calc(var(--bottom-nav-h) + env(safe-area-inset-bottom, 0));
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  background: rgba(17, 19, 26, 0.96);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border-top: 1px solid var(--border-strong);
+  z-index: 99;
+}
+.fb-actionbar > .btn { flex: 1; min-height: 44px; font-size: 0.86rem; white-space: nowrap; }
+.fb-actionbar > .btn.fb-actionbar-x { flex: 0 0 44px; }
+.fb-actionbar-info { flex: 2; min-width: 0; }
+.fb-actionbar-info + .btn { flex: 0 0 auto; padding-left: 16px; padding-right: 16px; }
+
+.file-menu-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  z-index: 1499;
+}
+.file-menu-sheet {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  top: auto;
+  max-height: 75dvh;
+  border-radius: 16px 16px 0 0;
+  border-width: 1px 0 0;
+  padding: 6px 0 calc(8px + env(safe-area-inset-bottom, 0));
+  z-index: 1500;
+}
+.file-menu-sheet .file-menu-item { padding: 14px 18px; font-size: 0.95rem; }
+.file-menu-title {
+  padding: 10px 18px 6px;
+  font-size: 0.72rem;
+  color: var(--muted);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.fb-nav { display: flex; align-items: center; gap: 6px; }
+.fb-nav > .btn { min-width: 40px; min-height: 40px; font-size: 1rem; flex-shrink: 0; }
+.fb-crumbs {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  overflow-x: auto;
+  white-space: nowrap;
+  scrollbar-width: none;
+}
+.fb-crumbs::-webkit-scrollbar { display: none; }
+.fb-crumb-wrap { display: inline-flex; align-items: center; gap: 2px; flex-shrink: 0; }
+.fb-crumb {
+  background: none;
+  border: none;
+  color: var(--text-soft);
+  font: inherit;
+  font-size: 0.9rem;
+  padding: 8px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.fb-crumb.is-current { color: var(--text); font-weight: 600; }
+
+.fb-list { max-height: 450px; overflow-y: auto; }
+
+@media (min-width: 769px) {
+  .fb-narrow { display: none !important; }
+  /* Floating pill centred in the content area, clear of the sidebar. */
+  .fb-actionbar {
+    left: var(--sidebar-w);
+    bottom: 16px;
+    width: fit-content;
+    min-width: 360px;
+    max-width: min(720px, calc(100vw - var(--sidebar-w) - 32px));
+    margin: 0 auto;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--r-md);
+    box-shadow: var(--shadow-md);
+  }
+}
+
+@media (max-width: 768px) {
+  .fb-wide { display: none !important; }
+  .fb .fb-title { display: none; }
+  .fb .file-card-content { min-height: 52px; }
+  .fb .file-card-kebab { min-width: 44px !important; min-height: 44px; font-size: 1.1rem; }
+
+  /* Browse tab on a phone: drop the title banner and the card chrome so
+     the list runs edge to edge and scrolls with the page instead of in a
+     450px box. */
+  .fileops--files { gap: var(--space-sm); }
+  .fileops--files .fileops-header { display: none; }
+  .fileops--files .fb {
+    margin-left: calc(-1 * var(--space-md));
+    margin-right: calc(-1 * var(--space-md));
+    background: none;
+    border: none;
+    border-radius: 0;
+    overflow: visible;
+  }
+  .fileops--files .fb > .fb-header { padding: 2px 12px 8px; border-bottom: none; }
+  .fileops--files .fb > .comp-card-body { padding: 0; gap: var(--space-sm); }
+  .fileops--files .fb > .comp-card-body > :not(.fb-list) { margin-left: 12px; margin-right: 12px; }
+  .fileops--files .fb .fb-nav {
+    position: sticky;
+    top: var(--topbar-h);
+    z-index: 5;
+    margin: 0 !important;
+    padding: 6px 12px;
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
+  }
+  .fileops--files .fb .fb-list { max-height: none; overflow: visible; gap: 0; }
+  .fileops--files .fb .file-card {
+    margin: 0;
+    border-width: 0 0 1px;
+    border-radius: 0;
+    background: none;
+  }
+  .fileops--files .fb .file-card-selected { background: var(--accent-dim); }
+}

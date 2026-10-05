@@ -25,6 +25,10 @@ function fmtSize(n) {
   return `${v.toFixed(v >= 100 ? 0 : v >= 10 ? 1 : 2)} ${u[i]}`;
 }
 
+// Download links are plain <a href>, so they bypass the api wrapper and
+// need the prefix spelled out.
+const API = '/api';
+
 const isArchive = (n) => /\.(rar|7z|zip|tar\.gz|tgz|tar|r\d{2}|part\d+\.rar)$/i.test(n);
 const isPfsImage = (n) => /\.(ffpfs|ffpfsc|pfs|dat|bin)$/i.test(n);
 const isPkgFile  = (n) => /\.pkg$/i.test(n);
@@ -135,6 +139,13 @@ export default function FileBrowser({
     // only flip up when there's clearly more room above (e.g. last row in a
     // long list). `position: fixed` is still used so the menu escapes the
     // file list's `overflow: auto` scroll container.
+    // Phones get a bottom sheet instead (styled via .file-menu-sheet), so
+    // no anchoring is needed there.
+    if (window.innerWidth <= 768) {
+      setMenuStyle({ sheet: true });
+      setMenuOpen(fileName);
+      return;
+    }
     const rect = e.currentTarget.getBoundingClientRect();
     const vh = window.innerHeight;
     const vw = window.innerWidth;
@@ -154,12 +165,14 @@ export default function FileBrowser({
     const handler = (e) => {
       if (!e.target.closest('.file-menu')) close();
     };
+    // Scrolling the menu's own (overflowing) list must not dismiss it.
+    const onScroll = (e) => { if (!e.target?.closest?.('.file-menu')) close(); };
     document.addEventListener('click', handler);
-    window.addEventListener('scroll', close, true);
+    window.addEventListener('scroll', onScroll, true);
     window.addEventListener('resize', close);
     return () => {
       document.removeEventListener('click', handler);
-      window.removeEventListener('scroll', close, true);
+      window.removeEventListener('scroll', onScroll, true);
       window.removeEventListener('resize', close);
     };
   }, [menuOpen]);
@@ -168,6 +181,38 @@ export default function FileBrowser({
   const [sortDir, setSortDir] = useState('asc');
 
   const listRef = useRef(null);
+
+  // Mobile nav row shows breadcrumbs by default; this flips it to the raw
+  // path input (from the ⋯ sheet or by tapping the current crumb).
+  const [editingPath, setEditingPath] = useState(false);
+  const crumbsRef = useRef(null);
+
+  // Long-press on a row (touch only) enters selection mode and picks that
+  // row. `longPressed` swallows the click that follows the touch release so
+  // the row isn't immediately toggled back / the folder opened.
+  const pressTimer = useRef(null);
+  const longPressed = useRef(false);
+  const pressStart = useRef(null);
+  const startPress = (e, name) => {
+    const t = e.touches[0];
+    pressStart.current = { x: t.clientX, y: t.clientY };
+    longPressed.current = false;
+    clearTimeout(pressTimer.current);
+    pressTimer.current = setTimeout(() => {
+      longPressed.current = true;
+      setMultiSelect(true);
+      setSelected(prev => new Set(prev).add(name));
+      navigator.vibrate?.(15);
+    }, 450);
+  };
+  const cancelPress = () => clearTimeout(pressTimer.current);
+  // A resting finger jitters by a pixel or two - only a real drag (scroll)
+  // should abort the press.
+  const movePress = (e) => {
+    const t = e.touches[0], s0 = pressStart.current;
+    if (!s0 || Math.abs(t.clientX - s0.x) > 10 || Math.abs(t.clientY - s0.y) > 10) cancelPress();
+  };
+  useEffect(() => () => clearTimeout(pressTimer.current), []);
 
   useEffect(() => {
     // The "SMB" tab now lists every remote source (SMB + FTP). The backend
@@ -192,6 +237,7 @@ export default function FileBrowser({
     setLoading(true); setError(null);
     setSelectedFile(null);
     setSelected(new Set());
+    setEditingPath(false);
     try {
       let d;
       if (kind === 'local') {
@@ -272,6 +318,11 @@ export default function FileBrowser({
     setSelected(new Set());
   };
 
+  const allSelected = files.length > 0 && selected.size === files.length;
+  const toggleSelectAll = () => {
+    setSelected(allSelected ? new Set() : new Set(files.map(f => f.name)));
+  };
+
   const toggleMultiSelect = () => {
     if (multiSelect) {
       clearSelection();
@@ -280,19 +331,25 @@ export default function FileBrowser({
     }
   };
 
+  // Transport-specific delete, no confirm / notification - shared by the
+  // single-entry and bulk paths.
+  const deleteOne = async (entry) => {
+    if (kind === 'local') {
+      const fullPath = path === '/' ? `/${entry.name}` : `${path.replace(/\/$/, '')}/${entry.name}`;
+      await api.post('/convert/local/delete', { path: fullPath, isDir: entry.isDir });
+    } else if (kind === 'smb') {
+      const sub = path ? `${path.replace(/\/+$/, '')}/${entry.name}` : entry.name;
+      await api.post(`/convert/sources/${smbId}/delete`, { path: sub, isDir: entry.isDir });
+    } else {
+      const fullPath = path === '/' ? `/${entry.name}` : `${path.replace(/\/$/, '')}/${entry.name}`;
+      await api.post('/convert/ftp/delete', { ip: ftpIp, path: fullPath, isDir: entry.isDir });
+    }
+  };
+
   const deleteEntry = async (entry) => {
     if (!window.confirm(`Delete ${entry.isDir ? 'folder' : 'file'}\n${entry.name}?`)) return;
     try {
-      if (kind === 'local') {
-        const fullPath = path === '/' ? `/${entry.name}` : `${path.replace(/\/$/, '')}/${entry.name}`;
-        await api.post('/convert/local/delete', { path: fullPath, isDir: entry.isDir });
-      } else if (kind === 'smb') {
-        const sub = path ? `${path.replace(/\/+$/, '')}/${entry.name}` : entry.name;
-        await api.post(`/convert/sources/${smbId}/delete`, { path: sub, isDir: entry.isDir });
-      } else {
-        const fullPath = path === '/' ? `/${entry.name}` : `${path.replace(/\/$/, '')}/${entry.name}`;
-        await api.post('/convert/ftp/delete', { ip: ftpIp, path: fullPath, isDir: entry.isDir });
-      }
+      await deleteOne(entry);
       onNotification?.(`Deleted ${entry.name}`, 'success');
       browse(path);
     } catch (e) { onNotification?.(`Delete failed: ${e.message}`, 'error'); }
@@ -513,11 +570,19 @@ export default function FileBrowser({
 
   const deleteSelected = async () => {
     if (!window.confirm(`Delete ${selected.size} item(s)?`)) return;
+    let ok = 0, fail = 0;
     for (const name of selected) {
       const f = files.find(f => f.name === name);
-      if (f) await deleteEntry(f);
+      if (!f) continue;
+      try { await deleteOne(f); ok++; }
+      catch (_) { fail++; }
     }
+    onNotification?.(
+      fail > 0 ? `Deleted ${ok}, ${fail} failed` : `Deleted ${ok} item(s)`,
+      fail > 0 ? 'error' : 'success',
+    );
     clearSelection();
+    browse(path);
   };
 
   // Trigger a browser download via a hidden anchor. The backend streams the
@@ -813,8 +878,29 @@ export default function FileBrowser({
     return sortDir === 'asc' ? cmp : -cmp;
   };
 
+  const toggleSort = (key) => {
+    if (sortBy === key) setSortDir(d => (d === 'asc' ? 'desc' : 'asc'));
+    else { setSortBy(key); setSortDir('asc'); }
+  };
+
   const sortedFiles = [...files].sort(sortFiles);
   const breadcrumbs = getBreadcrumbs();
+
+  // Keep the newest (deepest) crumb in view in the scrollable mobile row.
+  useEffect(() => {
+    const el = crumbsRef.current;
+    if (el) el.scrollLeft = el.scrollWidth;
+  }, [path, editingPath]);
+
+  // Names waiting on the clipboard as a cut from the folder we're looking
+  // at - rendered dimmed so it's obvious what is about to move.
+  const clipboardHere = !!clipboard && clipboardMatchesCurrent();
+  const cutNames = clipboardHere && clipboard.operation === 'cut' && clipboard.sourcePath === path
+    ? new Set(clipboard.items.map(i => i.name))
+    : null;
+  const pasteBlocked = !clipboardHere || (clipboard.operation === 'cut' && clipboard.sourcePath === path);
+  const selectionBar = multiSelect && selected.size > 0;
+  const showBar = selectionBar || !!clipboard;
 
   const renderFileCard = (f) => {
     const isSelected = selected.has(f.name);
@@ -974,8 +1060,14 @@ export default function FileBrowser({
       <div
         key={f.name}
         data-file={f.name}
-        className={`file-card ${isSelected ? 'file-card-selected' : ''} ${isActive ? 'file-card-active' : ''}`}
+        className={`file-card ${isSelected ? 'file-card-selected' : ''} ${isActive ? 'file-card-active' : ''} ${cutNames?.has(f.name) ? 'file-card-cut' : ''}`}
+        onTouchStart={(e) => startPress(e, f.name)}
+        onTouchMove={movePress}
+        onTouchEnd={cancelPress}
+        onTouchCancel={cancelPress}
+        onContextMenu={(e) => { if (longPressed.current) e.preventDefault(); }}
         onClick={() => {
+          if (longPressed.current) { longPressed.current = false; return; }
           if (multiSelect) { toggleSelect(f.name); return; }
           if (f.isDir) open(f);
         }}
@@ -986,8 +1078,10 @@ export default function FileBrowser({
             <input
               type="checkbox"
               checked={isSelected}
-              onChange={() => toggleSelect(f.name)}
-              style={{ width: 20, height: 20, cursor: 'pointer', accentColor: 'var(--accent)' }}
+              readOnly
+              tabIndex={-1}
+              // The row's own click handler does the toggling.
+              style={{ width: 20, height: 20, pointerEvents: 'none', accentColor: 'var(--accent)' }}
             />
           )}
 
@@ -998,10 +1092,10 @@ export default function FileBrowser({
             <div className="text-xs text-muted">{f.isDir ? (f.size ? fmtSize(f.size) : '—') : fmtSize(f.size)}</div>
           </div>
 
-          {secondaryActions.length > 0 && (
+          {secondaryActions.length > 0 && !multiSelect && (
             <div onClick={(e) => e.stopPropagation()}>
               <button
-                className="btn btn-ghost btn-sm"
+                className="btn btn-ghost btn-sm file-card-kebab"
                 onClick={(e) => openMenu(e, f.name)}
                 style={{ minWidth: 36 }}
               >
@@ -1014,7 +1108,13 @@ export default function FileBrowser({
                 // block. Without this, the menu would render offset or be
                 // clipped — especially inside the Convert tab and PS5 FTP
                 // view, where the FileBrowser sits deep in the DOM.
-                <div className="file-menu" style={menuStyle}>
+                <>
+                {menuStyle.sheet && <div className="file-menu-backdrop" />}
+                <div
+                  className={`file-menu ${menuStyle.sheet ? 'file-menu-sheet' : ''}`}
+                  style={menuStyle.sheet ? undefined : menuStyle}
+                >
+                  {menuStyle.sheet && <div className="file-menu-title truncate">{f.name}</div>}
                   {secondaryActions.length === 0 && (
                     <div className="file-menu-empty">
                       No actions available for this item
@@ -1034,7 +1134,8 @@ export default function FileBrowser({
                       {action.label}
                     </button>
                   ))}
-                </div>,
+                </div>
+                </>,
                 document.body,
               )}
             </div>
@@ -1045,20 +1146,28 @@ export default function FileBrowser({
   };
 
   return (
-    <div className="comp-card">
-      <div className="comp-card-header">
-        <div className="flex justify-between items-center flex-1">
-          <div>
-            <span className="comp-card-title">{title}</span>
-            {description && <div className="text-xs text-muted mt-xs">{description}</div>}
+    <div className={`comp-card fb ${showBar ? 'fb-has-bar' : ''}`}>
+      <div className="comp-card-header fb-header">
+        {multiSelect ? (
+          <div className="flex justify-between items-center flex-1 gap-sm">
+            <span className="comp-card-title">{selected.size} selected</span>
+            <div className="flex gap-xs">
+              <button className="btn btn-ghost btn-sm" onClick={toggleSelectAll} disabled={files.length === 0}>
+                {allSelected ? 'Select none' : 'Select all'}
+              </button>
+              <button className="btn btn-ghost btn-sm" onClick={clearSelection}>✕ Done</button>
+            </div>
           </div>
-          <button
-            className={`btn btn-ghost btn-sm ${multiSelect ? 'btn-primary' : ''}`}
-            onClick={toggleMultiSelect}
-          >
-            {multiSelect ? `✓ ${selected.size} selected` : '☰ Select'}
-          </button>
-        </div>
+        ) : (
+          <div className="flex justify-between items-center flex-1">
+            <div>
+              <span className="comp-card-title fb-title">{title}</span>
+              {description && <div className="text-xs text-muted mt-xs fb-title">{description}</div>}
+              <span className="text-sm text-muted fb-narrow">{files.length} items{loading ? ' · loading…' : ''}</span>
+            </div>
+            <button className="btn btn-ghost btn-sm" onClick={toggleMultiSelect}>☰ Select</button>
+          </div>
+        )}
       </div>
 
       <div className="comp-card-body flex-col gap-md">
@@ -1099,7 +1208,7 @@ export default function FileBrowser({
           const shown = allowed.filter(p => localRoots.includes(p));
           if (shown.length === 0) return null;
           return (
-            <div className="flex gap-xs flex-wrap">
+            <div className="flex gap-xs flex-wrap fb-wide">
               {shown.map(r => (
                 <button key={r} className="btn btn-ghost btn-sm" onClick={() => browse(r)}>{r}</button>
               ))}
@@ -1107,7 +1216,77 @@ export default function FileBrowser({
           );
         })()}
 
-        <div className="flex gap-sm items-center">
+        {/* Phone nav row: ↑ + scrollable breadcrumbs (or the path input
+            while editing) + refresh + a ⋯ sheet holding the rarely used
+            controls. The wide-screen rows below are hidden at this size. */}
+        <div className="fb-nav fb-narrow">
+          <button className="btn btn-sm btn-ghost" onClick={goUp} disabled={parent === null || parent === undefined}>↑</button>
+          {editingPath ? (
+            <>
+              <input
+                className="input flex-1"
+                autoFocus
+                value={pathInput}
+                onChange={e => setPathInput(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') browse(pathInput);
+                  if (e.key === 'Escape') { setPathInput(path); setEditingPath(false); }
+                }}
+                placeholder="/mnt"
+              />
+              <button className="btn btn-sm btn-primary" onClick={() => browse(pathInput)} disabled={loading}>▶</button>
+              <button className="btn btn-sm btn-ghost" onClick={() => { setPathInput(path); setEditingPath(false); }}>✕</button>
+            </>
+          ) : (
+            <>
+              <div className="fb-crumbs" ref={crumbsRef}>
+                {breadcrumbs.length === 0 && <span className="text-muted">/</span>}
+                {breadcrumbs.map((crumb, i) => {
+                  const last = i === breadcrumbs.length - 1;
+                  return (
+                    <span key={i} className="fb-crumb-wrap">
+                      {i > 0 && <span className="text-muted">›</span>}
+                      <button
+                        className={`fb-crumb ${last ? 'is-current' : ''}`}
+                        title={last ? 'Edit path' : crumb.path}
+                        onClick={() => (last ? setEditingPath(true) : navigateBreadcrumb(crumb.path))}
+                      >
+                        {crumb.label}
+                      </button>
+                    </span>
+                  );
+                })}
+              </div>
+              <button className="btn btn-sm btn-ghost" onClick={refresh} disabled={loading}>↻</button>
+              {enablePickDir && kind !== 'ftp' && <button className="btn btn-sm btn-success" onClick={() => pickDir(null)}>✓ Use</button>}
+              <button className="btn btn-sm btn-ghost" onClick={(e) => openMenu(e, '/tools')}>⋯</button>
+            </>
+          )}
+        </div>
+        {menuOpen === '/tools' && menuStyle && createPortal(
+          <>
+            <div className="file-menu-backdrop" />
+            <div className="file-menu file-menu-sheet" onClick={() => { setMenuOpen(null); setMenuStyle(null); }}>
+              <div className="file-menu-title">Sort by</div>
+              {['name', 'size', 'type'].map(key => (
+                <button key={key} className="file-menu-item" onClick={() => toggleSort(key)}>
+                  {key[0].toUpperCase() + key.slice(1)}{sortBy === key ? (sortDir === 'asc' ? ' ↑' : ' ↓') : ''}
+                </button>
+              ))}
+              <div className="file-menu-title">Go to</div>
+              <button className="file-menu-item" onClick={() => setEditingPath(true)}>✎ Type a path…</button>
+              {kind === 'local' && ['/mnt', '/home', '/data', '/data/payloads'].filter(r => localRoots.includes(r)).map(r => (
+                <button key={r} className="file-menu-item" onClick={() => browse(r)}>📁 {r}</button>
+              ))}
+              {enableSaveDefault && kind !== 'ftp' && (
+                <button className="file-menu-item" onClick={saveDefault}>★ Save this folder as default</button>
+              )}
+            </div>
+          </>,
+          document.body,
+        )}
+
+        <div className="flex gap-sm items-center fb-wide">
           <button className="btn btn-sm btn-ghost" onClick={goUp} disabled={parent === null || parent === undefined}>↑</button>
           <input
             className="input flex-1"
@@ -1119,41 +1298,11 @@ export default function FileBrowser({
           <button className="btn btn-sm btn-primary" onClick={() => browse(pathInput)} disabled={loading}>▶</button>
           <button className="btn btn-sm btn-ghost" onClick={refresh} disabled={loading}>↻</button>
           {enableSaveDefault && kind !== 'ftp' && <button className="btn btn-sm btn-ghost" onClick={saveDefault}>★</button>}
-          {/* Paste tile: only renders when there is something on the
-              clipboard AND the current view is a viable paste target.
-              Disabled if a paste is already in flight. Cancel (✕) drops
-              the clipboard without pasting. */}
-          {clipboard && clipboardMatchesCurrent() && (
-            <>
-              <button
-                className="btn btn-sm btn-success"
-                onClick={pasteHere}
-                disabled={pasteBusy}
-                title={
-                  clipboard.operation === 'cut'
-                    ? `Move ${clipboard.items.length} item(s) here from ${clipboard.sourcePath || '/'}`
-                    : `Copy ${clipboard.items.length} item(s) here from ${clipboard.sourcePath || '/'}`
-                }
-              >
-                {pasteBusy
-                  ? '⏳'
-                  : `📋 Paste${clipboard.items.length > 1 ? ` (${clipboard.items.length})` : ''}`}
-              </button>
-              <button
-                className="btn btn-sm btn-ghost"
-                onClick={() => setClipboard(null)}
-                title="Discard clipboard"
-                disabled={pasteBusy}
-              >
-                ✕
-              </button>
-            </>
-          )}
           {enablePickDir && kind !== 'ftp' && <button className="btn btn-sm btn-success" onClick={() => pickDir(null)}>✓ Use</button>}
         </div>
 
         {breadcrumbs.length > 0 && (
-          <div className="flex items-center gap-xs text-sm flex-wrap">
+          <div className="flex items-center gap-xs text-sm flex-wrap fb-wide">
             <span style={{ fontSize: '1rem' }}>{kind === 'local' ? '💾' : kind === 'smb' ? '📂' : '🎮'}</span>
             {breadcrumbs.map((crumb, i) => (
               <span key={i} className="flex items-center gap-xs">
@@ -1183,12 +1332,14 @@ export default function FileBrowser({
           </div>
         )}
 
-        <div className="flex justify-between items-center text-sm text-muted">
+        <div className="flex justify-between items-center text-sm text-muted fb-wide">
           <span>{files.length} items{loading ? ' · loading…' : ''}</span>
           <div className="flex gap-xs">
-            <button className={`btn btn-ghost btn-sm ${sortBy === 'name' ? 'btn-primary' : ''}`} onClick={() => { setSortBy('name'); setSortDir(d => sortBy === 'name' ? (d === 'asc' ? 'desc' : 'asc') : 'asc'); }}>Name</button>
-            <button className={`btn btn-ghost btn-sm ${sortBy === 'size' ? 'btn-primary' : ''}`} onClick={() => { setSortBy('size'); setSortDir(d => sortBy === 'size' ? (d === 'asc' ? 'desc' : 'asc') : 'asc'); }}>Size</button>
-            <button className={`btn btn-ghost btn-sm ${sortBy === 'type' ? 'btn-primary' : ''}`} onClick={() => { setSortBy('type'); setSortDir(d => sortBy === 'type' ? (d === 'asc' ? 'desc' : 'asc') : 'asc'); }}>Type</button>
+            {['name', 'size', 'type'].map(key => (
+              <button key={key} className={`btn btn-ghost btn-sm ${sortBy === key ? 'btn-primary' : ''}`} onClick={() => toggleSort(key)}>
+                {key[0].toUpperCase() + key.slice(1)}
+              </button>
+            ))}
           </div>
         </div>
 
@@ -1201,29 +1352,63 @@ export default function FileBrowser({
         ) : (
           <div
             ref={listRef}
-            className="flex-col gap-xs"
-            style={{ maxHeight: 450, overflowY: 'auto' }}
+            className="flex-col gap-xs fb-list"
           >
             {sortedFiles.map(f => renderFileCard(f))}
           </div>
         )}
 
-        {multiSelect && selected.size > 0 && (
-          <div className="flex gap-sm items-center flex-wrap p-md" style={{ background: 'var(--accent)', borderRadius: 8, position: 'sticky', bottom: 0 }}>
-            <span className="text-sm font-medium">{selected.size} selected</span>
-            {enableFtpUpload && ((kind === 'smb' && smbId) || kind === 'local') && uploadIp && (
-              <button className="btn btn-sm btn-success" onClick={uploadSelected}>⬆ Upload to PS5</button>
-            )}
-            <button className="btn btn-sm btn-secondary" onClick={cutSelected}>✂ Cut</button>
-            {kind === 'local' && (
-              <button className="btn btn-sm btn-secondary" onClick={copySelected}>📋 Copy</button>
-            )}
-            <button className="btn btn-sm btn-danger" onClick={deleteSelected}>🗑 Delete</button>
-            <button className="btn btn-sm btn-ghost" onClick={clearSelection}>✕ Cancel</button>
-          </div>
-        )}
-
       </div>
+
+      {/* Bottom action bar - bulk actions while items are selected, the
+          pending clipboard otherwise. It stays up while the user browses to
+          the destination, so Paste is always one tap away. Portalled for the
+          same reason as the ⋮ menu (transformed ancestor vs position:fixed). */}
+      {showBar && createPortal(
+        <div className="fb-actionbar">
+          {selectionBar ? (
+            <>
+              {enableFtpUpload && ((kind === 'smb' && smbId) || kind === 'local') && uploadIp && (
+                <button className="btn btn-success" onClick={uploadSelected}>⬆ Upload</button>
+              )}
+              <button className="btn btn-secondary" onClick={cutSelected}>✂ Cut</button>
+              {kind === 'local' && (
+                <button className="btn btn-secondary" onClick={copySelected}>📋 Copy</button>
+              )}
+              {enableDelete && (
+                <button className="btn btn-danger" onClick={deleteSelected}>🗑 Delete</button>
+              )}
+            </>
+          ) : (
+            <>
+              <div className="fb-actionbar-info">
+                <div className="text-sm truncate">
+                  {clipboard.operation === 'cut' ? '✂' : '📋'} {clipboard.items.length === 1 ? clipboard.items[0].name : `${clipboard.items.length} items`}
+                </div>
+                <div className="text-xs text-muted truncate">
+                  {!clipboardHere
+                    ? 'Switch back to the same source to paste'
+                    : pasteBlocked
+                      ? 'Open the destination folder, then paste'
+                      : `from ${clipboard.sourcePath || '/'}`}
+                </div>
+              </div>
+              <button className="btn btn-success" onClick={pasteHere} disabled={pasteBusy || pasteBlocked}>
+                {pasteBusy ? '⏳' : (clipboard.operation === 'cut' ? 'Move here' : 'Paste here')}
+              </button>
+              <button
+                className="btn btn-ghost fb-actionbar-x"
+                onClick={() => setClipboard(null)}
+                title="Discard clipboard"
+                disabled={pasteBusy}
+              >
+                ✕
+              </button>
+            </>
+          )}
+        </div>,
+        document.body,
+      )}
 
       {/* Rename modal. Submitting the form triggers confirmRename which
           dispatches the appropriate transport-specific /move endpoint. */}

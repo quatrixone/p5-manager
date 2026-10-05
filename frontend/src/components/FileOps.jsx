@@ -76,7 +76,7 @@ export default function FileOps({ profiles, onNotification }) {
   }, [switchTab]);
 
   return (
-    <div className="fileops">
+    <div className={`fileops ${subTab === 'files' ? 'fileops--files' : ''}`}>
       <header className="fileops-header">
         <div className="fileops-title">
           <span className="fileops-title-icon" aria-hidden>📂</span>
