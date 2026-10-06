@@ -2378,3 +2378,12 @@ pre { padding: 12px; overflow-x: auto; }
   cursor: pointer;
 }
 .lib-dest-off { opacity: 0.5; cursor: not-allowed; }
+
+/* PS5 Game Compressor's own UI, embedded in Convert (GameCompressor.jsx) */
+.gc-frame {
+  width: 100%;
+  height: min(78vh, 820px);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #fff;
+}

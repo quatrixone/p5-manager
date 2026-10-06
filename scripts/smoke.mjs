@@ -172,7 +172,8 @@ await step('payloads, profiles, settings and the user-data paths answer', async 
 await step('library reports an unreachable console cleanly', async () => {
   const r = await call('GET', '/api/library/127.0.0.1/overview');
   assert.equal(r.status, 502, r.text);
-  assert.match(r.data.error, /ShadowMount/);
+  assert.ok(['offline', 'stopped'].includes(r.data.reason), r.text);
+  assert.equal(typeof r.data.error, 'string');
 });
 
 if (flags.includes('--sidecar')) {

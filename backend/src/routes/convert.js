@@ -5319,6 +5319,6 @@ for (const sig of ['SIGTERM', 'SIGINT']) {
 // inside the module means there's nothing extra to wire from index.js.
 export { scheduleQueueSave };
 // Used by the downloader's PS5 destination (zftpd's HTTP API shares the FTP port).
-export { loadFtp, startZftpd };
+export { loadFtp, startZftpd, tcpPortOpen, sendElfPayload, ELF_LOADER_PORT };
 
 export default router;

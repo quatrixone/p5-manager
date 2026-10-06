@@ -4,6 +4,7 @@ import Downloader from './Downloader';
 import Queue from './Queue';
 import FileBrowser from './FileBrowser';
 import DualPane from './DualPane';
+import GameCompressor from './GameCompressor';
 import useVisiblePolling from '../hooks/useVisiblePolling';
 import { apiSafe } from '../lib/api.js';
 
@@ -157,6 +158,9 @@ export default function FileOps({ profiles, onNotification }) {
               />
             )}
           </>
+        )}
+        {subTab === 'convert' && (
+          <GameCompressor profiles={profiles} onNotification={onNotification} />
         )}
         {subTab === 'convert' && (
           <Convert

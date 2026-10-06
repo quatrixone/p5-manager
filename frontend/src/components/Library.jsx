@@ -31,7 +31,8 @@ function GameIcon({ game }) {
 export default function Library({ profiles = [], onNotification }) {
   const [ip, setIp] = useState('');
   const [data, setData] = useState(null);
-  const [error, setError] = useState(null);
+  const [error, setError] = useState(null); // { message, reason, can_start, has_payload }
+  const [starting, setStarting] = useState(false);
   const [loading, setLoading] = useState(false);
   const [query, setQuery] = useState('');
   const [storage, setStorage] = useState('all');
@@ -58,7 +59,7 @@ export default function Library({ profiles = [], onNotification }) {
       setData(d);
       setError(null);
     } catch (e) {
-      if (!quiet) { setData(null); setError(e.message); }
+      if (!quiet) { setData(null); setError({ message: e.message, ...(e.data || {}) }); }
     } finally {
       if (!quiet) setLoading(false);
     }
@@ -70,6 +71,20 @@ export default function Library({ profiles = [], onNotification }) {
   const jobActive = !!job?.active;
 
   // Fast poll while a storage job runs, slow background refresh otherwise.
+  // While the console is unreachable, keep trying: it shows up by itself
+  // once the console is awake and ShadowMount runs.
+  useVisiblePolling(() => { if (ip && error && !starting) load(); }, error ? 8000 : 0, [ip, !!error, starting]);
+
+  const startShadowMount = async () => {
+    setStarting(true);
+    try {
+      await api.post(`/library/${ip}/start`);
+      onNotification?.('ShadowMount started', 'success');
+      await load();
+    } catch (e) { onNotification?.(e.message, 'error'); }
+    setStarting(false);
+  };
+
   useVisiblePolling(async () => {
     if (!ip || !data) return;
     if (!jobActive) { load(true); return; }
@@ -260,8 +275,27 @@ export default function Library({ profiles = [], onNotification }) {
       {!ip && <div className="text-sm text-muted">Add a console in Settings to see its library.</div>}
       {loading && !data && <div className="text-sm text-muted">Loading library…</div>}
       {error && (
-        <div className="p-md badge-danger" style={{ borderRadius: 8 }}>
-          {error}
+        <div className="comp-card">
+          <div className="comp-card-body flex-col gap-sm">
+            <div className="text-sm"><b>{error.message}</b></div>
+            <div className="text-xs text-muted">
+              {error.reason === 'offline'
+                ? 'Turn the console on (or wake it) and run the jailbreak. This page checks again every few seconds.'
+                : error.reason === 'stopped'
+                  ? (error.has_payload
+                    ? 'The ELF loader is up, so ShadowMount can be started from here.'
+                    : 'Add shadowmountplus.elf under Payloads, then it can be started from here.')
+                  : 'This page checks again every few seconds.'}
+            </div>
+            <div className="flex gap-sm flex-wrap">
+              {error.can_start && (
+                <button className="btn btn-primary btn-sm" onClick={startShadowMount} disabled={starting}>
+                  {starting ? '⏳ Starting…' : '▶ Start ShadowMount'}
+                </button>
+              )}
+              <button className="btn btn-secondary btn-sm" onClick={() => load()} disabled={loading || starting}>↻ Check again</button>
+            </div>
+          </div>
         </div>
       )}
 

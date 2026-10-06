@@ -1,6 +1,8 @@
 import express from 'express';
 import net from 'net';
+import fs from 'fs';
 import { getRepo, log } from '../db/sqlite.js';
+import { tcpPortOpen, sendElfPayload, ELF_LOADER_PORT } from './convert.js';
 import {
   isValidTitleId, isSafeConsoleDir, storageOf, buildVolumes, buildDestinations,
 } from '../lib/libraryModel.js';
@@ -42,6 +44,29 @@ async function sm(ip, route, body = {}, timeoutMs = 20_000) {
 
 const fail = (res, e) => res.status(e.status || 500).json({ error: e.message });
 
+// ShadowMountPlus payload from the payload library, newest name first.
+function findShadowMountPayload() {
+  const rows = getRepo().queryAll(
+    "SELECT filename, filepath FROM payloads WHERE lower(filename) LIKE 'shadowmount%.elf'",
+  );
+  return rows
+    .filter(r => r.filepath && fs.existsSync(r.filepath))
+    .sort((a, b) => b.filename.localeCompare(a.filename, undefined, { numeric: true }))[0] || null;
+}
+
+// Why the API does not answer, so the page can say what to do about it
+// instead of a bare "not reachable":
+//   offline   nothing answers - console off, in rest mode or not jailbroken
+//   stopped   the ELF loader is up but ShadowMount is not running
+async function diagnose(ip) {
+  const loader = await tcpPortOpen(ip, ELF_LOADER_PORT, 1500);
+  return {
+    reason: loader ? 'stopped' : 'offline',
+    can_start: loader && !!findShadowMountPayload(),
+    has_payload: !!findShadowMountPayload(),
+  };
+}
+
 router.param('ip', (req, res, next, ip) => {
   if (net.isIP(ip) === 0) return res.status(400).json({ error: 'Invalid console address' });
   next();
@@ -79,6 +104,37 @@ router.get('/:ip/overview', async (req, res) => {
       destinations: buildDestinations(volumes, storage.destinations),
       job,
     });
+  } catch (e) {
+    if (e.status !== 502) return fail(res, e);
+    const why = await diagnose(req.params.ip);
+    res.status(502).json({
+      error: why.reason === 'offline'
+        ? `The console at ${req.params.ip} is not answering - it is off, in rest mode, or the jailbreak has not been run since it was turned on.`
+        : 'ShadowMountPlus is not running on the console.',
+      ...why,
+    });
+  }
+});
+
+// Sends ShadowMountPlus from the payload library and waits for its API.
+router.post('/:ip/start', async (req, res) => {
+  try {
+    const { ip } = req.params;
+    const port = apiPort();
+    if (await tcpPortOpen(ip, port, 1500)) return res.json({ success: true, already_running: true });
+    if (!(await tcpPortOpen(ip, ELF_LOADER_PORT, 2000))) {
+      return res.status(409).json({ error: `The ELF loader (port ${ELF_LOADER_PORT}) is not reachable on ${ip}` });
+    }
+    const payload = findShadowMountPayload();
+    if (!payload) return res.status(409).json({ error: 'No ShadowMountPlus payload in the payload library - add shadowmountplus.elf under Payloads first' });
+    log('info', `library ${ip}: sending ${payload.filename}`);
+    await sendElfPayload(ip, ELF_LOADER_PORT, payload.filepath);
+    const deadline = Date.now() + 30_000;
+    while (Date.now() < deadline) {
+      if (await tcpPortOpen(ip, port, 1000)) return res.json({ success: true });
+      await new Promise(r => setTimeout(r, 700));
+    }
+    res.status(504).json({ error: `Sent ${payload.filename} but its API did not come up on port ${port} within 30 s. Check that "Allow local network access" is enabled in ShadowMount's settings.` });
   } catch (e) { fail(res, e); }
 });
 
