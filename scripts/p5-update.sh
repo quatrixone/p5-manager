@@ -72,6 +72,10 @@ add --cap-add  < <(inspect '{{range .HostConfig.CapAdd}}{{println .}}{{end}}')
 add --group-add < <(inspect '{{range .HostConfig.GroupAdd}}{{println .}}{{end}}')
 add --security-opt < <(inspect '{{range .HostConfig.SecurityOpt}}{{println .}}{{end}}')
 add -p         < <(inspect '{{range $p, $b := .HostConfig.PortBindings}}{{range $b}}{{if .HostIp}}{{.HostIp}}:{{end}}{{.HostPort}}:{{$p}}{{println}}{{end}}{{end}}')
+# Labels too, minus the image's own: Docker Compose finds its containers by
+# them, so a later `docker compose up` still treats this one as its own.
+add --label    < <(grep -vxFf <(docker inspect --format '{{range $k, $v := .Config.Labels}}{{$k}}={{$v}}{{println}}{{end}}' "$OLD_IMAGE") \
+                              <(inspect '{{range $k, $v := .Config.Labels}}{{$k}}={{$v}}{{println}}{{end}}'))
 # Only the variables set on the container, not the ones its image brought.
 add -e         < <(grep -vxFf <(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$OLD_IMAGE") \
                               <(inspect '{{range .Config.Env}}{{println .}}{{end}}'))

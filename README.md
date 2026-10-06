@@ -43,7 +43,7 @@ from one browser tab on your PC or phone.
 | **Autoload** | Build a sequence of steps (wake the console, run a button script, wait for a port, send a payload, download, extract, convert, upload) and run it as one action - or let it start by itself when the console is on but not jailbroken. |
 | **File Ops** | Browse this computer, a network share and the console side by side. Drag files between two panes to copy or move them, upload from your device, download from a URL, convert and extract. Long jobs run in a queue you can pause and resume. |
 | **Library** | See every title ShadowMountPlus knows on the console, with icon, size and the drive it is on. Mount, move, copy, unpack, uninstall or delete a title, with a progress bar for the long ones. |
-| **Console** | Remote Play in the browser: wake the console, see the screen, use an on-screen controller, record and replay button sequences, send a payload without leaving the view. |
+| **Console** | Remote Play in the browser: wake the console, see the screen, use an on-screen controller, record and replay button sequences, send a payload without leaving the view. The tab is named *PS5 Control* or *PS4 Control* once your default profile is one of those. |
 | **Logs** | Live log streams from the console. |
 | **Settings** | Console profiles, backup and restore, defaults, restart. |
 
@@ -54,8 +54,8 @@ Highlights:
   the browser.
 - **Convert on the console.** Start
   [PS5 Game Compressor](https://github.com/juma-sayeh/PS5-Game-Compressor)
-  from the Convert tab and use it inside the app. Nothing is copied to the
-  server.
+  from **File Ops → Convert** and use it inside the app. Nothing is copied
+  to the server.
 - **Convert on the server.** Pack a file or folder into `.ffpfsc` (via
   `mkpfs`) or `.exfat`, and unpack them again.
 - **Works on a phone.** The layout adapts to small screens and can be
@@ -91,8 +91,8 @@ The screenshots use made-up demo data.
   the console. It is one of the built-in payloads, and the Library can
   start it for you.
 - For browsing the console's files: an FTP payload such as
-  [zftpd](https://github.com/seregonwar/zftpd). P5 Manager starts it for
-  you if it is in your payload library.
+  [zftpd](https://github.com/seregonwar/zftpd). On a PS5, P5 Manager
+  starts it for you if it is in your payload library.
 - One of:
   - **Docker** on Linux (recommended, all features), or
   - **Windows 10 / 11** for the portable version (no Docker needed).
@@ -114,17 +114,18 @@ Open `http://<this-computer>:3001`.
 `docker compose up -d` pulls the published images. To build from source
 instead, run `docker compose up -d --build`.
 
-Two containers start, both with host networking so console discovery,
-wake-on-LAN and Remote Play work without port forwarding:
+Two containers start, both with host networking so finding, waking and
+Remote Play of the console work without port forwarding:
 
 | Service        | What it is                                             |
 |----------------|--------------------------------------------------------|
 | `app`          | The web app and its API                                |
 | `pyremoteplay` | The Remote Play service the app talks to               |
 
-Your data (database, payloads, downloads, conversion work files) lives in
-`./data/` and survives updates. To update: `git pull && docker compose pull
-&& docker compose up -d`.
+Your data survives updates. The database is in `./data/`; payloads,
+downloads and conversion work files are in `/data/payloads`,
+`/data/downloads` and `/data/mkpfs` on the host. To update: `git pull &&
+docker compose pull && docker compose up -d`.
 
 **Update from inside the app.** When a newer release is out, the app shows
 a bar with *What's new*. To also get an **Update** button there, install the
@@ -134,12 +135,15 @@ small host-side helper once, as a user who may use Docker:
 scripts/p5-update.sh --install <name of the app container>
 ```
 
-It runs every minute from that user's crontab. A click on **Update** makes
-it pull the released image and replace the container with the same
-settings. The previous container is kept, stopped, as `<name>-previous`,
-and is started again by itself if the new version does not come up. The
-app container is not given access to Docker. Remove the helper with
-`scripts/p5-update.sh --uninstall`.
+`docker ps` shows the name (with Docker Compose it ends in `-app-1`). The
+helper runs every minute from that user's crontab. A click on **Update**
+makes it pull the released image and replace the app container with the
+same settings. The previous container is kept, stopped, as
+`<name>-previous`, and is started again by itself if the new version does
+not come up. The app container is not given access to Docker. The Remote
+Play service is a separate image and is not touched; update it with
+`docker compose pull pyremoteplay && docker compose up -d pyremoteplay`.
+Remove the helper with `scripts/p5-update.sh --uninstall`.
 
 ### Windows (portable)
 
@@ -172,7 +176,9 @@ into the Local file browser instead).
    and *PS5 FTP* on the other, and drag a file across.
 4. **Library**: pick the console. If ShadowMountPlus is not running, the
    page offers to start it.
-5. **Console**: pair Remote Play once, then use **Wake** to open a session.
+5. **Console**: pair Remote Play once under **PS Remote Play Settings**,
+   then press **Start session**. It wakes the console first if it is in
+   rest mode.
 
 ---
 
@@ -190,8 +196,8 @@ instead of Sony's manual. That is done with the console's DNS setting, not
 by P5 Manager:
 
 1. On the PS5: **Settings → Network → Settings → Set Up Internet
-   Connection**, pick your connection, **Advanced Settings → DNS Settings →
-   Manual**.
+   Connection**, highlight your connection, press **Options**, then
+   **Advanced Settings → DNS Settings → Manual**.
 2. Set **Primary DNS** to a DNS server that points
    `manuals.playstation.net` at a jailbreak host. The author's console uses
    **`45.56.67.85`**; with it the User's Guide opens the jailbreak page and
@@ -218,18 +224,28 @@ Things to know:
 
 ## Ports
 
-| Port | Proto | What                                        |
-|------|-------|---------------------------------------------|
-| 3001 | TCP   | Web app and API                             |
-| 9555 | TCP   | Remote Play service (`127.0.0.1` only)      |
-| 8080 | UDP   | Log receiver                                |
-| 3232 | TCP   | Kernel log receiver                         |
-| 9295 | UDP   | Remote Play discovery and wake              |
-| 9296 | UDP   | Remote Play control                         |
+Open on the computer running P5 Manager:
 
-On the console, P5 Manager connects to the payload loader (9021 / 9026 on
-PS5, 9020 on PS4), FTP (2120 or 2121), ShadowMountPlus (10101) and PS5 Game
-Compressor (5910).
+| Port | Proto | What                                             |
+|------|-------|--------------------------------------------------|
+| 3001 | TCP   | Web app and API                                  |
+| 9555 | TCP   | Remote Play service (`127.0.0.1` only)           |
+| 8080 | UDP   | Log receiver                                     |
+| 3232 | TCP   | Kernel log receiver                              |
+| 9303 | UDP   | Replies from consoles when searching for them    |
+
+On the console, P5 Manager connects to:
+
+| Port        | Proto | What                                        |
+|-------------|-------|---------------------------------------------|
+| 9021 / 9026 | TCP   | PS5 payload loader (ELF / Lua)              |
+| 9020        | TCP   | PS4 payload loader                          |
+| 2120 / 2121 | TCP   | FTP                                         |
+| 10101       | TCP   | ShadowMountPlus                             |
+| 5910        | TCP   | PS5 Game Compressor                         |
+| 9302 / 987  | UDP   | Finding and waking a PS5 / PS4              |
+| 9295        | TCP   | Remote Play session                         |
+| 9296        | UDP   | Remote Play video and input                 |
 
 ---
 
@@ -277,15 +293,16 @@ repos:
 
 - [PSBrew / MkPFS](https://github.com/PSBrew/MkPFS) — `mkpfs`,
   PFS packer/unpacker driving the `.ffpfsc` modes
-- [PSBrew / MicroMount](https://github.com/PSBrew/MicroMount) — bundled
-  MicroMount payload + config editor
+- [PSBrew / MicroMount](https://github.com/PSBrew/MicroMount) — one of
+  the built-in payloads
 - [kerrdec97 / ps5-exfat-builder](https://github.com/kerrdec97/ps5-exfat-builder)
   — Windows-side reference for the exFAT image pipeline
 - [ps5-payload-dev / sdk](https://github.com/ps5-payload-dev/sdk) —
   SDK every in-tree PS5 ELF builds against
 - [ktnrg45 / pyremoteplay](https://github.com/ktnrg45/pyremoteplay) —
   Remote Play protocol library powering the sidecar
-- [gezine](https://github.com/gezine) — author of **y2jb**
+- [gezine](https://github.com/gezine) — Luac0re, whose `setlogserver.lua`
+  is the Lua log redirector behind the Logs tab
 - **flatz** + **CelesteBlue** — original public-domain `unpkg.py` and
   the Python 3 port vendored as `backend/src/lib/unpkg.py`
 - **etaHEN team** — etaHEN
@@ -297,11 +314,9 @@ repos:
 - [EchoStretch / kstuff-lite](https://github.com/EchoStretch/kstuff-lite) —
   built-in payload
 - [juma-sayeh / PS5-Game-Compressor](https://github.com/juma-sayeh/PS5-Game-Compressor)
-  — on-console compression, started from the Convert tab
+  — on-console compression, started from File Ops → Convert
 
 If you should be credited and aren't, please open an issue.
-
----
 
 ---
 
