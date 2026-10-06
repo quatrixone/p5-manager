@@ -6,8 +6,8 @@ base64 Account ID by calling `sceRemoteplayGeneratePinCode` inside
 where the Settings → Remote Play menu on the PS5 refuses to show the PIN.
 
 This is a vendored copy of [idlesauce/ps5-remoteplay-get-pin](https://github.com/idlesauce/ps5-remoteplay-get-pin)
-with local patches; the compiled `rp-get-pin.elf` lives in `data/payloads/`
-and is invoked by the backend's `POST /api/remoteplay/get-pin` endpoint,
+with local patches; the compiled `rp-get-pin.elf` is copied to the payloads
+folder (`/data/payloads` in the Docker setup) and is invoked by the backend's `POST /api/remoteplay/get-pin` endpoint,
 which the Remote Play tab's "Auto-fetch PIN" button calls.
 
 In addition to streaming the PIN/User/Account ID over the TCP socket to
@@ -115,7 +115,7 @@ External SDK still works via `PS5_PAYLOAD_SDK=/path/to/sdk make`.
 
 The backend picks up the new binary on next `GET /api/payloads` (the
 filesystem scan in `backend/src/lib/defaultPayloads.js` registers it
-idempotently). No container rebuild required as long as `data/payloads/`
+idempotently). No container rebuild required as long as `/data/payloads`
 is bind-mounted (it is, per `docker-compose.yml`).
 
 ## Usage (manual)
@@ -153,6 +153,9 @@ screen every ~5.75 s with the same data.
 ## Upstream
 
 - Source: <https://github.com/idlesauce/ps5-remoteplay-get-pin>
+- Licence: the upstream repository states none. This copy is kept here
+  with attribution so the patches below can be read and rebuilt; it is not
+  covered by the MIT licence of the rest of the repository.
 - Last sync: commit `6373197` (`Update main.yml`)
 - Thanks: Nicit (testing), [astrelsky](https://github.com/astrelsky/)
   (ptrace examples), [john-tornblom](https://github.com/john-tornblom/)

@@ -1,7 +1,7 @@
 # Dual-pane file manager s drag & drop — návrh
 
 Dátum: 2026-10-06
-Stav: čaká na schválenie
+Stav: schválené a implementované (vydané vo v1.1.0)
 
 ## Cieľ
 

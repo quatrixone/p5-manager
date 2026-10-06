@@ -7,9 +7,15 @@ host that builds payloads / talks to the PS5 directly:
   [ps5-payload-dev/sdk](https://github.com/ps5-payload-dev/sdk)
   toolchain (`sdk/`, gitignored — 35 MB binary toolchain).
 - Three PS5 payload projects that compile against it:
-  - `offact/` — headless offline PSN activation
-  - `rp-get-pin/` — Remote Play PIN + Account ID harvester
-  - `pkg-install/` — fake-PKG installer for the install queue
+  - `offact/` — headless offline PSN activation. Derived from
+    [ps5-payload-dev/offact](https://github.com/ps5-payload-dev/offact),
+    GPL-3.0-or-later.
+  - `rp-get-pin/` — Remote Play PIN + Account ID harvester. A patched
+    copy of
+    [idlesauce/ps5-remoteplay-get-pin](https://github.com/idlesauce/ps5-remoteplay-get-pin)
+    (no licence stated upstream).
+  - `pkg-install/` — fake-PKG installer for the install queue. Written
+    for this project, MIT.
 
 ## Layout
 
@@ -39,18 +45,19 @@ without any exported env vars.
 
 ## Bootstrapping the SDK
 
-The SDK ships its own pinned installer that pulls a known-good
-toolchain. Run it once from the repo root:
+Upstream publishes a ready-built SDK with every release. From the repo
+root:
 
 ```bash
-# Option A: the upstream one-liner
-curl -sSL https://raw.githubusercontent.com/ps5-payload-dev/sdk/master/install.sh \
-  | env PS5_PAYLOAD_SDK_INSTALL=$(pwd)/p5managerclient/sdk bash
+# Option A: the released binary distribution
+wget https://github.com/ps5-payload-dev/sdk/releases/latest/download/ps5-payload-sdk.zip
+unzip -d p5managerclient ps5-payload-sdk.zip
+mv p5managerclient/ps5-payload-sdk p5managerclient/sdk
 
-# Option B: clone + make install
+# Option B: build it from source
+REPO=$(pwd)
 git clone https://github.com/ps5-payload-dev/sdk.git /tmp/ps5-payload-sdk-src
-cd /tmp/ps5-payload-sdk-src
-make install DESTDIR=$(git -C - rev-parse --show-toplevel)/p5managerclient/sdk
+make -C /tmp/ps5-payload-sdk-src DESTDIR="$REPO/p5managerclient/sdk" install
 ```
 
 Either way you should end up with `p5managerclient/sdk/toolchain/prospero.mk`

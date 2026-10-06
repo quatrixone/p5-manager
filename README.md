@@ -261,11 +261,15 @@ On the console, P5 Manager connects to:
   and a small launcher, built and tested by
   [GitHub Actions](.github/workflows/windows-portable.yml).
 
-Three small payloads written for this project live under
-[`p5managerclient/`](p5managerclient/) and build with the
+Three small payloads live under [`p5managerclient/`](p5managerclient/)
+and build with the
 [ps5-payload-dev SDK](https://github.com/ps5-payload-dev/sdk):
-`rp-get-pin.elf` (Remote Play pairing PIN), `offact.elf` (account ID for
-Remote Play pairing) and `pkg-install.elf` (package install queue).
+`rp-get-pin.elf` (Remote Play pairing PIN, a patched copy of
+[idlesauce's](https://github.com/idlesauce/ps5-remoteplay-get-pin)),
+`offact.elf` (account ID for Remote Play pairing, derived from
+[ps5-payload-dev/offact](https://github.com/ps5-payload-dev/offact),
+GPL-3.0-or-later) and `pkg-install.elf` (package install queue, written
+for this project). See [LEGAL.md](LEGAL.md) for their licences.
 
 ---
 
@@ -299,6 +303,10 @@ repos:
   — Windows-side reference for the exFAT image pipeline
 - [ps5-payload-dev / sdk](https://github.com/ps5-payload-dev/sdk) —
   SDK every in-tree PS5 ELF builds against
+- [ps5-payload-dev / offact](https://github.com/ps5-payload-dev/offact)
+  (John Törnblom) — the code `offact.elf` is derived from
+- [idlesauce / ps5-remoteplay-get-pin](https://github.com/idlesauce/ps5-remoteplay-get-pin)
+  — the code `rp-get-pin.elf` is a patched copy of
 - [ktnrg45 / pyremoteplay](https://github.com/ktnrg45/pyremoteplay) —
   Remote Play protocol library powering the sidecar
 - [gezine](https://github.com/gezine) — Luac0re, whose `setlogserver.lua`
@@ -331,4 +339,6 @@ support piracy. Details, intended use and how to report a content problem:
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE), except `p5managerclient/offact/` (GPL-3.0-or-later) and
+`p5managerclient/rp-get-pin/` (third-party, no licence stated upstream).
+Details in [LEGAL.md](LEGAL.md).

@@ -237,7 +237,7 @@ int main(int argc, char *argv[])
     printf("[offact] foreground user is at registry slot %d\n", slot);
 
     /* Read display name. Prefer the PSN online_id (the handle users see
-     * everywhere - "ExampleUser") and fall back to the local user_name
+     * everywhere - e.g. "ExampleUser") and fall back to the local user_name
      * (the local-only "name on this PS5") if the online slot is empty. */
     char online_id[ACCOUNT_TYPE_MAX] = {0};
     char user_name[ACCOUNT_NAME_MAX] = {0};

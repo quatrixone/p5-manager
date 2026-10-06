@@ -9,7 +9,10 @@ got cleared (e.g. after a factory reset / registry restore).
 
 This is a vendored + re-purposed variant of
 [ps5-payload-dev/offact](https://github.com/ps5-payload-dev/offact)
-(GPLv3+, John Törnblom). Upstream is a fullscreen SDL homebrew with an
+(GPLv3+, John Törnblom). Because it is derived from that code, everything
+in this directory, including the compiled `offact.elf`, is under the GNU
+GPL version 3 or later (see [LICENSE](LICENSE)) and not under the MIT
+licence of the rest of the repository. Upstream is a fullscreen SDL homebrew with an
 on-screen list + IME dialog; this build is **headless** so the P5
 Manager backend can send it straight to elfldr (port 9021) and parse
 the result, the same way `rp-get-pin.elf` works.
@@ -79,7 +82,7 @@ cp offact.elf /data/payloads/
 External SDK still works via `PS5_PAYLOAD_SDK=/path/to/sdk make`.
 
 The backend's `POST /api/remoteplay/activate-account` endpoint picks up
-the new binary automatically from `data/payloads/`.
+the new binary automatically from the payloads folder.
 
 ## Stdout format
 

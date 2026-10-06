@@ -16,24 +16,43 @@ They are used here only to describe what the software works with.
 
 - Original source code written for this project, under the MIT licence
   (see [LICENSE](LICENSE)).
-- Three small payloads under `p5managerclient/`, written for this project
-  and built with the open-source
-  [ps5-payload-dev SDK](https://github.com/ps5-payload-dev/sdk).
+- Three small payloads under `p5managerclient/`, as source and as compiled
+  `.elf`, built with the open-source
+  [ps5-payload-dev SDK](https://github.com/ps5-payload-dev/sdk). They are
+  not all original work and not all under the MIT licence:
+  - `pkg-install/` was written for this project (MIT).
+  - `offact/` is derived from
+    [ps5-payload-dev/offact](https://github.com/ps5-payload-dev/offact) by
+    John Törnblom and is under the GNU GPL version 3 or later (see
+    [p5managerclient/offact/LICENSE](p5managerclient/offact/LICENSE)).
+  - `rp-get-pin/` is a patched copy of
+    [idlesauce/ps5-remoteplay-get-pin](https://github.com/idlesauce/ps5-remoteplay-get-pin),
+    whose repository states no licence. It is included with attribution
+    and will be removed if its author asks.
+- `backend/src/lib/unpkg.py`, a public-domain script by flatz, in the
+  Python 3 port by CelesteBlue.
 
 To the best of the maintainers' knowledge it contains **no** Sony source
 code, firmware, system files, encryption keys, signing keys or account
-credentials, and **no** games, game dumps, package files or links to them.
+credentials, **no** exploit for any console, and **no** games, game dumps,
+package files or links to them.
 
-Third-party tools (payloads, converters, libraries) are not redistributed
-from this repository. Where the application can fetch one, it downloads it
-from that project's own release page at the user's request, and that
-project's licence and terms apply.
+Other third-party tools (payloads, converters, libraries) are not
+redistributed from this repository. The application downloads a small set
+of payloads from their authors' own release pages on first start, and
+others when the user asks for them; each project's own licence and terms
+apply.
 
 ## Intended use
 
 The software is a management console for a console its user owns: sending
 homebrew payloads, moving and converting the user's own files, viewing
 logs, and remote control over the local network.
+
+It does not unlock a console. Its Autoload feature can press buttons on a
+console through Remote Play, for example to open the User's Guide. What a
+console shows there is decided by the DNS server its owner configured on
+it, which is run by a third party and is not part of this project.
 
 It is not intended for, and the maintainers do not support, copyright
 infringement: obtaining, sharing or running software or games you do not

@@ -21,7 +21,8 @@ migration. Keep them small, readable, and dependency-free.
 * `inputScripts.json` is **plain JSON** (not a JS module) — an array of
   `{ id, name, description, script, notes? }`. `script` is a single string
   with `\n` between lines (same DSL the editor takes: `<button> [ms] [Nx]`,
-  `wait <ms>`, `text <string>`, `// comment`). `notes` is optional free-text
+  `wait <ms>`, `text <string>`, `lstick` / `rstick <x> <y> [ms]`, `home`,
+  `// comment`). `notes` is optional free-text
   for anything worth documenting about the macro (button-by-button
   navigation, firmware caveats, …) — JSON has no comment syntax, so this is
   where that goes instead of an inline `//`.
@@ -31,5 +32,10 @@ migration. Keep them small, readable, and dependency-free.
   (✏️, or the step editor's "Save to built-in"), or "Use as template" /
   📋 to fork into a savable copy instead.
 * Built-in payloads are re-fetched on every startup if the file is missing
-  from `data/payloads/`, so removing an entry here doesn't delete already
-  downloaded files — it just stops auto-restoring them.
+  from the payloads folder (`/data/payloads` in the Docker setup), so
+  removing an entry here doesn't delete already downloaded files — it just
+  stops auto-restoring them.
+* A template may carry `autoTrigger: 'loader_down'`; a sequence saved from
+  it then runs by itself when its console is on but the loader port is
+  closed. An Autoload script step can name a built-in script by id
+  (`scriptId: 'builtin:…'`) and gets its current text at run time.

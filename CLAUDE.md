@@ -33,29 +33,31 @@ cd pyremoteplay && pip install -r requirements.txt && python server.py
 - **Database**: `db/sqlite.js` — sql.js (SQLite in-memory + file persistence). `DatabaseRepo` class provides `queryOne / queryAll / queryScalar / run / runAndSave`. `getRepo()` singleton.
 - **Routes** (`routes/`): One file per resource. All follow `router.METHOD` pattern and use `getRepo()` for DB access.
 - **JobQueue** (`lib/JobQueue.js`): Generic async queue with single in-flight worker. Handles pause/resume/retry/clear/move. Used for convert, extract, ftpUpload, install, download jobs. `mountQueueRoutes()` wires standard CRUD onto any router.
-- **Log servers**: `lib/logServer.js` (UDP :8080), `lib/kernelLogServer.js` (TCP :3232)
+- **Log servers**: `routes/logServer.js` (UDP :8080), `routes/kernelLogServer.js` (TCP :3232)
+- **Autoload**: `routes/sequences.js` runs saved sequences and holds the watcher that starts a sequence by itself when its console is on but the loader port is closed (`auto_trigger = 'loader_down'`).
+- **Update**: `routes/update.js` checks GitHub Releases; the container swap is done on the host by `scripts/p5-update.sh` through a request file in the data dir.
 
 ### Frontend (`frontend/src/`)
 
 - **API layer** (`lib/api.js`): Centralized fetch wrapper. `api.get/post/put/patch/del` + `apiSafe` variant that swallows errors. Auto-prepends `/api` prefix.
-- **Context** (`contexts/PlatformContext.jsx`): Platform mode (PS4/PS5/auto) injected throughout the component tree.
-- **Hooks**: `useApi.js` (fetch helper), `useSSE.js` (Server-Sent Events), `useVisiblePolling.js` (visibility-gated polling).
+- **Contexts**: `contexts/PlatformContext.jsx` (platform mode PS4/PS5/auto for the whole tree), `contexts/Ps5StatusContext.jsx` (one shared console status poll).
+- **Hooks**: `useApi.js` (fetch helper), `useVisiblePolling.js` (visibility-gated polling).
 - **Components** (`components/`): One file per tab/section. `App.jsx` wires routing and global state.
 
 ### Data Model
 
-Tables: `profiles`, `payloads`, `autoload_sequences`, `logs`, `settings`, `input_scripts`, `convert_sources`. Schema migrations handled via `ALTER TABLE IF NOT EXISTS` blocks in `db/sqlite.js`.
+Tables: `profiles`, `payloads`, `autoload_sequences`, `logs`, `settings`, `input_scripts`, `convert_sources`. Schema migrations are `ALTER TABLE ... ADD COLUMN` statements in `db/sqlite.js`, each wrapped in a try/catch that ignores "duplicate column".
 
 ### Key Patterns
 
-- Backend route handlers throw `{ error: string }` objects; Express error middleware formats them.
+- Backend route handlers catch their own errors and answer `res.status(...).json({ error })`; there is no shared error middleware.
 - Frontend uses `apiSafe` for fire-and-forget polling and `api` for operations requiring error handling.
-- Job state persists via `saveDatabase()` calls after queue mutations.
 - exFAT pipeline (`lib/exfat.js`) requires `CAP_SYS_ADMIN` + loop device passthrough (handled in docker-compose.yml).
 
 ## Environment
 
 - `PORT` — backend port (default 3001)
 - `PYREMOTEPLAY_SIDECAR_URL` — sidecar URL (default http://127.0.0.1:9555)
-- `DATA_DIR` — data directory (default /app/data)
+- `DATA_DIR` — internal data directory (database; default /app/data in the image)
+- `USER_DATA_DIR` — payloads, downloads and mkpfs work files (default /data)
 - `NODE_ENV=production` — enables static file serving + PWA service worker
