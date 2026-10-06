@@ -1116,14 +1116,14 @@ export default function FileBrowser({
       // are filtered out entirely (no greyed-out rows). Order is preserved
       // so the menu still feels stable across (kind, file-type) variations.
       canUpload && {
-        label: '⬆ Upload now',
+        label: '🎮 Send to console now',
         action: () => runUpload(true),
-        title: `Queue upload to ${uploadIp || 'PS5'} and start immediately`,
+        title: `Send to ${uploadIp || 'the console'}${uploadDest} and start immediately`,
       },
       canUpload && {
-        label: '🕒 Upload queue',
+        label: '🕒 Send to console later',
         action: () => runUpload(false),
-        title: `Queue upload to ${uploadIp || 'PS5'} and pause — press ▶ in Queue when ready`,
+        title: `Queue for ${uploadIp || 'the console'}${uploadDest} and pause — press ▶ in Tasks when ready`,
       },
       canDownload && {
         label: '⬇ Download now',
@@ -1336,7 +1336,7 @@ export default function FileBrowser({
                   aria-expanded={uploadMenuOpen}
                   title="Upload files or a folder from this device into the open folder"
                 >
-                  ⬆ Upload
+                  📱 From device
                 </button>
               )}
               {canMakeFolder && (
@@ -1589,7 +1589,13 @@ export default function FileBrowser({
           {selectionBar ? (
             <>
               {enableFtpUpload && ((kind === 'smb' && smbId) || kind === 'local') && uploadIp && (
-                <button className="btn btn-success" onClick={uploadSelected}>⬆ Upload</button>
+                <button
+                  className="btn btn-success"
+                  onClick={uploadSelected}
+                  title={`Send the selection to the console (${uploadIp}${uploadDest})`}
+                >
+                  🎮 Send to console
+                </button>
               )}
               {onSendToOther && (
                 <>
