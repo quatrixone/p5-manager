@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { usePlatform, platformMatches } from '../contexts/PlatformContext';
-import FolderPickerModal from './UI/FolderPickerModal';
+import PathField from './UI/PathField';
 import { api, apiSafe } from '../lib/api.js';
 
 // Stable per-step React key. Steps arrive from the backend as plain
@@ -16,24 +16,6 @@ let _localIdCounter = 1;
 function withLocalId(step) {
   if (step && step._localId) return step;
   return { ...step, _localId: `s${_localIdCounter++}` };
-}
-
-// Compact 📁 button rendered next to every local-path input. Lifted out
-// of AutoloadBuilder so its identity is stable across renders (otherwise
-// React would unmount/remount the button on every keystroke in the
-// adjacent input).
-function BrowseBtn({ onClick, title }) {
-  return (
-    <button
-      type="button"
-      className="btn btn-secondary"
-      onClick={onClick}
-      title={title || 'Browse folders graphically'}
-      style={{ flexShrink: 0 }}
-    >
-      📁
-    </button>
-  );
 }
 
 function AutoloadBuilder({ profiles, payloads, onNotification }) {
@@ -74,22 +56,8 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
   const [convMode, setConvMode] = useState('pack-file');
   const [convOutputName, setConvOutputName] = useState('');
 
-  // Browse-folder modal shared across every local-path field in the
-  // builder. We track which field is currently editing via `picker.target`
-  // so onPick can route the selected path back to the right setter (or
-  // patch the right step). selectFiles + fileFilter mirror the download
-  // tab's UX so users can drill into archives directly.
-  const [picker, setPicker] = useState(null); // { target, initialPath, title, selectFiles, fileFilter }
-  const closePicker = () => setPicker(null);
-  const openPicker = (cfg) => setPicker(cfg);
-  const pickFor = (cfg) => () => openPicker(cfg);
-  const handlePick = (chosen) => {
-    if (!picker) return;
-    const { target } = picker;
-    if (typeof target === 'function') {
-      target(chosen);
-    }
-  };
+  // Local-path fields use the shared <PathField> (input + Browse button +
+  // picker), so there is no picker state to route here any more.
 
   const fetchSequences = async () => {
     const data = await apiSafe.get('/sequences');
@@ -1043,17 +1011,13 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
                     </div>
                     <div>
                       <label className="text-sm text-muted" style={{ display: 'block' }}>Destination folder</label>
-                      <div className="flex gap-xs items-center">
-                        <input className="input flex-1" placeholder="/data/mkpfs"
-                          value={dlDestPath} onChange={e => setDlDestPath(e.target.value)} />
-                        <BrowseBtn
-                          onClick={pickFor({
-                            target: setDlDestPath,
-                            initialPath: dlDestPath || '/data',
-                            title: 'Pick download folder',
-                          })}
-                        />
-                      </div>
+                      <PathField
+                        placeholder="/data/mkpfs"
+                        value={dlDestPath}
+                        onChange={setDlDestPath}
+                        browsePath={dlDestPath || '/data'}
+                        pickerTitle={'Pick download folder'}
+                      />
                     </div>
                   </div>
                   <button className="btn btn-success" disabled={!dlUrl.trim()}
@@ -1066,34 +1030,26 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
               {showAddStepMenu === 'extract' && (
                 <div className="p-md flex-col gap-sm" style={{ background: 'var(--panel2)', borderRadius: 8 }}>
                   <label className="text-sm text-muted" style={{ display: 'block' }}>Archive path (local)</label>
-                  <div className="flex gap-xs items-center">
-                    <input className="input flex-1" placeholder="/data/mkpfs/archive.zip"
-                      value={extractLocalPath} onChange={e => setExtractLocalPath(e.target.value)} />
-                    <BrowseBtn
-                      title="Browse for archive file"
-                      onClick={pickFor({
-                        target: setExtractLocalPath,
-                        initialPath: extractLocalPath && extractLocalPath.startsWith('/') ? extractLocalPath.replace(/[^/]+$/, '') : '/data/mkpfs',
-                        selectFiles: true,
-                        fileFilter: (n) => /\.(zip|rar|7z|tar|gz|bz2|xz|tgz|tbz2|txz)$/i.test(n),
-                        title: 'Pick archive file',
-                      })}
-                    />
-                  </div>
+                  <PathField
+                    placeholder="/data/mkpfs/archive.zip"
+                    value={extractLocalPath}
+                    onChange={setExtractLocalPath}
+                    browsePath={extractLocalPath && extractLocalPath.startsWith('/') ? extractLocalPath.replace(/[^/]+$/, '') : '/data/mkpfs'}
+                    selectFiles={true}
+                    fileFilter={(n) => /\.(zip|rar|7z|tar|gz|bz2|xz|tgz|tbz2|txz)$/i.test(n)}
+                    pickerTitle={'Pick archive file'}
+                    browseTitle="Browse for archive file"
+                  />
                   <div className="grid-2 gap-sm">
                     <div>
                       <label className="text-sm text-muted" style={{ display: 'block' }}>Extract to</label>
-                      <div className="flex gap-xs items-center">
-                        <input className="input flex-1" placeholder="/data/mkpfs"
-                          value={extractDestPath} onChange={e => setExtractDestPath(e.target.value)} />
-                        <BrowseBtn
-                          onClick={pickFor({
-                            target: setExtractDestPath,
-                            initialPath: extractDestPath || '/data',
-                            title: 'Pick extract destination folder',
-                          })}
-                        />
-                      </div>
+                      <PathField
+                        placeholder="/data/mkpfs"
+                        value={extractDestPath}
+                        onChange={setExtractDestPath}
+                        browsePath={extractDestPath || '/data'}
+                        pickerTitle={'Pick extract destination folder'}
+                      />
                     </div>
                     <div>
                       <label className="text-sm text-muted" style={{ display: 'block' }}>Password (optional)</label>
@@ -1123,20 +1079,15 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
                       onClick={() => setConvMode('pack-folder')}>Folder → ffpfsc</button>
                   </div>
                   <label className="text-sm text-muted" style={{ display: 'block' }}>Source path</label>
-                  <div className="flex gap-xs items-center">
-                    <input className="input flex-1" placeholder="/data/mkpfs/game.exfat or /data/mkpfs/game/"
-                      value={convSourcePath} onChange={e => setConvSourcePath(e.target.value)} />
-                    <BrowseBtn
-                      title={convMode === 'pack-folder' ? 'Pick source folder' : 'Pick source file (or folder)'}
-                      onClick={pickFor({
-                        target: setConvSourcePath,
-                        initialPath: convSourcePath && convSourcePath.startsWith('/') ? convSourcePath.replace(/[^/]+$/, '') : '/data/mkpfs',
-                        // pack-file: pick a file. pack-folder: pick the folder itself ("Use this folder" CTA).
-                        selectFiles: convMode === 'pack-file',
-                        title: convMode === 'pack-folder' ? 'Pick source folder' : 'Pick source file',
-                      })}
-                    />
-                  </div>
+                  <PathField
+                    placeholder="/data/mkpfs/game.exfat or /data/mkpfs/game/"
+                    value={convSourcePath}
+                    onChange={setConvSourcePath}
+                    browsePath={convSourcePath && convSourcePath.startsWith('/') ? convSourcePath.replace(/[^/]+$/, '') : '/data/mkpfs'}
+                    selectFiles={convMode === 'pack-file'}
+                    pickerTitle={convMode === 'pack-folder' ? 'Pick source folder' : 'Pick source file'}
+                    browseTitle={convMode === 'pack-folder' ? 'Pick source folder' : 'Pick source file (or folder)'}
+                  />
                   <label className="text-sm text-muted" style={{ display: 'block' }}>Output filename (optional)</label>
                   <input className="input" placeholder="game.ffpfsc"
                     value={convOutputName} onChange={e => setConvOutputName(e.target.value)} />
@@ -1151,19 +1102,15 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
                 <div className="p-md flex-col gap-sm" style={{ background: 'var(--panel2)', borderRadius: 8 }}>
                   <p className="text-sm text-muted">Uploads to the IP from the sequence's profile.</p>
                   <label className="text-sm text-muted" style={{ display: 'block' }}>Local file path</label>
-                  <div className="flex gap-xs items-center">
-                    <input className="input flex-1" placeholder="/data/mkpfs/file.ffpfsc"
-                      value={ftpLocalPath} onChange={e => setFtpLocalPath(e.target.value)} />
-                    <BrowseBtn
-                      title="Browse for local file"
-                      onClick={pickFor({
-                        target: setFtpLocalPath,
-                        initialPath: ftpLocalPath && ftpLocalPath.startsWith('/') ? ftpLocalPath.replace(/[^/]+$/, '') : '/data/mkpfs',
-                        selectFiles: true,
-                        title: 'Pick local file to upload',
-                      })}
-                    />
-                  </div>
+                  <PathField
+                    placeholder="/data/mkpfs/file.ffpfsc"
+                    value={ftpLocalPath}
+                    onChange={setFtpLocalPath}
+                    browsePath={ftpLocalPath && ftpLocalPath.startsWith('/') ? ftpLocalPath.replace(/[^/]+$/, '') : '/data/mkpfs'}
+                    selectFiles={true}
+                    pickerTitle={'Pick local file to upload'}
+                    browseTitle="Browse for local file"
+                  />
                   <label className="text-sm text-muted" style={{ display: 'block' }}>Remote destination directory</label>
                   <input className="input" placeholder="/data/homebrew"
                     value={ftpDestPath} onChange={e => setFtpDestPath(e.target.value)} />
@@ -1363,73 +1310,65 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
                                   value={step.url || ''}
                                   onChange={e => patchStep(index, { url: e.target.value })}
                                 />
+                                <label className="field-label">Destination folder</label>
+                                <PathField
+                                  placeholder="/data/mkpfs"
+                                  value={step.dest_path || ''}
+                                  onChange={(p) => patchStep(index, { dest_path: p })}
+                                  fallbackPath="/data"
+                                  pickerTitle="Pick download folder"
+                                />
                               </>
                             )}
                             {step.type === 'extract' && (
                               <>
                                 <label className="field-label">Archive path</label>
-                                <div className="flex gap-xs items-center">
-                                  <input
-                                    className="input flex-1"
-                                    placeholder="/data/mkpfs/archive.zip"
-                                    value={step.local_path || ''}
-                                    onChange={e => patchStep(index, { local_path: e.target.value })}
-                                  />
-                                  <BrowseBtn
-                                    title="Browse for archive file"
-                                    onClick={pickFor({
-                                      target: (p) => patchStep(index, { local_path: p }),
-                                      initialPath: step.local_path && step.local_path.startsWith('/') ? step.local_path.replace(/[^/]+$/, '') : '/data/mkpfs',
-                                      selectFiles: true,
-                                      fileFilter: (n) => /\.(zip|rar|7z|tar|gz|bz2|xz|tgz|tbz2|txz)$/i.test(n),
-                                      title: 'Pick archive file',
-                                    })}
-                                  />
-                                </div>
+                                <PathField
+                                  placeholder="/data/mkpfs/archive.zip"
+                                  value={step.local_path || ''}
+                                  onChange={(p) => patchStep(index, { local_path: p })}
+                                  browsePath={step.local_path && step.local_path.startsWith('/') ? step.local_path.replace(/[^/]+$/, '') : '/data/mkpfs'}
+                                  selectFiles={true}
+                                  fileFilter={(n) => /\.(zip|rar|7z|tar|gz|bz2|xz|tgz|tbz2|txz)$/i.test(n)}
+                                  pickerTitle={'Pick archive file'}
+                                  browseTitle="Browse for archive file"
+                                />
+                                <label className="field-label">Extract to</label>
+                                <PathField
+                                  placeholder="(next to the archive)"
+                                  value={step.dest_local_path || ''}
+                                  onChange={(p) => patchStep(index, { dest_local_path: p || undefined })}
+                                  browsePath={step.dest_local_path || (step.local_path && step.local_path.startsWith('/') ? step.local_path.replace(/[^/]+$/, '') : '/data')}
+                                  pickerTitle="Pick extract destination folder"
+                                />
                               </>
                             )}
                             {step.type === 'convert' && (
                               <>
                                 <label className="field-label">Source path</label>
-                                <div className="flex gap-xs items-center">
-                                  <input
-                                    className="input flex-1"
-                                    placeholder="/data/mkpfs/game.exfat"
-                                    value={step.source_path || ''}
-                                    onChange={e => patchStep(index, { source_path: e.target.value })}
-                                  />
-                                  <BrowseBtn
-                                    title="Pick source file or folder"
-                                    onClick={pickFor({
-                                      target: (p) => patchStep(index, { source_path: p }),
-                                      initialPath: step.source_path && step.source_path.startsWith('/') ? step.source_path.replace(/[^/]+$/, '') : '/data/mkpfs',
-                                      selectFiles: true,
-                                      title: 'Pick source path',
-                                    })}
-                                  />
-                                </div>
+                                <PathField
+                                  placeholder="/data/mkpfs/game.exfat"
+                                  value={step.source_path || ''}
+                                  onChange={(p) => patchStep(index, { source_path: p })}
+                                  browsePath={step.source_path && step.source_path.startsWith('/') ? step.source_path.replace(/[^/]+$/, '') : '/data/mkpfs'}
+                                  selectFiles={true}
+                                  pickerTitle={'Pick source path'}
+                                  browseTitle="Pick source file or folder"
+                                />
                               </>
                             )}
                             {step.type === 'ftp_upload' && (
                               <>
                                 <label className="field-label">Local file</label>
-                                <div className="flex gap-xs items-center">
-                                  <input
-                                    className="input flex-1"
-                                    placeholder="/data/mkpfs/file.ffpfsc"
-                                    value={step.local_path || ''}
-                                    onChange={e => patchStep(index, { local_path: e.target.value })}
-                                  />
-                                  <BrowseBtn
-                                    title="Pick local file to upload"
-                                    onClick={pickFor({
-                                      target: (p) => patchStep(index, { local_path: p }),
-                                      initialPath: step.local_path && step.local_path.startsWith('/') ? step.local_path.replace(/[^/]+$/, '') : '/data/mkpfs',
-                                      selectFiles: true,
-                                      title: 'Pick local file',
-                                    })}
-                                  />
-                                </div>
+                                <PathField
+                                  placeholder="/data/mkpfs/file.ffpfsc"
+                                  value={step.local_path || ''}
+                                  onChange={(p) => patchStep(index, { local_path: p })}
+                                  browsePath={step.local_path && step.local_path.startsWith('/') ? step.local_path.replace(/[^/]+$/, '') : '/data/mkpfs'}
+                                  selectFiles={true}
+                                  pickerTitle={'Pick local file'}
+                                  browseTitle="Pick local file to upload"
+                                />
                                 <label className="field-label">PS5 destination</label>
                                 <input
                                   className="input"
@@ -1459,16 +1398,6 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
           </div>
         </>
       )}
-
-      <FolderPickerModal
-        open={!!picker}
-        onClose={closePicker}
-        onPick={handlePick}
-        initialPath={picker?.initialPath}
-        title={picker?.title || 'Pick folder'}
-        selectFiles={!!picker?.selectFiles}
-        fileFilter={picker?.fileFilter}
-      />
     </div>
   );
 }

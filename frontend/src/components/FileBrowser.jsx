@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import Modal from './UI/Modal';
+import { BrowseButton } from './UI/PathField';
 import { api, apiSafe } from '../lib/api.js';
 import { entriesFromInput, topLevelNames, uploadOne } from '../lib/browserUpload.js';
 
@@ -1455,6 +1456,7 @@ export default function FileBrowser({
                 placeholder="/mnt"
               />
               <button className="btn btn-sm btn-primary" onClick={() => browse(pathInput)} disabled={loading}>▶</button>
+              {kind === 'local' && <BrowseButton compact small value={path} onPick={browse} pickerTitle="Go to folder" />}
               <button className="btn btn-sm btn-ghost" onClick={() => { setPathInput(path); setEditingPath(false); }}>✕</button>
             </>
           ) : (
@@ -1516,6 +1518,7 @@ export default function FileBrowser({
             placeholder="/mnt"
           />
           <button className="btn btn-sm btn-primary" onClick={() => browse(pathInput)} disabled={loading}>▶</button>
+          {kind === 'local' && <BrowseButton compact small value={path} onPick={browse} pickerTitle="Go to folder" />}
           <button className="btn btn-sm btn-ghost" onClick={refresh} disabled={loading}>↻</button>
           {enableSaveDefault && kind !== 'ftp' && <button className="btn btn-sm btn-ghost" onClick={saveDefault}>★</button>}
           {enablePickDir && kind !== 'ftp' && <button className="btn btn-sm btn-success" onClick={() => pickDir(null)}>✓ Use</button>}

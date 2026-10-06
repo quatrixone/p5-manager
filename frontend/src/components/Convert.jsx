@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import FileBrowser from './FileBrowser';
-import FolderPickerModal from './UI/FolderPickerModal';
+import PathField from './UI/PathField';
 import { usePlatform } from '../contexts/PlatformContext';
 import useVisiblePolling from '../hooks/useVisiblePolling';
 import { api, apiSafe } from '../lib/api.js';
@@ -118,14 +118,6 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
 
   const [job, setJob] = useState(null);
   const [running, setRunning] = useState(false);
-
-  // FolderPickerModal wiring. The modal is reused for three distinct
-  // contexts (pack source, unpack PKG source, mkpfs output dir), so we
-  // store the active context as a string and the input setter on the
-  // picker open call. Picker resets on close.
-  const [picker, setPicker] = useState(null); // { for, initialPath, mode }
-  const openPicker = (cfg) => setPicker(cfg);
-  const closePicker = () => setPicker(null);
 
   // When a file/folder is sent here from the Files tab kebab menu with an
   // intent ('now' or 'queue'), we highlight the matching action button so
@@ -654,36 +646,22 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
                 ? <span style={{ color: C.muted, fontWeight: 400 }}> · absolute path or relative to work dir</span>
                 : <span style={{ color: C.muted, fontWeight: 400 }}> · relative to work dir</span>}
             </label>
-            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-              <input
-                style={{ ...styles.input, flex: 1 }}
-                value={selected}
-                onChange={e => { setSelected(e.target.value); setSourceFtp(null); }}
-                placeholder={scanRoot
+            <PathField
+              inputStyle={{ ...styles.input, flex: 1 }}
+              inputClassName=""
+              value={selected}
+              onChange={(v) => { setSelected(v); setSourceFtp(null); }}
+              placeholder={scanRoot
                   ? ((mode === 'pack-file' || mode === 'exfat-file') ? '/mnt/sda1/.../GAME1234.iso' : '/mnt/sda1/.../GAME1234/')
                   : ((mode === 'pack-file' || mode === 'exfat-file') ? 'GAME1234.iso' : 'GAME1234/')}
-              />
-              <button
-                type="button"
-                style={styles.btn(C.blue, false)}
-                onClick={() => openPicker({
-                  for: 'pack-source',
-                  initialPath: selected && selected.startsWith('/') ? selected.replace(/[^/]+$/, '') : '/mnt',
-                  // *-file modes pick a single file; *-folder modes pick a directory.
-                  selectFiles: (mode === 'pack-file' || mode === 'exfat-file'),
-                  // PFS pack-file expects an existing exFAT / FFPKG / raw image;
-                  // exFAT pack-file is happy with anything (a single big file
-                  // gets wrapped into a fresh exFAT container around it). Keep
-                  // the PFS filter for clarity but loosen exFAT to "any file".
-                  fileFilter: mode === 'pack-file'
-                    ? (n) => /\.(exfat|iso|img|bin|ffpkg)$/i.test(n)
-                    : (mode === 'exfat-file' ? undefined : undefined),
-                })}
-                title={(mode === 'pack-file' || mode === 'exfat-file') ? 'Browse for a source file' : 'Browse for a source folder'}
-              >
-                📁 Browse…
-              </button>
-            </div>
+              // *-file modes pick a single file; *-folder modes pick a directory.
+              selectFiles={mode === 'pack-file' || mode === 'exfat-file'}
+              // PFS pack-file expects an existing exFAT / FFPKG / raw image;
+              // exFAT pack-file wraps any single file, so it takes everything.
+              fileFilter={mode === 'pack-file' ? (n) => /\.(exfat|iso|img|bin|ffpkg)$/i.test(n) : undefined}
+              browseTitle={(mode === 'pack-file' || mode === 'exfat-file') ? 'Browse for a source file' : 'Browse for a source folder'}
+              pickerTitle={(mode === 'pack-file' || mode === 'exfat-file') ? 'Pick source file' : 'Pick source folder'}
+            />
             {sourceFtp && (
               <button
                 type="button"
@@ -855,21 +833,6 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
           })()}
         </div>
       </section>
-
-      <FolderPickerModal
-        open={!!picker}
-        onClose={closePicker}
-        onPick={(p) => {
-          if (picker?.for === 'pack-source') {
-            setSelected(p);
-            setSourceFtp(null);
-          }
-        }}
-        initialPath={picker?.initialPath || '/mnt'}
-        selectFiles={!!picker?.selectFiles}
-        fileFilter={picker?.fileFilter}
-        title={picker?.selectFiles ? 'Pick source file' : 'Pick source folder'}
-      />
     </>
   );
 }
@@ -890,12 +853,6 @@ function PkgSection({ profiles, onNotification, onOpenQueue }) {
   const [pkgUpgrading, setPkgUpgrading] = useState(false);
   const [unpackSrc, setUnpackSrc] = useState('');
   const [submitting, setSubmitting] = useState(false);
-  // Folder picker for selecting the source .pkg. Same component reused
-  // here as in PfsConverter but with its own state slot since the two
-  // sub-tabs render independently.
-  const [picker, setPicker] = useState(null);
-  const openPicker = (cfg) => setPicker(cfg);
-  const closePicker = () => setPicker(null);
 
   const fetchStatus = useCallback(async () => {
     try {
@@ -997,28 +954,18 @@ function PkgSection({ profiles, onNotification, onOpenQueue }) {
         <h3 style={styles.h}>Unpack PS4 .pkg</h3>
         <div style={styles.col}>
           <label style={styles.label}>Source PKG path</label>
-          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-            <input
-              style={{ ...styles.input, flex: 1 }}
-              type="text"
-              placeholder="/data/mkpfs/CUSA00000.pkg"
-              value={unpackSrc}
-              onChange={e => setUnpackSrc(e.target.value)}
-            />
-            <button
-              type="button"
-              style={styles.btn(C.blue, false)}
-              onClick={() => openPicker({
-                for: 'unpack-pkg',
-                initialPath: unpackSrc && unpackSrc.startsWith('/') ? unpackSrc.replace(/[^/]+$/, '') : '/data/mkpfs',
-                selectFiles: true,
-                fileFilter: (n) => /\.pkg$/i.test(n),
-              })}
-              title="Browse for a .pkg file"
-            >
-              📁 Browse…
-            </button>
-          </div>
+          <PathField
+            inputStyle={{ ...styles.input, flex: 1 }}
+            inputClassName=""
+            placeholder="/data/mkpfs/CUSA00000.pkg"
+            value={unpackSrc}
+            onChange={setUnpackSrc}
+            fallbackPath="/data/mkpfs"
+            selectFiles
+            fileFilter={(n) => /\.pkg$/i.test(n)}
+            browseTitle="Browse for a .pkg file"
+            pickerTitle="Pick PKG file"
+          />
           <div className="text-xs text-muted">
             Output lands in the same <code>/data/mkpfs/</code> working dir under a folder named after the PKG basename.
           </div>
@@ -1041,16 +988,6 @@ function PkgSection({ profiles, onNotification, onOpenQueue }) {
           Not available in this image. {pkgStatus?.pack_supported_reason || ''}
         </div>
       </section>
-
-      <FolderPickerModal
-        open={!!picker}
-        onClose={closePicker}
-        onPick={(p) => { if (picker?.for === 'unpack-pkg') setUnpackSrc(p); }}
-        initialPath={picker?.initialPath || '/data/mkpfs'}
-        selectFiles={!!picker?.selectFiles}
-        fileFilter={picker?.fileFilter}
-        title="Pick PKG file"
-      />
     </>
   );
 }

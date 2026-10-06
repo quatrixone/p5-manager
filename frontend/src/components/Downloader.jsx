@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import FolderPickerModal from './UI/FolderPickerModal';
+import PathField from './UI/PathField';
 import { api, apiSafe } from '../lib/api.js';
 
 // Compact download form. Job history / progress moved entirely to the Queue
@@ -23,7 +23,6 @@ export default function Downloader({ profiles = [], onNotification, onOpenQueue 
   const [overwrite, setOverwrite] = useState(false);
   const [smbSources, setSmbSources] = useState([]);
   const [submitting, setSubmitting] = useState(false);
-  const [pickerOpen, setPickerOpen] = useState(false);
 
   const refreshSources = useCallback(async () => {
     const d = await apiSafe.get('/downloader/sources');
@@ -161,22 +160,14 @@ export default function Downloader({ profiles = [], onNotification, onOpenQueue 
             ) : destKind === 'local' ? (
               <div>
                 <label className="text-xs text-muted mb-sm" style={{ display: 'block' }}>Folder on the manager</label>
-                <div className="flex gap-xs items-center">
-                  <input
-                    className="input flex-1"
-                    value={destPath}
-                    onChange={e => setDestPath(e.target.value)}
-                    placeholder="/data/downloads"
-                  />
-                  <button
-                    type="button"
-                    className="btn btn-secondary"
-                    onClick={() => setPickerOpen(true)}
-                    title="Browse folders graphically"
-                  >
-                    📁 Browse…
-                  </button>
-                </div>
+                <PathField
+                  value={destPath}
+                  onChange={setDestPath}
+                  placeholder="/data/downloads"
+                  fallbackPath="/data/downloads"
+                  browseTitle="Browse folders graphically"
+                  pickerTitle="Pick download folder"
+                />
                 <div className="text-xs text-muted mt-sm">
                   Default <code>/data/downloads</code>. Click <b>Browse…</b> to pick a folder, or type a path directly.
                 </div>
@@ -212,14 +203,6 @@ export default function Downloader({ profiles = [], onNotification, onOpenQueue 
           </button>
         </div>
       </div>
-
-      <FolderPickerModal
-        open={pickerOpen}
-        onClose={() => setPickerOpen(false)}
-        onPick={(p) => setDestPath(p)}
-        initialPath={destPath}
-        title="Pick download folder"
-      />
     </div>
   );
 }
