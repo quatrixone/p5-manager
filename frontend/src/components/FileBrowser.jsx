@@ -190,6 +190,8 @@ export default function FileBrowser({
     setMenuOpen(fileName);
   };
 
+  const closeMenu = () => { setMenuOpen(null); setMenuStyle(null); };
+
   useEffect(() => {
     if (!menuOpen) return;
     const close = () => { setMenuOpen(null); setMenuStyle(null); };
@@ -1266,12 +1268,19 @@ export default function FileBrowser({
                 // clipped — especially inside the Convert tab and PS5 FTP
                 // view, where the FileBrowser sits deep in the DOM.
                 <>
-                {menuStyle.sheet && <div className="file-menu-backdrop" />}
+                {/* Its own onClick: iOS sends no click to a plain div, so the
+                    document-level "click outside" never saw a tap here. */}
+                {menuStyle.sheet && <div className="file-menu-backdrop" onClick={closeMenu} />}
                 <div
                   className={`file-menu ${menuStyle.sheet ? 'file-menu-sheet' : ''}`}
                   style={menuStyle.sheet ? undefined : menuStyle}
                 >
-                  {menuStyle.sheet && <div className="file-menu-title truncate">{f.name}</div>}
+                  {menuStyle.sheet && (
+                    <div className="file-menu-head">
+                      <div className="file-menu-title truncate">{f.name}</div>
+                      <button type="button" className="file-menu-close" aria-label="Close" onClick={closeMenu}>×</button>
+                    </div>
+                  )}
                   {secondaryActions.length === 0 && (
                     <div className="file-menu-empty">
                       No actions available for this item
@@ -1478,9 +1487,12 @@ export default function FileBrowser({
         </div>
         {menuOpen === '/tools' && menuStyle && createPortal(
           <>
-            <div className="file-menu-backdrop" />
-            <div className="file-menu file-menu-sheet" onClick={() => { setMenuOpen(null); setMenuStyle(null); }}>
-              <div className="file-menu-title">Sort by</div>
+            <div className="file-menu-backdrop" onClick={closeMenu} />
+            <div className="file-menu file-menu-sheet" onClick={closeMenu}>
+              <div className="file-menu-head">
+                <div className="file-menu-title">Sort by</div>
+                <button type="button" className="file-menu-close" aria-label="Close" onClick={closeMenu}>×</button>
+              </div>
               {['name', 'size', 'type'].map(key => (
                 <button key={key} className="file-menu-item" onClick={() => toggleSort(key)}>
                   {key[0].toUpperCase() + key.slice(1)}{sortBy === key ? (sortDir === 'asc' ? ' ↑' : ' ↓') : ''}

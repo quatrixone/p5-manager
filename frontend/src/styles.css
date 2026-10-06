@@ -2043,7 +2043,28 @@ pre { padding: 12px; overflow-x: auto; }
   inset: 0;
   background: rgba(0, 0, 0, 0.55);
   z-index: 1499;
+  cursor: pointer;
 }
+.file-menu-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.file-menu-head > .file-menu-title { min-width: 0; flex: 1; }
+.file-menu-close {
+  flex-shrink: 0;
+  width: 44px;
+  height: 44px;
+  margin-right: 6px;
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 1.5rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.file-menu-close:hover { color: var(--text); }
 .file-menu-sheet {
   position: fixed;
   left: 0;
