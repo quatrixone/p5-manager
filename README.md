@@ -26,6 +26,7 @@ from one browser tab on your PC or phone.
 - [What you need](#what-you-need)
 - [Install](#install)
 - [First steps](#first-steps)
+- [Jailbreak by itself after a restart](#jailbreak-by-itself-after-a-restart)
 - [Ports](#ports)
 - [How it is built](#how-it-is-built)
 - [Development](#development)
@@ -39,7 +40,7 @@ from one browser tab on your PC or phone.
 | Tab | What you can do there |
 |-----|-----------------------|
 | **Payloads** | Keep a library of payloads (`.elf`, `.lua`, `.bin`), fetch them from a GitHub release, check for updates and send one to the console with a click. |
-| **Autoload** | Build a sequence of steps (wake the console, wait for a port, send a payload, download, extract, convert, upload) and run it as one action. |
+| **Autoload** | Build a sequence of steps (wake the console, run a button script, wait for a port, send a payload, download, extract, convert, upload) and run it as one action - or let it start by itself when the console is on but not jailbroken. |
 | **File Ops** | Browse this computer, a network share and the console side by side. Drag files between two panes to copy or move them, upload from your device, download from a URL, convert and extract. Long jobs run in a queue you can pause and resume. |
 | **Library** | See every title ShadowMountPlus knows on the console, with icon, size and the drive it is on. Mount, move, copy, unpack, uninstall or delete a title, with a progress bar for the long ones. |
 | **Console** | Remote Play in the browser: wake the console, see the screen, use an on-screen controller, record and replay button sequences, send a payload without leaving the view. |
@@ -79,7 +80,10 @@ The screenshots use made-up demo data.
 ## What you need
 
 - A PS4 or PS5 that already runs homebrew, on the same network as the
-  computer running P5 Manager. P5 Manager does not unlock a console.
+  computer running P5 Manager. P5 Manager contains no exploit and does not
+  unlock a console by itself; it can only press the buttons that start the
+  jailbreak you already use (see
+  [Jailbreak by itself after a restart](#jailbreak-by-itself-after-a-restart)).
   - **PS5:** system software **13.60 or lower**.
   - **PS4:** a system software version your homebrew setup supports.
 - For the **Library** tab:
@@ -122,6 +126,21 @@ Your data (database, payloads, downloads, conversion work files) lives in
 `./data/` and survives updates. To update: `git pull && docker compose pull
 && docker compose up -d`.
 
+**Update from inside the app.** When a newer release is out, the app shows
+a bar with *What's new*. To also get an **Update** button there, install the
+small host-side helper once, as a user who may use Docker:
+
+```bash
+scripts/p5-update.sh --install <name of the app container>
+```
+
+It runs every minute from that user's crontab. A click on **Update** makes
+it pull the released image and replace the container with the same
+settings. The previous container is kept, stopped, as `<name>-previous`,
+and is started again by itself if the new version does not come up. The
+app container is not given access to Docker. Remove the helper with
+`scripts/p5-update.sh --uninstall`.
+
 ### Windows (portable)
 
 1. Download `P5Manager-windows-x64.zip` from the
@@ -142,7 +161,10 @@ into the Local file browser instead).
 
 ## First steps
 
-1. **Settings → Profiles**: add your console (name and IP address).
+1. **Settings → Profiles**: press **Find consoles**. Every PS4 / PS5 that
+   is on or in rest mode on your network is listed; press **+ Add** next
+   to yours. Nothing to type in. Each console address can have one
+   profile.
 2. **Payloads**: the built-in set (ShadowMountPlus, kstuff-lite, a log
    server and a few more) is downloaded from its authors on first start.
    Add your own with **+ Add**.
@@ -151,6 +173,46 @@ into the Local file browser instead).
 4. **Library**: pick the console. If ShadowMountPlus is not running, the
    page offers to start it.
 5. **Console**: pair Remote Play once, then use **Wake** to open a session.
+
+---
+
+## Jailbreak by itself after a restart
+
+After a restart a console is not jailbroken until its exploit has run
+again. P5 Manager can start that for you: the Autoload template **"PS5:
+Jailbreak when the loader is down"** watches the console and, when it is
+switched on while the payload loader port (9021) is closed, opens the
+**User's Guide** through Remote Play, waits for the loader, then sends
+`kstuff.elf` and `shadowmountplus.elf`.
+
+This works only if the User's Guide on your console opens a jailbreak page
+instead of Sony's manual. That is done with the console's DNS setting, not
+by P5 Manager:
+
+1. On the PS5: **Settings → Network → Settings → Set Up Internet
+   Connection**, pick your connection, **Advanced Settings → DNS Settings →
+   Manual**.
+2. Set **Primary DNS** to a DNS server that points
+   `manuals.playstation.net` at a jailbreak host. The author's console uses
+   **`45.56.67.85`**; with it the User's Guide opens the jailbreak page and
+   the loader comes up by itself.
+3. Open the User's Guide once by hand (Settings → Guide & Tips, Health and
+   Safety, and Other Information → User's Guide) and check that the loader
+   starts before relying on the sequence.
+
+Things to know:
+
+- Such a DNS server is run by a third party. It answers every lookup your
+  console makes and also blocks Sony's own addresses, so the console has
+  no PlayStation Network while it is set. Use one you trust.
+- Remote Play has to be paired (**Console → PS Remote Play Settings**),
+  because the sequence presses the buttons through it.
+- In **Autoload**, load the template, pick your console and save. Under
+  **When it runs → Loader down** you can change how often the console is
+  checked, which port is watched, how long it has to stay closed and the
+  pause after a run.
+- While a sequence is running, the Console tab is locked so your own
+  presses do not land in the middle of it.
 
 ---
 

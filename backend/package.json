@@ -1,6 +1,6 @@
 {
   "name": "p5-manager-backend",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "P5 Manager \u2014 Node/Express backend for the PS4 / PS5 control panel",
   "main": "src/index.js",
   "type": "module",
