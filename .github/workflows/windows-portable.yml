@@ -7,7 +7,14 @@ name: Windows portable
 
 on:
   push:
-    branches: [feat/windows-exe]
+    branches: [main]
+    paths:
+      - 'backend/**'
+      - 'frontend/**'
+      - 'pyremoteplay/**'
+      - 'packaging/**'
+      - 'scripts/smoke.mjs'
+      - '.github/workflows/windows-portable.yml'
     tags: ['v*']
   workflow_dispatch:
 

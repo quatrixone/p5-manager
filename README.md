@@ -2,9 +2,9 @@
 
 <img src="frontend/public/icon-192.svg" alt="P5 Manager" width="80" align="left" />
 
-A self-hosted web console for PS4 / PS5 homebrew: payload delivery, file
-ops, image conversion, Remote Play and autoload sequences from one
-browser tab.
+A web app for managing a PS4 or PS5 that runs homebrew. Send payloads, move
+and convert files, browse the installed library and use Remote Play, all
+from one browser tab on your PC or phone.
 
 <br clear="left" />
 
@@ -12,164 +12,194 @@ browser tab.
 > Interactive Entertainment. For use with a console you own and files you
 > have the right to use. See [LEGAL.md](LEGAL.md).
 
-![status](https://img.shields.io/badge/status-active-success)
-![platform](https://img.shields.io/badge/platform-Docker-blue)
-![runtime](https://img.shields.io/badge/runtime-Node%2020%20%2B%20Python%203.11-lightgrey)
 ![license](https://img.shields.io/badge/license-MIT-green)
+![platform](https://img.shields.io/badge/runs%20on-Docker%20%7C%20Windows-blue)
+
+![Library](docs/screenshots/library.png)
 
 ---
 
-## Features
+## Contents
 
-**Remote Play** — One-click Wake (WoL + DDP LAUNCH + RP session), warm
-session cache, rest-mode from the browser, on-screen DualShock, scripted
-input DSL, sub-tabbed pair wizard (PSN-activated → Auto-fetch PIN;
-not-activated → `offact.elf` registry push), LAN discovery for both
-consoles.
-
-**File Ops** — Browser over local / SMB / console FTP with cut/copy/paste,
-rename, info, graphical folder picker. HTTP & torrent downloader.
-Resilient FTP upload with TCP keep-alive + auto-resume. Multi-source
-side-by-side view.
-
-**Convert** — Unified converter with four pack modes
-(`File`/`Folder` × `.ffpfsc`/`.exfat`). PFS path uses `mkpfs`; exFAT
-path uses `mkfs.exfat` + loop mount + rsync. Unpack via the File
-Browser kebab menu. PS4 `.pkg` unpack via flatz's `unpkg.py` renders
-inline when the platform mode includes PS4.
-
-**Tasks** — Single queue listing downloads, extracts, converts,
-FTP uploads, PFS / PKG pack-unpack, exFAT pack/unpack and PKG
-installs. Per-job start / pause / resume / retry / cancel.
-Dedicated install sub-queue for fake PKGs on PS5
-(`sceAppInstUtilInstallByPackage` via the vendored `pkg-install.elf`).
-Queue state persists across container restarts.
-
-**Payloads** — Direct GitHub fetch (release, tag, blob, raw),
-`.lua` / `.elf` / `.bin` / `.zip` upload, automatic platform + port
-detection, bundled default payloads with separate Check / Update
-buttons. Files dropped into `data/payloads/` show up immediately.
-
-**Autoload** — Step builder (`wait`, WoL, port-check, send payload,
-download, extract, convert, FTP upload, RP session start/stop, input
-script via RP). Platform-aware templates. Profile optional for non-
-console sequences.
-
-**Logs** — UDP LUA log server (`:8080`) and TCP kernel log server
-(`:3232`) stream straight to the browser.
-
-**Other** — Multiple PS5 profiles with auto-default + backup/restore
-ZIP. Global FTP upload target shared across File Browser, Convert and
-Autoload. Mobile-friendly responsive UI.
+- [What it does](#what-it-does)
+- [Screenshots](#screenshots)
+- [What you need](#what-you-need)
+- [Install](#install)
+- [First steps](#first-steps)
+- [Ports](#ports)
+- [How it is built](#how-it-is-built)
+- [Development](#development)
+- [Credits](#credits)
+- [Legal](#legal)
 
 ---
 
-## Requirements
+## What it does
 
-- PS5 firmware **≤ 12.70** for the LUA exploit chain (y2jb)
-- A Lua-vulnerable game (~24 known titles, e.g. *Star Wars Racer
-  Revenge* CUSA03474 / CUSA03492) or the y2jb harness
-- Console reachable on the same LAN
-- Docker + Docker Compose
+| Tab | What you can do there |
+|-----|-----------------------|
+| **Payloads** | Keep a library of payloads (`.elf`, `.lua`, `.bin`), fetch them from a GitHub release, check for updates and send one to the console with a click. |
+| **Autoload** | Build a sequence of steps (wake the console, wait for a port, send a payload, download, extract, convert, upload) and run it as one action. |
+| **File Ops** | Browse this computer, a network share and the console side by side. Drag files between two panes to copy or move them, upload from your device, download from a URL, convert and extract. Long jobs run in a queue you can pause and resume. |
+| **Library** | See every title ShadowMountPlus knows on the console, with icon, size and the drive it is on. Mount, move, copy, unpack, uninstall or delete a title, with a progress bar for the long ones. |
+| **Console** | Remote Play in the browser: wake the console, see the screen, use an on-screen controller, record and replay button sequences, send a payload without leaving the view. |
+| **Logs** | Live log streams from the console. |
+| **Settings** | Console profiles, backup and restore, defaults, restart. |
+
+Highlights:
+
+- **Two-pane file manager.** Console on one side, your disk on the other
+  (or the console on both). Transfers run on the server, so you can close
+  the browser.
+- **Convert on the console.** Start
+  [PS5 Game Compressor](https://github.com/juma-sayeh/PS5-Game-Compressor)
+  from the Convert tab and use it inside the app. Nothing is copied to the
+  server.
+- **Convert on the server.** Pack a file or folder into `.ffpfsc` (via
+  `mkpfs`) or `.exfat`, and unpack them again.
+- **Works on a phone.** The layout adapts to small screens and can be
+  installed as an app (PWA).
+
+---
+
+## Screenshots
+
+| File manager with two panes | A title in the Library |
+|---|---|
+| ![File Ops](docs/screenshots/file-ops-two-panes.png) | ![Library title](docs/screenshots/library-game.png) |
+
+| Convert | Library on a phone |
+|---|---|
+| ![Convert](docs/screenshots/convert.png) | <img src="docs/screenshots/library-phone.png" alt="Library on a phone" width="260" /> |
+
+The screenshots use made-up demo data.
+
+---
+
+## What you need
+
+- A PS4 or PS5 that already runs homebrew, on the same network as the
+  computer running P5 Manager. P5 Manager does not unlock a console.
+- For the **Library** tab:
+  [ShadowMountPlus](https://github.com/drakmor/ShadowMountPlus) running on
+  the console.
+- For browsing the console's files: an FTP payload such as
+  [zftpd](https://github.com/seregonwar/zftpd). P5 Manager starts it for
+  you if it is in your payload library.
+- One of:
+  - **Docker** on Linux (recommended, all features), or
+  - **Windows 10 / 11** for the portable version (no Docker needed).
 
 ---
 
 ## Install
 
+### Docker
+
 ```bash
 git clone https://github.com/quatrixone/p5-manager.git
 cd p5-manager
-docker compose up -d --build
+docker compose up -d
 ```
 
-Web UI: `http://<host>:3001`.
+Open `http://<this-computer>:3001`.
 
-Two containers come up, both on `network_mode: host` so PS5 discovery,
-WoL and Remote Play work without port forwarding:
+`docker compose up -d` pulls the published images. To build from source
+instead, run `docker compose up -d --build`.
 
-| Service        | Purpose                                                      |
-|----------------|--------------------------------------------------------------|
-| `app`          | Node/Express backend + bundled React frontend                |
-| `pyremoteplay` | FastAPI sidecar wrapping `pyremoteplay` for OAuth + RP input |
+Two containers start, both with host networking so console discovery,
+wake-on-LAN and Remote Play work without port forwarding:
 
-Update with `git pull && docker compose up -d --build`. State lives in
-`./data/` (SQLite DB, payloads, downloads, mkpfs scratch) and survives
-rebuilds.
+| Service        | What it is                                             |
+|----------------|--------------------------------------------------------|
+| `app`          | The web app and its API                                |
+| `pyremoteplay` | The Remote Play service the app talks to               |
 
----
+Your data (database, payloads, downloads, conversion work files) lives in
+`./data/` and survives updates. To update: `git pull && docker compose pull
+&& docker compose up -d`.
 
-## Usage
+### Windows (portable)
 
-1. **Settings → Profiles**: add a PS5 (IP + MAC).
-2. **Payloads → ✨ Defaults**: pull the bundled community payloads.
-3. **P5 Control**: pair Remote Play once (PSN-activated path is
-   single-click via Auto-fetch PIN), then **Wake** opens an RP session
-   ready for input.
+1. Download `P5Manager-windows-x64.zip` from the
+   [latest release](https://github.com/quatrixone/p5-manager/releases/latest).
+2. Extract the whole zip anywhere.
+3. Double-click `P5Manager.exe`. A console window opens (that is the app)
+   and your browser opens `http://localhost:3001/`.
 
-The Convert, Autoload, Tasks and Logs tabs are self-explanatory from
-there. See [`docker-compose.yml`](docker-compose.yml) for capability
-notes (the exFAT pipeline needs `CAP_SYS_ADMIN` + relaxed
-seccomp/AppArmor + `/dev/loopN` passthrough; all baked into the shipped
-compose file).
+Allow `node.exe` and `python.exe` through Windows Firewall on private
+networks when asked. Your data is kept in the `data` folder next to the
+exe. Close the console window to stop the app.
 
----
-
-## Default Ports
-
-| Port | Proto | What                                       |
-|------|-------|--------------------------------------------|
-| 3001 | TCP   | Web UI + REST API                          |
-| 9555 | TCP   | pyremoteplay sidecar (`127.0.0.1` only)    |
-| 8080 | UDP   | LUA log server                             |
-| 3232 | TCP   | Kernel log server                          |
-| 9026 | TCP   | PS5 LUA payload (on console)               |
-| 9021 | TCP   | PS5 ELF payload (on console)               |
-| 9020 | TCP   | PS4 GoldHEN payload (on console)           |
-| 2121 | TCP   | PS4 GoldHEN FTP (after `ftp_server.bin`)   |
-| 9295 | UDP   | Remote Play DDP discovery + wake           |
-| 9296 | UDP   | Remote Play control                        |
+Two things work only in the Docker version: creating exFAT images, and
+"remote source" SMB shares (on Windows, type the `\\server\share` path
+into the Local file browser instead).
 
 ---
 
-## Vendored PS5 Payloads
+## First steps
 
-Source for the in-tree ELFs lives under [`p5managerclient/`](p5managerclient/)
-and builds against the [ps5-payload-dev SDK](https://github.com/ps5-payload-dev/sdk):
-
-| Payload          | Purpose                                                    |
-|------------------|------------------------------------------------------------|
-| `rp-get-pin.elf` | `sceRemoteplayGeneratePinCode` + foreground-user regmgr    |
-| `offact.elf`     | Push OAuth-linked PSN `account_id` onto the console        |
-| `pkg-install.elf`| `sceAppInstUtilInstallByPackage` for staged fake PKGs      |
-
-Pre-built copies ship under **Payloads → ✨ Defaults**.
+1. **Settings → Profiles**: add your console (name and IP address).
+2. **Payloads → Defaults**: fetch the payloads you use.
+3. **File Ops → Browse**: turn on **Two panes**, pick *Local* on one side
+   and *PS5 FTP* on the other, and drag a file across.
+4. **Library**: pick the console. If ShadowMountPlus is not running, the
+   page offers to start it.
+5. **Console**: pair Remote Play once, then use **Wake** to open a session.
 
 ---
 
-## Architecture
+## Ports
 
-- **Backend** — Node.js 20, Express, native UDP for discovery / WoL /
-  pair, `sql.js`, `basic-ftp`, spawns `mkpfs` / `mkfs.exfat` / `7z` /
-  `smbclient`.
-- **Frontend** — React 18 + Vite, PWA with offline service worker.
-- **Sidecar** — Python 3.11 + FastAPI + [`pyremoteplay`](https://github.com/ktnrg45/pyremoteplay)
-  (PSN OAuth, registration, RP session, DualShock emulation) with
-  upstream timeout-predicate patches for clean standby + reconnect.
-- **Storage** — SQLite (`sql.js`) on a bind-mounted Docker volume.
+| Port | Proto | What                                        |
+|------|-------|---------------------------------------------|
+| 3001 | TCP   | Web app and API                             |
+| 9555 | TCP   | Remote Play service (`127.0.0.1` only)      |
+| 8080 | UDP   | Log receiver                                |
+| 3232 | TCP   | Kernel log receiver                         |
+| 9295 | UDP   | Remote Play discovery and wake              |
+| 9296 | UDP   | Remote Play control                         |
+
+On the console, P5 Manager connects to the payload loader (9021 / 9026 on
+PS5, 9020 on PS4), FTP (2120 or 2121), ShadowMountPlus (10101) and PS5 Game
+Compressor (5910).
+
+---
+
+## How it is built
+
+- **Backend**: Node.js and Express, SQLite through `sql.js`, `basic-ftp`.
+  It calls `mkpfs`, `mkfs.exfat`, `7z` and `smbclient` for conversions and
+  network shares.
+- **Frontend**: React 18 and Vite, installable as a PWA.
+- **Remote Play service**: Python 3.11, FastAPI and
+  [`pyremoteplay`](https://github.com/ktnrg45/pyremoteplay).
+- **Windows build**: the same code with a private Node and Python runtime
+  and a small launcher, built and tested by
+  [GitHub Actions](.github/workflows/windows-portable.yml).
+
+Three small payloads written for this project live under
+[`p5managerclient/`](p5managerclient/) and build with the
+[ps5-payload-dev SDK](https://github.com/ps5-payload-dev/sdk):
+`rp-get-pin.elf` (Remote Play pairing PIN), `offact.elf` (account ID for
+Remote Play pairing) and `pkg-install.elf` (package install queue).
 
 ---
 
 ## Development
 
-For working on the source itself only — not a substitute for the
-Docker install. Bare-metal Node runs skip the sudoers + capability
-plumbing the exFAT pipeline depends on.
-
 ```bash
-cd backend  && npm install && npm run dev   # :3001
-cd frontend && npm install && npm run dev   # :3000
+cd backend  && npm install && npm run dev   # API on :3001
+cd frontend && npm install && npm run dev   # UI on :3000
 cd pyremoteplay && pip install -r requirements.txt && python server.py
 ```
+
+Tests: `npm test` in `backend/` and in `frontend/`. An end-to-end check
+against a running instance: `node scripts/smoke.mjs http://127.0.0.1:3001
+/tmp/p5m-smoke`.
+
+Contributions are welcome; please read [CONTRIBUTING.md](CONTRIBUTING.md)
+first.
 
 ---
 
@@ -188,14 +218,21 @@ repos:
   SDK every in-tree PS5 ELF builds against
 - [ktnrg45 / pyremoteplay](https://github.com/ktnrg45/pyremoteplay) —
   Remote Play protocol library powering the sidecar
-- [gezine](https://github.com/gezine) — author of **y2jb**, the PS5
-  Lua-port jailbreak (PS5 fw ≤ 12.70, subject to upstream)
+- [gezine](https://github.com/gezine) — author of **y2jb**
 - **flatz** + **CelesteBlue** — original public-domain `unpkg.py` and
   the Python 3 port vendored as `backend/src/lib/unpkg.py`
-- **etaHEN team** — PS5 jailbreak payload
+- **etaHEN team** — etaHEN
 - **GoldHEN team** (sleirsgoevy et al.) — PS4 GoldHEN payload
+- [drakmor / ShadowMountPlus](https://github.com/drakmor/ShadowMountPlus) —
+  the API behind the Library tab
+- [seregonwar / zftpd](https://github.com/seregonwar/zftpd) — FTP server
+  and on-console downloader used by File Ops and Download
+- [juma-sayeh / PS5-Game-Compressor](https://github.com/juma-sayeh/PS5-Game-Compressor)
+  — on-console compression, started from the Convert tab
 
 If you should be credited and aren't, please open an issue.
+
+---
 
 ---
 
@@ -206,10 +243,8 @@ and "PS5" are its trademarks. This repository contains no Sony code,
 firmware or keys and no game content, and third-party tools are fetched
 from their authors rather than redistributed here. The project does not
 support piracy. Details, intended use and how to report a content problem:
-[LEGAL.md](LEGAL.md). Contribution rules: [CONTRIBUTING.md](CONTRIBUTING.md).
-
----
+[LEGAL.md](LEGAL.md).
 
 ## License
 
-MIT
+[MIT](LICENSE)

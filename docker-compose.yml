@@ -3,7 +3,7 @@ services:
     build:
       context: ./pyremoteplay
       dockerfile: Dockerfile
-    image: pyremoteplay-sidecar:latest
+    image: ghcr.io/quatrixone/p5-manager-remoteplay:latest
     restart: unless-stopped
     # host networking so pyremoteplay can do UDP discovery + Remote Play
     # streaming with the PS5 directly on the LAN (no port forwarding pain).
@@ -17,6 +17,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    image: ghcr.io/quatrixone/p5-manager:latest
     # Run as the host user that owns the repo. Defaults to 1000:1000, which
     # matches the first non-root user on most Linux distros (Debian, Ubuntu,
     # Fedora, Arch, Alpine, …). Override with P5M_UID / P5M_GID in a .env
