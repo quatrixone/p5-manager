@@ -29,7 +29,9 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # 22 like the Windows build: the test scripts use a glob that
+          # `node --test` only understands from Node 21 on.
+          node-version: 22
 
       - name: Install dependencies
         run: |
