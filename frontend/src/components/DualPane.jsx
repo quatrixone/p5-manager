@@ -5,6 +5,10 @@ import { api, apiSafe } from '../lib/api.js';
 import { planTransfer } from '../lib/transferPlan.js';
 
 const RIGHT_KEY = 'fileops.dualPane.right';
+const MOVES_KEY = 'fileops.dualPane.consoleMoves';
+
+const fmtGB = (n) => (n >= 1e9 ? `${(n / 1e9).toFixed(1)} GB` : `${Math.max(1, Math.round(n / 1e6))} MB`);
+const fmtEta = (sec) => (sec >= 90 ? `~${Math.round(sec / 60)} min left` : `~${Math.max(1, Math.round(sec))} s left`);
 
 const joinPath = (loc, name) => (loc.kind === 'local'
   ? (loc.path === '/' ? `/${name}` : `${loc.path.replace(/\/$/, '')}/${name}`)
@@ -19,6 +23,50 @@ export default function DualPane({ profiles, onNotification, onOpenQueue, onPick
   const [reload, setReload] = useState(0);
   const [pending, setPending] = useState(null); // { src, dst, items, point, op?, conflicts?, busy? }
   const watched = useRef(new Set()); // batch ids still in the queue
+
+  // Moves the console carries out itself (same console, rename). Within one
+  // drive they are instant; across drives zftpd copies in the background and
+  // tells nobody, so we measure it: what is left under the source, plus the
+  // file currently in flight at the destination. Kept in localStorage so the
+  // bar survives a reload while the console keeps working.
+  const [consoleMoves, setConsoleMoves] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(MOVES_KEY) || '[]'); } catch (_) { return []; }
+  });
+  const consoleMovesRef = useRef(consoleMoves);
+  useEffect(() => {
+    consoleMovesRef.current = consoleMoves;
+    try { localStorage.setItem(MOVES_KEY, JSON.stringify(consoleMoves)); } catch (_) {}
+  }, [consoleMoves]);
+  useEffect(() => {
+    const tick = async () => {
+      const moves = consoleMovesRef.current;
+      if (moves.length === 0) return;
+      const next = [];
+      let finished = false;
+      for (const m of moves) {
+        const d = await apiSafe.post('/convert/ftp/du', { ip: m.ip, paths: [m.src, m.dst] });
+        if (!d?.sizes) { next.push(m); continue; } // console busy / unreachable: keep waiting
+        const left = d.sizes[m.src];
+        const inFlight = d.sizes[m.dst]?.tmp || 0;
+        if (!left || (left.size === 0 && left.tmp === 0 && inFlight === 0)) {
+          finished = true;
+          if (m.total > 0 && Date.now() - m.startedAt > 4000) onNotification?.(`Move finished: ${m.name}`, 'success');
+          continue;
+        }
+        const done = Math.max(0, Math.min(m.total, m.total - left.size + inFlight));
+        const now = Date.now();
+        const dt = (now - (m.sampleAt || m.startedAt)) / 1000;
+        const inst = dt > 0 ? Math.max(0, done - (m.done || 0)) / dt : 0;
+        // Smoothed so one slow poll doesn't make the estimate jump around.
+        const rate = m.rate ? m.rate * 0.6 + inst * 0.4 : inst;
+        next.push({ ...m, done, rate, sampleAt: now });
+      }
+      setConsoleMoves(next);
+      if (finished) setReload(r => r + 1);
+    };
+    const t = setInterval(tick, 3000);
+    return () => clearInterval(t);
+  }, [onNotification]);
 
   const rightInitial = useMemo(() => {
     try { return JSON.parse(localStorage.getItem(RIGHT_KEY) || 'null'); } catch (_) { return null; }
@@ -77,10 +125,21 @@ export default function DualPane({ profiles, onNotification, onOpenQueue, onPick
           onNotification?.(`Already in the destination: ${taken.slice(0, 5).join(', ')}${taken.length > 5 ? '…' : ''}. Open that folder and move the contents instead.`, 'error');
           return;
         }
-        for (const it of t.items) {
-          await api.post('/convert/ftp/move', { ip: t.src.ftpIp, src: joinPath(t.src, it.name), dst: joinPath(t.dst, it.name) });
+        const pairs = t.items.map(it => ({ name: it.name, src: joinPath(t.src, it.name), dst: joinPath(t.dst, it.name) }));
+        // Sizes first: once the move runs there is nothing left to measure against.
+        const before = await apiSafe.post('/convert/ftp/du', { ip: t.src.ftpIp, paths: pairs.map(x => x.src) });
+        for (const x of pairs) {
+          await api.post('/convert/ftp/move', { ip: t.src.ftpIp, src: x.src, dst: x.dst });
         }
-        onNotification?.(`Moved ${t.items.length} item(s)`, 'success');
+        const startedAt = Date.now();
+        setConsoleMoves(list => [
+          ...list,
+          ...pairs.map(x => ({
+            id: `${startedAt}:${x.src}`, ip: t.src.ftpIp, name: x.name, src: x.src, dst: x.dst,
+            total: before?.sizes?.[x.src]?.size || 0, done: 0, rate: 0, startedAt,
+          })),
+        ]);
+        onNotification?.(`Move started on the console: ${t.items.length} item(s)`, 'success');
         setReload(r => r + 1);
       } else if (plan.route === 'local-copy' || plan.route === 'local-move') {
         const endpoint = plan.route === 'local-move' ? 'move' : 'copy';
@@ -167,6 +226,24 @@ export default function DualPane({ profiles, onNotification, onOpenQueue, onPick
   };
 
   return (
+    <>
+    {consoleMoves.filter(m => m.total > 0 && Date.now() - m.startedAt > 2500).map(m => {
+      const pct = Math.min(100, Math.round((m.done / m.total) * 100));
+      return (
+        <div key={m.id} className="console-move">
+          <div className="flex justify-between gap-sm text-xs">
+            <span className="truncate" title={`${m.src} → ${m.dst}`}>
+              🎮 {profileName(m.ip)} is moving <b>{m.name}</b> → {m.dst}
+            </span>
+            <span className="text-muted" style={{ whiteSpace: 'nowrap' }}>
+              {pct}% · {fmtGB(m.done)} / {fmtGB(m.total)}
+              {m.rate > 0 ? ` · ${fmtGB(m.rate)}/s · ${fmtEta((m.total - m.done) / m.rate)}` : ''}
+            </span>
+          </div>
+          <div className="console-move-bar"><div style={{ width: `${pct}%` }} /></div>
+        </div>
+      );
+    })}
     <div className="dual-pane">
       <FileBrowser
         {...paneProps}
@@ -196,5 +273,6 @@ export default function DualPane({ profiles, onNotification, onOpenQueue, onPick
         onCancel={() => setPending(null)}
       />
     </div>
+    </>
   );
 }

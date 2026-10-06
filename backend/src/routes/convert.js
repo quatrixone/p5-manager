@@ -862,6 +862,48 @@ router.post('/local/mkdir', (req, res) => {
   }
 });
 
+// Sizes of files/folders on a console, for the progress bar of a move the
+// console performs by itself (RNFR/RNTO across drives makes zftpd copy in
+// the background). Per path: { size, tmp } - `tmp` is what sits in zftpd's
+// in-flight ".zftpd*.tmp" files below it - or null when the path is gone.
+router.post('/ftp/du', async (req, res) => {
+  try {
+    const { ip, paths } = req.body || {};
+    if (!ip || !Array.isArray(paths) || paths.length === 0 || paths.length > 50) {
+      return res.status(400).json({ error: 'ip and 1-50 paths required' });
+    }
+    const out = {};
+    await withFtp(ip, loadFtp(), async (client) => {
+      const walk = async (dir, acc) => {
+        const entries = await client.list(dir);
+        for (const e of entries) {
+          if (e.name === '.' || e.name === '..') continue;
+          const child = joinPath(dir, e.name);
+          if (e.type === 2 || e.isDirectory === true) await walk(child, acc);
+          else if (/^\.zftpd.*\.tmp$/i.test(e.name)) acc.tmp += e.size || 0;
+          else acc.size += e.size || 0;
+        }
+      };
+      for (const raw of paths) {
+        const p = cleanDir(raw);
+        // Folder first: zftpd answers SIZE for a directory too (with the
+        // directory entry's own size), so SIZE cannot tell the two apart.
+        let isDir = true;
+        try { await client.cd(p); } catch (_) { isDir = false; }
+        if (isDir) {
+          const acc = { size: 0, tmp: 0 };
+          try { await walk(p, acc); out[raw] = acc; } catch (_) { out[raw] = null; }
+        } else {
+          try { out[raw] = { size: await client.size(p), tmp: 0 }; } catch (_) { out[raw] = null; }
+        }
+      }
+    });
+    res.json({ success: true, sizes: out });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
 // New folder on a console. ensureDir creates missing parents too and is a
 // no-op when the folder is already there.
 router.post('/ftp/mkdir', async (req, res) => {

@@ -2282,3 +2282,23 @@ pre { padding: 12px; overflow-x: auto; }
   background: var(--accent);
   transition: width 0.2s linear;
 }
+
+/* Progress of a move the console performs itself (DualPane.jsx) */
+.console-move {
+  padding: 8px 12px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.console-move-bar {
+  height: 6px;
+  margin-top: 6px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+.console-move-bar > div {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.4s linear;
+}
