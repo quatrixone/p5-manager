@@ -81,7 +81,7 @@ jobs:
         shell: pwsh
         run: |
           $py = "dist-portable/P5Manager/runtime/python/python.exe"
-          & $py -c "import sys, av, PIL, fastapi, uvicorn, netifaces, pyremoteplay; import pyremoteplay_patches; print('python', sys.version.split()[0], 'av', av.__version__, 'pyremoteplay', pyremoteplay.__version__)"
+          & $py -c "import sys, av, PIL, fastapi, uvicorn, netifaces, pyremoteplay, pyremoteplay_patches; from importlib.metadata import version; print('python', sys.version.split()[0], 'av', av.__version__, 'pyremoteplay', version('pyremoteplay'))"
           if ($LASTEXITCODE -ne 0) { throw "bundled Python cannot import the Remote Play service's modules" }
 
       - name: Start the packaged app and run the smoke test
