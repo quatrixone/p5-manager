@@ -7,6 +7,7 @@ import Settings from './components/Settings';
 import FileOps from './components/FileOps';
 import Library from './components/Library';
 import BuiltinEditor from './components/BuiltinEditor';
+import UpdateBanner from './components/UpdateBanner';
 import { PlatformProvider, usePlatform } from './contexts/PlatformContext';
 import { Ps5StatusProvider, usePs5Status } from './contexts/Ps5StatusContext';
 import useVisiblePolling from './hooks/useVisiblePolling';
@@ -407,6 +408,7 @@ function App() {
         {sidebar}
 
         <main className="app-main">
+          <UpdateBanner onNotification={showNotification} />
           {showBuiltinEditor && (
             <BuiltinEditor onClose={closeBuiltinEditor} onNotification={showNotification} />
           )}

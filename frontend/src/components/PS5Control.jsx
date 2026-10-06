@@ -62,6 +62,23 @@ function PS5Control({ profiles, onNotification, onProfilesChanged }) {
 
   const defaultProfile = profiles.find(p => p.is_default) || profiles[0];
 
+  // An Autoload sequence that is steering this console right now. While it
+  // runs the whole tab is locked: presses from here would land in the middle
+  // of the sequence's own Remote Play inputs.
+  const [autoloadRun, setAutoloadRun] = useState(null);
+  useVisiblePolling(async () => {
+    const runs = await apiSafe.get('/sequences/runs/recent');
+    if (!Array.isArray(runs)) return;
+    const active = runs.find(r => (r.status === 'running' || r.status === 'queued') && r.profile_id === defaultProfile?.id);
+    setAutoloadRun(active || null);
+  }, 3000, [defaultProfile?.id]);
+  const cancelAutoloadRun = async () => {
+    try {
+      await api.post(`/sequences/runs/${autoloadRun.id}/cancel`);
+      showToast('Cancel requested - the sequence stops after its current step', 'info');
+    } catch (e) { showToast(e.message, 'error'); }
+  };
+
   const showToast = (message, type = 'info') => {
     if (onNotification) {
       onNotification(message, type);
@@ -288,6 +305,24 @@ function PS5Control({ profiles, onNotification, onProfilesChanged }) {
         </div>
       )}
 
+      {autoloadRun && (
+        <div className="comp-card mb-md" role="status">
+          <div className="comp-card-body flex gap-md items-center flex-wrap">
+            <div className="flex-1" style={{ minWidth: 200 }}>
+              <div className="font-medium">⏳ Busy - Autoload is running</div>
+              <div className="text-sm text-muted" style={{ wordBreak: 'break-word' }}>
+                {autoloadRun.sequence_name} · step {Math.min((autoloadRun.current_step || 0) + 1, autoloadRun.total)}/{autoloadRun.total}
+                {autoloadRun.current_step_name ? `: ${autoloadRun.current_step_name}` : ''}
+              </div>
+              <div className="text-xs text-muted">PS5 Control is locked until the sequence finishes.</div>
+            </div>
+            <button className="btn btn-secondary btn-sm" onClick={cancelAutoloadRun}>Cancel sequence</button>
+          </div>
+        </div>
+      )}
+
+      <div className={autoloadRun ? 'ps5control-locked' : undefined} {...(autoloadRun ? { inert: '' } : {})}>
+
       {/* Status header. Wake + Standby live here on the right side so
           they're always visible without scrolling, matching the user's
           mental model of "PS5 power buttons are part of the PS5 status
@@ -449,6 +484,7 @@ function PS5Control({ profiles, onNotification, onProfilesChanged }) {
           </div>
         </div>
       )}
+      </div>
     </div>
   );
 }

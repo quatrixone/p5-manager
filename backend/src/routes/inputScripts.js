@@ -14,7 +14,7 @@ const BUILTIN_MAX_BYTES = 256 * 1024;
 // every call (the file is a few KB; no caching needed) so an edit via
 // PUT /builtin/:id below is visible on the very next request without any
 // module-cache invalidation dance.
-function readBuiltinInputScripts() {
+export function readBuiltinInputScripts() {
   const filePath = path.join(getBuiltinDir(), BUILTIN_FILE);
   if (!fs.existsSync(filePath)) return [];
   try {

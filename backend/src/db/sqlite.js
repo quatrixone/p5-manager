@@ -182,6 +182,12 @@ export async function initDatabase() {
     if (!/duplicate column/i.test(e.message)) throw e;
   }
 
+  // 'loader_down' = run by itself when the console is on but its payload
+  // loader port is closed (see the watcher in routes/sequences.js).
+  try { db.run(`ALTER TABLE autoload_sequences ADD COLUMN auto_trigger TEXT`); } catch (e) { if (!/duplicate column/i.test(e.message)) throw e; }
+  // JSON settings of that trigger: { intervalS, port, closedForS, cooldownMin }.
+  try { db.run(`ALTER TABLE autoload_sequences ADD COLUMN auto_trigger_config TEXT`); } catch (e) { if (!/duplicate column/i.test(e.message)) throw e; }
+
   db.run(`
     CREATE TABLE IF NOT EXISTS logs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,

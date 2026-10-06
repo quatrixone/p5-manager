@@ -45,10 +45,23 @@ function normalizeConsoleType(v) {
   return CONSOLE_TYPES.has(s) ? s : null;
 }
 
+// One profile per console address: Remote Play pairing, sessions and Autoload
+// triggers are all looked up by IP, so two profiles on one address would get
+// each other's pairing. Returns the profile already using `ip`, if any.
+function profileWithIp(ip, exceptId = null) {
+  return getRepo().queryOne(
+    'SELECT id, name FROM profiles WHERE TRIM(ip_address) = ? AND id != ? LIMIT 1',
+    [String(ip).trim(), exceptId == null ? -1 : exceptId],
+  );
+}
+
 router.post('/', (req, res) => {
   try {
-    const { name, ip_address, mac_address, port, console_type } = req.body;
+    const { name, mac_address, port, console_type } = req.body;
+    const ip_address = String(req.body.ip_address || '').trim();
     if (!name || !ip_address) return res.status(400).json({ error: 'Name and IP address required' });
+    const taken = profileWithIp(ip_address);
+    if (taken) return res.status(409).json({ error: `Profile "${taken.name}" already uses ${ip_address}` });
     const lastId = getRepo().runAndSave(
       'INSERT INTO profiles (name, ip_address, mac_address, port, console_type) VALUES (?, ?, ?, ?, ?)',
       [name, ip_address, mac_address || null, port || 9021, normalizeConsoleType(console_type)],
@@ -64,10 +77,13 @@ router.post('/', (req, res) => {
 router.put('/:id', (req, res) => {
   try {
     const { id } = req.params;
-    const { name, ip_address, mac_address, port, console_type } = req.body;
+    const { name, mac_address, port, console_type } = req.body;
+    const ip_address = String(req.body.ip_address || '').trim();
     const repo = getRepo();
     const existing = repo.queryOne('SELECT * FROM profiles WHERE id = ?', [parseInt(id)]);
     if (!existing) return res.status(404).json({ error: 'Profile not found' });
+    const taken = ip_address ? profileWithIp(ip_address, existing.id) : null;
+    if (taken) return res.status(409).json({ error: `Profile "${taken.name}" already uses ${ip_address}` });
 
     // console_type === undefined means "don't touch"; explicit null clears
     // the field back to auto-detect, explicit 'ps4' / 'ps5' overrides.

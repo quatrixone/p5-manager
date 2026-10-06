@@ -74,6 +74,18 @@ function HoldButton({
     setPressed(false);
     onRelease?.(id);
   };
+  // No pointerup arrives once the page is in the background, so let go
+  // then; the console would keep the button held otherwise.
+  const releaseRef = useRef(release);
+  releaseRef.current = release;
+  useEffect(() => {
+    const letGo = () => { if (document.hidden) releaseRef.current(); };
+    document.addEventListener('visibilitychange', letGo);
+    return () => {
+      document.removeEventListener('visibilitychange', letGo);
+      releaseRef.current();
+    };
+  }, []);
   // For colour-coded face buttons we get a tinted background prop. Default
   // is a neutral glass panel. The pressed state simply boosts opacity +
   // adds a soft glow so the same visual works on any tint.
@@ -1370,6 +1382,32 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
     return () => { cancelled = true; clearInterval(id); };
   }, [sessionState, profile?.ip_address]);
 
+  // Leaving the page mid-press (tab switch, browser to the background,
+  // reload) loses the release, and the MJPEG <img> does not survive the
+  // browser being in the background either. So: let go of everything when
+  // the page goes away, and on the way back clear anything still held and
+  // reopen the stream.
+  useEffect(() => {
+    if (!sessionId) return undefined;
+    const url = `${API}/sessions/${encodeURIComponent(sessionId)}/release-all`;
+    const releaseAll = () => { apiSafe.post(url); };
+    // sendBeacon still goes out while the page is being hidden or unloaded.
+    const releaseOnLeave = () => { if (!navigator.sendBeacon?.(url)) releaseAll(); };
+    const onVisibility = () => {
+      if (document.hidden) { releaseOnLeave(); return; }
+      releaseAll();
+      setVideoNonce(n => n + 1);
+    };
+    releaseAll();
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('pagehide', releaseOnLeave);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('pagehide', releaseOnLeave);
+      releaseAll();
+    };
+  }, [sessionId]);
+
   const sendInput = async (payload) => {
     if (!sessionId) return;
     // Recording capture is intentional BEFORE the network send so the
@@ -1603,7 +1641,11 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
   // building/running a script live.
   const renderManualPad = () => {
     const byId = Object.fromEntries(PS5_BUTTONS.map(b => [b.id, b]));
-    const Btn = ({ id, className = '', style = {} }) => {
+    // A plain function, not a component: a component defined in here is a
+    // new type on every render, so React replaced every pad button each
+    // time RemotePlay re-rendered - and a button replaced while held never
+    // got its pointerup, leaving it pressed on the console.
+    const padButton = (id, className = '', style = {}) => {
       const b = byId[id];
       if (!b) return null;
       // Touchpad gets a dedicated tap path (see sendTouchpadTap):
@@ -1648,35 +1690,35 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
       <div className="rp-pad">
         <div className="rp-pad-shoulders">
           <div className="rp-pad-shoulders-side">
-            <Btn id="l2" /><Btn id="l1" />
+            {padButton('l2')}{padButton('l1')}
           </div>
           <div className="rp-pad-shoulders-side rp-pad-shoulders-side-right">
-            <Btn id="r1" /><Btn id="r2" />
+            {padButton('r1')}{padButton('r2')}
           </div>
         </div>
 
         <div className="rp-pad-main">
           <div className="rp-dpad">
-            <div className="rp-dpad-up"><Btn id="up" /></div>
-            <div className="rp-dpad-left"><Btn id="left" /></div>
-            <div className="rp-dpad-right"><Btn id="right" /></div>
-            <div className="rp-dpad-down"><Btn id="down" /></div>
+            <div className="rp-dpad-up">{padButton('up')}</div>
+            <div className="rp-dpad-left">{padButton('left')}</div>
+            <div className="rp-dpad-right">{padButton('right')}</div>
+            <div className="rp-dpad-down">{padButton('down')}</div>
           </div>
           <div className="rp-face">
-            <div className="rp-face-triangle"><Btn id="triangle" /></div>
-            <div className="rp-face-square"><Btn id="square" /></div>
-            <div className="rp-face-circle"><Btn id="circle" /></div>
-            <div className="rp-face-cross"><Btn id="cross" /></div>
+            <div className="rp-face-triangle">{padButton('triangle')}</div>
+            <div className="rp-face-square">{padButton('square')}</div>
+            <div className="rp-face-circle">{padButton('circle')}</div>
+            <div className="rp-face-cross">{padButton('cross')}</div>
           </div>
         </div>
 
         <div className="rp-pad-center rp-pad-center-main">
-          <Btn id="share" />
-          <Btn id="touchpad" />
-          <Btn id="options" />
-          <Btn id="ps" />
-          <Btn id="l3" />
-          <Btn id="r3" />
+          {padButton('share')}
+          {padButton('touchpad')}
+          {padButton('options')}
+          {padButton('ps')}
+          {padButton('l3')}
+          {padButton('r3')}
           {/* Motion-burst gesture. Same one-shot semantics as the
               touchpad tap — see sendShake() for the wiring. */}
           <button

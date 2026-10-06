@@ -102,8 +102,8 @@ router.post('/', (req, res) => {
       repo.run('DELETE FROM autoload_sequences');
       for (const seq of data.sequences) {
         repo.run(
-          'INSERT INTO autoload_sequences (profile_id, name, steps, schedule_cron, schedule_enabled) VALUES (?, ?, ?, ?, ?)',
-          [seq.profile_id, seq.name, seq.steps, seq.schedule_cron, seq.schedule_enabled || 0],
+          'INSERT INTO autoload_sequences (profile_id, name, steps, schedule_cron, schedule_enabled, auto_trigger, auto_trigger_config) VALUES (?, ?, ?, ?, ?, ?, ?)',
+          [seq.profile_id, seq.name, seq.steps, seq.schedule_cron, seq.schedule_enabled || 0, seq.auto_trigger || null, seq.auto_trigger_config || null],
         );
       }
     }

@@ -11,8 +11,9 @@ import backupRouter from './routes/backup.js';
 import logServerRouter, { startLogServer } from './routes/logServer.js';
 import kernelLogServerRouter, { startKernelLogServer } from './routes/kernelLogServer.js';
 import ps5ControlRouter from './routes/ps5control.js';
-import sequencesRouter from './routes/sequences.js';
+import sequencesRouter, { startAutoTriggerWatcher } from './routes/sequences.js';
 import settingsRouter from './routes/settings.js';
+import updateRouter from './routes/update.js';
 import inputScriptsRouter from './routes/inputScripts.js';
 import convertRouter from './routes/convert.js';
 import downloaderRouter from './routes/downloader.js';
@@ -108,6 +109,8 @@ const ACCESS_LOG_SILENCE = [
   /^\/api\/gamecompressor\/[^/]+\/status$/,
   /^\/api\/library\/[^/]+\/icon\//,
   /^\/api\/sequences$/,
+  /^\/api\/sequences\/runs\/recent$/, // PS5 Control busy poll
+  /^\/api\/update\/status$/,
   /^\/api\/logs$/,
 ];
 app.use((req, res, next) => {
@@ -126,6 +129,7 @@ app.use('/api/kernellog', kernelLogServerRouter);
 app.use('/api/ps5control', ps5ControlRouter);
 app.use('/api/sequences', sequencesRouter);
 app.use('/api/settings', settingsRouter);
+app.use('/api/update', updateRouter);
 app.use('/api/input-scripts', inputScriptsRouter);
 // Mounted at /api/convert (was /api/micromount before the rename); kept as a
 // single big router covering FS browse, FTP upload queue, extract, convert
@@ -220,4 +224,5 @@ ensureDefaultPayloads().then((s) => {
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`P5 Manager API running on port ${PORT}`);
+  startAutoTriggerWatcher();
 });

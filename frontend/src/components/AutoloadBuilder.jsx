@@ -31,6 +31,13 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
   const [waitUnit, setWaitUnit] = useState('seconds');
   const [scheduleCron, setScheduleCron] = useState('');
   const [scheduleEnabled, setScheduleEnabled] = useState(false);
+  // 'loader_down' = the backend runs the sequence by itself when the console
+  // is on but its payload loader port is closed; '' = manual only.
+  const [autoTrigger, setAutoTrigger] = useState('');
+  // Its settings; an empty field means "use the default" (see the
+  // placeholders below and AUTO_TRIGGER_DEFAULTS in routes/sequences.js).
+  const [autoTriggerConfig, setAutoTriggerConfig] = useState({});
+  const patchAutoTriggerConfig = (key, value) => setAutoTriggerConfig(prev => ({ ...prev, [key]: value === '' ? null : parseInt(value) }));
   const [showAddStepMenu, setShowAddStepMenu] = useState(false);
   const [selectedPayloadForStep, setSelectedPayloadForStep] = useState(null);
   const [targetPort, setTargetPort] = useState('9021');
@@ -258,6 +265,8 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
     setSteps(tpl.steps.map(s => withLocalId({ ...s })));
     setScheduleType('none');
     setScheduleEnabled(false);
+    setAutoTrigger(tpl.autoTrigger || '');
+    setAutoTriggerConfig(tpl.autoTriggerConfig || {});
     setActiveView('create');
   };
 
@@ -346,6 +355,8 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
         steps,
         scheduleCron: buildCron() || null,
         scheduleEnabled: scheduleType !== 'none' && scheduleEnabled,
+        autoTrigger: autoTrigger || null,
+        autoTriggerConfig,
       });
       if (data.success) {
         onNotification('Sequence saved', 'success');
@@ -373,6 +384,8 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
         profileId: selectedProfile || null,
         scheduleCron: buildCron() || null,
         scheduleEnabled: scheduleType !== 'none' && scheduleEnabled,
+        autoTrigger: autoTrigger || null,
+        autoTriggerConfig,
       });
       if (data.success) {
         onNotification('Sequence updated', 'success');
@@ -417,6 +430,9 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
     setSteps(parsed.map(withLocalId));
     parseCronToState(seq.schedule_cron);
     setScheduleEnabled(seq.schedule_enabled === 1);
+    setAutoTrigger(seq.auto_trigger || '');
+    try { setAutoTriggerConfig(JSON.parse(seq.auto_trigger_config || '{}') || {}); }
+    catch (_) { setAutoTriggerConfig({}); }
     setActiveView('edit');
   };
 
@@ -429,6 +445,8 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
     setScheduleInterval(5);
     setScheduleTime('00:00');
     setScheduleEnabled(false);
+    setAutoTrigger('');
+    setAutoTriggerConfig({});
     setActiveView('list');
   };
 
@@ -543,24 +561,22 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
                     }}
                   >
                     <div style={{ minWidth: 0, flex: 1 }}>
-                      <div className="font-medium flex items-center gap-xs" style={{ wordBreak: 'break-word', fontSize: '0.88rem' }}>
-                        <span>{tpl.name}</span>
-                        {tpl.console_type && (
-                          <span className="console-type-badge">{tpl.console_type.toUpperCase()}</span>
-                        )}
-                      </div>
+                      <div className="font-medium" style={{ wordBreak: 'break-word', fontSize: '0.88rem' }}>{tpl.name}</div>
                       <div className="text-muted" style={{ fontSize: '0.72rem', wordBreak: 'break-word', lineHeight: 1.3 }}>{tpl.description}</div>
                       <div className="text-muted" style={{ fontSize: '0.7rem', lineHeight: 1.3 }}>
                         {tpl.steps.map(s => getStepIcon(s.type)).join(' ')} ({tpl.steps.length} steps)
                       </div>
                     </div>
-                    <button
-                      className="btn btn-primary btn-sm"
-                      onClick={() => loadTemplate(tpl)}
-                      style={{ flexShrink: 0 }}
-                    >
-                      Use template
-                    </button>
+                    {/* Badge above the button: next to the name it was squeezed
+                        into a one-letter-wide column on a phone. */}
+                    <div className="flex-col" style={{ flexShrink: 0, alignItems: 'flex-end', gap: 6 }}>
+                      {tpl.console_type && (
+                        <span className="console-type-badge" style={{ whiteSpace: 'nowrap' }}>{tpl.console_type.toUpperCase()}</span>
+                      )}
+                      <button className="btn btn-primary btn-sm" onClick={() => loadTemplate(tpl)}>
+                        Use template
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -587,6 +603,11 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
                       <div className="text-muted" style={{ fontSize: '0.72rem', lineHeight: 1.3 }}>
                         {seq.profile_name || 'Unknown'} • {(() => { try { return JSON.parse(seq.steps || '[]').length; } catch (_) { return 0; } })()} steps
                       </div>
+                      {seq.auto_trigger === 'loader_down' && (
+                        <div style={{ fontSize: '0.7rem', lineHeight: 1.3, color: 'var(--green)' }}>
+                          ⚡ Runs by itself when the console is on and the loader port is closed
+                        </div>
+                      )}
                       {seq.schedule_cron && (
                         <div style={{ fontSize: '0.7rem', lineHeight: 1.3, color: seq.schedule_enabled ? 'var(--green)' : 'var(--muted)' }}>
                           {seq.schedule_enabled ? '🔄' : '⏸'} {formatSchedule(seq.schedule_cron)}
@@ -645,25 +666,32 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
 
           <div className="comp-card">
             <div className="comp-card-header">
-              <span className="comp-card-title">⏰ Schedule</span>
+              <span className="comp-card-title">⏰ When it runs</span>
             </div>
             <div className="comp-card-body flex-col gap-md">
               <div className="flex gap-sm flex-wrap">
                 <button
-                  className={`btn btn-sm ${scheduleType === 'none' ? 'btn-primary' : 'btn-ghost'}`}
-                  onClick={() => setScheduleType('none')}
+                  className={`btn btn-sm ${scheduleType === 'none' && !autoTrigger ? 'btn-primary' : 'btn-ghost'}`}
+                  onClick={() => { setScheduleType('none'); setAutoTrigger(''); }}
                 >
-                  Off
+                  ▶ Manual only
+                </button>
+                <button
+                  className={`btn btn-sm ${autoTrigger === 'loader_down' ? 'btn-primary' : 'btn-ghost'}`}
+                  onClick={() => { setScheduleType('none'); setAutoTrigger('loader_down'); }}
+                  title="Runs by itself when the console is on but its payload loader port is closed"
+                >
+                  ⚡ Loader down
                 </button>
                 <button
                   className={`btn btn-sm ${scheduleType === 'interval' ? 'btn-primary' : 'btn-ghost'}`}
-                  onClick={() => setScheduleType('interval')}
+                  onClick={() => { setScheduleType('interval'); setAutoTrigger(''); }}
                 >
                   ⏱ Interval
                 </button>
                 <button
                   className={`btn btn-sm ${scheduleType === 'daily' ? 'btn-primary' : 'btn-ghost'}`}
-                  onClick={() => setScheduleType('daily')}
+                  onClick={() => { setScheduleType('daily'); setAutoTrigger(''); }}
                 >
                   📅 Daily
                 </button>
@@ -707,6 +735,29 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
                   />
                   <span className="text-sm">Enable schedule</span>
                 </label>
+              )}
+
+              {autoTrigger === 'loader_down' && (
+                <>
+                  <div className="text-sm">Runs by itself when the console is on but its payload loader port is closed.</div>
+                  <div className="autoload-trigger-grid">
+                    <label className="field-label">Check every (seconds)</label>
+                    <input type="number" className="input" min={10} max={3600} placeholder="30"
+                      value={autoTriggerConfig.intervalS ?? ''} onChange={e => patchAutoTriggerConfig('intervalS', e.target.value)} />
+                    <label className="field-label">Port to watch</label>
+                    <input type="number" className="input" min={1} max={65535} placeholder="profile port (9021)"
+                      value={autoTriggerConfig.port ?? ''} onChange={e => patchAutoTriggerConfig('port', e.target.value)} />
+                    <label className="field-label">Start after the port stayed closed for (seconds)</label>
+                    <input type="number" className="input" min={0} max={3600} placeholder="30"
+                      value={autoTriggerConfig.closedForS ?? ''} onChange={e => patchAutoTriggerConfig('closedForS', e.target.value)} />
+                    <label className="field-label">Pause after a run (minutes)</label>
+                    <input type="number" className="input" min={0} max={1440} placeholder="10"
+                      value={autoTriggerConfig.cooldownMin ?? ''} onChange={e => patchAutoTriggerConfig('cooldownMin', e.target.value)} />
+                  </div>
+                  <div className="text-xs text-muted">
+                    Applies to the profile above, only while the console is on (not in rest mode) and no other sequence is running. The sequence steers the console through Remote Play, so the pause keeps a failing run from repeating right away.
+                  </div>
+                </>
               )}
             </div>
           </div>
@@ -1234,7 +1285,7 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
                                 <label className="field-label">…or by name</label>
                                 <input
                                   className="input"
-                                  placeholder="e.g. p2jb.lua"
+                                  placeholder="e.g. kstuff.elf"
                                   value={step.payloadName || ''}
                                   onChange={e => patchStep(index, { payloadName: e.target.value, payloadId: null })}
                                 />
@@ -1266,6 +1317,15 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
                                   value={step.retryToStep ?? ''}
                                   onChange={e => patchStep(index, { retryToStep: e.target.value === '' ? null : parseInt(e.target.value) })}
                                   placeholder="optional"
+                                />
+                                <label className="field-label">Wait for the port (seconds)</label>
+                                <input
+                                  type="number"
+                                  className="input"
+                                  value={step.waitSeconds ?? ''}
+                                  onChange={e => patchStep(index, { waitSeconds: e.target.value === '' ? null : parseInt(e.target.value) })}
+                                  placeholder="optional"
+                                  min={0}
                                 />
                               </>
                             )}

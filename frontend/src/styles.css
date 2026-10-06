@@ -1021,6 +1021,17 @@ select option, select optgroup {
   gap: var(--space-sm);
 }
 .autoload-add-grid > button { min-height: 34px; width: 100%; }
+.autoload-trigger-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 4px var(--space-md);
+  align-items: center;
+}
+.autoload-trigger-grid > .input { margin-bottom: var(--space-sm); }
+@media (min-width: 600px) {
+  .autoload-trigger-grid { grid-template-columns: minmax(0, 1fr) 200px; gap: var(--space-sm) var(--space-md); }
+  .autoload-trigger-grid > .input { margin-bottom: 0; }
+}
 .step-card {
   background: var(--bg-elev);
   border: 1px solid var(--border);
@@ -1614,7 +1625,10 @@ pre { padding: 12px; overflow-x: auto; }
 /* ---------- subtle reveal animation ---------- */
 
 @media (prefers-reduced-motion: no-preference) {
-  .app-main > * { animation: page-in 0.32s cubic-bezier(0.22, 1, 0.36, 1) both; }
+  /* Not `both`: a transform kept after the animation makes the page the
+     containing block of every position:fixed child, so modals opened at
+     the end of a long page instead of over the viewport. */
+  .app-main > * { animation: page-in 0.32s cubic-bezier(0.22, 1, 0.36, 1) backwards; }
 }
 @keyframes page-in {
   from { opacity: 0; transform: translateY(6px); }
@@ -2134,6 +2148,28 @@ pre { padding: 12px; overflow-x: auto; }
     background: none;
   }
   .fileops--files .fb .file-card-selected { background: var(--accent-dim); }
+  /* The 12px side margins above would push a full-width select off screen. */
+  .fileops--files .fb > .comp-card-body > .select { width: calc(100% - 24px); }
+
+  /* Two panes on a phone sit one above the other. Edge to edge and
+     scrolling with the page they read as one long list, so here each pane
+     keeps its card, shows its name and scrolls its own list - both stay on
+     screen and a file can be picked in one while the other is in view. */
+  .fileops--files .dual-pane { gap: var(--space-sm); }
+  .fileops--files .dual-pane .fb {
+    margin-left: 0;
+    margin-right: 0;
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  .fileops--files .dual-pane .fb > .fb-header { padding: 8px 12px; border-bottom: 1px solid var(--border); }
+  .fileops--files .dual-pane .fb .comp-card-title.fb-title { display: block; white-space: nowrap; }
+  .fileops--files .dual-pane .fb > .fb-header .fb-narrow { white-space: nowrap; }
+  .fileops--files .dual-pane .fb > .comp-card-body { padding-top: var(--space-sm); }
+  .fileops--files .dual-pane .fb .fb-nav { position: static; background: none; }
+  .fileops--files .dual-pane .fb .fb-list { max-height: 34vh; max-height: 34dvh; overflow-y: auto; }
 }
 
 /* ─── Live Session tab bar dropdowns (SessionTabBar.jsx) ─────────────── */
@@ -2387,3 +2423,22 @@ pre { padding: 12px; overflow-x: auto; }
   border-radius: 10px;
   background: #fff;
 }
+
+/* PS5 Control while an Autoload sequence steers the console (PS5Control.jsx) */
+.ps5control-locked { opacity: 0.45; pointer-events: none; user-select: none; }
+
+/* "New version available" bar (UpdateBanner.jsx) */
+.update-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  margin-bottom: var(--space-md);
+  padding: 8px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  background: var(--bg-elev-2);
+  font-size: 0.88rem;
+}
+.update-banner-text { min-width: 0; flex: 1 1 220px; }

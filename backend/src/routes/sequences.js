@@ -2,6 +2,7 @@ import express from 'express';
 import net from 'net';
 import { getRepo, log } from '../db/sqlite.js';
 import { loadBuiltin } from '../lib/builtinLoader.js';
+import { readBuiltinInputScripts } from './inputScripts.js';
 
 const router = express.Router();
 
@@ -67,6 +68,33 @@ function runLog(run, line) {
   if (run.log.length > 200_000) run.log = run.log.slice(-200_000);
 }
 
+// The only automatic trigger so far; anything else is stored as "none".
+const AUTO_TRIGGER_LOADER_DOWN = 'loader_down';
+const normalizeAutoTrigger = (v) => (v === AUTO_TRIGGER_LOADER_DOWN ? v : null);
+
+// Settings of the trigger, with the defaults used when a field is missing.
+//   intervalS   how often the console is checked
+//   port        port to watch; null = the profile's payload port
+//   closedForS  how long the port has to stay closed before the run starts
+//   cooldownMin pause after a run before the trigger may fire again
+const AUTO_TRIGGER_DEFAULTS = { intervalS: 30, port: null, closedForS: 30, cooldownMin: 10 };
+function parseAutoTriggerConfig(raw) {
+  let cfg = raw;
+  if (typeof raw === 'string') { try { cfg = JSON.parse(raw); } catch (_) { cfg = null; } }
+  cfg = cfg && typeof cfg === 'object' ? cfg : {};
+  const num = (v, min, max, fallback) => {
+    const n = parseInt(v);
+    return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback;
+  };
+  return {
+    intervalS: num(cfg.intervalS, 10, 3600, AUTO_TRIGGER_DEFAULTS.intervalS),
+    port: num(cfg.port, 1, 65535, AUTO_TRIGGER_DEFAULTS.port),
+    closedForS: num(cfg.closedForS, 0, 3600, AUTO_TRIGGER_DEFAULTS.closedForS),
+    cooldownMin: num(cfg.cooldownMin, 0, 1440, AUTO_TRIGGER_DEFAULTS.cooldownMin),
+  };
+}
+const serializeAutoTriggerConfig = (trigger, raw) => (normalizeAutoTrigger(trigger) ? JSON.stringify(parseAutoTriggerConfig(raw)) : null);
+
 router.get('/', (req, res) => {
   try {
     res.json(getRepo().queryAll(`
@@ -94,11 +122,11 @@ router.get('/:id', (req, res) => {
 
 router.post('/', (req, res) => {
   try {
-    const { profileId, name, steps, scheduleCron, scheduleEnabled } = req.body;
+    const { profileId, name, steps, scheduleCron, scheduleEnabled, autoTrigger, autoTriggerConfig } = req.body;
     if (!name || !steps) return res.status(400).json({ error: 'name and steps required' });
     const lastId = getRepo().runAndSave(
-      'INSERT INTO autoload_sequences (profile_id, name, steps, schedule_cron, schedule_enabled) VALUES (?, ?, ?, ?, ?)',
-      [profileId ? parseInt(profileId) : null, name, JSON.stringify(steps), scheduleCron || null, scheduleEnabled ? 1 : 0],
+      'INSERT INTO autoload_sequences (profile_id, name, steps, schedule_cron, schedule_enabled, auto_trigger, auto_trigger_config) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [profileId ? parseInt(profileId) : null, name, JSON.stringify(steps), scheduleCron || null, scheduleEnabled ? 1 : 0, normalizeAutoTrigger(autoTrigger), serializeAutoTriggerConfig(autoTrigger, autoTriggerConfig)],
     );
     log('info', `Created sequence: ${name}`);
     res.json({ success: true, id: lastId });
@@ -110,14 +138,14 @@ router.post('/', (req, res) => {
 
 router.put('/:id', (req, res) => {
   try {
-    const { name, steps, scheduleCron, scheduleEnabled, profileId } = req.body;
+    const { name, steps, scheduleCron, scheduleEnabled, profileId, autoTrigger, autoTriggerConfig } = req.body;
     const repo = getRepo();
     if (!repo.queryOne('SELECT id FROM autoload_sequences WHERE id = ?', [parseInt(req.params.id)])) {
       return res.status(404).json({ error: 'Sequence not found' });
     }
     repo.runAndSave(
-      'UPDATE autoload_sequences SET name = ?, steps = ?, profile_id = ?, schedule_cron = ?, schedule_enabled = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-      [name, JSON.stringify(steps), profileId ? parseInt(profileId) : null, scheduleCron || null, scheduleEnabled ? 1 : 0, parseInt(req.params.id)],
+      'UPDATE autoload_sequences SET name = ?, steps = ?, profile_id = ?, schedule_cron = ?, schedule_enabled = ?, auto_trigger = ?, auto_trigger_config = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      [name, JSON.stringify(steps), profileId ? parseInt(profileId) : null, scheduleCron || null, scheduleEnabled ? 1 : 0, normalizeAutoTrigger(autoTrigger), serializeAutoTriggerConfig(autoTrigger, autoTriggerConfig), parseInt(req.params.id)],
     );
     log('info', `Updated sequence: ${name}`);
     res.json({ success: true });
@@ -166,7 +194,15 @@ function checkPortOpen(ip, port, timeoutMs = 3000) {
 async function execCheckPort(step, ctx) {
   if (!ctx.profile) throw new Error('check_port needs a profile');
   const port = parseInt(step.port) || 9021;
-  const ok = await checkPortOpen(ctx.profile.ip_address, port);
+  // waitSeconds: keep probing that long before calling it a failure, for a
+  // port that opens some time after the previous step (a jailbreak that is
+  // still running).
+  const deadline = Date.now() + (parseInt(step.waitSeconds) || 0) * 1000;
+  let ok = await checkPortOpen(ctx.profile.ip_address, port);
+  while (!ok && Date.now() < deadline && !ctx.run.cancelled) {
+    await sleep(3000);
+    ok = await checkPortOpen(ctx.profile.ip_address, port);
+  }
   if (!ok) {
     const from = Math.max(1, parseInt(step.retryFromStep) || 1);
     const to = Math.max(from, parseInt(step.retryToStep) || from);
@@ -406,7 +442,13 @@ async function execInputScript(step, ctx) {
     keep_session: true, // leave session in warm cache for the next step
   };
   if (step.script) body.script = step.script;
-  else if (step.scriptId) body.script_id = step.scriptId;
+  else if (typeof step.scriptId === 'string' && step.scriptId.startsWith('builtin:')) {
+    // Built-in scripts are not in the input_scripts table; take the current
+    // text so an edit of the built-in applies to the next run.
+    const builtin = readBuiltinInputScripts().find(s => s.id === step.scriptId);
+    if (!builtin?.script) throw new Error(`Built-in script "${step.scriptId}" not found`);
+    body.script = builtin.script;
+  } else if (step.scriptId) body.script_id = step.scriptId;
   else throw new Error('input_script step needs a script or scriptId');
 
   await ensureSessionForStep(ctx, 'input_script');
@@ -502,6 +544,7 @@ async function executeSequence(run, sequence, profile, steps) {
       }
       const step = steps[i];
       run.current_step = i;
+      run.current_step_name = step.name || step.type;
       runLog(run, `Step ${i + 1}/${steps.length}: ${step.name || step.type}`);
 
       const exec = STEP_EXEC[step.type];
@@ -553,57 +596,138 @@ async function executeSequence(run, sequence, profile, steps) {
   log('info', `sequence ${sequence.id} (${sequence.name}) ${run.status}`);
 }
 
+// Start a run of a saved sequence in the background. Returns the run, or
+// throws an Error with .status for the route to report.
+function startSequenceRun(sequenceId, startedBy) {
+  const sequence = getRepo().queryOne(`
+    SELECT s.*, p.name as profile_name, p.ip_address, p.port, p.mac_address
+    FROM autoload_sequences s
+    LEFT JOIN profiles p ON s.profile_id = p.id
+    WHERE s.id = ?
+  `, [sequenceId]);
+
+  if (!sequence) throw Object.assign(new Error('Sequence not found'), { status: 404 });
+  const steps = JSON.parse(sequence.steps || '[]');
+  if (steps.length === 0) throw Object.assign(new Error('Sequence has no steps'), { status: 400 });
+
+  const profile = sequence.profile_id ? {
+    id: sequence.profile_id,
+    name: sequence.profile_name,
+    ip_address: sequence.ip_address,
+    port: sequence.port,
+    mac_address: sequence.mac_address,
+  } : null;
+
+  const runId = `r${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+  const run = {
+    id: runId,
+    sequence_id: sequence.id,
+    sequence_name: sequence.name,
+    profile_id: sequence.profile_id || null,
+    status: 'queued',
+    total: steps.length,
+    current_step: 0,
+    started_at: null,
+    finished_at: null,
+    error: null,
+    log: '',
+    cancelled: false,
+  };
+  recordRun(run);
+  if (startedBy) runLog(run, startedBy);
+
+  log('info', `Running sequence "${sequence.name}" (${steps.length} steps)`);
+  executeSequence(run, sequence, profile, steps).catch(e => {
+    run.status = 'failed';
+    run.error = e.message;
+    run.finished_at = new Date().toISOString();
+    runLog(run, `Fatal: ${e.message}`);
+  });
+  return run;
+}
+
 router.post('/:id/run', async (req, res) => {
   try {
-    const sequence = getRepo().queryOne(`
-      SELECT s.*, p.name as profile_name, p.ip_address, p.port, p.mac_address
-      FROM autoload_sequences s
-      LEFT JOIN profiles p ON s.profile_id = p.id
-      WHERE s.id = ?
-    `, [parseInt(req.params.id)]);
-
-    if (!sequence) return res.status(404).json({ error: 'Sequence not found' });
-    const steps = JSON.parse(sequence.steps || '[]');
-    if (steps.length === 0) return res.status(400).json({ error: 'Sequence has no steps' });
-
-    const profile = sequence.profile_id ? {
-      id: sequence.profile_id,
-      name: sequence.profile_name,
-      ip_address: sequence.ip_address,
-      port: sequence.port,
-      mac_address: sequence.mac_address,
-    } : null;
-
-    const runId = `r${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
-    const run = {
-      id: runId,
-      sequence_id: sequence.id,
-      sequence_name: sequence.name,
-      status: 'queued',
-      total: steps.length,
-      current_step: 0,
-      started_at: null,
-      finished_at: null,
-      error: null,
-      log: '',
-      cancelled: false,
-    };
-    recordRun(run);
-
-    log('info', `Running sequence "${sequence.name}" (${steps.length} steps)`);
-    executeSequence(run, sequence, profile, steps).catch(e => {
-      run.status = 'failed';
-      run.error = e.message;
-      run.finished_at = new Date().toISOString();
-      runLog(run, `Fatal: ${e.message}`);
-    });
-
-    res.json({ success: true, run_id: runId, message: `Sequence "${sequence.name}" started with ${steps.length} steps` });
+    const run = startSequenceRun(parseInt(req.params.id));
+    res.json({ success: true, run_id: run.id, message: `Sequence "${run.sequence_name}" started with ${run.total} steps` });
   } catch (error) {
+    if (error.status) return res.status(error.status).json({ error: error.message });
     log('error', `Failed to run sequence: ${error.message}`);
     res.status(500).json({ error: error.message });
   }
 });
+
+// ---- Automatic trigger: console on, payload loader down ----------------------
+//
+// A sequence saved with auto_trigger = 'loader_down' runs by itself when its
+// console answers as switched on (not rest mode) while the watched port is
+// closed - i.e. the console was restarted and is not jailbroken any more.
+// The sequence takes over the controller through Remote Play, so the watcher
+// is deliberately slow to fire: the port has to stay closed for a while, no
+// other sequence may be running, and after a run it waits out a cooldown
+// before trying again, so a jailbreak that keeps failing does not keep
+// steering the console. How often, which port, how long and the cooldown are
+// per sequence - see AUTO_TRIGGER_DEFAULTS.
+const AUTO_TRIGGER_TICK_MS = 5 * 1000;
+const autoTriggerState = new Map(); // sequence id -> { nextCheckAt, downSince, lastRunAt }
+
+async function isConsoleOn(ip) {
+  try {
+    const ddp = await apiFetch('GET', `/remoteplay/discover?ip=${encodeURIComponent(ip)}`);
+    return String(ddp?.status || '').toLowerCase() === 'ok';
+  } catch (_) {
+    return false;
+  }
+}
+
+async function autoTriggerTick() {
+  const sequences = getRepo().queryAll(`
+    SELECT s.id, s.name, s.auto_trigger_config, p.ip_address, p.port
+    FROM autoload_sequences s
+    JOIN profiles p ON s.profile_id = p.id
+    WHERE s.auto_trigger = ?
+  `, [AUTO_TRIGGER_LOADER_DOWN]);
+  if (sequences.length === 0) return;
+  const busy = Array.from(sequenceRuns.values()).some(r => r.status === 'queued' || r.status === 'running');
+
+  for (const seq of sequences) {
+    const cfg = parseAutoTriggerConfig(seq.auto_trigger_config);
+    let state = autoTriggerState.get(seq.id);
+    if (!state) { state = { nextCheckAt: 0, downSince: 0, lastRunAt: 0 }; autoTriggerState.set(seq.id, state); }
+    if (Date.now() < state.nextCheckAt) continue;
+    state.nextCheckAt = Date.now() + cfg.intervalS * 1000;
+
+    const port = cfg.port || seq.port || 9021;
+    const cooledDown = !state.lastRunAt || Date.now() - state.lastRunAt >= cfg.cooldownMin * 60 * 1000;
+    const down = !busy && cooledDown
+      && await isConsoleOn(seq.ip_address)
+      && !(await checkPortOpen(seq.ip_address, port));
+    if (!down) { state.downSince = 0; continue; }
+    if (!state.downSince) state.downSince = Date.now();
+    if (Date.now() - state.downSince < cfg.closedForS * 1000) continue;
+
+    state.downSince = 0;
+    state.lastRunAt = Date.now();
+    log('info', `Auto-trigger: ${seq.ip_address} is on but port ${port} is closed - running "${seq.name}"`);
+    try {
+      startSequenceRun(seq.id, `Started automatically: console is on, port ${port} is closed`);
+    } catch (e) {
+      log('error', `Auto-trigger for "${seq.name}" failed: ${e.message}`);
+    }
+    return; // one console-steering run at a time
+  }
+}
+
+export function startAutoTriggerWatcher() {
+  let ticking = false;
+  const timer = setInterval(async () => {
+    if (ticking) return;
+    ticking = true;
+    try { await autoTriggerTick(); } catch (e) { log('error', `Auto-trigger check failed: ${e.message}`); }
+    ticking = false;
+  }, AUTO_TRIGGER_TICK_MS);
+  timer.unref?.();
+}
 
 router.get('/runs/recent', (req, res) => {
   const list = runOrder.slice().reverse().map(id => {

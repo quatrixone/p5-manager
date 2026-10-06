@@ -248,7 +248,7 @@ export default function DualPane({ profiles, onNotification, onOpenQueue, onPick
       <FileBrowser
         {...paneProps}
         paneId="left"
-        title="Left pane"
+        title="Pane 1"
         onLocationChange={onLeftLoc}
         onDropItems={handleDrop('left')}
         onSendToOther={sendToOther('left')}
@@ -256,7 +256,7 @@ export default function DualPane({ profiles, onNotification, onOpenQueue, onPick
       <FileBrowser
         {...paneProps}
         paneId="right"
-        title="Right pane"
+        title="Pane 2"
         defaultKind="ftp"
         initialLocation={rightInitial}
         enableSaveDefault={false}

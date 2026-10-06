@@ -37,16 +37,6 @@ export const ESSENTIAL_PAYLOADS = [
     description: 'PS5 Lua log redirector (used by Log viewer)',
   },
 
-  // --- Required by built-in templates ------------------------------------
-  {
-    filename: 'p2jb.lua',
-    url: 'https://raw.githubusercontent.com/Gezine/Luac0re/main/payloads/p2jb.lua',
-    tag: 'template',
-    console_type: 'ps5',
-    port: 9026,
-    description: 'PS5 p2jb kernel exploit (used by the "p2jb jailbreak" template)',
-  },
-
   // --- Pre-curated convenience PS5 payloads ------------------------------
   {
     filename: 'ps5-backpork.elf',

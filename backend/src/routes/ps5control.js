@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import dgram from 'dgram';
 import net from 'net';
+import os from 'os';
 import { spawn } from 'child_process';
 import { getRepo } from '../db/sqlite.js';
 
@@ -245,6 +246,73 @@ router.post('/scan-subnet', async (req, res) => {
     res.json({ success: true, devices: found.map(formatDevice) });
   } catch (err) {
     res.json({ success: false, error: err.message, devices: [] });
+  }
+});
+
+const intToIp = (n) => [(n >>> 24) & 0xff, (n >>> 16) & 0xff, (n >>> 8) & 0xff, n & 0xff].join('.');
+const ipToInt = (ip) => {
+  const o = String(ip).split('.').map((n) => parseInt(n, 10));
+  if (o.length !== 4 || o.some((n) => Number.isNaN(n) || n < 0 || n > 255)) return null;
+  return ((o[0] << 24) | (o[1] << 16) | (o[2] << 8) | o[3]) >>> 0;
+};
+
+// Interfaces that are never the LAN a console sits on.
+const VIRTUAL_NIC = /^(lo|docker|br-|veth|virbr|vmnet|vboxnet|tailscale|tun|tap|wg|zt|utun|llw|awdl)/i;
+
+// The networks to look for consoles on, worked out from this machine's own
+// addresses so the user does not have to know their subnet. A network larger
+// than /24 is narrowed to the /24 around our own address - sweeping 65k hosts
+// is neither quick nor polite. Inside a bridged container only the bridge is
+// visible; the saved default_subnet (or ?subnet=) covers that case.
+function localSubnets(extra) {
+  const nets = new Map(); // "network/prefix" -> { network, bcast }
+  const add = (addrInt, prefix) => {
+    const p = Math.max(24, Math.min(30, prefix));
+    const mask = (0xffffffff << (32 - p)) >>> 0;
+    const network = (addrInt & mask) >>> 0;
+    nets.set(`${intToIp(network)}/${p}`, { network, bcast: (network | (~mask >>> 0)) >>> 0 });
+  };
+  for (const [name, addrs] of Object.entries(os.networkInterfaces())) {
+    if (VIRTUAL_NIC.test(name)) continue;
+    for (const a of addrs || []) {
+      if (a.internal || a.family !== 'IPv4' || a.address.startsWith('169.254.')) continue;
+      const addrInt = ipToInt(a.address);
+      const prefix = parseInt(String(a.cidr || '').split('/')[1], 10);
+      if (addrInt != null) add(addrInt, Number.isNaN(prefix) ? 24 : prefix);
+    }
+  }
+  for (const subnet of extra) {
+    if (!subnet) continue;
+    const [base, prefixStr] = String(subnet).split('/');
+    const baseInt = ipToInt(base);
+    if (baseInt != null) add(baseInt, parseInt(prefixStr || '24', 10) || 24);
+  }
+  return nets;
+}
+
+// "Find my consoles" with nothing to fill in: asks every address of every
+// local network directly and by broadcast in one pass. Direct questions find
+// a console where broadcasts are filtered (Wi-Fi isolation, some routers);
+// the broadcast finds it where it only answers those.
+router.get('/find', async (req, res) => {
+  try {
+    let saved = null;
+    try { saved = getRepo().queryScalar("SELECT value FROM settings WHERE key='default_subnet'"); } catch (_) {}
+    const nets = localSubnets([req.query.subnet, saved]);
+    const targets = new Set(['255.255.255.255']);
+    for (const { network, bcast } of nets.values()) {
+      for (let host = network + 1; host < bcast; host++) targets.add(intToIp(host));
+      targets.add(intToIp(bcast));
+    }
+    const found = await ddpScan([...targets], 3500);
+    const known = new Map(getRepo().queryAll('SELECT name, ip_address FROM profiles').map((p) => [String(p.ip_address).trim(), p.name]));
+    res.json({
+      success: true,
+      networks: [...nets.keys()],
+      devices: found.map(formatDevice).map((d) => ({ ...d, profile: known.get(d.ip) || null })),
+    });
+  } catch (err) {
+    res.json({ success: false, error: err.message, devices: [], networks: [] });
   }
 });
 

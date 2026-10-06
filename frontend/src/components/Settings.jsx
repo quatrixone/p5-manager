@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import Modal from './UI/Modal';
 import Badge from './UI/Badge';
 import RemoteSourcesSection from './RemoteSourcesSection';
@@ -17,7 +17,9 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
   const [profileForm, setProfileForm] = useState({ name: '', ip: '', mac: '', consoleType: '' });
   const [scanning, setScanning] = useState(false);
   const [discoveredDevices, setDiscoveredDevices] = useState([]);
-  const [scanMode, setScanMode] = useState('local');
+  // null until a search ran; then whether it came back empty, which is when
+  // the "which network" field is offered.
+  const [scanEmpty, setScanEmpty] = useState(false);
   // Single source of truth for the subnet - same value drives both the
   // "Default subnet" config field and the scan input, so saving in one place
   // is reflected in the other.
@@ -116,47 +118,39 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
     ['pkg_trigger_file', pkgTriggerFile],
   ], 'PKG installer saved!');
 
-  // Both scans share the same loading flag + result handler — the only
-  // difference is method (GET vs POST) and query/body shape, so we keep a
-  // single helper and pass the call site as a thunk.
-  const runScan = async (call) => {
+  // One search, nothing to fill in: the backend works out this machine's
+  // networks itself and asks every address plus the broadcast. `subnet` is
+  // only passed from the fallback field shown after an empty search.
+  const findConsoles = async (subnet) => {
     setScanning(true);
+    setScanEmpty(false);
     setDiscoveredDevices([]);
+    setMessage('');
     try {
-      const data = await call();
+      const q = subnet ? `?subnet=${encodeURIComponent(subnet)}` : '';
+      const data = await api.get(`/ps5control/find${q}`);
       if (data?.success && Array.isArray(data.devices)) {
         setDiscoveredDevices(data.devices);
-        if (data.devices.length === 0) setMessage('Scan complete · no devices found');
-      } else if (data && !data.success) {
-        setMessage(data.error || 'Scan failed');
+        setScanEmpty(data.devices.length === 0);
+      } else {
+        setMessage(data?.error || 'Search failed');
       }
     } catch (err) {
-      setMessage('Scan failed: ' + (err?.data?.error || err.message));
+      setMessage('Search failed: ' + (err?.data?.error || err.message));
     }
     setScanning(false);
-    setTimeout(() => setMessage(''), 3000);
   };
 
-  const handleScan = () => {
-    // Pass the saved default subnet so the backend can pick the right NIC
-    // for the directed broadcast (255.255.255.255 alone often lands on a
-    // docker bridge instead of the LAN).
-    const q = defaultSubnet ? `&subnet=${encodeURIComponent(defaultSubnet)}` : '';
-    return runScan(() => api.get(`/ps5control/scan?timeout=3${q}`));
-  };
-
-  const handleScanSubnet = () =>
-    runScan(() => api.post('/ps5control/scan-subnet', { subnet: defaultSubnet, timeout: 3 }));
-
-  const handleScanClick = () => {
-    if (!defaultSubnet) {
-      setMessage('Please set a default subnet first (e.g. 10.0.0.0/24)');
-      setTimeout(() => setMessage(''), 3000);
-      return;
-    }
-    if (scanMode === 'local') handleScan();
-    else handleScanSubnet();
-  };
+  // First visit with no console yet: look right away instead of waiting for
+  // a click. The short delay lets the profile list arrive first, so a page
+  // opened straight on Settings does not search for consoles it already has.
+  const autoSearched = useRef(false);
+  useEffect(() => {
+    if (autoSearched.current || activeTab !== 'profiles' || profiles.length > 0) return undefined;
+    const timer = setTimeout(() => { autoSearched.current = true; findConsoles(); }, 1500);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, profiles.length]);
 
   const handleAddDiscovered = async (device) => {
     const name = device.name || `${device.type || 'PS5'}-${device.ip?.split('.').pop()}`;
@@ -246,49 +240,55 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
         <button className="btn btn-primary" onClick={openAddProfile}>+ Add</button>
       </div>
 
-      {profiles.length === 0 && discoveredDevices.length === 0 && (
+      {profiles.length === 0 && discoveredDevices.length === 0 && !scanEmpty && (
         <div className="comp-card mb-md" style={{ borderLeft: '3px solid var(--blue)' }}>
           <div className="comp-card-header">
-            <span className="comp-card-title">🚀 First-time setup</span>
+            <span className="comp-card-title">🚀 Add your console</span>
           </div>
           <div className="comp-card-body flex-col gap-sm">
             <div className="text-sm">
-              <strong>Step 1.</strong> Set your LAN subnet (the network where your PS4 / PS5 lives).
-              Typical values: <code>10.0.0.0/24</code>, <code>192.168.1.0/24</code>.
+              Switch the PS4 / PS5 on (rest mode is fine) on the same network as this computer.
+              The app looks for it by itself.
             </div>
             <div className="flex gap-sm items-center flex-wrap">
-              <input
-                className="input"
-                type="text"
-                placeholder="10.0.0.0/24"
-                value={defaultSubnet}
-                onChange={e => setDefaultSubnet(e.target.value)}
-                onBlur={saveConfigSettings}
-                style={{ maxWidth: 200 }}
-              />
-              <span className="text-xs text-muted">Saved automatically on blur</span>
-            </div>
-            <div className="text-sm">
-              <strong>Step 2.</strong> Scan the subnet for consoles, then click <em>+ Add</em>
-              next to each discovered device.
-            </div>
-            <div className="flex gap-sm items-center flex-wrap">
-              <select className="select" value={scanMode} onChange={e => setScanMode(e.target.value)} style={{ maxWidth: 160 }}>
-                <option value="local">Broadcast (fast)</option>
-                <option value="subnet">Subnet sweep (slower, more reliable)</option>
-              </select>
-              <button className="btn btn-primary" onClick={handleScanClick} disabled={scanning || !defaultSubnet}>
-                {scanning ? '⏳ Scanning…' : '🔍 Scan now'}
+              <button className="btn btn-primary" onClick={() => findConsoles()} disabled={scanning}>
+                {scanning ? '⏳ Looking for consoles…' : '🔍 Find consoles'}
               </button>
               <button className="btn btn-ghost btn-sm" onClick={openAddProfile}>
                 or add manually
               </button>
             </div>
-            {message && (
-              <div className="text-sm" style={{ color: message.includes('fail') || message.includes('Please') ? 'var(--red)' : 'var(--muted)' }}>
-                {message}
-              </div>
-            )}
+            {message && <div className="text-sm" style={{ color: 'var(--red)' }}>{message}</div>}
+          </div>
+        </div>
+      )}
+
+      {scanEmpty && (
+        <div className="comp-card mb-md" style={{ borderLeft: '3px solid var(--yellow, var(--blue))' }}>
+          <div className="comp-card-header">
+            <span className="comp-card-title">No console found</span>
+          </div>
+          <div className="comp-card-body flex-col gap-sm">
+            <div className="text-sm">
+              Check that the console is switched on or in rest mode and connected to the same network, then look again.
+              If it sits on another network, enter that network here.
+            </div>
+            <div className="flex gap-sm items-center flex-wrap">
+              <input
+                className="input"
+                type="text"
+                placeholder="192.168.1.0/24"
+                value={defaultSubnet}
+                onChange={e => setDefaultSubnet(e.target.value)}
+                onBlur={saveConfigSettings}
+                style={{ maxWidth: 190 }}
+                aria-label="Network to search"
+              />
+              <button className="btn btn-primary" onClick={() => findConsoles(defaultSubnet)} disabled={scanning}>
+                {scanning ? '⏳ Looking…' : '🔍 Look again'}
+              </button>
+              <button className="btn btn-ghost btn-sm" onClick={openAddProfile}>add manually</button>
+            </div>
           </div>
         </div>
       )}
@@ -296,45 +296,36 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
       {discoveredDevices.length > 0 && (
         <div className="comp-card mb-md">
           <div className="comp-card-header">
-            <span className="comp-card-title">🔍 Discovered Devices</span>
+            <span className="comp-card-title">🔍 Found on your network</span>
           </div>
           <div className="comp-card-body">
-            {discoveredDevices.map((device, idx) => (
-              <div key={idx} className="list-item">
-                <span style={{ fontSize: '1.5rem' }}>🎮</span>
-                <div className="list-item-content">
-                  <div className="list-item-title">{device.name}</div>
-                  <div className="list-item-subtitle">{device.ip} • {device.type}</div>
+            {discoveredDevices.map((device, idx) => {
+              const added = device.profile || profiles.find(p => p.ip_address === device.ip)?.name;
+              return (
+                <div key={idx} className="list-item">
+                  <span style={{ fontSize: '1.5rem' }}>🎮</span>
+                  <div className="list-item-content">
+                    <div className="list-item-title">{device.name}</div>
+                    <div className="list-item-subtitle">
+                      {device.type} • {device.ip} • {device.state === 'standby' ? 'rest mode' : device.state === 'ready' ? 'on' : device.state}
+                    </div>
+                  </div>
+                  {added
+                    ? <span className="text-xs text-muted">✓ Added{added !== device.name ? ` as ${added}` : ''}</span>
+                    : <button className="btn btn-sm btn-success" onClick={() => handleAddDiscovered(device)}>+ Add</button>}
                 </div>
-                <button className="btn btn-sm btn-success" onClick={() => handleAddDiscovered(device)}>+ Add</button>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
 
       {(profiles.length > 0 || discoveredDevices.length > 0) && (
         <div className="flex gap-sm mb-sm flex-wrap items-center">
-          <select className="select" value={scanMode} onChange={e => setScanMode(e.target.value)} style={{ maxWidth: 130 }}>
-            <option value="local">Broadcast</option>
-            <option value="subnet">Subnet sweep</option>
-          </select>
-          <input
-            className="input"
-            type="text"
-            placeholder="10.0.0.0/24"
-            value={defaultSubnet}
-            onChange={e => setDefaultSubnet(e.target.value)}
-            onBlur={saveConfigSettings}
-            style={{ maxWidth: 170 }}
-            title="Subnet used for scanning. Saved on blur."
-          />
-          <button className="btn btn-secondary" onClick={handleScanClick} disabled={scanning || !defaultSubnet}>
-            {scanning ? '⏳ Scanning…' : '🔍 Scan'}
+          <button className="btn btn-secondary" onClick={() => findConsoles()} disabled={scanning}>
+            {scanning ? '⏳ Looking for consoles…' : '🔍 Find consoles'}
           </button>
-          {message && profiles.length > 0 && (
-            <span className="text-xs text-muted">{message}</span>
-          )}
+          {message && <span className="text-xs" style={{ color: 'var(--red)' }}>{message}</span>}
         </div>
       )}
 
@@ -346,7 +337,7 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
               <div className="flex-1" style={{ minWidth: 0 }}>
                 <div className="flex items-center gap-sm">
                   <span className="list-item-title">{profile.name}</span>
-                  {profile.is_default && <Badge variant="success">Default</Badge>}
+                  {!!profile.is_default && <Badge variant="success">Default</Badge>}
                   {profile.console_type && (
                     <span className="console-type-badge" title="Console type stored on this profile">
                       {profile.console_type.toUpperCase()}

@@ -62,7 +62,7 @@ function PayloadList({ payloads, profiles, onFetchUrl, onSend, onDelete, onUpdat
         const list = await api.get('/payloads/defaults');
         if (cancelled || !Array.isArray(list)) return;
         // Only 'log' and 'template' entries are actual app dependencies
-        // (Log viewer, the p2jb template). 'community' entries (kstuff,
+        // (Log viewer, Autoload templates). 'community' entries (kstuff,
         // ps5-backpork, micromount) are pre-curated convenience downloads -
         // nothing in the app breaks without them, so they belong in All,
         // not Built-in.
@@ -396,7 +396,7 @@ function PayloadList({ payloads, profiles, onFetchUrl, onSend, onDelete, onUpdat
           type="button"
           className={`tab-item ${activeTab === 'builtin' ? 'active' : ''}`}
           onClick={() => setActiveTab('builtin')}
-          title="Payloads the app itself depends on by name - required for the Log viewer, Remote Play PIN pairing, offline account activation, the p2jb template, and the PKG installer. Deleting one breaks that feature."
+          title="Payloads the app itself depends on by name - required for the Log viewer, Remote Play PIN pairing, offline account activation and the PKG installer. Deleting one breaks that feature."
         >
           🧷 Built-in{builtinPayloads.length > 0 ? ` (${builtinPayloads.length})` : ''}
         </button>
@@ -413,7 +413,7 @@ function PayloadList({ payloads, profiles, onFetchUrl, onSend, onDelete, onUpdat
         <EmptyState
           icon="🧷"
           title="No built-in payloads present"
-          text="None of the app-required payloads (log viewer, PIN pairing, offline activation, p2jb, PKG installer) are on disk yet. Hit ✨ Defaults to fetch the ones that come from GitHub, or upload the vendored ones (rp-get-pin.elf, offact.elf, pkg-install.elf) manually."
+          text="None of the app-required payloads (log viewer, PIN pairing, offline activation, PKG installer) are on disk yet. Hit ✨ Defaults to fetch the ones that come from GitHub, or upload the vendored ones (rp-get-pin.elf, offact.elf, pkg-install.elf) manually."
           action={onRestoreDefaults && <button className="btn btn-primary" onClick={() => onRestoreDefaults(false)}>✨ Defaults</button>}
         />
       ) : visiblePayloads.length === 0 ? (

@@ -42,7 +42,6 @@ export default function Library({ profiles = [], onNotification }) {
   const [customDest, setCustomDest] = useState('');
   const [deleteSource, setDeleteSource] = useState(false);
   const [deleting, setDeleting] = useState(null); // game pending delete confirmation
-  const [deleteText, setDeleteText] = useState('');
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -351,7 +350,7 @@ export default function Library({ profiles = [], onNotification }) {
                 <button className="btn btn-secondary" disabled={busy || jobActive || !game.source_available} onClick={() => openPicker(game, 'unpack')}>📂 Unpack to…</button>
               )}
               <button className="btn btn-secondary" disabled={busy || !game.installed} onClick={() => uninstall(game)} title="Remove the title from the console's home screen; files stay">✖ Uninstall</button>
-              <button className="btn btn-danger" disabled={busy || jobActive} onClick={() => { setDeleteText(''); setDeleting(game); }} title="Delete the game's files for good">🗑 Delete</button>
+              <button className="btn btn-danger" disabled={busy || jobActive} onClick={() => setDeleting(game)} title="Delete the game's files for good">🗑 Delete</button>
             </div>
           </div>
         )}
@@ -409,9 +408,9 @@ export default function Library({ profiles = [], onNotification }) {
         title="Delete game files"
         footer={deleting && (
           <>
-            <button className="btn btn-ghost" onClick={() => setDeleting(null)} disabled={busy}>Cancel</button>
-            <button className="btn btn-danger" onClick={confirmDelete} disabled={busy || deleteText.trim() !== deleting.title_id}>
-              {busy ? '⏳ Deleting…' : 'Delete for good'}
+            <button className="btn btn-ghost" onClick={() => setDeleting(null)} disabled={busy}>No</button>
+            <button className="btn btn-danger" onClick={confirmDelete} disabled={busy}>
+              {busy ? '⏳ Deleting…' : 'Yes, delete'}
             </button>
           </>
         )}
@@ -419,11 +418,9 @@ export default function Library({ profiles = [], onNotification }) {
         {deleting && (
           <div className="flex-col gap-sm">
             <div className="text-sm">
-              This deletes <b>{deleting.title_name || deleting.title_id}</b> ({fmtBytes(sizeOf(deleting))}) from the console. It cannot be undone.
+              Delete <b>{deleting.title_name || deleting.title_id}</b> ({fmtBytes(sizeOf(deleting))}) from the console? It cannot be undone.
             </div>
             <div className="text-xs text-muted" style={{ wordBreak: 'break-all' }}>{deleting.path}</div>
-            <label className="text-xs text-muted">Type <b>{deleting.title_id}</b> to confirm</label>
-            <input className="input" value={deleteText} onChange={e => setDeleteText(e.target.value)} placeholder={deleting.title_id} autoFocus />
           </div>
         )}
       </Modal>

@@ -406,6 +406,10 @@ function parseScriptLine(line) {
     const text = t.replace(/^\S+\s+/, '');
     return { type: 'text', text };
   }
+  // home - back to the main screen. The browser runner also reads the video
+  // frame to correct Control Center's cursor; here it is the plain
+  // PS, Down, Cross it falls back to without a frame.
+  if (cmd === 'home') return { type: 'home' };
   const btn = BUTTON_ALIASES[cmd];
   if (btn) {
     // Accept the remaining args in any order:
@@ -1189,13 +1193,57 @@ router.get('/sessions/:sid/video.mjpeg', async (req, res) => {
   }
 });
 
+// What the browser currently holds down per session: sid -> { buttons, sticks }.
+// A press whose release never arrives (page reloaded or sent to the
+// background mid-press, request lost) would otherwise stay held on the
+// console for the rest of the session - the cursor then keeps drifting that
+// way. release-all below lets the page clear it when it leaves and when it
+// comes back.
+const heldInputs = new Map();
+
+function trackHeldInput(sid, body) {
+  let held = heldInputs.get(sid);
+  if (!held) { held = { buttons: new Set(), sticks: new Set() }; heldInputs.set(sid, held); }
+  if (body.button) {
+    const button = String(body.button).toLowerCase();
+    if (body.action === 'press') held.buttons.add(button);
+    else if (body.action === 'release') held.buttons.delete(button);
+  } else if (body.stick) {
+    if (Number(body.x) || Number(body.y)) held.sticks.add(body.stick);
+    else held.sticks.delete(body.stick);
+  }
+  if (held.buttons.size === 0 && held.sticks.size === 0) heldInputs.delete(sid);
+}
+
 router.post('/sessions/:sid/input', async (req, res) => {
   try {
     const data = await sidecar('POST', `/sessions/${encodeURIComponent(req.params.sid)}/input`, req.body || {}, { timeout: 5000 });
+    trackHeldInput(req.params.sid, req.body || {});
     res.json({ success: true, ...data });
   } catch (err) {
     res.status(err.status || 502).json({ success: false, error: err.message });
   }
+});
+
+// Release every button and centre every stick the browser left held.
+router.post('/sessions/:sid/release-all', async (req, res) => {
+  const sid = req.params.sid;
+  const held = heldInputs.get(sid);
+  heldInputs.delete(sid);
+  const released = [];
+  if (held) {
+    const inputs = [
+      ...Array.from(held.buttons, button => ({ button, action: 'release' })),
+      ...Array.from(held.sticks, stick => ({ stick, x: 0, y: 0 })),
+    ];
+    for (const input of inputs) {
+      try {
+        await sidecar('POST', `/sessions/${encodeURIComponent(sid)}/input`, input, { timeout: 5000 });
+        released.push(input.button || `${input.stick} stick`);
+      } catch (_) { /* session gone - nothing left to release */ }
+    }
+  }
+  res.json({ success: true, released });
 });
 
 // Fullscreen "Shake" gesture — proxies to the sidecar's Controller.shake()
@@ -1562,6 +1610,16 @@ router.post('/run-script', async (req, res) => {
       }
       if (parsed.type === 'unknown') {
         events.push({ line: i + 1, type: 'error', msg: `unknown command: ${parsed.raw}` });
+        continue;
+      }
+      if (parsed.type === 'home') {
+        let lastErr = null;
+        for (const [button, pauseMs] of [['ps', 800], ['down', 400], ['cross', 0]]) {
+          const err = await sendButton(button, 80);
+          if (err && err !== 'recovered') lastErr = err;
+          if (pauseMs) await new Promise((r) => setTimeout(r, pauseMs));
+        }
+        events.push({ line: i + 1, type: 'home', ...(lastErr ? { error: lastErr } : {}) });
         continue;
       }
       if (parsed.type === 'text') {

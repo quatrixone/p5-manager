@@ -17,8 +17,6 @@
 //                    "All" shows everything. Untagged = cross-platform
 //                    (e.g. generic download-then-upload pipelines).
 
-const MIN = 60 * 1000;
-
 // Convention for PS5 / cross-platform templates:
 //   - First step is always `rp_session start` — pyremoteplay's quick-start
 //     wakes the console from rest (DDP), opens the RP session, dismisses
@@ -63,24 +61,19 @@ export const DEFAULT_TEMPLATES = [
     console_type: 'ps5',
   },
   {
-    id: 'tpl-p2jb-jailbreak',
-    name: 'PS5: p2jb jailbreak (start session → lua → wait 55min → verify ELF → rest mode)',
-    description: 'Open Remote Play session, wait 15s for the Lua port (9026) to be up, send p2jb.lua, wait 55 minutes, verify the ELF port (9021) is reachable, then rest mode.',
+    id: 'tpl-userguide-jailbreak-autoload',
+    name: "PS5: Jailbreak when the loader is down (User's Guide → kstuff → ShadowMount)",
+    description: "Runs by itself when the console is on but the ELF loader port (9021) is closed: opens the User's Guide through Remote Play, waits for the loader, then sends kstuff.elf and shadowmountplus.elf.",
+    // Saved sequences keep this trigger; the backend watcher starts them.
+    autoTrigger: 'loader_down',
     steps: [
-      // Step 1 — RP session: opens the link and wakes the PS5 if it was asleep.
-      { type: 'rp_session', action: 'start', name: 'Start Remote Play session' },
-      // Step 2 — give the Lua exploit listener time to come up.
-      { type: 'wait', duration: 15000, name: 'Wait 15 seconds' },
-      // Step 3 — block until Lua port 9026 is reachable; on failure retry steps 1-2 (re-open RP + wait).
-      { type: 'check_port', port: 9026, retryFromStep: 1, retryToStep: 2, name: 'Check Lua port 9026 (retry on fail)' },
-      // Step 4 — fire the actual exploit.
-      { type: 'payload', payloadName: 'p2jb.lua', name: 'Send p2jb.lua' },
-      // Step 5 — p2jb prep takes ~55 min to complete the kexploit.
-      { type: 'wait', duration: 55 * MIN, name: 'Wait 55 minutes' },
-      // Step 6 — final verification: ELF port 9021 must be open. No retry → fails the sequence if unreachable.
-      { type: 'check_port', port: 9021, retryFromStep: 6, retryToStep: 6, name: 'Verify ELF port 9021 (success)' },
-      // Step 7 — done; put the console back to sleep.
-      { type: 'rp_session', action: 'standby', name: 'Console rest mode' },
+      // Built-in script, looked up at run time so edits to it apply here.
+      { type: 'input_script', scriptId: 'builtin:open-user-guide', builtin: true, name: "Run: Open User's Guide" },
+      // The exploit page needs a while; fail the run if the loader never comes up.
+      { type: 'check_port', port: 9021, waitSeconds: 240, retryFromStep: 2, retryToStep: 2, name: 'Wait for ELF port 9021' },
+      { type: 'payload', payloadName: 'kstuff.elf', name: 'Send kstuff.elf' },
+      { type: 'wait', duration: 5000, name: 'Wait 5 seconds' },
+      { type: 'payload', payloadName: 'shadowmountplus.elf', name: 'Send shadowmountplus.elf' },
     ],
     requiresProfile: true,
     console_type: 'ps5',
