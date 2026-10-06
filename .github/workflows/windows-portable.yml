@@ -63,7 +63,7 @@ jobs:
           # Backend: sources, built UI, production dependencies only.
           Copy-Item backend/src "$out/app/backend/src" -Recurse
           Copy-Item backend/dist "$out/app/backend/dist" -Recurse
-          Copy-Item backend/package.json, backend/package-lock.json "$out/app/backend/"
+          Copy-Item backend/package.json, backend/package-lock.json, backend/image-level, backend/deps-hash.mjs "$out/app/backend/"
           Get-ChildItem "$out/app/backend/src" -Recurse -Filter *.test.js | Remove-Item
           Push-Location "$out/app/backend"; npm ci --omit=dev --no-audit --no-fund; Pop-Location
           Copy-Item frontend/builtin "$out/app/builtin" -Recurse

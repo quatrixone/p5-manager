@@ -128,22 +128,19 @@ downloads and conversion work files are in `/data/payloads`,
 docker compose pull && docker compose up -d`.
 
 **Update from inside the app.** When a newer release is out, the app shows
-a bar with *What's new*. To also get an **Update** button there, install the
-small host-side helper once, as a user who may use Docker:
+a bar with **Update** and *What's new*. Update downloads the new version of
+the app's own code from the release, checks it against the published
+checksum, stores it in the data folder and restarts. The container itself
+is not replaced and the app needs no access to Docker. If the new version
+does not start, the app goes back to the one that ran before.
 
-```bash
-scripts/p5-update.sh --install <name of the app container>
-```
+The container has to be allowed to restart for this: the provided
+`docker-compose.yml` uses `restart: unless-stopped`.
 
-`docker ps` shows the name (with Docker Compose it ends in `-app-1`). The
-helper runs every minute from that user's crontab. A click on **Update**
-makes it pull the released image and replace the app container with the
-same settings. The previous container is kept, stopped, as
-`<name>-previous`, and is started again by itself if the new version does
-not come up. The app container is not given access to Docker. The Remote
-Play service is a separate image and is not touched; update it with
-`docker compose pull pyremoteplay && docker compose up -d pyremoteplay`.
-Remove the helper with `scripts/p5-update.sh --uninstall`.
+What an in-app update cannot change is the image underneath: system tools,
+the Node runtime, the installed libraries and the Remote Play service. When
+a release needs a newer image, the bar says so instead of offering Update;
+then use `git pull && docker compose pull && docker compose up -d`.
 
 ### Windows (portable)
 
@@ -156,6 +153,10 @@ Remove the helper with `scripts/p5-update.sh --uninstall`.
 Allow `node.exe` and `python.exe` through Windows Firewall on private
 networks when asked. Your data is kept in the `data` folder next to the
 exe. Close the console window to stop the app.
+
+The **Update** bar works here too. When a release needs a newer package,
+download the new zip, extract it elsewhere and move your `data` folder
+into it.
 
 Two things work only in the Docker version: creating exFAT images, and
 "remote source" SMB shares (on Windows, type the `\\server\share` path

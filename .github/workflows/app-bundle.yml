@@ -1,0 +1,49 @@
+name: App bundle
+
+# Builds the bundle the in-app Update installs (backend sources + built web
+# UI, see scripts/build-app-bundle.mjs) and attaches it to the release of a
+# version tag. A manual run only checks that it builds.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: |
+          npm ci --prefix backend --no-audit --no-fund
+          npm ci --prefix frontend --no-audit --no-fund
+
+      - name: Tests
+        run: |
+          npm test --prefix backend
+          npm test --prefix frontend
+
+      - name: Build the bundle
+        run: node scripts/build-app-bundle.mjs dist-bundle
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: app-bundle
+          path: dist-bundle/*
+          if-no-files-found: error
+
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist-bundle/*

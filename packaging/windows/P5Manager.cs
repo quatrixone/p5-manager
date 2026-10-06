@@ -169,7 +169,7 @@ static class P5Manager
         }
 
         Console.WriteLine("[launcher] starting P5 Manager on port " + port + ", data in " + data);
-        Process server = Start(node, "src\\index.js", backend, new string[][] {
+        string[][] serverEnv = new string[][] {
             new string[] { "NODE_ENV", "production" },
             new string[] { "PORT", port },
             new string[] { "P5M_PORTABLE", "1" },
@@ -178,7 +178,8 @@ static class P5Manager
             new string[] { "USER_DATA_DIR", data },
             new string[] { "BUILTIN_DIR", Path.Combine(home, "app", "builtin") },
             new string[] { "PYREMOTEPLAY_SIDECAR_URL", "http://127.0.0.1:" + sidecarPort },
-        });
+        };
+        Process server = Start(node, "src\\index.js", backend, serverEnv);
 
         string url = "http://localhost:" + port + "/";
         bool up = false;
@@ -212,6 +213,16 @@ static class P5Manager
 
         server.WaitForExit();
         int code = server.ExitCode;
+        // 75 = the app installed an update of itself and wants to be started
+        // again (backend/src/routes/update.js). The Remote Play service keeps
+        // running across that.
+        while (code == 75)
+        {
+            Console.WriteLine("[launcher] restarting P5 Manager after an update");
+            server = Start(node, "src\\index.js", backend, serverEnv);
+            server.WaitForExit();
+            code = server.ExitCode;
+        }
         if (code != 0)
         {
             Console.Error.WriteLine("[launcher] P5 Manager stopped with exit code " + code + ". Press Enter to close.");
