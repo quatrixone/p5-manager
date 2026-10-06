@@ -9,8 +9,9 @@
 // from there instead of from the image.
 //
 // A downloaded copy brings no node_modules; it runs on the image's. So it
-// is used only while it is newer than the image, was built against the same
-// dependencies (deps-hash.mjs) and the image is recent enough for it
+// is used only while it is newer than the image, is meant for this platform
+// (Docker or the Windows package), was built against the same dependencies
+// (deps-hash.mjs) and the image is recent enough for it
 // (backend/image-level). It gets two attempts to start: main.js clears the
 // attempt counter once it is up, and a copy that used both is set aside so
 // the image's own code runs again.
@@ -39,6 +40,11 @@ let imageLevel = 1;
 try { imageLevel = parseInt(fs.readFileSync(path.join(baseRoot, 'image-level'), 'utf8'), 10) || 1; } catch (_) {}
 let baseDeps = '';
 try { baseDeps = depsHash(path.join(baseRoot, 'package-lock.json')); } catch (_) {}
+// The Windows package (its launcher sets P5M_PORTABLE) also holds the Remote
+// Play service; `pydeps` there names the Python packages it was built with.
+const platform = process.env.P5M_PORTABLE === '1' ? 'windows' : 'docker';
+let basePydeps = '';
+try { basePydeps = fs.readFileSync(path.resolve(baseRoot, '../pyremoteplay/pydeps'), 'utf8').trim(); } catch (_) {}
 
 function pickDownloadedCopy() {
   const current = path.join(updateDir, 'current');
@@ -51,6 +57,8 @@ function pickDownloadedCopy() {
   }
   if ((parseInt(manifest.image_level, 10) || 1) > imageLevel) return null;
   if (!baseDeps || manifest.deps !== baseDeps) return null;
+  if ((manifest.platform || 'docker') !== platform) return null;
+  if (manifest.pydeps && manifest.pydeps !== basePydeps) return null;
 
   const bootFile = path.join(updateDir, 'boot.json');
   const boot = readJson(bootFile);
@@ -95,6 +103,8 @@ process.env.P5M_BASE_ROOT = baseRoot;
 process.env.P5M_BASE_VERSION = baseVersion;
 process.env.P5M_IMAGE_LEVEL = String(imageLevel);
 process.env.P5M_DEPS_HASH = baseDeps;
+process.env.P5M_PLATFORM = platform;
+process.env.P5M_PYDEPS = basePydeps;
 if (picked && !process.env.BUILTIN_DIR) {
   // main.js finds the built-in lists next to itself; a downloaded copy has
   // none of its own and uses the image's (or the folder mounted over it).

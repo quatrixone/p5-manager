@@ -82,6 +82,10 @@ jobs:
           $pth = Get-ChildItem "$out/runtime/python" -Filter "python*._pth" | Select-Object -First 1
           Set-Content $pth.FullName -Encoding ascii -Value @("python311.zip", ".", "Lib\site-packages", "..\..\app\pyremoteplay", "import site")
           Copy-Item pyremoteplay/server.py, pyremoteplay/pyremoteplay_patches.py "$out/app/pyremoteplay/"
+          # Which Python packages this service was built with: an in-app update
+          # brings a newer service only when it was built against the same ones.
+          node -e "import('./backend/deps-hash.mjs').then(m => process.stdout.write(m.fileHash('pyremoteplay/requirements.txt')))" | Set-Content "$out/app/pyremoteplay/pydeps"
+          if (-not (Get-Content "$out/app/pyremoteplay/pydeps")) { throw "could not fingerprint requirements.txt" }
 
           # Launcher, built with the C# compiler that ships with Windows.
           & "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /nologo /optimize+ /target:exe "/out:$out\P5Manager.exe" packaging\windows\P5Manager.cs
@@ -124,6 +128,37 @@ jobs:
           Start-Sleep -Seconds 3
           $left = Get-Process node, python -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "$app*" }
           if ($left) { throw "child processes survived the launcher: $($left.Id -join ', ')" }
+
+      - name: Update the packaged app from inside
+        shell: pwsh
+        run: |
+          # The app updates itself from a release's bundle. Build one with a
+          # higher version, serve it locally the way GitHub would, and let the
+          # packaged app install it: the launcher has to start the new code and
+          # the Remote Play service that came with it.
+          $ErrorActionPreference = 'Stop'
+          $app = Resolve-Path "dist-portable/P5Manager"
+          $bundles = "$env:RUNNER_TEMP\bundles"
+          node scripts/build-app-bundle.mjs $bundles --no-build --version 99.0.0
+          if ($LASTEXITCODE -ne 0) { throw "bundle did not build" }
+          $log = "$env:RUNNER_TEMP\p5manager-update.log"
+          $env:P5M_UPDATE_FEED = "http://127.0.0.1:39918/latest"
+          $proc = Start-Process "$app\P5Manager.exe" -ArgumentList "--no-browser" -PassThru -RedirectStandardOutput $log -RedirectStandardError "$log.err"
+          try {
+            node scripts/update-check.mjs http://127.0.0.1:3001 $bundles 99.0.0 --sidecar
+            if ($LASTEXITCODE -ne 0) { throw "the in-app update did not work" }
+            $text = Get-Content $log -Raw
+            if ($text -notmatch 'restarting P5 Manager after an update') { throw "the launcher did not restart the app" }
+            if ($text -notmatch 'Remote Play service on 127\.0\.0\.1:\d+ \(updated copy\)') { throw "the updated Remote Play service was not started" }
+          }
+          finally {
+            Write-Host "---- launcher / server log ----"
+            if (Test-Path $log) { Get-Content $log -Tail 80 }
+            if (Test-Path "$log.err") { Get-Content "$log.err" -Tail 40 }
+            if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
+            Remove-Item Env:P5M_UPDATE_FEED
+          }
+          Start-Sleep -Seconds 3
 
       - name: Zip
         shell: pwsh

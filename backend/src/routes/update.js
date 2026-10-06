@@ -10,8 +10,10 @@ import { internalDataDir } from '../lib/paths.js';
 // "A new version is out" notice plus the Update button.
 //
 // The app updates its own code, not its container. Every release carries
-// an "app bundle" (p5-manager-app-<version>-level<n>-deps<hash>.zip with
-// src/ and dist/, built by scripts/build-app-bundle.mjs). Update downloads
+// one "app bundle" per platform - Docker and the Windows package - named
+// p5-manager-app-<version>-<platform>-level<n>-deps<hash>[-py<hash>].zip
+// (src/ and dist/, on Windows also the Remote Play service; built by
+// scripts/build-app-bundle.mjs). Update downloads
 // it, checks it against the published SHA-256, unpacks it into
 // <data dir>/app-update/current and exits; the restart policy starts the
 // app again and src/index.js loads the new copy from there. Nothing outside
@@ -21,8 +23,9 @@ import { internalDataDir } from '../lib/paths.js';
 // Node runtime, node_modules, the Remote Play service. Its name says which
 // image it fits - `level` is the image level it needs (backend/image-level)
 // and `deps` the fingerprint of the dependencies it was built against
-// (backend/deps-hash.mjs). A bundle that does not fit the running image is
-// reported, not installed.
+// (backend/deps-hash.mjs); `py`, on Windows, the same for the Remote Play
+// service's Python packages. A bundle that does not fit the running image
+// is reported, not installed.
 
 const router = express.Router();
 
@@ -33,7 +36,7 @@ const FEED_URL = process.env.P5M_UPDATE_FEED || `https://api.github.com/repos/${
 const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const UPDATE_DIR = path.join(internalDataDir, 'app-update');
 const RESULT_FILE = path.join(UPDATE_DIR, 'result.json');
-const BUNDLE_NAME = /^p5-manager-app-(\d[0-9A-Za-z.]*)-level(\d+)-deps([0-9a-f]{12})\.zip$/;
+const BUNDLE_NAME = /^p5-manager-app-(\d[0-9A-Za-z.]*)-(docker|windows)-level(\d+)-deps([0-9a-f]{12})(?:-py([0-9a-f]{12}))?\.zip$/;
 // Asked of whatever restarts the process: Docker restarts on any exit, the
 // Windows launcher only on this code.
 export const RESTART_EXIT_CODE = 75;
@@ -51,6 +54,8 @@ const CURRENT_VERSION = (() => {
 const SELF_UPDATE = !!process.env.P5M_BASE_ROOT;
 const IMAGE_LEVEL = parseInt(process.env.P5M_IMAGE_LEVEL, 10) || 1;
 const DEPS_HASH = process.env.P5M_DEPS_HASH || '';
+const PLATFORM = process.env.P5M_PLATFORM || 'docker';
+const PYDEPS = process.env.P5M_PYDEPS || '';
 
 const parseVersion = (v) => String(v || '').replace(/^v/i, '').split('-')[0].split('.').map(n => parseInt(n, 10) || 0);
 export function isNewerVersion(candidate, current) {
@@ -78,7 +83,7 @@ async function checkLatest(force = false) {
     if (!res.ok) throw new Error(`GitHub answered ${res.status}`);
     const rel = await res.json();
     const assets = Array.isArray(rel.assets) ? rel.assets : [];
-    const zip = assets.find(a => BUNDLE_NAME.test(a.name));
+    const zip = assets.find(a => a.name.match(BUNDLE_NAME)?.[2] === PLATFORM);
     const sum = zip && assets.find(a => a.name === `${zip.name}.sha256`);
     latest = {
       version: String(rel.tag_name || '').replace(/^v/i, ''),
@@ -91,8 +96,9 @@ async function checkLatest(force = false) {
         url: zip.browser_download_url,
         sha256_url: sum.browser_download_url,
         size: zip.size,
-        image_level: parseInt(zip.name.match(BUNDLE_NAME)[2], 10),
-        deps: zip.name.match(BUNDLE_NAME)[3],
+        image_level: parseInt(zip.name.match(BUNDLE_NAME)[3], 10),
+        deps: zip.name.match(BUNDLE_NAME)[4],
+        pydeps: zip.name.match(BUNDLE_NAME)[5] || '',
       } : null,
     };
     checkError = null;
@@ -110,8 +116,8 @@ const readJson = (file) => {
 function blocker() {
   if (!latest?.version || !isNewerVersion(latest.version, CURRENT_VERSION)) return 'No newer version to install';
   if (!SELF_UPDATE) return 'This installation cannot update itself';
-  if (!latest.bundle) return 'This release has no app bundle to install';
-  if (latest.bundle.image_level > IMAGE_LEVEL || latest.bundle.deps !== DEPS_HASH) {
+  if (!latest.bundle) return `This release has no app bundle for ${PLATFORM === 'windows' ? 'the Windows package' : 'Docker'}`;
+  if (latest.bundle.image_level > IMAGE_LEVEL || latest.bundle.deps !== DEPS_HASH || (latest.bundle.pydeps && latest.bundle.pydeps !== PYDEPS)) {
     return 'This version needs a newer image - pull it (docker compose pull && docker compose up -d) or download the new Windows package';
   }
   return null;
@@ -173,7 +179,8 @@ async function install(bundle, version) {
     zip.extractAllTo(staging, true);
     const manifest = readJson(path.join(staging, 'manifest.json'));
     if (manifest?.version !== version) throw new Error(`the bundle says version ${manifest?.version}, expected ${version}`);
-    if ((parseInt(manifest.image_level, 10) || 1) > IMAGE_LEVEL || manifest.deps !== DEPS_HASH) throw new Error('the bundle needs a newer image');
+    if ((manifest.platform || 'docker') !== PLATFORM) throw new Error(`the bundle is for ${manifest.platform}`);
+    if ((parseInt(manifest.image_level, 10) || 1) > IMAGE_LEVEL || manifest.deps !== DEPS_HASH || (manifest.pydeps && manifest.pydeps !== PYDEPS)) throw new Error('the bundle needs a newer image');
     for (const need of ['src/main.js', 'dist/index.html', 'package.json']) {
       if (!fs.existsSync(path.join(staging, need))) throw new Error(`the bundle is incomplete: ${need} is missing`);
     }

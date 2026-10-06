@@ -137,10 +137,14 @@ does not start, the app goes back to the one that ran before.
 The container has to be allowed to restart for this: the provided
 `docker-compose.yml` uses `restart: unless-stopped`.
 
-What an in-app update cannot change is the image underneath: system tools,
-the Node runtime, the installed libraries and the Remote Play service. When
-a release needs a newer image, the bar says so instead of offering Update;
-then use `git pull && docker compose pull && docker compose up -d`.
+Docker and the Windows package each get their own update bundle with every
+release, and an installation only ever takes the one for its platform.
+
+What an in-app update cannot change in Docker is the image underneath:
+system tools, the Node runtime, the installed libraries and the Remote Play
+service (its own image). When a release needs a newer image, the bar says so
+instead of offering Update; then use `git pull && docker compose pull &&
+docker compose up -d`.
 
 ### Windows (portable)
 
@@ -154,7 +158,9 @@ Allow `node.exe` and `python.exe` through Windows Firewall on private
 networks when asked. Your data is kept in the `data` folder next to the
 exe. Close the console window to stop the app.
 
-The **Update** bar works here too. When a release needs a newer package,
+The **Update** bar works here too, with a bundle made for the Windows
+package: it also brings the newer Remote Play service. When a release needs
+a newer package (other bundled runtimes or libraries), the bar says so;
 download the new zip, extract it elsewhere and move your `data` folder
 into it.
 

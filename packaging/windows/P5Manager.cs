@@ -20,6 +20,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Net;
 using System.Runtime.InteropServices;
+using System.Text.RegularExpressions;
 using System.Threading;
 
 static class P5Manager
@@ -114,6 +115,44 @@ static class P5Manager
         return string.IsNullOrEmpty(v) ? fallback : v;
     }
 
+    static string ReadTrimmed(string file)
+    {
+        try { return File.ReadAllText(file).Trim(); }
+        catch { return ""; }
+    }
+
+    // An in-app update (backend\src\routes\update.js) can bring a newer
+    // Remote Play service along with the app, in <data>\app\app-update\current.
+    // It is used only when it was built against the same Python packages as
+    // this package (the "pydeps" fingerprint); otherwise the packaged one runs.
+    static string PickSidecarDir(string packaged, string appData)
+    {
+        string current = Path.Combine(appData, "app-update", "current");
+        string updated = Path.Combine(current, "pyremoteplay");
+        string want = ReadTrimmed(Path.Combine(packaged, "pydeps"));
+        if (want == "" || !File.Exists(Path.Combine(updated, "server.py"))) return packaged;
+        Match m = Regex.Match(ReadTrimmed(Path.Combine(current, "manifest.json")), "\"pydeps\"\\s*:\\s*\"([0-9a-f]+)\"");
+        return m.Success && m.Groups[1].Value == want ? updated : packaged;
+    }
+
+    static Process StartSidecar(string python, string packaged, string appData, string sidecarPort)
+    {
+        string dir = PickSidecarDir(packaged, appData);
+        // The bundled Python only looks where its ._pth file says, which is the
+        // packaged folder. For an updated copy, put its own folder first.
+        string args = dir == packaged
+            ? "server.py"
+            : "-c \"import os, runpy, sys; sys.path.insert(0, sys.argv[1]); runpy.run_path(os.path.join(sys.argv[1], 'server.py'), run_name='__main__')\" \"" + dir + "\"";
+        Console.WriteLine("[launcher] starting Remote Play service on 127.0.0.1:" + sidecarPort
+            + (dir == packaged ? "" : " (updated copy)"));
+        return Start(python, args, dir, new string[][] {
+            new string[] { "PYREMOTEPLAY_SIDECAR_HOST", "127.0.0.1" },
+            new string[] { "PYREMOTEPLAY_SIDECAR_PORT", sidecarPort },
+            new string[] { "PYTHONUNBUFFERED", "1" },
+            new string[] { "PYTHONIOENCODING", "utf-8" },
+        });
+    }
+
     static int Main(string[] args)
     {
         bool openBrowser = Env("P5M_NO_BROWSER", "") == "";
@@ -153,15 +192,10 @@ static class P5Manager
         CreateKillOnCloseJob();
 
         bool hasSidecar = File.Exists(python) && File.Exists(Path.Combine(sidecarDir, "server.py"));
+        Process sidecar = null;
         if (hasSidecar)
         {
-            Console.WriteLine("[launcher] starting Remote Play service on 127.0.0.1:" + sidecarPort);
-            Start(python, "server.py", sidecarDir, new string[][] {
-                new string[] { "PYREMOTEPLAY_SIDECAR_HOST", "127.0.0.1" },
-                new string[] { "PYREMOTEPLAY_SIDECAR_PORT", sidecarPort },
-                new string[] { "PYTHONUNBUFFERED", "1" },
-                new string[] { "PYTHONIOENCODING", "utf-8" },
-            });
+            sidecar = StartSidecar(python, sidecarDir, appData, sidecarPort);
         }
         else
         {
@@ -214,11 +248,22 @@ static class P5Manager
         server.WaitForExit();
         int code = server.ExitCode;
         // 75 = the app installed an update of itself and wants to be started
-        // again (backend/src/routes/update.js). The Remote Play service keeps
-        // running across that.
-        while (code == 75)
+        // again (backend/src/routes/update.js). The Remote Play service is
+        // started again too, since the update may have brought a newer one.
+        // An updated app that then stops with an error gets a few more starts:
+        // after two failed ones its loader goes back to the previous version.
+        int retries = 0;
+        bool updated = false;
+        while (code == 75 || (updated && code != 0 && retries < 3))
         {
+            if (code == 75) { updated = true; retries = 0; }
+            else retries++;
             Console.WriteLine("[launcher] restarting P5 Manager after an update");
+            if (sidecar != null)
+            {
+                try { if (!sidecar.HasExited) { sidecar.Kill(); sidecar.WaitForExit(5000); } } catch { }
+                sidecar = StartSidecar(python, sidecarDir, appData, sidecarPort);
+            }
             server = Start(node, "src\\index.js", backend, serverEnv);
             server.WaitForExit();
             code = server.ExitCode;

@@ -9,6 +9,14 @@
 import fs from 'fs';
 import crypto from 'crypto';
 
+// Fingerprint of a file as it is, for the Remote Play service's
+// requirements.txt in the Windows package. Line endings are ignored: a
+// Windows checkout may have converted them.
+export function fileHash(file) {
+  const text = fs.readFileSync(file, 'utf8').replace(/\r\n/g, '\n');
+  return crypto.createHash('sha256').update(text).digest('hex').slice(0, 12);
+}
+
 export function depsHash(lockFile) {
   const lock = JSON.parse(fs.readFileSync(lockFile, 'utf8'));
   delete lock.version;
