@@ -80,6 +80,8 @@ The screenshots use made-up demo data.
 
 - A PS4 or PS5 that already runs homebrew, on the same network as the
   computer running P5 Manager. P5 Manager does not unlock a console.
+  - **PS5:** system software **13.60 or lower**.
+  - **PS4:** a system software version your homebrew setup supports.
 - For the **Library** tab:
   [ShadowMountPlus](https://github.com/drakmor/ShadowMountPlus) running on
   the console.
