@@ -1268,8 +1268,9 @@ export default function FileBrowser({
                 // clipped — especially inside the Convert tab and PS5 FTP
                 // view, where the FileBrowser sits deep in the DOM.
                 <>
-                {/* Its own onClick: iOS sends no click to a plain div, so the
-                    document-level "click outside" never saw a tap here. */}
+                {/* iOS sends no click for a tap on a plain div, so "click outside"
+                    never fired there; .file-menu-backdrop has cursor: pointer,
+                    which is what makes iOS treat it as clickable. */}
                 {menuStyle.sheet && <div className="file-menu-backdrop" onClick={closeMenu} />}
                 <div
                   className={`file-menu ${menuStyle.sheet ? 'file-menu-sheet' : ''}`}
