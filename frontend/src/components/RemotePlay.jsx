@@ -2992,7 +2992,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
             onClick={wakePs5}
             title="Pre-warm: opens a full Remote Play session (waking the PS5 from rest mode if needed) and immediately parks it in the warm cache so the next Start session resumes in milliseconds."
           >
-            {wakeBusy ? '⏳ Waking…' : warmCache ? '✓ Warm — re-warm?' : '📡 Wake PS5'}
+            {wakeBusy ? '⏳ Waking…' : '📡 Wake PS5'}
           </button>
           <button
             className="btn btn-ghost"
