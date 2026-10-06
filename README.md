@@ -247,7 +247,7 @@ On the console, P5 Manager connects to:
 |-------------|-------|---------------------------------------------|
 | 9021 / 9026 | TCP   | PS5 payload loader (ELF / Lua)              |
 | 9020        | TCP   | PS4 payload loader                          |
-| 2120 / 2121 | TCP   | FTP                                         |
+| 2120        | TCP   | FTP (zftpd; the port is set in Settings)    |
 | 10101       | TCP   | ShadowMountPlus                             |
 | 5910        | TCP   | PS5 Game Compressor                         |
 | 9302 / 987  | UDP   | Finding and waking a PS5 / PS4              |

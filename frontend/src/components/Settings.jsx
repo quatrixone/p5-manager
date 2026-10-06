@@ -30,13 +30,9 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
   // current default profile at submit time (legacy behaviour).
   const [uploadTargetIp, setUploadTargetIp] = useState('');
   const [uploadTargetPath, setUploadTargetPath] = useState('/data/homebrew');
-  // Anonymous FTP control port the console's FTP payload listens on.
-  // Used by the offact.elf trigger-file upload (see routes/remoteplay.js
-  // getFtpControlPort()). ftpsrv defaults to 2121; zftpd (faster
-  // alternative) defaults to 2120 - configurable here instead of
-  // hardcoded so swapping FTP payloads doesn't silently break offline
-  // account activation.
-  const [ftpControlPort, setFtpControlPort] = useState('2121');
+  // Port of the console's FTP server (zftpd, default 2120). The whole app
+  // reads it from this one setting - see backend/src/lib/ftpPort.js.
+  const [ftpControlPort, setFtpControlPort] = useState('2120');
   // PKG installer settings. The install queue stages .pkg files to
   // `pkg_stage_dir` on the PS5 via FTP, drops a trigger file with the path
   // at `pkg_trigger_file`, then sends `pkg_installer_payload_id` over the
@@ -437,12 +433,11 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
 
       <div className="comp-card">
         <div className="comp-card-body">
-          <div className="font-bold mb-sm">Anonymous FTP control port</div>
+          <div className="font-bold mb-sm">Console FTP port</div>
           <div className="text-xs text-muted mb-md">
-            Port the console's FTP payload listens on. Used to upload the offline-activation
-            trigger file for <code>offact.elf</code>. <code>ftpsrv</code> defaults to <b>2121</b>,
-            <code> zftpd</code> (faster alternative) defaults to <b>2120</b> — update this if you
-            switch which FTP payload you run.
+            Port <code>zftpd</code> listens on, <b>2120</b> unless you changed it on the console.
+            Everything that reaches the console's files uses it: File Ops, uploads, downloads
+            to the console, the install queue and offline activation.
           </div>
           <div className="mb-md">
             <input
@@ -450,7 +445,7 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
               type="number"
               value={ftpControlPort}
               onChange={e => setFtpControlPort(e.target.value)}
-              placeholder="2121"
+              placeholder="2120"
               style={{ maxWidth: 140 }}
             />
           </div>

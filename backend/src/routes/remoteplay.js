@@ -6,6 +6,7 @@ import { Client as FtpClient } from 'basic-ftp';
 import { getRepo, log } from '../db/sqlite.js';
 import { pushKernelLogEntry } from './kernelLogServer.js';
 import { payloadsDir } from '../lib/paths.js';
+import { getFtpPort } from '../lib/ftpPort.js';
 
 const router = express.Router();
 
@@ -14,15 +15,8 @@ const router = express.Router();
 // linked yet. Matches TRIGGER_PATH in p5managerclient/offact/main.c.
 const OFFACT_TRIGGER_DEFAULT = '/data/.p5manager-offact';
 
-// Anonymous PS5 FTP control port. ps5-payload-dev's ftpsrv defaults to
-// 2121; zftpd (a faster alternative some users run instead) defaults to
-// 2120. Configurable via Settings ("ftp_control_port") instead of
-// hardcoded so switching FTP payloads doesn't silently break this.
-function getFtpControlPort() {
-  const raw = getRepo().queryScalar("SELECT value FROM settings WHERE key = 'ftp_control_port'");
-  const n = parseInt(raw, 10);
-  return Number.isFinite(n) && n > 0 ? n : 2121;
-}
+// The console's FTP port comes from Settings, like everywhere else.
+const getFtpControlPort = getFtpPort;
 
 // We keep the trigger upload self-contained instead of going through
 // convert.js' withFtp helper because /activate-account is a small

@@ -23,6 +23,7 @@ import { uploadDirToSmb as smbUploadDir } from '../lib/smb.js';
 // user can scp/rsync into them directly. See backend/src/lib/paths.js
 // for the rationale and migration notes.
 import { payloadsDir, mkpfsWorkDir, downloadsDir, userDataDir, USER_QUICK_TABS } from '../lib/paths.js';
+import { getFtpPort } from '../lib/ftpPort.js';
 import { createExfatImage, unpackExfatImage } from '../lib/exfat.js';
 // Generic FIFO worker + standard CRUD endpoint binder. Replaces four nearly
 // identical hand-rolled queue scaffolds further down in this file.
@@ -173,8 +174,10 @@ function saveConfig(cfg) {
   saveJsonSetting(CONFIG_KEY, cfg);
 }
 
+// Login for the console's FTP server. The port is not kept here: it is the
+// one from Settings (lib/ftpPort.js), whatever an older stored copy says.
 function loadFtp() {
-  return loadJsonSetting(FTP_KEY, { port: 2121, username: 'anonymous', password: '' });
+  return { ...loadJsonSetting(FTP_KEY, { username: 'anonymous', password: '' }), port: getFtpPort() };
 }
 
 function saveFtp(ftp) {
@@ -261,11 +264,15 @@ router.put('/ftp', (req, res) => {
   try {
     const cur = loadFtp();
     const next = {
-      port: parseInt(req.body.port) || cur.port || 2121,
       username: req.body.username || cur.username || 'anonymous',
       password: req.body.password === '__set__' ? cur.password : (req.body.password ?? ''),
     };
     saveFtp(next);
+    // A port sent here goes where the port lives: the Settings key.
+    const port = parseInt(req.body.port);
+    if (port > 0 && port < 65536) {
+      getRepo().runAndSave("INSERT OR REPLACE INTO settings (key, value) VALUES ('ftp_control_port', ?)", [String(port)]);
+    }
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
