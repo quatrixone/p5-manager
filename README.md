@@ -8,6 +8,10 @@ browser tab.
 
 <br clear="left" />
 
+> Independent hobby project, not affiliated with or endorsed by Sony
+> Interactive Entertainment. For use with a console you own and files you
+> have the right to use. See [LEGAL.md](LEGAL.md).
+
 ![status](https://img.shields.io/badge/status-active-success)
 ![platform](https://img.shields.io/badge/platform-Docker-blue)
 ![runtime](https://img.shields.io/badge/runtime-Node%2020%20%2B%20Python%203.11-lightgrey)
@@ -192,6 +196,17 @@ repos:
 - **GoldHEN team** (sleirsgoevy et al.) — PS4 GoldHEN payload
 
 If you should be credited and aren't, please open an issue.
+
+---
+
+## Legal
+
+Not affiliated with Sony Interactive Entertainment; "PlayStation", "PS4"
+and "PS5" are its trademarks. This repository contains no Sony code,
+firmware or keys and no game content, and third-party tools are fetched
+from their authors rather than redistributed here. The project does not
+support piracy. Details, intended use and how to report a content problem:
+[LEGAL.md](LEGAL.md). Contribution rules: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 
