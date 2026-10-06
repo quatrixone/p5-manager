@@ -754,6 +754,15 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
       if (def) setProfileId(String(def.id));
     }
   }, [profiles, profileId]);
+  // Follow the console picked in the top bar: when the default profile
+  // changes while this view is open, switch to it.
+  const defaultId = profiles.find(p => p.is_default)?.id;
+  const followedDefault = useRef(defaultId);
+  useEffect(() => {
+    if (defaultId == null || followedDefault.current === defaultId) return;
+    followedDefault.current = defaultId;
+    setProfileId(String(defaultId));
+  }, [defaultId]);
 
   useEffect(() => {
     apiSafe.get(`${RP}/health`).then(d => setHealth(d || { success: false, error: 'sidecar offline' }));

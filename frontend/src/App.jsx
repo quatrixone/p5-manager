@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import PayloadList from './components/PayloadList';
 import LogViewer from './components/LogViewer';
 import AutoloadBuilder from './components/AutoloadBuilder';
@@ -390,7 +391,14 @@ function App() {
     <>
       <header className="app-topbar">
         <PlatformAwareBrand />
-        {defaultProfile && <TopbarPs5Status profile={defaultProfile} />}
+        {defaultProfile && (
+          <TopbarPs5Status
+            profile={defaultProfile}
+            profiles={profiles}
+            onSwitch={setDefaultProfile}
+            onManage={() => setActiveTab('settings')}
+          />
+        )}
       </header>
 
       {notification && (
@@ -471,20 +479,67 @@ function App() {
 // poller (a TCP payload-port check independent of PS5 Control's DDP
 // check, which made the dot flash red right when "Wake PS5" was clicked
 // even though the console really was waking up).
-function TopbarPs5Status({ profile }) {
+// The pill is also the console switcher: a click lists the profiles and
+// picking one makes it the default, which is the console the whole UI works
+// with.
+function TopbarPs5Status({ profile, profiles = [], onSwitch, onManage }) {
   const { state, portStatus } = usePs5Status();
+  const [open, setOpen] = useState(false);
   const label = {
     online: 'Payload host up',
     waking: 'Console awake, payload host not loaded',
     standby: 'In rest mode',
     offline: 'Unreachable',
   }[state];
+  const pick = (id) => {
+    setOpen(false);
+    if (id !== profile.id) onSwitch?.(id);
+  };
   return (
-    <div className="app-status" title={`${profile.name} — ${label}`}>
-      <span className={`dot ${state}`} />
-      <span className="truncate">{profile.name}</span>
-      <ConsoleTypeBadge consoleType={portStatus?.console_type || profile.console_type} />
-      <span className="ip">{profile.ip_address}</span>
+    <div className="app-status-wrap">
+      <button
+        type="button"
+        className="app-status"
+        title={`${profile.name} — ${label}. Click to switch console.`}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen(o => !o)}
+      >
+        <span className={`dot ${state}`} />
+        <span className="truncate">{profile.name}</span>
+        <ConsoleTypeBadge consoleType={portStatus?.console_type || profile.console_type} />
+        <span className="ip">{profile.ip_address}</span>
+        <span className="app-status-caret" aria-hidden="true">▾</span>
+      </button>
+      {/* In a portal: the top bar's backdrop-filter would otherwise confine
+          the fixed backdrop to the bar itself. */}
+      {open && createPortal(
+        <>
+          <div className="app-status-backdrop" onClick={() => setOpen(false)} />
+          <div className="app-status-menu" role="menu">
+            <div className="app-status-menu-title">Console</div>
+            {profiles.map(p => (
+              <button
+                key={p.id}
+                type="button"
+                role="menuitemradio"
+                aria-checked={p.id === profile.id}
+                className={`app-status-menu-item ${p.id === profile.id ? 'active' : ''}`}
+                onClick={() => pick(p.id)}
+              >
+                <span className="app-status-menu-check">{p.id === profile.id ? '✓' : ''}</span>
+                <span className="truncate" style={{ flex: 1, minWidth: 0 }}>{p.name}</span>
+                <ConsoleTypeBadge consoleType={p.console_type} />
+                <span className="ip">{p.ip_address}</span>
+              </button>
+            ))}
+            <button type="button" className="app-status-menu-item app-status-menu-manage" onClick={() => { setOpen(false); onManage?.(); }}>
+              ⚙ Add or edit consoles…
+            </button>
+          </div>
+        </>,
+        document.body,
+      )}
     </div>
   );
 }

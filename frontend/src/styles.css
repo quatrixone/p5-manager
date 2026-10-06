@@ -274,8 +274,55 @@ pre,
   text-transform: uppercase;
 }
 
+.app-status-wrap { margin-left: auto; position: relative; min-width: 0; }
+.app-status-caret { color: var(--muted); font-size: 0.7rem; }
+/* cursor: pointer is what makes a tap on it count as a click on iOS. */
+.app-status-backdrop { position: fixed; inset: 0; z-index: 199; cursor: pointer; }
+.app-status-menu {
+  position: fixed;
+  top: calc(var(--topbar-h) + 6px);
+  right: 12px;
+  z-index: 200;
+  min-width: 260px;
+  max-width: calc(100vw - 24px);
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-elev, #14161b);
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55);
+}
+.app-status-menu-title {
+  padding: 6px 10px 4px;
+  font-size: 0.7rem;
+  color: var(--muted);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.app-status-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.88rem;
+  text-align: left;
+  cursor: pointer;
+}
+.app-status-menu-item:hover { background: var(--bg-elev-2); }
+.app-status-menu-item.active { color: var(--accent); }
+.app-status-menu-item .ip { font-family: 'JetBrains Mono', monospace; font-size: 0.74rem; color: var(--muted); }
+.app-status-menu-check { width: 14px; flex-shrink: 0; color: var(--accent); }
+.app-status-menu-manage { border-top: 1px solid var(--border); border-radius: 0 0 8px 8px; margin-top: 4px; color: var(--text-soft); }
 .app-status {
-  margin-left: auto;
+  cursor: pointer;
+  font-family: inherit;
   display: inline-flex;
   align-items: center;
   gap: var(--space-sm);
