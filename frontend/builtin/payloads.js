@@ -77,7 +77,8 @@ export const ESSENTIAL_PAYLOADS = [
   },
   {
     filename: 'micromount.elf',
-    url: 'https://github.com/PSBrew/MicroMount/releases/latest/download/micromount.elf',
+    // MicroMount releases ship a zip; the fetcher takes micromount.elf out of it.
+    url: 'https://github.com/PSBrew/MicroMount/releases/download/0.0.3/micromount_0.0.3.zip',
     tag: 'community',
     console_type: 'ps5',
     port: 9021,
