@@ -55,7 +55,9 @@ jobs:
           export DATA_DIR="$RUNNER_TEMP/p5m-data" USER_DATA_DIR="$RUNNER_TEMP/p5m-user" PORT=3901
           export P5M_UPDATE_FEED=http://127.0.0.1:39918/latest
           # Stands in for the container's restart policy.
-          (cd backend && while true; do node src/index.js; [ $? -eq 75 ] || break; done) > "$RUNNER_TEMP/app.log" 2>&1 &
+          # (`|| code=$?` because the step runs under `bash -e`, which would
+          # otherwise end the loop at the first non-zero exit.)
+          (cd backend && while true; do code=0; node src/index.js || code=$?; [ "$code" -eq 75 ] || break; done) > "$RUNNER_TEMP/app.log" 2>&1 &
           node scripts/update-check.mjs http://127.0.0.1:3901 "$RUNNER_TEMP/bundles" 99.0.0 || { tail -60 "$RUNNER_TEMP/app.log"; exit 1; }
 
       - uses: actions/upload-artifact@v4
