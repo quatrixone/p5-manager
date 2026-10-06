@@ -84,7 +84,8 @@ The screenshots use made-up demo data.
   - **PS4:** a system software version your homebrew setup supports.
 - For the **Library** tab:
   [ShadowMountPlus](https://github.com/drakmor/ShadowMountPlus) running on
-  the console.
+  the console. It is one of the built-in payloads, and the Library can
+  start it for you.
 - For browsing the console's files: an FTP payload such as
   [zftpd](https://github.com/seregonwar/zftpd). P5 Manager starts it for
   you if it is in your payload library.
@@ -142,7 +143,9 @@ into the Local file browser instead).
 ## First steps
 
 1. **Settings → Profiles**: add your console (name and IP address).
-2. **Payloads → Defaults**: fetch the payloads you use.
+2. **Payloads**: the built-in set (ShadowMountPlus, kstuff-lite, a log
+   server and a few more) is downloaded from its authors on first start.
+   Add your own with **+ Add**.
 3. **File Ops → Browse**: turn on **Two panes**, pick *Local* on one side
    and *PS5 FTP* on the other, and drag a file across.
 4. **Library**: pick the console. If ShadowMountPlus is not running, the
@@ -229,6 +232,8 @@ repos:
   the API behind the Library tab
 - [seregonwar / zftpd](https://github.com/seregonwar/zftpd) — FTP server
   and on-console downloader used by File Ops and Download
+- [EchoStretch / kstuff-lite](https://github.com/EchoStretch/kstuff-lite) —
+  built-in payload
 - [juma-sayeh / PS5-Game-Compressor](https://github.com/juma-sayeh/PS5-Game-Compressor)
   — on-console compression, started from the Convert tab
 

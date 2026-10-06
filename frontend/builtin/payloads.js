@@ -57,12 +57,23 @@ export const ESSENTIAL_PAYLOADS = [
     description: 'PS5 BackPork ELF',
   },
   {
+    // Pinned: PS5 Game Compressor (Convert on console) needs 1.07 or newer.
     filename: 'kstuff.elf',
-    url: 'https://github.com/EchoStretch/kstuff-lite/releases/download/v1.06/kstuff.elf',
+    url: 'https://github.com/EchoStretch/kstuff-lite/releases/download/v1.11/kstuff.elf',
     tag: 'community',
     console_type: 'ps5',
     port: 9021,
-    description: 'PS5 kstuff-lite',
+    description: 'PS5 kstuff-lite v1.11',
+  },
+  {
+    // Pinned to the release the Library tab's API calls were written
+    // against. The Library's "Start ShadowMount" button sends this file.
+    filename: 'shadowmountplus.elf',
+    url: 'https://github.com/drakmor/ShadowMountPlus/releases/download/1.7beta3/shadowmountplus.elf',
+    tag: 'community',
+    console_type: 'ps5',
+    port: 9021,
+    description: 'PS5 ShadowMountPlus 1.7beta3 (game mounting + Library API)',
   },
   {
     filename: 'micromount.elf',
