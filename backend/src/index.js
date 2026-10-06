@@ -19,6 +19,7 @@ import downloaderRouter from './routes/downloader.js';
 import eventsRouter from './routes/events.js';
 import remoteplayRouter from './routes/remoteplay.js';
 import builtinRouter from './routes/builtin.js';
+import libraryRouter from './routes/library.js';
 import { ensureDefaultPayloads } from './lib/defaultPayloads.js';
 import { migratePaths } from './lib/migrate-paths.js';
 
@@ -101,6 +102,8 @@ const ACCESS_LOG_SILENCE = [
   /^\/api\/kernellog\/status$/,
   /^\/api\/logserver\/status$/,
   /^\/api\/convert\/ftp\/upload\/queue$/, // queue poll
+  /^\/api\/library\/[^/]+\/job$/, // storage job poll
+  /^\/api\/library\/[^/]+\/icon\//,
   /^\/api\/sequences$/,
   /^\/api\/logs$/,
 ];
@@ -132,6 +135,7 @@ app.use('/api/downloader', downloaderRouter);
 app.use('/api/events', eventsRouter);
 app.use('/api/remoteplay', remoteplayRouter);
 app.use('/api/builtin', builtinRouter);
+app.use('/api/library', libraryRouter);
 
 // started_at lets the Settings "Restart app" flow tell a fresh process from
 // the one it just asked to exit.

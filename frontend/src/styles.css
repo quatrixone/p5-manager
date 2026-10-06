@@ -449,9 +449,10 @@ pre,
   align-items: center;
   justify-content: center;
   gap: 2px;
-  min-width: 64px;
+  /* Seven tabs have to fit a 360 px phone without scrolling the bar. */
+  min-width: 48px;
   flex: 1;
-  padding: 8px 4px;
+  padding: 8px 2px;
   border: none;
   background: transparent;
   color: var(--muted);
@@ -2302,3 +2303,78 @@ pre { padding: 12px; overflow-x: auto; }
   background: var(--accent);
   transition: width 0.4s linear;
 }
+
+/* ─── Game library (Library.jsx) ────────────────────────────────────── */
+.lib-volumes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 10px 16px;
+}
+.lib-bar {
+  height: 6px;
+  margin-top: 6px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+.lib-bar > div {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.4s linear;
+}
+.lib-job {
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-elev-2);
+}
+.lib-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 10px;
+}
+.lib-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  padding: 10px;
+  text-align: left;
+  font: inherit;
+  color: var(--text);
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.lib-card:hover { border-color: var(--border-strong); background: var(--bg-elev-2); }
+.lib-card-main { min-width: 0; flex: 1; }
+.lib-card-title { font-weight: 600; font-size: 0.92rem; }
+.lib-icon {
+  width: 72px;
+  height: 72px;
+  flex-shrink: 0;
+  border-radius: 10px;
+  object-fit: cover;
+  background: linear-gradient(145deg, #1d2c43, #0c111a);
+  border: 1px solid var(--border);
+}
+.lib-icon-fallback {
+  display: grid;
+  place-items: center;
+  font-weight: 800;
+  color: var(--blue);
+}
+.lib-badges { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.lib-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.lib-dest {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.lib-dest-off { opacity: 0.5; cursor: not-allowed; }

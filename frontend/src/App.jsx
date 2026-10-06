@@ -5,6 +5,7 @@ import AutoloadBuilder from './components/AutoloadBuilder';
 import PS5Control from './components/PS5Control';
 import Settings from './components/Settings';
 import FileOps from './components/FileOps';
+import Library from './components/Library';
 import BuiltinEditor from './components/BuiltinEditor';
 import { PlatformProvider, usePlatform } from './contexts/PlatformContext';
 import { Ps5StatusProvider, usePs5Status } from './contexts/Ps5StatusContext';
@@ -16,6 +17,7 @@ const tabs = [
   { id: 'payloads', label: 'Payloads', icon: '📦' },
   { id: 'autoload', label: 'Autoload', icon: '⚡' },
   { id: 'files', label: 'File Ops', icon: '📁' },
+  { id: 'library', label: 'Library', icon: '🕹️' },
   { id: 'remote', label: 'P5 Control', icon: '🎮' },
   { id: 'logs', label: 'Logs', icon: '📋' },
   { id: 'settings', label: 'Settings', icon: '⚙️' }
@@ -431,6 +433,9 @@ function App() {
           )}
           {!showBuiltinEditor && activeTab === 'files' && (
             <FileOps profiles={profiles} onNotification={showNotification} />
+          )}
+          {!showBuiltinEditor && activeTab === 'library' && (
+            <Library profiles={profiles} onNotification={showNotification} />
           )}
           {!showBuiltinEditor && activeTab === 'settings' && (
             <Settings
