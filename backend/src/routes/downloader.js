@@ -13,7 +13,8 @@ import { buildSmbArgs, runSmbClient, smbClientError, getSmbSource, listSmbSource
 import { mkpfsWorkDir, userDataDir } from '../lib/paths.js';
 import { toClientPath, mapPosixDefault, isFsRoot, listLocalRoots, isLocalPathAllowed } from '../lib/platform.js';
 import net from 'net';
-import { loadFtp, startZftpd } from './convert.js';
+import { startZftpd } from './convert.js';
+import { getFtpPort } from '../lib/ftpPort.js';
 
 // Scratch dir for in-flight SMB downloads (the worker streams into a
 // temp folder under mkpfs work dir, then copies to the share when
@@ -366,7 +367,7 @@ async function zftpdConnect(job, ip, port) {
 }
 
 async function runPs5DownloadJob(job, url, ip, destDir) {
-  const port = loadFtp().port;
+  const port = getFtpPort(ip);
   const signal = job.controller.signal;
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
   let remoteId = null;

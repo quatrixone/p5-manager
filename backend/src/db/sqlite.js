@@ -116,6 +116,8 @@ export async function initDatabase() {
   // calling /api/ps5/status which already extracts host_type from the
   // sidecar discover response.
   try { db.run(`ALTER TABLE profiles ADD COLUMN console_type TEXT`); } catch (e) { if (!/duplicate column/i.test(e.message)) throw e; }
+  // FTP port of this console; NULL = the default for its type (lib/ftpPort.js).
+  try { db.run(`ALTER TABLE profiles ADD COLUMN ftp_port INTEGER`); } catch (e) { if (!/duplicate column/i.test(e.message)) throw e; }
 
   db.run(`
     CREATE TABLE IF NOT EXISTS payloads (

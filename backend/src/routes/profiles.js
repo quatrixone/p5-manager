@@ -45,6 +45,14 @@ function normalizeConsoleType(v) {
   return CONSOLE_TYPES.has(s) ? s : null;
 }
 
+// FTP port as sent by the form: empty = NULL (follow the console type),
+// a valid port = that port, anything else = false (reject).
+function normalizeFtpPort(v) {
+  if (v === undefined || v === null || v === '') return null;
+  const n = Number(v);
+  return Number.isInteger(n) && n > 0 && n < 65536 ? n : false;
+}
+
 // One profile per console address: Remote Play pairing, sessions and Autoload
 // triggers are all looked up by IP, so two profiles on one address would get
 // each other's pairing. Returns the profile already using `ip`, if any.
@@ -60,11 +68,13 @@ router.post('/', (req, res) => {
     const { name, mac_address, port, console_type } = req.body;
     const ip_address = String(req.body.ip_address || '').trim();
     if (!name || !ip_address) return res.status(400).json({ error: 'Name and IP address required' });
+    const ftp_port = normalizeFtpPort(req.body.ftp_port);
+    if (ftp_port === false) return res.status(400).json({ error: 'FTP port has to be a number between 1 and 65535' });
     const taken = profileWithIp(ip_address);
     if (taken) return res.status(409).json({ error: `Profile "${taken.name}" already uses ${ip_address}` });
     const lastId = getRepo().runAndSave(
-      'INSERT INTO profiles (name, ip_address, mac_address, port, console_type) VALUES (?, ?, ?, ?, ?)',
-      [name, ip_address, mac_address || null, port || 9021, normalizeConsoleType(console_type)],
+      'INSERT INTO profiles (name, ip_address, mac_address, port, console_type, ftp_port) VALUES (?, ?, ?, ?, ?, ?)',
+      [name, ip_address, mac_address || null, port || 9021, normalizeConsoleType(console_type), ftp_port],
     );
     log('info', `Created profile: ${name} (${ip_address})`);
     res.json({ success: true, id: lastId });
@@ -85,6 +95,11 @@ router.put('/:id', (req, res) => {
     const taken = ip_address ? profileWithIp(ip_address, existing.id) : null;
     if (taken) return res.status(409).json({ error: `Profile "${taken.name}" already uses ${ip_address}` });
 
+    // ftp_port === undefined means "don't touch"; empty clears it back to the
+    // default for the console type.
+    const nextFtpPort = req.body.ftp_port === undefined ? existing.ftp_port : normalizeFtpPort(req.body.ftp_port);
+    if (nextFtpPort === false) return res.status(400).json({ error: 'FTP port has to be a number between 1 and 65535' });
+
     // console_type === undefined means "don't touch"; explicit null clears
     // the field back to auto-detect, explicit 'ps4' / 'ps5' overrides.
     const nextConsoleType = console_type === undefined
@@ -92,13 +107,14 @@ router.put('/:id', (req, res) => {
       : normalizeConsoleType(console_type);
 
     repo.runAndSave(
-      'UPDATE profiles SET name = ?, ip_address = ?, mac_address = ?, port = ?, console_type = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      'UPDATE profiles SET name = ?, ip_address = ?, mac_address = ?, port = ?, console_type = ?, ftp_port = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
       [
         name || existing.name,
         ip_address || existing.ip_address,
         mac_address !== undefined ? mac_address : existing.mac_address,
         port || existing.port,
         nextConsoleType,
+        nextFtpPort,
         parseInt(id),
       ],
     );

@@ -93,8 +93,8 @@ router.post('/', (req, res) => {
     repo.run('DELETE FROM profiles');
     for (const profile of data.profiles) {
       repo.run(
-        'INSERT INTO profiles (name, ip_address, mac_address, port, is_default) VALUES (?, ?, ?, ?, ?)',
-        [profile.name, profile.ip_address, profile.mac_address, profile.port || 9021, profile.is_default || 0],
+        'INSERT INTO profiles (name, ip_address, mac_address, port, is_default, ftp_port) VALUES (?, ?, ?, ?, ?, ?)',
+        [profile.name, profile.ip_address, profile.mac_address, profile.port || 9021, profile.is_default || 0, profile.ftp_port || null],
       );
     }
 

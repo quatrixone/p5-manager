@@ -4,6 +4,9 @@ import Badge from './UI/Badge';
 import RemoteSourcesSection from './RemoteSourcesSection';
 import { api, apiSafe, putSetting } from '../lib/api.js';
 
+// Same defaults as backend/src/lib/ftpPort.js.
+const defaultFtpPort = (consoleType) => (consoleType === 'ps4' ? 2121 : 2120);
+
 function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete, onProfileSetDefault }) {
   const [activeTab, setActiveTab] = useState('profiles');
   const [backupStatus, setBackupStatus] = useState('');
@@ -14,7 +17,8 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
   // status poll" (default for newly-added profiles); explicit 'ps4' / 'ps5'
   // is the manual override. The status route already auto-fills it when
   // discovery succeeds, so leaving this blank is usually fine.
-  const [profileForm, setProfileForm] = useState({ name: '', ip: '', mac: '', consoleType: '' });
+  // ftpPort: '' = the default for the console type (see defaultFtpPort).
+  const [profileForm, setProfileForm] = useState({ name: '', ip: '', mac: '', consoleType: '', ftpPort: '' });
   const [scanning, setScanning] = useState(false);
   const [discoveredDevices, setDiscoveredDevices] = useState([]);
   // null until a search ran; then whether it came back empty, which is when
@@ -30,9 +34,6 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
   // current default profile at submit time (legacy behaviour).
   const [uploadTargetIp, setUploadTargetIp] = useState('');
   const [uploadTargetPath, setUploadTargetPath] = useState('/data/homebrew');
-  // Port of the console's FTP server (zftpd, default 2120). The whole app
-  // reads it from this one setting - see backend/src/lib/ftpPort.js.
-  const [ftpControlPort, setFtpControlPort] = useState('2120');
   // PKG installer settings. The install queue stages .pkg files to
   // `pkg_stage_dir` on the PS5 via FTP, drops a trigger file with the path
   // at `pkg_trigger_file`, then sends `pkg_installer_payload_id` over the
@@ -58,7 +59,6 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
         if (data.pkg_installer_payload_id) setPkgInstallerPayloadId(String(data.pkg_installer_payload_id));
         if (data.pkg_stage_dir) setPkgStageDir(data.pkg_stage_dir);
         if (data.pkg_trigger_file) setPkgTriggerFile(data.pkg_trigger_file);
-        if (data.ftp_control_port) setFtpControlPort(String(data.ftp_control_port));
       }
       // Auto-bind the PKG installer to the payload literally named
       // `pkg-install.elf` instead of making the user pick it from a
@@ -95,10 +95,6 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
     ['upload_target_ip', uploadTargetIp],
     ['upload_target_path', uploadTargetPath],
   ], 'Upload target saved!');
-
-  const saveFtpControlPort = () => saveSettingsKeys([
-    ['ftp_control_port', ftpControlPort],
-  ], 'FTP port saved!');
 
   // Three keys in one button so the user always saves a consistent install
   // setup: empty payload id is allowed (clears the binding so the install
@@ -166,7 +162,7 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
 
   const openAddProfile = () => {
     setEditingProfile(null);
-    setProfileForm({ name: '', ip: '', mac: '', consoleType: '' });
+    setProfileForm({ name: '', ip: '', mac: '', consoleType: '', ftpPort: '' });
     setShowProfileModal(true);
   };
 
@@ -177,6 +173,7 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
       ip: profile.ip_address,
       mac: profile.mac_address || '',
       consoleType: profile.console_type || '',
+      ftpPort: profile.ftp_port ? String(profile.ftp_port) : '',
     });
     setShowProfileModal(true);
   };
@@ -185,9 +182,9 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
     // Empty string from the <select> becomes null at the backend = auto-detect.
     const consoleType = profileForm.consoleType || null;
     if (editingProfile) {
-      onProfileUpdate(editingProfile.id, profileForm.name, profileForm.ip, profileForm.mac, consoleType);
+      onProfileUpdate(editingProfile.id, profileForm.name, profileForm.ip, profileForm.mac, consoleType, profileForm.ftpPort);
     } else {
-      onProfileCreate(profileForm.name, profileForm.ip, profileForm.mac, consoleType);
+      onProfileCreate(profileForm.name, profileForm.ip, profileForm.mac, consoleType, profileForm.ftpPort);
     }
     setShowProfileModal(false);
   };
@@ -336,7 +333,7 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
                     </span>
                   )}
                 </div>
-                <div className="list-item-subtitle">{profile.ip_address}</div>
+                <div className="list-item-subtitle">{profile.ip_address} · FTP {profile.ftp_port || defaultFtpPort(profile.console_type)}</div>
                 {profile.mac_address && <div className="text-xs text-muted">MAC: {profile.mac_address}</div>}
               </div>
               <div className="flex gap-sm">
@@ -430,30 +427,6 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
   const renderConfig = () => (
     <div className="flex-col gap-md">
       <h2 className="font-bold" style={{ fontSize: '1.25rem' }}>Configuration</h2>
-
-      <div className="comp-card">
-        <div className="comp-card-body">
-          <div className="font-bold mb-sm">Console FTP port</div>
-          <div className="text-xs text-muted mb-md">
-            Port <code>zftpd</code> listens on, <b>2120</b> unless you changed it on the console.
-            Everything that reaches the console's files uses it: File Ops, uploads, downloads
-            to the console, the install queue and offline activation.
-          </div>
-          <div className="mb-md">
-            <input
-              className="input"
-              type="number"
-              value={ftpControlPort}
-              onChange={e => setFtpControlPort(e.target.value)}
-              placeholder="2120"
-              style={{ maxWidth: 140 }}
-            />
-          </div>
-          <button className="btn btn-primary" onClick={saveFtpControlPort} disabled={loading}>
-            {loading ? '⏳ Saving...' : '💾 Save FTP Port'}
-          </button>
-        </div>
-      </div>
 
       <div className="comp-card">
         <div className="comp-card-body">
@@ -619,6 +592,24 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
               Drives which payloads, autoload templates and Convert sub-tabs the UI offers when
               this profile is the default. Auto-detect resolves on the next status poll via
               pyremoteplay /discover and persists into the profile.
+            </div>
+          </div>
+          <div>
+            <label className="text-sm text-muted mb-sm" style={{ display: 'block' }}>FTP port</label>
+            <input
+              className="input"
+              type="number"
+              min={1}
+              max={65535}
+              placeholder={String(defaultFtpPort(profileForm.consoleType))}
+              value={profileForm.ftpPort}
+              onChange={e => setProfileForm(p => ({ ...p, ftpPort: e.target.value }))}
+              style={{ maxWidth: 160 }}
+            />
+            <div className="text-xs text-muted mt-sm">
+              Port of the FTP server on this console. Leave empty for the usual one:
+              2120 on a PS5 (zftpd), 2121 on a PS4. File Ops, uploads, downloads to the
+              console, the install queue and offline activation all use it.
             </div>
           </div>
         </div>

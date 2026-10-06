@@ -174,10 +174,12 @@ function saveConfig(cfg) {
   saveJsonSetting(CONFIG_KEY, cfg);
 }
 
-// Login for the console's FTP server. The port is not kept here: it is the
-// one from Settings (lib/ftpPort.js), whatever an older stored copy says.
+// Login for the consoles' FTP server. The port is not part of it: every
+// console has its own (lib/ftpPort.js) and the code asks for it by IP where
+// it connects.
 function loadFtp() {
-  return { ...loadJsonSetting(FTP_KEY, { username: 'anonymous', password: '' }), port: getFtpPort() };
+  const { username = 'anonymous', password = '' } = loadJsonSetting(FTP_KEY, {});
+  return { username, password };
 }
 
 function saveFtp(ftp) {
@@ -268,11 +270,6 @@ router.put('/ftp', (req, res) => {
       password: req.body.password === '__set__' ? cur.password : (req.body.password ?? ''),
     };
     saveFtp(next);
-    // A port sent here goes where the port lives: the Settings key.
-    const port = parseInt(req.body.port);
-    if (port > 0 && port < 65536) {
-      getRepo().runAndSave("INSERT OR REPLACE INTO settings (key, value) VALUES ('ftp_control_port', ?)", [String(port)]);
-    }
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -285,7 +282,7 @@ async function withFtp(ip, ftpOpts, fn) {
   try {
     await client.access({
       host: ip,
-      port: ftpOpts.port,
+      port: getFtpPort(ip),
       user: ftpOpts.username || 'anonymous',
       password: ftpOpts.password || '',
       secure: false,
@@ -321,7 +318,7 @@ function startFtpHeartbeat(ip, ftpOpts, intervalMs = 25_000) {
         client.ftp.verbose = false;
         await client.access({
           host: ip,
-          port: ftpOpts.port,
+          port: getFtpPort(ip),
           user: ftpOpts.username || 'anonymous',
           password: ftpOpts.password || '',
           secure: false,
@@ -444,7 +441,7 @@ router.post('/push-config', async (req, res) => {
       await client.uploadFrom(stream, 'config.ini');
     });
 
-    log('info', `MicroMount config pushed to ${ip}:${ftp.port}`);
+    log('info', `MicroMount config pushed to ${ip}:${getFtpPort(ip)}`);
     res.json({ success: true, message: `config.ini uploaded to ${ip}:/data/micromount/config.ini` });
   } catch (err) {
     log('error', `MicroMount push-config failed: ${err.message}`);
@@ -558,7 +555,7 @@ router.post('/ftp/browse', async (req, res) => {
       list = await listTarget();
     } catch (e) {
       if (e.code !== 'ECONNREFUSED') throw e;
-      await startZftpd(ip, ftp.port);
+      await startZftpd(ip, getFtpPort(ip));
       ftpStarted = true;
       list = await listTarget();
     }

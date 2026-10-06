@@ -15,8 +15,6 @@ const router = express.Router();
 // linked yet. Matches TRIGGER_PATH in p5managerclient/offact/main.c.
 const OFFACT_TRIGGER_DEFAULT = '/data/.p5manager-offact';
 
-// The console's FTP port comes from Settings, like everywhere else.
-const getFtpControlPort = getFtpPort;
 
 // We keep the trigger upload self-contained instead of going through
 // convert.js' withFtp helper because /activate-account is a small
@@ -32,7 +30,7 @@ async function writeOffactTrigger(ip, triggerPath, accountIdB64, onlineId) {
     const client = new FtpClient(10_000);
     client.ftp.verbose = false;
     try {
-      await client.access({ host: ip, port: getFtpControlPort(), user: 'anonymous', password: '', secure: false });
+      await client.access({ host: ip, port: getFtpPort(ip), user: 'anonymous', password: '', secure: false });
       const remoteDir = path.posix.dirname(triggerPath);
       const remoteName = path.posix.basename(triggerPath);
       if (remoteDir && remoteDir !== '/' && remoteDir !== '.') {
@@ -58,7 +56,7 @@ async function deleteOffactTrigger(ip, triggerPath) {
     const client = new FtpClient(8_000);
     client.ftp.verbose = false;
     try {
-      await client.access({ host: ip, port: getFtpControlPort(), user: 'anonymous', password: '', secure: false });
+      await client.access({ host: ip, port: getFtpPort(ip), user: 'anonymous', password: '', secure: false });
       await client.remove(triggerPath);
     } finally {
       try { client.close(); } catch (_) {}

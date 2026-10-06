@@ -265,7 +265,7 @@ function App() {
     }
   };
 
-  const createProfile = async (name, ip, mac, consoleType) => {
+  const createProfile = async (name, ip, mac, consoleType, ftpPort) => {
     try {
       // consoleType may be 'ps4' | 'ps5' | null/undefined. Backend
       // normalises invalid values back to NULL = auto-detect.
@@ -274,6 +274,8 @@ function App() {
         ip_address: ip,
         mac_address: mac,
         console_type: consoleType ?? null,
+        // '' = no own port, follow the console type.
+        ftp_port: ftpPort ?? '',
       });
       showNotification('Profile created', 'success');
       fetchProfiles();
@@ -290,7 +292,7 @@ function App() {
     }
   };
 
-  const updateProfile = async (id, name, ip, mac, consoleType) => {
+  const updateProfile = async (id, name, ip, mac, consoleType, ftpPort) => {
     try {
       // Skip console_type entirely when caller didn't supply one so the
       // backend leaves the column untouched (legacy callers).
@@ -299,6 +301,7 @@ function App() {
         ip_address: ip,
         mac_address: mac,
         ...(consoleType !== undefined ? { console_type: consoleType } : {}),
+        ...(ftpPort !== undefined ? { ftp_port: ftpPort } : {}),
       });
       showNotification('Profile updated', 'success');
       fetchProfiles();
