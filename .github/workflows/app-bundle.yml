@@ -33,13 +33,15 @@ jobs:
 
       - name: Install dependencies
         run: |
-          npm ci --prefix backend --no-audit --no-fund
-          npm ci --prefix frontend --no-audit --no-fund
+          # cd, not --prefix: a dependency's install script runs npx, which
+          # would pick the prefix up and look for its files in the wrong place.
+          (cd backend && npm ci --no-audit --no-fund)
+          (cd frontend && npm ci --no-audit --no-fund)
 
       - name: Tests
         run: |
-          npm test --prefix backend
-          npm test --prefix frontend
+          (cd backend && npm test)
+          (cd frontend && npm test)
 
       - name: Build the bundles
         run: node scripts/build-app-bundle.mjs dist-bundle
