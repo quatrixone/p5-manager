@@ -67,6 +67,16 @@ export default function DualPane({ profiles, onNotification, onOpenQueue, onPick
     setPending(p => (p ? { ...p, op, busy: true } : p));
     try {
       if (plan.route === 'ftp-rename') {
+        // A rename onto an existing name is up to the FTP server: zftpd merges
+        // folders (and copies for real when the target is another drive).
+        // Never do that silently - refuse and let the user sort it out.
+        const there = await api.post('/convert/ftp/browse', { ip: t.dst.ftpIp, path: t.dst.path });
+        const taken = t.items.map(it => it.name).filter(n => (there.files || []).some(f => f.name === n));
+        if (taken.length) {
+          setPending(null);
+          onNotification?.(`Already in the destination: ${taken.slice(0, 5).join(', ')}${taken.length > 5 ? '…' : ''}. Open that folder and move the contents instead.`, 'error');
+          return;
+        }
         for (const it of t.items) {
           await api.post('/convert/ftp/move', { ip: t.src.ftpIp, src: joinPath(t.src, it.name), dst: joinPath(t.dst, it.name) });
         }
@@ -150,6 +160,7 @@ export default function DualPane({ profiles, onNotification, onOpenQueue, onPick
     enableExtract: true,
     enableDelete: true,
     enableFtpUpload: true,
+    enableDeviceUpload: true,
     onOpenQueue,
     onPickConvert,
     reloadSignal: reload,

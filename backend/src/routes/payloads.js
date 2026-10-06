@@ -8,6 +8,7 @@ import { getRepo, log } from '../db/sqlite.js';
 import { ensureDefaultPayloads, getEssentialPayloads, scanPayloadsDir } from '../lib/defaultPayloads.js';
 import { pushKernelLogEntry } from './kernelLogServer.js';
 import { payloadsDir } from '../lib/paths.js';
+import { pickReleaseAsset, renamedDisplayName } from '../lib/releaseAsset.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -793,16 +794,18 @@ router.put('/:id/update', async (req, res) => {
           return res.json({ success: false, error: 'No newer version available', currentVersion: payload.version, newVersion: null });
         }
 
-        // Prefer the asset whose name matches the existing filename, then any
-        // asset sharing the same extension, then any asset at all.
+        // Same file name, or the same name with a different version in it
+        // (zftpd-ps5-v1.5.0.elf -> zftpd-ps5-v1.6.0.elf). See releaseAsset.js
+        // for the fallbacks; it never swaps a PS5 file for a PS4 build.
         const assets = Array.isArray(release.assets) ? release.assets : [];
-        const ext = path.extname(resolvedFilename || assetNameInUrl).toLowerCase();
-        const byExactName = assets.find(a => a.name === resolvedFilename);
-        const byExt = ext ? assets.find(a => path.extname(a.name).toLowerCase() === ext) : null;
-        const chosen = byExactName || byExt || assets[0];
+        const chosen = pickReleaseAsset(assets, resolvedFilename || assetNameInUrl);
         if (chosen) {
           url = chosen.browser_download_url;
           resolvedFilename = chosen.name;
+        } else if (assets.length > 0) {
+          return res.status(409).json({
+            error: `Release ${newVersion} has no asset matching ${resolvedFilename} - update it manually`,
+          });
         } else if (oldTag) {
           // No asset listed (private repo? rare). Try a literal tag swap.
           url = url.replace(`/releases/download/${oldTag}/`, `/releases/download/${newVersion}/`);
@@ -879,13 +882,16 @@ router.put('/:id/update', async (req, res) => {
     }
     fs.writeFileSync(filepath, buffer);
 
+    // The list shows `name`; keep it in step with the file so a payload
+    // called "zftpd-ps5-v1.5.0.elf" doesn't keep that label on v1.6.0.
+    const newName = renamedDisplayName(payload.name, payload.filename, resolvedFilename);
     repo.runAndSave(
-      'UPDATE payloads SET filename = ?, filepath = ?, size = ?, source_url = ?, version = COALESCE(?, version), updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-      [resolvedFilename, filepath, buffer.length, url, newVersion, parseInt(id)],
+      'UPDATE payloads SET name = ?, filename = ?, filepath = ?, size = ?, source_url = ?, version = COALESCE(?, version), updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      [newName, resolvedFilename, filepath, buffer.length, url, newVersion, parseInt(id)],
     );
 
-    log('info', `Updated payload: ${payload.name}${newVersion ? ` -> ${newVersion}` : ''}`);
-    res.json({ success: true, message: 'Payload updated', newVersion });
+    log('info', `Updated payload: ${payload.name}${newName !== payload.name ? ` -> ${newName}` : ''}${newVersion ? ` (${newVersion})` : ''}`);
+    res.json({ success: true, message: 'Payload updated', newVersion, name: newName, filename: resolvedFilename });
   } catch (error) {
     log('error', `Update failed: ${error.message}`);
     res.status(500).json({ error: error.message });

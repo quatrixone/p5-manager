@@ -2,6 +2,7 @@ import express from 'express';
 import { spawn } from 'child_process';
 import { Client as FtpClient } from 'basic-ftp';
 import { Readable } from 'stream';
+import { pipeline } from 'stream/promises';
 import path from 'path';
 import os from 'os';
 import fs from 'fs';
@@ -858,6 +859,22 @@ router.post('/local/mkdir', (req, res) => {
     res.json({ success: true, existed, path: abs });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// New folder on a console. ensureDir creates missing parents too and is a
+// no-op when the folder is already there.
+router.post('/ftp/mkdir', async (req, res) => {
+  try {
+    const { ip, path: target } = req.body || {};
+    if (!ip || !target) return res.status(400).json({ error: 'ip and path required' });
+    const clean = cleanDir(target);
+    if (clean === '/') return res.status(400).json({ error: 'Folder name required' });
+    await withFtp(ip, loadFtp(), (client) => client.ensureDir(clean));
+    log('info', `FTP mkdir ${ip}:${clean}`);
+    res.json({ success: true, path: clean });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
   }
 });
 
@@ -4345,6 +4362,82 @@ router.post('/ftp/upload/queue', async (req, res) => {
     res.json({ success: true, items: addedItems, count: addedItems.length, item: addedItems[0] });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// Upload from the device running the browser. One file per request, raw
+// bytes in the body (no multipart, no JSON), streamed straight to its
+// destination so size is only limited by the target disk:
+//   PUT /upload?kind=local|ftp&path=<dest folder>&rel=<relative/file.ext>
+//       [&ip=<console>][&overwrite=1]
+// `rel` keeps the sub-folder structure of a folder upload. Console
+// destinations are piped into the FTP data connection - nothing touches the
+// server's disk.
+router.put('/upload', async (req, res) => {
+  const fail = (status, error) => {
+    // Body may still be arriving; don't make the browser push the rest.
+    res.set('Connection', 'close');
+    res.status(status).json({ error });
+    req.destroy();
+  };
+  try {
+    const { kind, ip } = req.query;
+    const overwrite = req.query.overwrite === '1';
+    const rel = String(req.query.rel || '').replace(/\\/g, '/');
+    const parts = rel.split('/');
+    if (!rel || parts.some(seg => seg === '' || seg === '.' || seg === '..')) return fail(400, 'Invalid file path');
+    if (!req.query.path) return fail(400, 'path required');
+    const name = parts[parts.length - 1];
+    const subDir = parts.slice(0, -1).join('/');
+    const length = parseInt(req.headers['content-length'], 10) || 0;
+
+    if (kind === 'local') {
+      const base = path.resolve(String(req.query.path));
+      if (!isLocalPathAllowed(base)) return fail(403, `Path not allowed: ${base}`);
+      if (!fs.existsSync(base) || !fs.statSync(base).isDirectory()) return fail(400, `Folder not found: ${base}`);
+      const destDir = path.join(base, subDir);
+      const finalPath = path.join(destDir, name);
+      if (fs.existsSync(finalPath) && !overwrite) return fail(409, `${rel} already exists`);
+      fs.mkdirSync(destDir, { recursive: true });
+      try { assertFreeSpace(destDir, length); } catch (e) { return fail(507, e.message); }
+      const partPath = path.join(destDir, `.${name}.part`);
+      try {
+        await pipeline(req, fs.createWriteStream(partPath));
+        fs.renameSync(partPath, finalPath);
+      } catch (e) {
+        try { fs.unlinkSync(partPath); } catch (_) {}
+        throw e;
+      }
+      log('info', `device upload -> ${finalPath}`);
+      return res.json({ success: true, size: fs.statSync(finalPath).size });
+    }
+
+    if (kind === 'ftp') {
+      if (net.isIP(String(ip || '')) === 0) return fail(400, 'ip must be a valid IP address');
+      const destDir = subDir ? joinPath(cleanDir(req.query.path), subDir) : cleanDir(req.query.path);
+      const ftp = loadFtp();
+      let exists = false;
+      try {
+        await withFtp(ip, ftp, async (client) => {
+          await client.ensureDir(destDir);
+          if (!overwrite) {
+            try { await client.size(name); exists = true; return; } catch (_) {}
+          }
+          await client.uploadFrom(req, name);
+        });
+      } catch (e) {
+        // Aborted or broken mid-way: don't leave a truncated file behind.
+        try { await withFtp(ip, ftp, (client) => client.remove(joinPath(destDir, name))); } catch (_) {}
+        throw e;
+      }
+      if (exists) return fail(409, `${rel} already exists`);
+      log('info', `device upload -> ${ip}:${joinPath(destDir, name)}`);
+      return res.json({ success: true });
+    }
+
+    return fail(400, 'kind must be local or ftp');
+  } catch (err) {
+    if (!res.headersSent) res.status(500).json({ error: err.message });
   }
 });
 

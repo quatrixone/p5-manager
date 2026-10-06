@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import Modal from './UI/Modal';
 import { api, apiSafe } from '../lib/api.js';
+import { entriesFromInput, topLevelNames, uploadOne } from '../lib/browserUpload.js';
 
 const C = {
   bg: 'var(--bg)',
@@ -64,6 +65,9 @@ export default function FileBrowser({
   //                     and this pane (and its folder rows) a drop target
   //   onSendToOther     (op, payload) => void, touch fallback for drag & drop
   //   reloadSignal      bump to re-list the current folder
+  //   enableDeviceUpload  show "⬆ Upload": files/folders from the device running
+  //                       the browser into the folder that is open here
+  enableDeviceUpload = false,
   paneId,
   initialLocation,
   onLocationChange,
@@ -313,6 +317,78 @@ export default function FileBrowser({
     if (firstReload.current) { firstReload.current = false; return; }
     browse(pathRef.current);
   }, [reloadSignal]);
+
+  // ─── Upload from this device ─────────────────────────────────────────
+  // Runs in the page (not the server queue): closing the tab stops it.
+  const filesInputRef = useRef(null);
+  const folderInputRef = useRef(null);
+  const uploadAbortRef = useRef(null);
+  const [uploadMenuOpen, setUploadMenuOpen] = useState(false);
+  const [deviceUpload, setDeviceUpload] = useState(null); // { index, total, name, sent, bytes }
+  const canDeviceUpload = enableDeviceUpload && (kind === 'local' || (kind === 'ftp' && !!ftpIp)) && !!path;
+  const startDeviceUpload = async (fileList) => {
+    const entries = entriesFromInput(fileList);
+    if (entries.length === 0) return;
+    const dest = kind === 'ftp' ? { kind: 'ftp', ip: ftpIp, path } : { kind: 'local', path };
+    const clash = topLevelNames(entries).filter(n => files.some(f => f.name === n));
+    if (clash.length > 0) {
+      const shown = clash.slice(0, 5).join(', ') + (clash.length > 5 ? ` and ${clash.length - 5} more` : '');
+      if (!window.confirm(`Already in this folder: ${shown}.\n\nOverwrite?`)) return;
+    }
+    const bytes = entries.reduce((n, e) => n + e.file.size, 0);
+    const controller = new AbortController();
+    uploadAbortRef.current = controller;
+    let done = 0;
+    let failed = null;
+    for (let i = 0; i < entries.length; i++) {
+      const { file, rel } = entries[i];
+      setDeviceUpload({ index: i + 1, total: entries.length, name: rel, sent: done, bytes });
+      try {
+        await uploadOne({
+          file, rel, dest, overwrite: clash.length > 0, signal: controller.signal,
+          onProgress: (loaded) => setDeviceUpload(u => (u ? { ...u, sent: done + loaded } : u)),
+        });
+        done += file.size;
+      } catch (e) {
+        failed = e;
+        break;
+      }
+    }
+    uploadAbortRef.current = null;
+    setDeviceUpload(null);
+    if (failed?.cancelled) onNotification?.('Upload cancelled', 'info');
+    else if (failed) onNotification?.(`Upload failed: ${failed.message}`, 'error');
+    else onNotification?.(`Uploaded ${entries.length} file${entries.length === 1 ? '' : 's'}`, 'success');
+    browse(pathRef.current);
+  };
+  const onDeviceFilesPicked = (e) => {
+    const list = e.target.files;
+    setUploadMenuOpen(false);
+    startDeviceUpload(list);
+    e.target.value = ''; // let the same file be picked again
+  };
+
+  // New folder in the open folder (server disk or console; remote sources
+  // have no mkdir endpoint).
+  const canMakeFolder = enableDeviceUpload && (kind === 'local' || (kind === 'ftp' && !!ftpIp)) && !!path;
+  const makeFolder = async () => {
+    const name = (window.prompt('New folder name') || '').trim();
+    if (!name) return;
+    if (/[\\/]/.test(name) || name === '.' || name === '..') {
+      onNotification?.('Folder name cannot contain slashes', 'error');
+      return;
+    }
+    if (files.some(f => f.name === name)) {
+      onNotification?.(`"${name}" already exists here`, 'error');
+      return;
+    }
+    try {
+      if (kind === 'local') await api.post('/convert/local/mkdir', { path: childPath(name) });
+      else await api.post('/convert/ftp/mkdir', { ip: ftpIp, path: childPath(name) });
+      onNotification?.(`Created folder ${name}`, 'success');
+      browse(pathRef.current);
+    } catch (e) { onNotification?.(e.message, 'error'); }
+  };
 
   const DRAG_MIME = 'application/x-p5m-items';
   const dragEnabled = !!onDropItems;
@@ -1259,10 +1335,60 @@ export default function FileBrowser({
               {description && <div className="text-xs text-muted mt-xs fb-title">{description}</div>}
               <span className="text-sm text-muted fb-narrow">{files.length} items{loading ? ' · loading…' : ''}</span>
             </div>
-            <button className="btn btn-ghost btn-sm" onClick={toggleMultiSelect}>☰ Select</button>
+            <div className="flex gap-xs items-center">
+              {canDeviceUpload && (
+                <button
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => setUploadMenuOpen(o => !o)}
+                  disabled={!!deviceUpload}
+                  aria-expanded={uploadMenuOpen}
+                  title="Upload files or a folder from this device into the open folder"
+                >
+                  ⬆ Upload
+                </button>
+              )}
+              {canMakeFolder && (
+                <button className="btn btn-ghost btn-sm" onClick={makeFolder} title="Create a folder in the open folder">
+                  📁＋ New folder
+                </button>
+              )}
+              <button className="btn btn-ghost btn-sm" onClick={toggleMultiSelect}>☰ Select</button>
+            </div>
           </div>
         )}
       </div>
+
+      {canDeviceUpload && (
+        <>
+          <input ref={filesInputRef} type="file" multiple hidden onChange={onDeviceFilesPicked} />
+          <input ref={folderInputRef} type="file" webkitdirectory="" directory="" hidden onChange={onDeviceFilesPicked} />
+        </>
+      )}
+      {canDeviceUpload && uploadMenuOpen && !deviceUpload && (
+        <div className="fb-device-upload">
+          <span className="text-xs text-muted truncate">From this device into {path}</span>
+          <div className="flex gap-xs">
+            <button className="btn btn-secondary btn-sm" onClick={() => filesInputRef.current?.click()}>📄 Files…</button>
+            <button className="btn btn-secondary btn-sm" onClick={() => folderInputRef.current?.click()}>📁 Folder…</button>
+          </div>
+        </div>
+      )}
+      {deviceUpload && (
+        <div className="fb-device-upload">
+          <div className="flex-1" style={{ minWidth: 0 }}>
+            <div className="text-xs truncate" title={deviceUpload.name}>
+              ⬆ {deviceUpload.index}/{deviceUpload.total} · {deviceUpload.name}
+            </div>
+            <div className="fb-device-upload-bar">
+              <div style={{ width: `${deviceUpload.bytes ? Math.min(100, Math.round((deviceUpload.sent / deviceUpload.bytes) * 100)) : 0}%` }} />
+            </div>
+          </div>
+          <span className="text-xs text-muted">
+            {deviceUpload.bytes ? Math.min(100, Math.round((deviceUpload.sent / deviceUpload.bytes) * 100)) : 0}%
+          </span>
+          <button className="btn btn-ghost btn-sm" onClick={() => uploadAbortRef.current?.abort()}>Cancel</button>
+        </div>
+      )}
 
       <div className="comp-card-body flex-col gap-md">
         <div className="tabs">

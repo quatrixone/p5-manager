@@ -185,18 +185,23 @@ function App() {
     }
   };
 
+  // Returns the backend's answer so PayloadList can show the new version
+  // without issuing a second PUT of its own (it used to: every Update
+  // downloaded the release twice).
   const updatePayload = async (id) => {
     try {
       const data = await api.put(`/payloads/${id}/update`);
       if (data.success) {
-        showNotification('Payload updated', 'success');
+        showNotification(data.name ? `Updated to ${data.name}` : 'Payload updated', 'success');
         fetchPayloads();
         fetchLogs();
       } else {
         showNotification(data.error || 'Update failed', 'warning');
       }
-    } catch (err) {
-      showNotification(err.message, 'error');
+      return data;
+    } catch (error) {
+      showNotification(error.message || 'Update failed', 'error');
+      return null;
     }
   };
 

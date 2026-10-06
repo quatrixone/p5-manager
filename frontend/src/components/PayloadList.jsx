@@ -115,8 +115,9 @@ function PayloadList({ payloads, profiles, onFetchUrl, onSend, onDelete, onUpdat
   const handleUpdate = async (id) => {
     setUpdatingId(id);
     try {
-      const data = await api.put(`/payloads/${id}/update`);
-      if (data.success && data.newVersion) {
+      // The parent performs the PUT (and refreshes the list) - exactly once.
+      const data = await onUpdate(id);
+      if (data?.success && data.newVersion) {
         setUpdateInfo(prev => ({
           ...prev,
           [id]: {
@@ -127,7 +128,6 @@ function PayloadList({ payloads, profiles, onFetchUrl, onSend, onDelete, onUpdat
             updateAvailable: false,
           },
         }));
-        onUpdate(id);
       }
     } catch (err) {
       console.error('Update failed:', err);
@@ -268,6 +268,23 @@ function PayloadList({ payloads, profiles, onFetchUrl, onSend, onDelete, onUpdat
             className="comp-card-footer"
             style={{ flexWrap: 'wrap', gap: 6, padding: '6px 10px' }}
           >
+            {/* Inline check result. First in the row with an auto right
+                margin: the footer right-aligns its children, so putting it
+                last (with an auto LEFT margin) shoved the buttons to the
+                left edge the moment a Check finished. */}
+            {info?.checked && payload.source_url && (
+              <span
+                className="text-xs text-muted"
+                style={{ marginRight: 'auto', alignSelf: 'center' }}
+                title={info.error ? `Error: ${info.error}` : undefined}
+              >
+                {info.error
+                  ? `⚠ ${info.error}`
+                  : info.updateAvailable
+                    ? `New release: ${info.newVersion}`
+                    : '✓ Up to date'}
+              </span>
+            )}
             {/* Check + Update are two separate actions and both are
                 ALWAYS visible (when the payload has a GitHub source):
                 - Check: contacts GitHub, just compares versions
@@ -305,21 +322,6 @@ function PayloadList({ payloads, profiles, onFetchUrl, onSend, onDelete, onUpdat
             <button className="btn btn-sm btn-danger" onClick={() => onDelete(payload.id)}>
               🗑️ Delete
             </button>
-            {/* Inline check result — sits at the end so it never elbows
-                the action buttons out of the row. */}
-            {info?.checked && payload.source_url && (
-              <span
-                className="text-xs text-muted"
-                style={{ marginLeft: 'auto', alignSelf: 'center' }}
-                title={info.error ? `Error: ${info.error}` : undefined}
-              >
-                {info.error
-                  ? `⚠ ${info.error}`
-                  : info.updateAvailable
-                    ? `New release: ${info.newVersion}`
-                    : '✓ Up to date'}
-              </span>
-            )}
           </div>
         )}
       </div>

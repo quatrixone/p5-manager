@@ -151,7 +151,7 @@ export default function FileOps({ profiles, onNotification }) {
               <FileBrowser
                 profiles={profiles}
                 onNotification={onNotification}
-                enableFtp enableExtract enableDelete enableFtpUpload
+                enableFtp enableExtract enableDelete enableFtpUpload enableDeviceUpload
                 onOpenQueue={openQueue}
                 onPickConvert={sendToConvert}
               />

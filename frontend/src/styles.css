@@ -2259,3 +2259,26 @@ pre { padding: 12px; overflow-x: auto; }
   border-radius: 12px;
   box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55);
 }
+
+/* ─── Upload from this device (FileBrowser) ─────────────────────────── */
+.fb-device-upload {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px var(--space-md);
+  border-bottom: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.02);
+}
+.fb-device-upload-bar {
+  height: 4px;
+  margin-top: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+.fb-device-upload-bar > div {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.2s linear;
+}
