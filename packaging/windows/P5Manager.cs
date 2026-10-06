@@ -128,7 +128,14 @@ static class P5Manager
         string port = Env("PORT", "3001");
         string sidecarPort = Env("PYREMOTEPLAY_SIDECAR_PORT", "9555");
 
-        Console.Title = "P5 Manager";
+        Console.Title = "P5 Manager - starting...";
+        Console.WriteLine("==============================================================");
+        Console.WriteLine("  P5 Manager is starting. Please wait...");
+        Console.WriteLine("  The first start can take a minute while Windows checks the");
+        Console.WriteLine("  files. Your browser opens by itself when it is ready.");
+        Console.WriteLine("  Keep this window open - closing it stops P5 Manager.");
+        Console.WriteLine("==============================================================");
+        Console.WriteLine();
         if (!File.Exists(node) || !File.Exists(Path.Combine(backend, "src", "index.js")))
         {
             Console.Error.WriteLine("P5 Manager: the app files are missing next to P5Manager.exe.");
@@ -175,14 +182,23 @@ static class P5Manager
 
         string url = "http://localhost:" + port + "/";
         bool up = false;
-        for (int i = 0; i < 120 && !server.HasExited; i++)
+        for (int i = 0; i < 240 && !server.HasExited; i++)
         {
             if (Answers(url + "api/health")) { up = true; break; }
             Thread.Sleep(500);
+            // A line every 5 seconds so a slow start does not look like a hang.
+            if (i > 0 && i % 10 == 0)
+                Console.WriteLine("[launcher] still starting... (" + (i / 2) + " s)");
         }
         if (up)
         {
-            Console.WriteLine("[launcher] ready: " + url + "  (close this window to stop P5 Manager)");
+            Console.Title = "P5 Manager - running on " + url;
+            Console.WriteLine();
+            Console.WriteLine("==============================================================");
+            Console.WriteLine("  P5 Manager is ready: " + url);
+            Console.WriteLine("  Close this window to stop it.");
+            Console.WriteLine("==============================================================");
+            Console.WriteLine();
             if (openBrowser)
             {
                 try { Process.Start(url); }
