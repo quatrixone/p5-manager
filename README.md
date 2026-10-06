@@ -164,9 +164,9 @@ a newer package (other bundled runtimes or libraries), the bar says so;
 download the new zip, extract it elsewhere and move your `data` folder
 into it.
 
-Two things work only in the Docker version: creating exFAT images, and
-"remote source" SMB shares (on Windows, type the `\\server\share` path
-into the Local file browser instead).
+One thing works only in the Docker version: "remote source" SMB shares
+(on Windows, type the `\\server\share` path into the Local file browser
+instead).
 
 ---
 

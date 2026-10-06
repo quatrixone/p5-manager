@@ -27,6 +27,31 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { spawn, spawnSync } from 'child_process';
+import { buildExfatImage, extractExfatImage } from './exfatImage.js';
+
+// Windows cannot loop-mount an image, and neither can a Linux install that
+// lacks CAP_SYS_ADMIN. There the image is written and read directly by
+// lib/exfatImage.js instead - no mkfs, no mount, no extra rights.
+// P5M_EXFAT_BUILTIN=1 picks that path anywhere; =0 forces the mount path.
+const USE_BUILTIN = process.env.P5M_EXFAT_BUILTIN
+  ? process.env.P5M_EXFAT_BUILTIN === '1'
+  : process.platform === 'win32';
+
+// Progress of the built-in writer / reader, reported on the job the same way
+// the rsync output is: a percentage and a line in the log now and then.
+function builtinProgress(job, helpers, from, to) {
+  let lastLogged = -1;
+  return (done, total) => {
+    const pct = total ? done / total : 1;
+    job.progress = Math.round(from + (to - from) * pct);
+    job.bytes_done = done;
+    const step = Math.floor(pct * 20);
+    if (step !== lastLogged) {
+      lastLogged = step;
+      helpers.appendLog(job, `[manager] ${(done / MIB).toFixed(0)} / ${(total / MIB).toFixed(0)} MiB (${Math.round(pct * 100)}%)\n`);
+    }
+  };
+}
 
 // Pick the loop-mount temp staging root. We deliberately use the OS tmpdir
 // so loop mounts don't bind into one of the Docker bind volumes (which would
@@ -192,6 +217,31 @@ export async function createExfatImage(job, helpers, src, out, opts = {}) {
   totalBytes = Math.ceil(totalBytes / MIB) * MIB;
   job.bytes_total = payload;
   appendLog(job, `[manager] payload=${(payload / MIB).toFixed(1)} MiB, headroom=${(headroom / MIB).toFixed(1)} MiB, image=${(totalBytes / MIB).toFixed(1)} MiB\n`);
+
+  if (USE_BUILTIN) {
+    // Same sizing and label rules as below, written without mounting.
+    const builtinLabel = (String(opts.volume_label || path.basename(out).replace(/\.exfat$/i, '') || 'PS5DATA')
+      .replace(/[^A-Za-z0-9_-]/g, '')
+      .slice(0, 11) || 'PS5DATA');
+    job.phase = 'copying';
+    job.progress = 10;
+    appendLog(job, `[manager] writing the exFAT image directly (label ${builtinLabel})\n`);
+    try {
+      const built = await buildExfatImage({
+        src, out, label: builtinLabel, sizeBytes: totalBytes,
+        onProgress: builtinProgress(job, helpers, 10, 98),
+        cancelled: () => !!job.cancelled || job.status === 'cancelled',
+      });
+      appendLog(job, `[manager] ${built.files} files, ${built.folders} folders, image ${(built.sizeBytes / MIB).toFixed(1)} MiB, cluster ${built.clusterSize / 1024} KiB\n`);
+      return { code: 0 };
+    } catch (e) {
+      appendLog(job, `[manager] exFAT image failed: ${e.message}\n`);
+      return { code: -1, error: e.message };
+    } finally {
+      job.progress = 100;
+      job.phase = null;
+    }
+  }
 
   // 2. Allocate the sparse image file.
   job.phase = 'allocating';
@@ -384,6 +434,27 @@ export async function unpackExfatImage(job, helpers, imagePath, destDir) {
   } catch (e) {
     appendLog(job, `[manager] cannot prepare ${destDir}: ${e.message}\n`);
     return { code: -1, error: e.message };
+  }
+
+  if (USE_BUILTIN) {
+    job.phase = 'copying';
+    job.progress = 10;
+    appendLog(job, `[manager] reading the exFAT image directly\n`);
+    try {
+      const res = await extractExfatImage({
+        image: imagePath, dest: destDir,
+        onProgress: builtinProgress(job, helpers, 10, 98),
+        cancelled: () => !!job.cancelled || job.status === 'cancelled',
+      });
+      appendLog(job, `[manager] ${res.files} files, ${res.folders} folders, ${(res.bytes / MIB).toFixed(1)} MiB\n`);
+      return { code: 0 };
+    } catch (e) {
+      appendLog(job, `[manager] exFAT unpack failed: ${e.message}\n`);
+      return { code: -1, error: e.message };
+    } finally {
+      job.progress = 100;
+      job.phase = null;
+    }
   }
 
   // Loop attach (read-only).

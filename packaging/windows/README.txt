@@ -26,7 +26,5 @@ Options (environment variables, set before starting)
   P5M_NO_BROWSER=1  do not open the browser (also: P5Manager.exe --no-browser)
 
 Not available on Windows
-  - Creating exFAT images (needs Linux loop devices). Use the Docker version
-    for that.
   - SMB "remote sources". Type the network path (\\server\share\folder) in
     the Local file browser instead.

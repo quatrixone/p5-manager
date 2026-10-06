@@ -3699,9 +3699,9 @@ async function executeConvertJob(job) {
     }
     else if (job.mode === 'exfat-file' || job.mode === 'exfat-folder') {
       // exFAT image builder — lib/exfat.js does the mkfs.exfat + loop-mount
-      // + rsync dance. The same appendLog / updateProgressFromText pipeline
-      // is wired through so phase + progress surface in the Tasks UI.
-      if (isWindows) throw new Error('exFAT images can only be created by the Linux/Docker version of P5 Manager');
+      // + rsync dance on Linux and writes the image directly on Windows. The
+      // same appendLog / updateProgressFromText pipeline is wired through
+      // so phase + progress surface in the Tasks UI.
       result = await createExfatImage(job, { appendLog, updateProgressFromText }, job.source, job.output, {
         volume_label: params.volume_label,
         size_bytes: params.size_bytes,
