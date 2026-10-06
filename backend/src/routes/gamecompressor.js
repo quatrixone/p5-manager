@@ -101,7 +101,9 @@ router.post('/:ip/start', async (req, res) => {
 router.post('/:ip/stop', async (req, res) => {
   try {
     const { ip } = req.params;
-    const r = await fetch(`http://${ip}:${UI_PORT}/api/control/shutdown`, {
+    // removeTile=1 also takes its launcher tile off the home screen, like
+    // the terminate button of its own UI does.
+    const r = await fetch(`http://${ip}:${UI_PORT}/api/control/shutdown?removeTile=1`, {
       method: 'POST', signal: AbortSignal.timeout(10_000),
     });
     const text = await r.text();

@@ -47,7 +47,9 @@ export default function GameCompressor({ profiles = [], onNotification }) {
       onNotification?.('Game Compressor stopped', 'success');
     } catch (e) { onNotification?.(e.message, 'error'); }
     setBusy(null);
-    setTimeout(refresh, 1500);
+    // It answers at once but needs several seconds to wind down.
+    setTimeout(refresh, 4000);
+    setTimeout(refresh, 10000);
   };
 
   return (
