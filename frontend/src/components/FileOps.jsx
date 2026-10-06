@@ -3,10 +3,12 @@ import Convert from './Convert';
 import Downloader from './Downloader';
 import Queue from './Queue';
 import FileBrowser from './FileBrowser';
+import DualPane from './DualPane';
 import useVisiblePolling from '../hooks/useVisiblePolling';
 import { apiSafe } from '../lib/api.js';
 
 const STORAGE_TAB = 'fileops.tab';
+const STORAGE_DUAL = 'fileops.dualPane';
 
 // Counts of "in flight" items per queue type. Polled centrally here so each
 // tab badge stays in sync and we only hit the queue endpoints once per cycle.
@@ -62,6 +64,15 @@ export default function FileOps({ profiles, onNotification }) {
   // bounce to the Convert tab which picks it up via `initialPick`.
   const [pendingConvertPick, setPendingConvertPick] = useState(null);
 
+  // Browse tab: one browser, or two side by side with drag & drop between them.
+  const [dualPane, setDualPane] = useState(() => {
+    try { return localStorage.getItem(STORAGE_DUAL) === '1'; } catch (_) { return false; }
+  });
+  const toggleDualPane = () => setDualPane(v => {
+    try { localStorage.setItem(STORAGE_DUAL, v ? '0' : '1'); } catch (_) {}
+    return !v;
+  });
+
   const counts = useQueueCounts();
 
   const switchTab = useCallback((next) => {
@@ -114,13 +125,38 @@ export default function FileOps({ profiles, onNotification }) {
 
       <div className="fileops-body">
         {subTab === 'files' && (
-          <FileBrowser
-            profiles={profiles}
-            onNotification={onNotification}
-            enableFtp enableExtract enableDelete enableFtpUpload
-            onOpenQueue={openQueue}
-            onPickConvert={sendToConvert}
-          />
+          <>
+            <div className="fileops-pane-toggle">
+              <button
+                type="button"
+                className={`btn btn-sm ${dualPane ? 'btn-primary' : 'btn-ghost'}`}
+                aria-pressed={dualPane}
+                onClick={toggleDualPane}
+                title="Show two browsers side by side and drag files between them"
+              >
+                ◫ Two panes
+              </button>
+              {dualPane && (
+                <span className="text-xs text-muted">Drag files from one pane to the other, then pick Copy or Move. On touch screens use Select, then Copy / Move to other pane.</span>
+              )}
+            </div>
+            {dualPane ? (
+              <DualPane
+                profiles={profiles}
+                onNotification={onNotification}
+                onOpenQueue={openQueue}
+                onPickConvert={sendToConvert}
+              />
+            ) : (
+              <FileBrowser
+                profiles={profiles}
+                onNotification={onNotification}
+                enableFtp enableExtract enableDelete enableFtpUpload
+                onOpenQueue={openQueue}
+                onPickConvert={sendToConvert}
+              />
+            )}
+          </>
         )}
         {subTab === 'convert' && (
           <Convert

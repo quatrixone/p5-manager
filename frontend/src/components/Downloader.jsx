@@ -16,6 +16,10 @@ export default function Downloader({ profiles = [], onNotification, onOpenQueue 
   const [destPath, setDestPath] = useState('/data/downloads');
   const [smbSourceId, setSmbSourceId] = useState('');
   const [smbSubdir, setSmbSubdir] = useState('');
+  // PS5 destination: the console downloads the URL itself through zftpd's
+  // web API, so nothing passes through the manager.
+  const [ps5Ip, setPs5Ip] = useState('');
+  const [ps5Path, setPs5Path] = useState('/data/homebrew');
   const [overwrite, setOverwrite] = useState(false);
   const [smbSources, setSmbSources] = useState([]);
   const [submitting, setSubmitting] = useState(false);
@@ -37,6 +41,12 @@ export default function Downloader({ profiles = [], onNotification, onOpenQueue 
     apiSafe.get('/convert/paths').then(d => { if (d?.downloads) setDestPath(d.downloads); });
   }, []);
 
+  useEffect(() => {
+    if (ps5Ip || profiles.length === 0) return;
+    const def = profiles.find(p => p.is_default) || profiles[0];
+    if (def) setPs5Ip(def.ip_address);
+  }, [profiles, ps5Ip]);
+
   const start = async () => {
     const trimmed = url.trim();
     if (!trimmed) return onNotification?.('URL required', 'error');
@@ -45,6 +55,8 @@ export default function Downloader({ profiles = [], onNotification, onOpenQueue 
     }
     if (destKind === 'local' && !destPath.trim()) return onNotification?.('Destination directory required', 'error');
     if (destKind === 'smb' && !smbSourceId) return onNotification?.('SMB source required', 'error');
+    if (destKind === 'ps5' && !ps5Ip) return onNotification?.('Pick a console', 'error');
+    if (destKind === 'ps5' && !ps5Path.trim().startsWith('/')) return onNotification?.('Console folder must be an absolute path', 'error');
 
     setSubmitting(true);
     try {
@@ -55,6 +67,7 @@ export default function Downloader({ profiles = [], onNotification, onOpenQueue 
         overwrite,
       };
       if (destKind === 'local') body.dest_path = destPath.trim();
+      else if (destKind === 'ps5') { body.ps5_ip = ps5Ip; body.dest_path = ps5Path.trim(); body.filename = undefined; }
       else { body.smb_source_id = smbSourceId; body.smb_subdir = smbSubdir.trim() || undefined; }
 
       await api.post('/downloader/start', body);
@@ -88,10 +101,12 @@ export default function Downloader({ profiles = [], onNotification, onOpenQueue 
             />
           </div>
 
-          <div>
-            <label className="text-sm text-muted mb-sm" style={{ display: 'block' }}>Filename <span className="text-muted">(optional)</span></label>
-            <input className="input" value={filename} onChange={e => setFilename(e.target.value)} placeholder="(auto-detected)" />
-          </div>
+          {destKind !== 'ps5' && (
+            <div>
+              <label className="text-sm text-muted mb-sm" style={{ display: 'block' }}>Filename <span className="text-muted">(optional)</span></label>
+              <input className="input" value={filename} onChange={e => setFilename(e.target.value)} placeholder="(auto-detected)" />
+            </div>
+          )}
 
           <div className="downloader-dest">
             <div className="flex items-center justify-between flex-wrap gap-sm">
@@ -111,10 +126,39 @@ export default function Downloader({ profiles = [], onNotification, onOpenQueue 
                 >
                   📂 SMB
                 </button>
+                <button
+                  type="button"
+                  className={`tab-item ${destKind === 'ps5' ? 'active' : ''}`}
+                  onClick={() => setDestKind('ps5')}
+                >
+                  🎮 PS5
+                </button>
               </div>
             </div>
 
-            {destKind === 'local' ? (
+            {destKind === 'ps5' ? (
+              <div>
+                <div className="grid-2">
+                  <div>
+                    <label className="text-xs text-muted mb-sm" style={{ display: 'block' }}>Console</label>
+                    <select className="select" value={ps5Ip} onChange={e => setPs5Ip(e.target.value)}>
+                      <option value="">— pick console —</option>
+                      {profiles.map(p => (
+                        <option key={p.id} value={p.ip_address}>{p.name} ({p.ip_address})</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-xs text-muted mb-sm" style={{ display: 'block' }}>Folder on the console</label>
+                    <input className="input" value={ps5Path} onChange={e => setPs5Path(e.target.value)} placeholder="/data/homebrew" />
+                  </div>
+                </div>
+                <div className="text-xs text-muted mt-sm">
+                  The console downloads the URL itself, so nothing passes through the manager. Needs the
+                  zftpd 1.6.0+ <code>zhttp</code> build running on the console; it also picks the file name.
+                </div>
+              </div>
+            ) : destKind === 'local' ? (
               <div>
                 <label className="text-xs text-muted mb-sm" style={{ display: 'block' }}>Folder on the manager</label>
                 <div className="flex gap-xs items-center">
@@ -156,10 +200,12 @@ export default function Downloader({ profiles = [], onNotification, onOpenQueue 
             )}
           </div>
 
-          <label className="flex items-center gap-sm" style={{ cursor: 'pointer' }}>
-            <input type="checkbox" checked={overwrite} onChange={e => setOverwrite(e.target.checked)} />
-            <span className="text-sm">Overwrite if file already exists</span>
-          </label>
+          {destKind !== 'ps5' && (
+            <label className="flex items-center gap-sm" style={{ cursor: 'pointer' }}>
+              <input type="checkbox" checked={overwrite} onChange={e => setOverwrite(e.target.checked)} />
+              <span className="text-sm">Overwrite if file already exists</span>
+            </label>
+          )}
 
           <button className="btn btn-success btn-block" onClick={start} disabled={submitting}>
             {submitting ? '⏳ Adding…' : '＋ Add to queue'}

@@ -12,7 +12,7 @@ import { AVAILABLE_COMMANDS, buildOskInputs, parseLine } from '../lib/inputScrip
 // that goes through the RP session's own input channel, so "▶ Run" here
 // and the step-by-step "👣 Step" mode both ultimately press buttons the
 // same way as the on-screen touch controller.
-function ScriptRunner({ ip, liveSession, onStartSession, sendCommand, scripts, onScriptsChange, onRequestStep }) {
+function ScriptRunner({ ip, liveSession, onStartSession, sendCommand, scripts, onScriptsChange, onRequestStep, onResetToMainScreen }) {
   const [output, setOutput] = useState([]);
   const [manualBusy, setManualBusy] = useState(null); // cmd currently in flight, or null
   const [isRunning, setIsRunning] = useState(null); // holds the id/key of the script currently running, or null
@@ -123,6 +123,23 @@ function ScriptRunner({ ip, liveSession, onStartSession, sendCommand, scripts, o
         if (checkStop()) break;
         await runCommand(ev.button);
         await new Promise(r => setTimeout(r, ev.commit ? 140 : 90));
+      }
+      return;
+    }
+
+    if (parsed.cmd === 'home') {
+      addOutput('🏠 Reset to main screen', 'info');
+      if (onResetToMainScreen) {
+        // RemotePlay's resetToMainScreen(): PS, Down, Cross, plus a
+        // left/right correction read off the live video frame when
+        // Control Center's cursor was not left on Home.
+        await onResetToMainScreen();
+      } else {
+        await runCommand('ps');
+        await new Promise(r => setTimeout(r, 800));
+        await runCommand('down');
+        await new Promise(r => setTimeout(r, 400));
+        await runCommand('cross');
       }
       return;
     }

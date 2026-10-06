@@ -1,6 +1,6 @@
 import express from 'express';
 import path from 'path';
-import { getRepo, log } from '../db/sqlite.js';
+import { getRepo, log, saveDatabase } from '../db/sqlite.js';
 import { payloadsDir } from '../lib/paths.js';
 
 const router = express.Router();
@@ -38,6 +38,20 @@ router.put('/', (req, res) => {
     log('error', `Failed to update setting: ${error.message}`);
     res.status(500).json({ error: error.message });
   }
+});
+
+// Exits the process and relies on the container restart policy
+// (docker-compose: `restart: unless-stopped`) to bring it back. Emitting
+// SIGTERM first runs the same listeners `docker stop` would trigger
+// (convert.js snapshots the queue state there).
+router.post('/restart', (req, res) => {
+  log('info', 'Restart requested from Settings');
+  res.json({ success: true });
+  setTimeout(() => {
+    try { process.emit('SIGTERM'); } catch (_) {}
+    try { saveDatabase(); } catch (_) {}
+    process.exit(0);
+  }, 300);
 });
 
 router.get('/payloads', (req, res) => {

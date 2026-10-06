@@ -1708,18 +1708,31 @@ pre { padding: 12px; overflow-x: auto; }
   .rp-controller-hint { font-size: 0.7rem; margin-top: 2px; }
 }
 
-/* Smaller pad for the Scripts tab (above the step editor) - it's a
-   convenience for manual presses while building/running a script, not
-   the main event the way it is on the Control tab, so it doesn't need
-   full size there. */
-.rp-pad-compact .rp-pad { gap: var(--space-xs); }
-.rp-pad-compact .rp-pad-main { gap: var(--space-sm); }
-.rp-pad-compact .rp-pad-shoulders-side > button { min-width: 40px; height: 28px; font-size: 0.68rem; padding: 0 6px; }
-.rp-pad-compact .rp-dpad, .rp-pad-compact .rp-face { width: clamp(80px, 22vw, 110px); gap: 3px; }
-.rp-pad-compact .rp-dpad > div > button, .rp-pad-compact .rp-face > div > button { font-size: 0.85rem; }
-.rp-pad-compact .rp-face > div > button { font-size: 0.9rem; }
-.rp-pad-compact .rp-pad-center > button { min-width: 44px; height: 28px; font-size: 0.68rem; padding: 0 6px; }
-.rp-pad-compact .rp-controller-hint { font-size: 0.68rem; margin-top: 2px; }
+/* Tiny pad for the Scripts tab - sits to the LEFT of the step list (see
+   the .rp-pad-mini wrapper in RemotePlay.jsx) instead of full-width
+   above everything. It's a convenience for manual presses while
+   building/running a script, not the main event the way it is on the
+   Control tab, so it's shrunk hard and the D-pad/face clusters stack
+   vertically (rather than side by side) to fit a narrow column. The
+   PS2-compat row and usage hint are dropped entirely here - there's no
+   room, and this pad is a quick-press convenience, not the primary way
+   to use those two features. */
+.rp-pad-mini { width: 130px; flex-shrink: 0; }
+.rp-pad-mini .rp-pad { gap: 6px; }
+.rp-pad-mini .rp-pad-shoulders { gap: 4px; }
+.rp-pad-mini .rp-pad-shoulders-side > button { min-width: 0; height: 22px; font-size: 0.6rem; padding: 0 4px; }
+.rp-pad-mini .rp-pad-main { grid-template-columns: 1fr; gap: 6px; justify-items: center; }
+.rp-pad-mini .rp-dpad, .rp-pad-mini .rp-face { width: 76px; gap: 2px; }
+.rp-pad-mini .rp-dpad > div > button, .rp-pad-mini .rp-face > div > button { font-size: 0.68rem; }
+.rp-pad-mini .rp-face > div > button { font-size: 0.72rem; }
+.rp-pad-mini .rp-pad-center > button { min-width: 32px; height: 22px; font-size: 0.56rem; padding: 0 3px; }
+.rp-pad-mini .rp-pad-center-ps2,
+.rp-pad-mini .rp-controller-hint { display: none; }
+
+@media (max-width: 420px) {
+  .rp-pad-mini { width: 104px; }
+  .rp-pad-mini .rp-dpad, .rp-pad-mini .rp-face { width: 62px; }
+}
 
 /* ---------- Live-session layout ----------
    On mobile/tablet (<1024px) this is just a vertical stack: chips →
@@ -2120,4 +2133,129 @@ pre { padding: 12px; overflow-x: auto; }
     background: none;
   }
   .fileops--files .fb .file-card-selected { background: var(--accent-dim); }
+}
+
+/* ─── Live Session tab bar dropdowns (SessionTabBar.jsx) ─────────────── */
+.session-tabbar {
+  position: relative;
+  max-width: 460px;
+}
+.session-tabbar-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  background: var(--bg-elev, #14161b);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
+}
+.session-tabbar-menu-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.session-tabbar-menu-item {
+  border: none;
+  border-top: 1px solid var(--border);
+  background: none;
+  color: var(--text);
+  text-align: left;
+  padding: 10px 6px 4px;
+  cursor: pointer;
+  font: inherit;
+}
+.session-tabbar-menu-item:hover { color: var(--accent); }
+
+.search-select {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.search-select-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+.search-select-empty { padding: 8px 6px; }
+.search-select-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  flex-shrink: 0;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: none;
+  color: var(--text);
+  text-align: left;
+  padding: 8px 10px;
+  cursor: pointer;
+  font: inherit;
+}
+.search-select-option:hover,
+.search-select-option.cursor { background: rgba(255, 255, 255, 0.05); }
+.search-select-option.selected {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.session-tabbar .tab-item {
+  padding-left: 8px;
+  padding-right: 8px;
+  white-space: nowrap;
+}
+
+/* ─── Dual-pane file manager (DualPane.jsx) ─────────────────────────── */
+.fileops-pane-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.dual-pane {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--space-md);
+  align-items: start;
+}
+@media (max-width: 900px) {
+  .dual-pane { grid-template-columns: minmax(0, 1fr); }
+}
+.fb-drop-target {
+  outline: 2px dashed var(--accent);
+  outline-offset: -2px;
+}
+.file-card-drop {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  background: var(--accent-dim);
+}
+.transfer-menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 2999;
+}
+.transfer-menu {
+  position: fixed;
+  z-index: 3000;
+  width: 280px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  background: var(--bg-elev, #14161b);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55);
 }

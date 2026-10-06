@@ -31,6 +31,7 @@ export const AVAILABLE_COMMANDS = [
   { cmd: 'R3', desc: 'R3 stick press' },
   { cmd: 'wait', desc: 'Wait X ms (e.g. wait 1000)' },
   { cmd: 'text', desc: 'Type text on PS5 on-screen keyboard (e.g. text Revenge)' },
+  { cmd: 'home', desc: 'Reset to main screen (PS, Down, Cross)' },
 ];
 
 // Note: append "Nx" / "xN" / "*N" to any button line to repeat it N times.

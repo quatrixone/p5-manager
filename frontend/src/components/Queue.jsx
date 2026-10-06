@@ -78,7 +78,13 @@ function itemSubtitle(item) {
   }
   if (item.type === 'convert') return `${item.mode || ''}${item.output_name ? ` → ${item.output_name}` : ''}`;
   if (item.type === 'extract') return `${item.archive_type || ''}${item.dest ? ` → ${item.dest}` : ''}`;
-  if (item.type === 'upload') return `${item.ip || ''}${item.dest_path ? ` → ${item.dest_path}` : ''}`;
+  if (item.type === 'upload') {
+    // Transfer items (dual-pane drag & drop) carry a direction and an operation.
+    const dest = item.dest_kind === 'local' ? `Server ${item.dest_path || ''}` : `${item.ip || ''}${item.dest_path ? ` → ${item.dest_path}` : ''}`;
+    if (!item.batch_id) return dest;
+    const from = item.source_kind === 'ps5-ftp' ? item.source_ip : item.source_kind === 'local' ? 'Server' : 'Remote';
+    return `${item.op === 'move' ? 'Move' : 'Copy'} · ${from} → ${dest}`;
+  }
   if (item.type === 'install') {
     // For install items the title slot already shows the pkg name, so the
     // subtitle gives the target PS5 + the live install_status hint when the

@@ -3,6 +3,8 @@ import { api, apiSafe } from '../lib/api.js';
 import { usePs5Status } from '../contexts/Ps5StatusContext';
 import { parseLine, buildOskInputs, AVAILABLE_COMMANDS } from '../lib/inputScriptDsl.js';
 import ScriptRunner from './ScriptRunner';
+import SessionTabBar from './SessionTabBar';
+import { detectFocusedControlCenterIcon, shortestPathOnRing, CONTROL_CENTER_SLOT_COUNT, CONTROL_CENTER_HOME_INDEX } from '../lib/controlCenterNav.js';
 
 const API = '/api/remoteplay';
 // Paths used with `api.*` are relative to /api, so the Remote Play sidecar's
@@ -348,7 +350,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
   // is rendered as a direct child here (not a sibling anymore), so its
   // "👣 Step" buttons call openStepMode() directly via the onRequestStep
   // prop - no more lifting state up through PS5Control.
-  const [sessionViewTab, setSessionViewTab] = useState('control'); // 'control' | 'scripts' | 'payloads'
+  const [sessionViewTab, setSessionViewTab] = useState('control'); // 'control' | 'scripts'
   const [stepPanel, setStepPanel] = useState(null); // { name, steps, index } | null
   const [stepBusy, setStepBusy] = useState(false);
   // DOM node per step row (keyed by index), so the current step can be
@@ -385,6 +387,10 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
   // Esc / browser back / OS gestures collapse the overlay cleanly.
   const videoContainerRef = useRef(null);
   const [fsActive, setFsActive] = useState(false);
+  // The Scripts-tab <img> (renderTabVideo) - resetToMainScreen() below
+  // draws its current frame to a canvas to see which Control Center icon
+  // is focused.
+  const videoImgRef = useRef(null);
 
   // ─── Input recording ──────────────────────────────────────────────────────
   //
@@ -523,11 +529,39 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
   };
 
   // ─── Run-script picker (▶ button) ───────────────────────────────────────
-  // Lists every saved + built-in script; picking one hands off to the
-  // existing step-through runner (openStepMode, defined below) so playback
-  // against the live session/video is the one already-tested code path -
-  // no separate "auto-run a whole script" engine duplicated here.
+  // Lists every saved + built-in script; picking one plays it straight
+  // through on the Control tab (no tab switch, no step panel) - unlike
+  // the Scripts tab's 👣 Step, this is meant as a "just run it" shortcut
+  // while watching the Control tab's own video. Reuses executeStepLine
+  // (defined below) so a given line behaves identically whether it's
+  // run this way, stepped through, or replayed in the step editor.
   const [runPickerOpen, setRunPickerOpen] = useState(false);
+  const [runningPickedScript, setRunningPickedScript] = useState(false);
+  const runFullScript = async (scriptText, name) => {
+    if (!liveSession) {
+      const ok = await startSession(true); // forceVideo
+      if (!ok) return;
+    }
+    setRunningPickedScript(true);
+    onNotification?.(`▶ Running "${name}"...`, 'info');
+    try {
+      for (const line of (scriptText || '').split('\n')) {
+        const parsed = parseLine(line);
+        if (!parsed) continue;
+        await executeStepLine(parsed);
+        await new Promise(r => setTimeout(r, 100));
+      }
+      onNotification?.(`✅ "${name}" complete`, 'success');
+    } catch (e) {
+      onNotification?.(`Script failed: ${e.message}`, 'error');
+    }
+    setRunningPickedScript(false);
+  };
+  // Reference popup for the step editor's "add a step" input - lists
+  // every DSL command (AVAILABLE_COMMANDS) plus the repeat-token and
+  // text/home usage notes. Replaces having to remember the syntax or
+  // hunt through the datalist one keystroke at a time.
+  const [commandsOpen, setCommandsOpen] = useState(false);
   const openRunPicker = async () => {
     await fetchExistingScripts();
     setRunPickerOpen(true);
@@ -535,7 +569,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
   const closeRunPicker = () => setRunPickerOpen(false);
   const runPickedScript = (s) => {
     setRunPickerOpen(false);
-    openStepMode(s.script, s.name, false, { id: s.id, kind: s.kind });
+    runFullScript(s.script, s.name);
   };
 
   // ─── Auto-hiding video overlay controls ─────────────────────────────────
@@ -1436,15 +1470,53 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
     await sendInput({ button: cmd, action: 'tap', duration_ms: duration });
   };
 
-  // Quick action for the step editor's manual pad: PS -> Down -> Cross,
-  // which backs out of whatever's running to the Home screen. Reuses the
-  // same tap semantics as scripted playback (stepSendCommand) so it
-  // behaves identically to typing "ps\ndown\ncross" into a script.
+  // Quick action for the step editor's manual pad, and what the `home`
+  // script command runs: PS opens Control Center (focus lands on the card
+  // grid), Down moves to the icon row, Cross on the Home icon backs out to
+  // the Home screen.
+  //
+  // Down returns to whichever icon was focused the last time Control
+  // Center was open, not always Home (confirmed on a real PS5: leave the
+  // cursor on Notifications, close, PS + Down -> Notifications again). So
+  // between Down and Cross this reads the live video frame, finds the
+  // focused icon (detectFocusedControlCenterIcon) and walks the shortest
+  // way to Home (shortestPathOnRing - the row wraps around). The frame
+  // must be read AFTER Down: right after PS no icon is focused and the
+  // detector returns a meaningless slot.
   const resetToMainScreen = async () => {
     await stepSendCommand('ps');
-    await new Promise(r => setTimeout(r, 400));
+    await new Promise(r => setTimeout(r, 800));
     await stepSendCommand('down');
     await new Promise(r => setTimeout(r, 400));
+
+    let steps = 0;
+    let direction = 'left';
+    try {
+      const img = videoImgRef.current;
+      if (img && img.naturalWidth) {
+        const canvas = document.createElement('canvas');
+        canvas.width = img.naturalWidth;
+        canvas.height = img.naturalHeight;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0);
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const focusedIdx = detectFocusedControlCenterIcon(imageData, canvas.width, canvas.height);
+        if (focusedIdx != null) {
+          const path = shortestPathOnRing(focusedIdx, CONTROL_CENTER_HOME_INDEX, CONTROL_CENTER_SLOT_COUNT);
+          steps = path.steps;
+          direction = path.direction;
+        }
+      }
+    } catch (e) {
+      // No readable frame (video off, canvas error, ...) - plain
+      // PS, Down, Cross.
+    }
+
+    for (let i = 0; i < steps; i++) {
+      await stepSendCommand(direction);
+      await new Promise(r => setTimeout(r, 150));
+    }
+    if (steps > 0) await new Promise(r => setTimeout(r, 200));
     await stepSendCommand('cross');
   };
 
@@ -1459,6 +1531,10 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
         await stepSendCommand(ev.button);
         await new Promise(r => setTimeout(r, ev.commit ? 140 : 90));
       }
+      return;
+    }
+    if (parsed.cmd === 'home') {
+      await resetToMainScreen();
       return;
     }
     const reps = Math.max(1, parsed.count || 1);
@@ -1668,6 +1744,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
   const renderTabVideo = () => (
     sessionHasVideo && sessionId ? (
       <img
+        ref={videoImgRef}
         key={videoNonce}
         src={`${API}/sessions/${encodeURIComponent(sessionId)}/video.mjpeg?fps=15&nonce=${videoNonce}`}
         alt="PS5 preview"
@@ -1732,6 +1809,29 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
         idx++;
         setStepPanel(p => (p ? { ...p, index: idx } : p));
         if (idx <= targetIdx) await new Promise(r => setTimeout(r, 100));
+      }
+    } catch (e) {
+      onNotification?.(`Step failed: ${e.message}`, 'error');
+    }
+    setStepBusy(false);
+  };
+
+  // "Replay all": unlike stepReplayTo (continues from wherever the cursor
+  // already is), this explicitly rewinds to step 1 first - it's the
+  // "run the whole thing again from scratch" action, so re-sending
+  // already-executed presses is the whole point here.
+  const stepReplayAll = async () => {
+    if (!stepPanel || stepBusy || stepPanel.steps.length === 0) return;
+    setStepBusy(true);
+    setStepPanel(p => (p ? { ...p, index: 0 } : p));
+    try {
+      let idx = 0;
+      while (idx < stepPanel.steps.length) {
+        const step = stepPanel.steps[idx];
+        await executeStepLine(step.parsed);
+        idx++;
+        setStepPanel(p => (p ? { ...p, index: idx } : p));
+        if (idx < stepPanel.steps.length) await new Promise(r => setTimeout(r, 100));
       }
     } catch (e) {
       onNotification?.(`Step failed: ${e.message}`, 'error');
@@ -2878,33 +2978,24 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
           }
         >
         {/* Control (touch overlay) / Input Scripts (list + editor + step
-            runner) / Payloads (send without leaving this view) - Control
-            and Input Scripts share the same video/session, never two
-            MJPEG streams at once since only one tab's markup is mounted
-            at a time. */}
-        <div className="tabs mb-sm" style={{ maxWidth: 460 }}>
-          <button
-            type="button"
-            className={`tab-item ${sessionViewTab === 'control' ? 'active' : ''}`}
-            onClick={() => setSessionViewTab('control')}
-          >
-            🎮 Control
-          </button>
-          <button
-            type="button"
-            className={`tab-item ${sessionViewTab === 'scripts' ? 'active' : ''}`}
-            onClick={() => setSessionViewTab('scripts')}
-          >
-            ⌨️ Input Scripts
-          </button>
-          <button
-            type="button"
-            className={`tab-item ${sessionViewTab === 'payloads' ? 'active' : ''}`}
-            onClick={() => { setSessionViewTab('payloads'); if (!payloadsLoaded) fetchPayloadsList(); }}
-          >
-            📦 Payloads
-          </button>
-        </div>
+            runner) - they share the same video/session, never two MJPEG
+            streams at once since only one tab's markup is mounted at a
+            time. Running a script and sending a payload live in the tab
+            bar's dropdowns (SessionTabBar) so Control stays on screen. */}
+        <SessionTabBar
+          viewTab={sessionViewTab}
+          onSelectTab={setSessionViewTab}
+          scripts={recExistingScripts}
+          onOpenScripts={fetchExistingScripts}
+          onRunScript={(sc) => runFullScript(sc.script, sc.name)}
+          scriptRunning={runningPickedScript}
+          payloads={payloadsList}
+          payloadsLoaded={payloadsLoaded}
+          onOpenPayloads={() => { if (!payloadsLoaded) fetchPayloadsList(); }}
+          onSendPayload={sendPayload}
+          sendingPayloadId={sendingPayloadId}
+          targetName={profile?.name}
+        />
 
         {sessionViewTab === 'control' && (
         <>
@@ -3039,8 +3130,9 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
                         <button
                           type="button"
                           onClick={openRunPicker}
+                          disabled={runningPickedScript}
                           aria-label="Run a script"
-                          title="Run a saved or built-in script"
+                          title={runningPickedScript ? 'Script running…' : 'Run a saved or built-in script'}
                           style={{
                             position: 'absolute',
                             top: 8,
@@ -3048,12 +3140,14 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
                             width: 44, height: 44, borderRadius: 8,
                             background: 'rgba(0,0,0,0.55)',
                             color: '#fff', border: '1px solid rgba(255,255,255,0.3)',
-                            fontSize: 18, fontWeight: 700, cursor: 'pointer',
+                            fontSize: 18, fontWeight: 700,
+                            cursor: runningPickedScript ? 'default' : 'pointer',
+                            opacity: runningPickedScript ? 0.6 : 1,
                             display: 'flex', alignItems: 'center', justifyContent: 'center',
                             touchAction: 'none', userSelect: 'none',
                           }}
                         >
-                          ▶
+                          {runningPickedScript ? '⏳' : '▶'}
                         </button>
                       )}
                     </div>
@@ -3109,14 +3203,6 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
                   </div>
                 </div>
 
-                {/* Manual controls above the video/step grid - lets the user
-                    press real buttons while building or running a script
-                    live, same pad + press/release wiring as the Control
-                    tab (see renderManualPad above). */}
-                <div className="mb-sm rp-pad-compact">
-                  {renderManualPad()}
-                </div>
-
                 <div className="tabs mobile-only" style={{ marginBottom: 10 }}>
                   <button
                     type="button"
@@ -3140,6 +3226,16 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
                   </div>
 
                   <div className={`step-list ${stepMobileTab === 'steps' ? '' : 'mobile-hidden'}`}>
+                    {/* Small manual pad lives only here (paired with the
+                        step list), not above the whole video+list grid
+                        like before - it never shows while the Video tab
+                        is active, since this whole block is mobile-hidden
+                        then. */}
+                    <div className="flex gap-md items-start">
+                      <div className="rp-pad-mini">
+                        {renderManualPad()}
+                      </div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
                     {/* Reset + Save, above the Prev/Next/Restart/Replay row -
                         moved out of the manual pad and the panel header
                         respectively so every step-editor action lives in
@@ -3200,6 +3296,17 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
                       </button>
                       <button className="btn btn-ghost btn-sm" onClick={stepRestart} disabled={stepBusy || stepPanel.steps.length === 0}>
                         ↺ Restart
+                      </button>
+                      <button
+                        className="btn btn-secondary btn-sm"
+                        onClick={stepReplayAll}
+                        disabled={stepBusy || stepPanel.steps.length === 0}
+                        title="Rewind to step 1 and run the whole script through"
+                      >
+                        ▶▶ Replay all
+                      </button>
+                      <button className="btn btn-ghost btn-sm" onClick={() => setCommandsOpen(true)} title="What commands can I type here?">
+                        ❓ Commands
                       </button>
                       <div className="flex items-center gap-xs" style={{ marginLeft: 'auto' }}>
                         <span className="text-xs text-muted">Replay to</span>
@@ -3318,6 +3425,8 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
                         </div>
                       ))}
                     </div>
+                      </div>
+                    </div>
                   </div>
                 </div>
               </>
@@ -3342,6 +3451,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
                       scripts={scripts}
                       onScriptsChange={onScriptsChange}
                       onRequestStep={(scriptText, name, source) => openStepMode(scriptText, name, false, source)}
+                      onResetToMainScreen={resetToMainScreen}
                     />
                   </div>
                 </div>
@@ -3350,45 +3460,6 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
           </div>
         )}
 
-        {sessionViewTab === 'payloads' && (
-          <div className="step-panel-grid">
-            <div className="step-video">{renderTabVideo()}</div>
-            <div className="step-list" style={{ overflowY: 'visible' }}>
-              <p className="text-sm text-muted mb-sm">
-                Send a payload to <b>{profile?.name}</b> ({profile?.ip_address}) without leaving Remote Play.
-                Manage the full library (add / update / delete) in the Payloads tab.
-              </p>
-              {!payloadsLoaded ? (
-                <div className="text-sm text-muted">Loading…</div>
-              ) : payloadsList.length === 0 ? (
-                <div className="text-sm text-muted">No payloads yet - add some in the Payloads tab.</div>
-              ) : (
-                <div className="flex-col" style={{ gap: 6, maxHeight: 420, overflowY: 'auto' }}>
-                  {payloadsList.map(p => (
-                    <div key={p.id} className="list-item" style={{ marginBottom: 0 }}>
-                      <div className="flex-1 truncate" title={p.name}>
-                        <span className="truncate" style={{ fontWeight: 600 }}>{p.name}</span>
-                        {p.console_type && (
-                          <span className="console-type-badge" style={{ marginLeft: 6 }}>{p.console_type.toUpperCase()}</span>
-                        )}
-                      </div>
-                      <div className="list-item-actions">
-                        <button
-                          className="btn btn-success btn-sm btn-icon"
-                          onClick={() => sendPayload(p)}
-                          disabled={sendingPayloadId === p.id}
-                          title="Send"
-                        >
-                          {sendingPayloadId === p.id ? '⏳' : '📤'}
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-        )}
         </Section>
       )}
 
@@ -3432,6 +3503,40 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
                   ))}
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ─── Commands reference ─────────────────────────────────────────────
+          Opened by the ❓ Commands button next to Restart. Every DSL token
+          the step-add input / typed scripts accept, pulled straight from
+          AVAILABLE_COMMANDS so it can never drift out of sync with what
+          parseLine() actually recognises. */}
+      {commandsOpen && (
+        <div
+          className="rp-rec-modal-backdrop"
+          onClick={(e) => { if (e.target === e.currentTarget) setCommandsOpen(false); }}
+        >
+          <div className="rp-rec-modal">
+            <div className="rp-rec-modal-header">
+              <span>❓ Available commands</span>
+              <button type="button" className="btn btn-sm btn-ghost" onClick={() => setCommandsOpen(false)} aria-label="Close">✕</button>
+            </div>
+            <div className="rp-rec-modal-body">
+              <div className="flex-col gap-xs" style={{ fontSize: '0.78rem' }}>
+                {AVAILABLE_COMMANDS.map(({ cmd, desc }) => (
+                  <div key={cmd}>
+                    <code className="font-mono">{cmd}</code>
+                    <span className="text-muted"> — {desc}</span>
+                  </div>
+                ))}
+              </div>
+              <p className="text-xs text-muted mt-sm">
+                Append <code>10x</code>, <code>x10</code>, or <code>*10</code> to any button command to repeat it
+                (e.g. <code>left 10x</code>, <code>cross 5x 120</code> for 5 taps of 120 ms each).
+                Lines starting with <code>//</code> are comments and don't execute.
+              </p>
             </div>
           </div>
         </div>

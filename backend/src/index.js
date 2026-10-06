@@ -133,8 +133,11 @@ app.use('/api/events', eventsRouter);
 app.use('/api/remoteplay', remoteplayRouter);
 app.use('/api/builtin', builtinRouter);
 
+// started_at lets the Settings "Restart app" flow tell a fresh process from
+// the one it just asked to exit.
+const STARTED_AT = new Date().toISOString();
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+  res.json({ status: 'ok', timestamp: new Date().toISOString(), started_at: STARTED_AT });
 });
 
 const distPath = path.join(__dirname, '../dist');

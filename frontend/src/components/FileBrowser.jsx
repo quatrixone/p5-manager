@@ -56,14 +56,31 @@ export default function FileBrowser({
   jobKeyPrefix = 'mm.fb',
   title = 'File Browser',
   description,
+  // Dual-pane mode (DualPane.jsx) - all optional, a lone browser ignores them.
+  //   paneId            'left' | 'right', echoed in drag payloads
+  //   initialLocation   { kind, ftpIp, smbId, path } to open instead of the defaults
+  //   onLocationChange  (loc) => void, fired whenever the open folder changes
+  //   onDropItems       (payload, destPath, { x, y }) => void, makes rows draggable
+  //                     and this pane (and its folder rows) a drop target
+  //   onSendToOther     (op, payload) => void, touch fallback for drag & drop
+  //   reloadSignal      bump to re-list the current folder
+  paneId,
+  initialLocation,
+  onLocationChange,
+  onDropItems,
+  onSendToOther,
+  reloadSignal,
 }) {
   const [smbSources, setSmbSources] = useState([]);
   const [localRoots, setLocalRoots] = useState([]);
   const [browserPrefs, setBrowserPrefs] = useState({ local: '', smb: {} });
 
-  const [kind, setKind] = useState(defaultKind);
-  const [smbId, setSmbId] = useState('');
-  const [ftpIp, setFtpIp] = useState('');
+  const [kind, setKind] = useState(initialLocation?.kind || defaultKind);
+  const [smbId, setSmbId] = useState(initialLocation?.smbId ? String(initialLocation.smbId) : '');
+  const [ftpIp, setFtpIp] = useState(initialLocation?.ftpIp || '');
+  // Folder to reopen for the store `initialLocation` points at; dropped as
+  // soon as the user switches to another store.
+  const initialRef = useRef(initialLocation?.path ? initialLocation : null);
 
   const [pathInput, setPathInput] = useState('/mnt');
   const [path, setPath] = useState('/mnt');
@@ -71,6 +88,14 @@ export default function FileBrowser({
   const [parent, setParent] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  // PS5 FTP only: the backend may be sending zftpd and waiting for its port,
+  // which takes a few seconds - say so instead of a silent "loading…".
+  const [ftpSlow, setFtpSlow] = useState(false);
+  useEffect(() => {
+    if (!(loading && kind === 'ftp')) { setFtpSlow(false); return; }
+    const t = setTimeout(() => setFtpSlow(true), 1500);
+    return () => clearTimeout(t);
+  }, [loading, kind]);
 
   const [extractPwd, setExtractPwd] = useState('');
   const [extractDeleteAfter, setExtractDeleteAfter] = useState(false);
@@ -248,6 +273,7 @@ export default function FileBrowser({
       } else {
         if (!ftpIp) { setLoading(false); setError('Select PS5 IP'); return; }
         d = await api.post('/convert/ftp/browse', { ip: ftpIp, path: p });
+        if (d.ftp_started) onNotification?.('FTP was not running on the console - started zftpd', 'info');
       }
       setPath(d.path); setPathInput(d.path);
       setFiles(d.files || []); setParent(d.parent);
@@ -256,16 +282,75 @@ export default function FileBrowser({
   }, [kind, smbId, ftpIp]);
 
   useEffect(() => {
+    const init = initialRef.current;
+    const initHere = init && init.kind === kind
+      && String(init.smbId || '') === String(smbId || '')
+      && (init.kind !== 'ftp' || init.ftpIp === ftpIp);
+    if (init && !initHere) initialRef.current = null;
     if (kind === 'local') {
-      const p = browserPrefs.local || '/mnt';
+      const p = (initHere && init.path) || browserPrefs.local || '/mnt';
       setPathInput(p); setPath(p); browse(p);
     } else if (kind === 'smb' && smbId) {
-      const def = browserPrefs.smb?.[smbId] || '';
+      const def = (initHere && init.path) || browserPrefs.smb?.[smbId] || '';
       setPathInput(def); setPath(def); browse(def);
     } else if (kind === 'ftp' && ftpIp) {
-      setPathInput('/data'); setPath('/data'); browse('/data');
+      const p = (initHere && init.path) || '/data';
+      setPathInput(p); setPath(p); browse(p);
     } else { setFiles([]); setPath(''); setParent(null); }
   }, [kind, smbId, ftpIp, browserPrefs.local]);
+
+  // ─── Dual-pane plumbing ──────────────────────────────────────────────
+  const onLocationChangeRef = useRef(onLocationChange);
+  onLocationChangeRef.current = onLocationChange;
+  useEffect(() => {
+    onLocationChangeRef.current?.({ kind, ftpIp, smbId, path });
+  }, [kind, ftpIp, smbId, path]);
+
+  const pathRef = useRef(path);
+  pathRef.current = path;
+  const firstReload = useRef(true);
+  useEffect(() => {
+    if (firstReload.current) { firstReload.current = false; return; }
+    browse(pathRef.current);
+  }, [reloadSignal]);
+
+  const DRAG_MIME = 'application/x-p5m-items';
+  const dragEnabled = !!onDropItems;
+  // 'pane' | folder name | null - what a dragged selection currently hovers.
+  const [dropTarget, setDropTarget] = useState(null);
+  const childPath = (name) => (kind === 'local'
+    ? (path === '/' ? `/${name}` : `${path.replace(/\/$/, '')}/${name}`)
+    : (path ? `${path.replace(/\/+$/, '')}/${name}` : name));
+  const buildTransferPayload = (names) => ({
+    pane: paneId, kind, ftpIp, smbId, path,
+    items: names
+      .map(n => files.find(f => f.name === n))
+      .filter(Boolean)
+      .map(f => ({ name: f.name, isDir: !!f.isDir, size: f.size || 0 })),
+  });
+  const isTransferDrag = (e) => dragEnabled && Array.from(e.dataTransfer?.types || []).includes(DRAG_MIME);
+  const onRowDragStart = (e, f) => {
+    const names = selected.has(f.name) ? Array.from(selected) : [f.name];
+    e.dataTransfer.setData(DRAG_MIME, JSON.stringify(buildTransferPayload(names)));
+    e.dataTransfer.effectAllowed = 'copyMove';
+  };
+  const onTargetDragOver = (e, target) => {
+    if (!isTransferDrag(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = 'copy';
+    if (dropTarget !== target) setDropTarget(target);
+  };
+  const onTargetDrop = (e, destPath) => {
+    if (!isTransferDrag(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    setDropTarget(null);
+    let payload;
+    try { payload = JSON.parse(e.dataTransfer.getData(DRAG_MIME)); } catch (_) { return; }
+    if (!payload?.items?.length) return;
+    onDropItems(payload, destPath, { x: e.clientX, y: e.clientY });
+  };
 
   const open = (f) => {
     if (!f.isDir) return;
@@ -1060,7 +1145,11 @@ export default function FileBrowser({
       <div
         key={f.name}
         data-file={f.name}
-        className={`file-card ${isSelected ? 'file-card-selected' : ''} ${isActive ? 'file-card-active' : ''} ${cutNames?.has(f.name) ? 'file-card-cut' : ''}`}
+        className={`file-card ${isSelected ? 'file-card-selected' : ''} ${isActive ? 'file-card-active' : ''} ${cutNames?.has(f.name) ? 'file-card-cut' : ''} ${dropTarget === f.name ? 'file-card-drop' : ''}`}
+        draggable={dragEnabled || undefined}
+        onDragStart={dragEnabled ? (e) => onRowDragStart(e, f) : undefined}
+        onDragOver={dragEnabled && f.isDir ? (e) => onTargetDragOver(e, f.name) : undefined}
+        onDrop={dragEnabled && f.isDir ? (e) => onTargetDrop(e, childPath(f.name)) : undefined}
         onTouchStart={(e) => startPress(e, f.name)}
         onTouchMove={movePress}
         onTouchEnd={cancelPress}
@@ -1146,7 +1235,12 @@ export default function FileBrowser({
   };
 
   return (
-    <div className={`comp-card fb ${showBar ? 'fb-has-bar' : ''}`}>
+    <div
+      className={`comp-card fb ${showBar ? 'fb-has-bar' : ''} ${dropTarget === 'pane' ? 'fb-drop-target' : ''}`}
+      onDragOver={dragEnabled ? (e) => onTargetDragOver(e, 'pane') : undefined}
+      onDragLeave={dragEnabled ? (e) => { if (!e.currentTarget.contains(e.relatedTarget)) setDropTarget(null); } : undefined}
+      onDrop={dragEnabled ? (e) => onTargetDrop(e, path) : undefined}
+    >
       <div className="comp-card-header fb-header">
         {multiSelect ? (
           <div className="flex justify-between items-center flex-1 gap-sm">
@@ -1332,6 +1426,12 @@ export default function FileBrowser({
           </div>
         )}
 
+        {ftpSlow && (
+          <div className="p-sm text-sm text-muted">
+            ⏳ Connecting to the console… starting zftpd if FTP is not running.
+          </div>
+        )}
+
         <div className="flex justify-between items-center text-sm text-muted fb-wide">
           <span>{files.length} items{loading ? ' · loading…' : ''}</span>
           <div className="flex gap-xs">
@@ -1370,6 +1470,12 @@ export default function FileBrowser({
             <>
               {enableFtpUpload && ((kind === 'smb' && smbId) || kind === 'local') && uploadIp && (
                 <button className="btn btn-success" onClick={uploadSelected}>⬆ Upload</button>
+              )}
+              {onSendToOther && (
+                <>
+                  <button className="btn btn-secondary" onClick={() => onSendToOther('copy', buildTransferPayload(Array.from(selected)))}>⇄ Copy to other pane</button>
+                  <button className="btn btn-secondary" onClick={() => onSendToOther('move', buildTransferPayload(Array.from(selected)))}>⇄ Move to other pane</button>
+                </>
               )}
               <button className="btn btn-secondary" onClick={cutSelected}>✂ Cut</button>
               {kind === 'local' && (

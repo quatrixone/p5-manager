@@ -11,6 +11,8 @@ const __dirname = path.dirname(__filename);
 import { log } from '../db/sqlite.js';
 import { buildSmbArgs, runSmbClient, smbClientError, getSmbSource, listSmbSources, uploadDirToSmb } from '../lib/smb.js';
 import { mkpfsWorkDir } from '../lib/paths.js';
+import net from 'net';
+import { loadFtp, startZftpd } from './convert.js';
 
 // Scratch dir for in-flight SMB downloads (the worker streams into a
 // temp folder under mkpfs work dir, then copies to the share when
@@ -332,14 +334,142 @@ async function runDownloadJob(job, trimmed, isTorrent, localDestDir, finalLocal,
   }
 }
 
+// ── PS5 destination ────────────────────────────────────────────────────────
+// zftpd >= 1.6.0 (zhttp build) can fetch a URL by itself, so for dest_kind
+// 'ps5' we only hand the URL to the console and mirror its progress here.
+// Its HTTP API listens on the same port as its FTP server; POSTs need the
+// CSRF token the web UI gets from a <meta> tag on the index page.
+const PS5_POLL_MS = 2000;
+const PS5_POLL_MAX_FAILURES = 15;
+
+async function zftpdFetch(ip, port, pathname, { method = 'GET', body, token } = {}) {
+  const headers = {};
+  if (body !== undefined) headers['Content-Type'] = 'application/json';
+  if (token) headers['X-CSRF-Token'] = token;
+  const r = await fetch(`http://${ip}:${port}${pathname}`, {
+    method,
+    headers,
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(10_000),
+  });
+  const text = await r.text();
+  let data = null;
+  try { data = JSON.parse(text); } catch (_) {}
+  return { ok: r.ok, status: r.status, text, data };
+}
+
+function zftpdErrorText(resp) {
+  const d = resp.data;
+  return (d && (d.error || d.message)) || resp.text.slice(0, 200) || `HTTP ${resp.status}`;
+}
+
+// Makes sure a zftpd with the HTTP API answers on ip:port (starting the
+// payload when nothing listens) and returns its CSRF token.
+async function zftpdConnect(job, ip, port) {
+  const noApi = `zftpd on ${ip}:${port} has no web API - direct downloads need the zftpd 1.6.0+ "zhttp" build running on the console`;
+  let status;
+  try {
+    status = await zftpdFetch(ip, port, '/api/status');
+  } catch (e) {
+    if (e.cause?.code !== 'ECONNREFUSED') throw new Error(noApi);
+    appendLog(job, `[ps5] nothing listening on ${ip}:${port}, starting zftpd\n`);
+    await startZftpd(ip, port);
+    try { status = await zftpdFetch(ip, port, '/api/status'); }
+    catch (_) { throw new Error(noApi); }
+  }
+  if (!status.ok || !status.data?.ok) throw new Error(noApi);
+  appendLog(job, `[ps5] zftpd ${status.data.version || '?'} on ${ip}:${port}\n`);
+  const index = await zftpdFetch(ip, port, '/');
+  const m = index.text.match(/<meta[^>]+name=["']csrf-token["'][^>]*content=["']([^"']+)["']/i)
+    || index.text.match(/<meta[^>]+content=["']([^"']+)["'][^>]*name=["']csrf-token["']/i);
+  return m ? m[1] : '';
+}
+
+async function runPs5DownloadJob(job, url, ip, destDir) {
+  const port = loadFtp().port;
+  const signal = job.controller.signal;
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+  let remoteId = null;
+  let token = '';
+  try {
+    token = await zftpdConnect(job, ip, port);
+    const started = await zftpdFetch(ip, port, '/api/download/start', {
+      method: 'POST', token, body: { url, dst: destDir },
+    });
+    if (!started.ok || !started.data?.ok) throw new Error(`Console refused the download: ${zftpdErrorText(started)}`);
+    remoteId = started.data.id;
+    job.ps5_transfer_id = remoteId;
+    if (started.data.name) job.filename = started.data.name;
+    appendLog(job, `[ps5] console accepted transfer #${remoteId}${started.data.queued ? ' (queued on console)' : ''}\n`);
+
+    let failures = 0;
+    let missing = 0;
+    for (;;) {
+      await sleep(PS5_POLL_MS);
+      if (signal.aborted) {
+        try { await zftpdFetch(ip, port, '/api/download/cancel', { method: 'POST', token, body: { id: remoteId } }); } catch (_) {}
+        throw new Error('aborted');
+      }
+      let st;
+      try {
+        st = await zftpdFetch(ip, port, '/api/download/status');
+        failures = 0;
+      } catch (e) {
+        if (++failures >= PS5_POLL_MAX_FAILURES) throw new Error(`Lost contact with the console while it was downloading (${e.message})`);
+        continue;
+      }
+      const t = (st.data?.downloads || []).find(d => d.id === remoteId);
+      if (!t) {
+        if (++missing >= 5) throw new Error('The console no longer lists this transfer (zftpd was restarted?)');
+        continue;
+      }
+      missing = 0;
+      job.bytes_downloaded = t.downloaded || 0;
+      job.bytes_total = t.total_size || 0;
+      job.speed = t.speed || 0;
+      if (t.name) job.filename = t.name;
+      if (t.dst) job.dest_path = `${ip}:${t.dst}`;
+      if (t.cancelled) throw new Error('Cancelled on the console');
+      if (t.error) throw new Error(`Console download failed: ${t.error}`);
+      if (t.done) break;
+    }
+    job.status = 'completed';
+    job.finished_at = new Date().toISOString();
+    appendLog(job, `[ps5] OK\n`);
+    log('info', `download ${job.id} completed on console ${ip}: ${url}`);
+  } catch (e) {
+    if (signal.aborted) {
+      job.status = 'cancelled';
+      job.error = 'cancelled';
+      appendLog(job, `[manager] Cancelled\n`);
+    } else {
+      job.status = 'failed';
+      job.error = e.message;
+      appendLog(job, `[manager] ERROR: ${e.message}\n`);
+    }
+    job.finished_at = new Date().toISOString();
+    log('error', `download ${job.id} on console ${ip} failed: ${e.message}`);
+  }
+}
+
 function downloaderWorkerTick() {
   if (downloaderWorkerRunning) return;
   if (downloaderPaused) return;
   // run downloads one at a time so the queue order is meaningful
-  const anyRunning = Array.from(jobs.values()).some(j => j.status === 'running');
-  if (anyRunning) return;
-  const next = Array.from(jobs.values()).find(j => j.status === 'queued');
+  // PS5 jobs are downloaded by the console itself, so they neither wait for
+  // nor hold the manager's single download slot.
+  const anyRunning = Array.from(jobs.values()).some(j => j.status === 'running' && j.dest_kind !== 'ps5');
+  const next = Array.from(jobs.values()).find(j => j.status === 'queued' && (j.dest_kind === 'ps5' || !anyRunning));
   if (!next || !next._plan) return;
+  if (next.dest_kind === 'ps5') {
+    next.status = 'running';
+    next.started_at = new Date().toISOString();
+    const { trimmed, ps5Ip, ps5Dest } = next._plan;
+    delete next._plan;
+    runPs5DownloadJob(next, trimmed, ps5Ip, ps5Dest);
+    setTimeout(downloaderWorkerTick, 100);
+    return;
+  }
 
   downloaderWorkerRunning = true;
   next.status = 'running';
@@ -372,8 +502,41 @@ router.post('/start', async (req, res) => {
     if (!trimmed || (!/^https?:\/\//i.test(trimmed) && !isMagnet(trimmed))) {
       return res.status(400).json({ error: 'url must be http(s) or magnet:?' });
     }
-    if (!dest_kind || (dest_kind !== 'local' && dest_kind !== 'smb')) {
-      return res.status(400).json({ error: 'dest_kind must be local or smb' });
+    if (!['local', 'smb', 'ps5'].includes(dest_kind)) {
+      return res.status(400).json({ error: 'dest_kind must be local, smb or ps5' });
+    }
+
+    if (dest_kind === 'ps5') {
+      const ps5Ip = String(req.body.ps5_ip || '').trim();
+      if (net.isIP(ps5Ip) === 0) return res.status(400).json({ error: 'ps5_ip must be a valid IP address' });
+      const ps5Dest = String(dest_path || '').trim().replace(/\/+$/, '') || '/data/homebrew';
+      if (!ps5Dest.startsWith('/')) return res.status(400).json({ error: 'dest_path must be an absolute path on the console' });
+      const jobId = newJobId();
+      const job = {
+        id: jobId,
+        type: isTorrent ? 'torrent' : 'download',
+        status: 'queued',
+        url: trimmed,
+        // zftpd picks the name itself; this is only a label until it reports one.
+        filename: isTorrent ? 'torrent' : sanitizeName(deriveFilenameFromUrl(trimmed)),
+        dest_kind,
+        dest_path: `${ps5Ip}:${ps5Dest}`,
+        ps5_ip: ps5Ip,
+        log: '',
+        bytes_total: 0,
+        bytes_downloaded: 0,
+        added_at: new Date().toISOString(),
+        started_at: null,
+        finished_at: null,
+        error: null,
+        controller: new AbortController(),
+        _plan: { trimmed, ps5Ip, ps5Dest },
+      };
+      recordJob(job);
+      log('info', `download ${jobId} queued for console ${ps5Ip}: ${trimmed}`);
+      res.json({ success: true, job_id: jobId, type: job.type, status: job.status });
+      setTimeout(downloaderWorkerTick, 50);
+      return;
     }
 
     let smbSource = null;

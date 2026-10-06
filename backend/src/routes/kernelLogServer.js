@@ -1,4 +1,7 @@
 import express from 'express';
+// Lines kept in memory for the Logs panel. A title's [PS5VK] run can scroll out of 500
+// lines in seconds on a busy klog, so the buffer is larger and /logs takes ?limit=.
+const KLOG_BUFFER = Number(process.env.P5M_KLOG_BUFFER) || 5000;
 import net from 'net';
 import { log } from '../db/sqlite.js';
 
@@ -39,8 +42,8 @@ function startKernelLogServer(port = 3232) {
         const logEntry = { timestamp, message, ip: clientIp };
         receivedLogs.unshift(logEntry);
 
-        if (receivedLogs.length > 500) {
-          receivedLogs = receivedLogs.slice(0, 500);
+        if (receivedLogs.length > KLOG_BUFFER) {
+          receivedLogs = receivedLogs.slice(0, KLOG_BUFFER);
         }
 
         console.log(`[KERNEL] ${message}`);
@@ -123,7 +126,7 @@ function connectToPs5Once(ip, port = 3232) {
       const message = data.toString().trim();
       if (!message) return;
       receivedLogs.unshift({ timestamp, message, ip });
-      if (receivedLogs.length > 500) receivedLogs = receivedLogs.slice(0, 500);
+      if (receivedLogs.length > 500) receivedLogs = receivedLogs.slice(0, KLOG_BUFFER);
       console.log(`[KERNEL] ${message}`);
     });
 
@@ -244,7 +247,7 @@ router.post('/stop', (req, res) => {
 });
 
 router.get('/logs', (req, res) => {
-  res.json(receivedLogs.slice(0, 100));
+  res.json(receivedLogs.slice(0, Math.min(Number(req.query.limit) || 100, KLOG_BUFFER)));
 });
 
 // Internal helper used by other routes (e.g. payload send) to inject lines
@@ -264,7 +267,7 @@ function pushKernelLogEntry(message, ip = null, tag = null) {
       ip: ip || 'payload',
     };
     receivedLogs.unshift(entry);
-    if (receivedLogs.length > 500) receivedLogs = receivedLogs.slice(0, 500);
+    if (receivedLogs.length > 500) receivedLogs = receivedLogs.slice(0, KLOG_BUFFER);
     console.log(`[KERNEL]${tag ? ` [${tag}]` : ''} ${line}`);
   }
 }

@@ -47,6 +47,8 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
   const [availablePayloads, setAvailablePayloads] = useState([]);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
+  const [restarting, setRestarting] = useState(false);
+  const [restartMessage, setRestartMessage] = useState('');
 
   useEffect(() => {
     (async () => {
@@ -368,6 +370,33 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
     </div>
   );
 
+  // The backend exits and Docker's restart policy brings it back; we poll
+  // /health until started_at changes, then reload so the UI re-syncs.
+  const restartApp = async () => {
+    if (!window.confirm('Restart the app? Running jobs are interrupted and go back to the queue.')) return;
+    setRestarting(true);
+    setRestartMessage('');
+    const before = (await apiSafe.get('/health'))?.started_at;
+    try {
+      await api.post('/settings/restart');
+    } catch (e) {
+      setRestarting(false);
+      setRestartMessage(`Failed to restart: ${e.message}`);
+      return;
+    }
+    const deadline = Date.now() + 60_000;
+    while (Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, 1000));
+      const h = await apiSafe.get('/health');
+      if (h?.started_at && h.started_at !== before) {
+        window.location.reload();
+        return;
+      }
+    }
+    setRestarting(false);
+    setRestartMessage('Failed: the app did not come back within 60 s. Check the container.');
+  };
+
   const renderBackup = () => (
     <div>
       <h2 className="font-bold mb-md" style={{ fontSize: '1.25rem' }}>Backup & Restore</h2>
@@ -553,6 +582,20 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
       </div>
 
       <RemoteSourcesSection profiles={profiles} />
+
+      <div className="comp-card">
+        <div className="comp-card-body">
+          <div className="font-bold mb-sm">Restart app</div>
+          <div className="text-xs text-muted mb-md">
+            Restarts the P5 Manager backend. Running jobs are interrupted and return to the queue;
+            the page reloads once the app is back.
+          </div>
+          <button className="btn btn-danger" onClick={restartApp} disabled={restarting}>
+            {restarting ? '⏳ Restarting...' : '🔄 Restart app'}
+          </button>
+          {restartMessage && <div className="mt-sm text-sm" style={{ color: 'var(--red)' }}>{restartMessage}</div>}
+        </div>
+      </div>
     </div>
   );
 

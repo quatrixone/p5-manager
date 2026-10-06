@@ -5,6 +5,7 @@ import { Readable } from 'stream';
 import path from 'path';
 import os from 'os';
 import fs from 'fs';
+import net from 'net';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import AdmZip from 'adm-zip';
@@ -25,6 +26,7 @@ import { createExfatImage, unpackExfatImage } from '../lib/exfat.js';
 // Generic FIFO worker + standard CRUD endpoint binder. Replaces four nearly
 // identical hand-rolled queue scaffolds further down in this file.
 import { JobQueue, mountQueueRoutes } from '../lib/JobQueue.js';
+import { cleanDir, joinPath, isSameOrInside, destDirFor } from '../lib/transferPaths.js';
 
 const router = express.Router();
 
@@ -455,6 +457,80 @@ router.post('/test-ftp', async (req, res) => {
   }
 });
 
+// ── zftpd auto-start ───────────────────────────────────────────────────────
+// Opening the PS5 FTP browser while no FTP payload is running used to end in
+// a bare ECONNREFUSED. When the ELF loader is up we now send zftpd from the
+// payload library ourselves and wait for the FTP port. Only triggered by a
+// refused connection, so a running FTP server never gets a second instance.
+const ELF_LOADER_PORT = 9021;
+const ZFTPD_START_TIMEOUT_MS = 15_000;
+const zftpdStartInFlight = new Map(); // ip -> Promise<void>
+
+function tcpPortOpen(ip, port, timeoutMs = 2000) {
+  return new Promise((resolve) => {
+    const sock = new net.Socket();
+    const done = (ok) => { sock.destroy(); resolve(ok); };
+    sock.setTimeout(timeoutMs);
+    sock.once('connect', () => done(true));
+    sock.once('timeout', () => done(false));
+    sock.once('error', () => done(false));
+    sock.connect(port, ip);
+  });
+}
+
+// Newest PS5 zftpd build in the payload library (zftpd-ps5-v1.5.0.elf style
+// names; numeric-aware compare so v1.10 beats v1.9). PS4 builds are skipped
+// by name: the library's console_type column can be wrong for them.
+function findZftpdPayload() {
+  const rows = getRepo().queryAll(
+    "SELECT filename, filepath FROM payloads WHERE lower(filename) LIKE 'zftpd%.elf'",
+  );
+  return rows
+    .filter(r => !/ps4/i.test(r.filename))
+    .filter(r => r.filepath && fs.existsSync(r.filepath))
+    .sort((a, b) => b.filename.localeCompare(a.filename, undefined, { numeric: true }))[0] || null;
+}
+
+function sendElfPayload(ip, port, filepath) {
+  const data = fs.readFileSync(filepath);
+  return new Promise((resolve, reject) => {
+    const sock = new net.Socket();
+    sock.setTimeout(15_000);
+    sock.once('error', reject);
+    sock.once('timeout', () => { sock.destroy(); reject(new Error('ELF loader timed out')); });
+    sock.connect(port, ip, () => {
+      sock.end(data, () => resolve());
+    });
+  });
+}
+
+function startZftpd(ip, ftpPort) {
+  if (zftpdStartInFlight.has(ip)) return zftpdStartInFlight.get(ip);
+  const promise = (async () => {
+    const profile = getRepo().queryOne('SELECT console_type FROM profiles WHERE ip_address = ?', [ip]);
+    if (profile?.console_type === 'ps4') {
+      throw new Error(`FTP is not running on ${ip}:${ftpPort} (auto-start is PS5 only)`);
+    }
+    if (!(await tcpPortOpen(ip, ELF_LOADER_PORT))) {
+      throw new Error(`FTP is not running on ${ip}:${ftpPort} and the ELF loader (port ${ELF_LOADER_PORT}) is not reachable, so zftpd cannot be started`);
+    }
+    const payload = findZftpdPayload();
+    if (!payload) {
+      throw new Error(`FTP is not running on ${ip}:${ftpPort} and no zftpd payload is in the payload library`);
+    }
+    log('info', `FTP refused on ${ip}:${ftpPort}; sending ${payload.filename} to the ELF loader`);
+    await sendElfPayload(ip, ELF_LOADER_PORT, payload.filepath);
+    const deadline = Date.now() + ZFTPD_START_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      if (await tcpPortOpen(ip, ftpPort, 1000)) return;
+      await new Promise(r => setTimeout(r, 500));
+    }
+    throw new Error(`Sent ${payload.filename} but FTP port ${ftpPort} did not open within ${ZFTPD_START_TIMEOUT_MS / 1000} s (zftpd listens on 2120 by default; check the FTP port setting)`);
+  })().finally(() => zftpdStartInFlight.delete(ip));
+  zftpdStartInFlight.set(ip, promise);
+  return promise;
+}
+
 router.post('/ftp/browse', async (req, res) => {
   try {
     const { ip, path: reqPath = '/' } = req.body || {};
@@ -462,11 +538,21 @@ router.post('/ftp/browse', async (req, res) => {
     const cleaned = (reqPath || '/').replace(/\/+/g, '/');
     const target = cleaned.startsWith('/') ? cleaned : `/${cleaned}`;
     const ftp = loadFtp();
-    const list = await withFtp(ip, ftp, async (client) => {
+    const listTarget = () => withFtp(ip, ftp, async (client) => {
       try { await client.cd(target); }
       catch (e) { throw new Error(`cd ${target}: ${e.message}`); }
       return await client.list();
     });
+    let list;
+    let ftpStarted = false;
+    try {
+      list = await listTarget();
+    } catch (e) {
+      if (e.code !== 'ECONNREFUSED') throw e;
+      await startZftpd(ip, ftp.port);
+      ftpStarted = true;
+      list = await listTarget();
+    }
     const files = list
       .filter(f => f.name !== '.' && f.name !== '..')
       .map(f => ({
@@ -478,7 +564,7 @@ router.post('/ftp/browse', async (req, res) => {
     files.sort((a, b) => Number(b.isDir) - Number(a.isDir) || a.name.localeCompare(b.name));
     const tNoTrail = target === '/' ? '/' : target.replace(/\/+$/, '');
     const parent = tNoTrail === '/' ? null : (tNoTrail.split('/').slice(0, -1).join('/') || '/');
-    res.json({ success: true, path: tNoTrail, parent, files });
+    res.json({ success: true, path: tNoTrail, parent, files, ftp_started: ftpStarted });
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
@@ -3833,54 +3919,197 @@ function appendFtpJobLog(job, chunk) {
   if (lines.length > MAX_FTP_LOG_LINES) job.log = lines.slice(-MAX_FTP_LOG_LINES).join('\n');
 }
 
+// ── Transfer helpers (dual-pane file manager) ─────────────────────────────
+// The upload queue also carries "transfer" items: any of server disk, remote
+// source or console as origin, server disk or console as destination, copy
+// or move. Items without the newer fields behave like the plain uploads
+// this queue started with.
+
+function fmtBytes(n) {
+  if (n >= 1024 ** 3) return `${(n / 1024 ** 3).toFixed(1)} GB`;
+  if (n >= 1024 ** 2) return `${(n / 1024 ** 2).toFixed(1)} MB`;
+  return `${Math.round(n / 1024)} KB`;
+}
+
+// Anything pulled onto the server's disk first needs room for the whole file.
+function assertFreeSpace(dir, needBytes) {
+  if (!needBytes) return;
+  let st;
+  try { st = fs.statfsSync(dir); } catch (_) { return; }
+  const free = Number(st.bavail) * Number(st.bsize);
+  if (free < needBytes) {
+    throw new Error(`Not enough free space in ${dir}: need ${fmtBytes(needBytes)}, have ${fmtBytes(free)}`);
+  }
+}
+
+// Download the item's source (console or remote source) to `target`.
+async function fetchTransferSource(job, ftp, target, onBytes) {
+  if (job.source_kind === 'ps5-ftp') {
+    await withFtp(job.source_ip, ftp, async (client) => {
+      client.trackProgress((info) => { if (info && typeof info.bytes === 'number') onBytes(info.bytes); });
+      try { await client.downloadTo(target, job.source_remote_path); }
+      finally { client.trackProgress(); }
+    });
+    return;
+  }
+  const src = getSource(job.source_id);
+  if (!src) throw new Error(`Source ${job.source_id} no longer exists`);
+  if (src.type === 'ftp') {
+    await withSourceFtp(src, async (client) => {
+      client.trackProgress((info) => { if (info && typeof info.bytes === 'number') onBytes(info.bytes); });
+      try { await client.downloadTo(target, job.source_remote_path); }
+      finally { client.trackProgress(); }
+    });
+  } else if (src.type === 'smb') {
+    const relRemote = (job.source_remote_path || '').replace(/\\/g, '/').replace(/^\/+/, '');
+    const args = [...buildSmbArgs(src), '-c', `get "${smbEscape(relRemote)}" "${smbEscape(target)}"`];
+    const { stdout, code } = await runSmbClient(args);
+    const err = smbClientError(stdout, code);
+    if (err) throw new Error(`SMB stage: ${err.message}`);
+  } else {
+    throw new Error(`Unsupported remote source type: ${src.type}`);
+  }
+}
+
+// Move only: remove the origin file once the destination was verified.
+async function deleteTransferSource(job, ftp) {
+  const kind = job.source_kind || 'local';
+  if (kind === 'local') {
+    fs.unlinkSync(job.local_path);
+  } else if (kind === 'ps5-ftp') {
+    await withFtp(job.source_ip, ftp, (client) => client.remove(job.source_remote_path));
+  } else {
+    const src = getSource(job.source_id);
+    if (!src) throw new Error(`Source ${job.source_id} no longer exists`);
+    if (src.type === 'ftp') {
+      await withSourceFtp(src, (client) => client.remove(job.source_remote_path));
+    } else {
+      const clean = (job.source_remote_path || '').replace(/\\/g, '/').replace(/^\/+/, '');
+      const args = [...buildSmbArgs(src), '-c', `del "${smbEscape(clean)}"`];
+      const { stdout, stderr, code } = await runSmbClient(args);
+      const err = smbClientError(`${stdout || ''}\n${stderr || ''}`, code);
+      if (err) throw new Error(`SMB delete: ${err.message}`);
+    }
+  }
+}
+
+// Move of a folder: once every item of the batch made it, drop the folders
+// the move emptied. Only ever removes EMPTY directories - anything that
+// still holds a file (failed item, file added meanwhile) stays.
+async function removeEmptiedSourceDirs(job, ftp) {
+  const root = job.source_root;
+  if (!root) return;
+  const kind = job.source_kind || 'local';
+  if (kind === 'local') {
+    const prune = (dir) => {
+      let entries;
+      try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (_) { return; }
+      for (const e of entries) if (e.isDirectory()) prune(path.join(dir, e.name));
+      try { fs.rmdirSync(dir); } catch (_) {}
+    };
+    if (isLocalPathAllowed(path.resolve(root))) prune(path.resolve(root));
+    return;
+  }
+  const pruneFtp = async (client) => {
+    const prune = async (dir) => {
+      let entries;
+      try { entries = await client.list(dir); } catch (_) { return; }
+      for (const e of entries) {
+        if (e.name === '.' || e.name === '..') continue;
+        if (e.type === 2 || e.isDirectory === true) await prune(joinPath(dir, e.name));
+      }
+      try { await client.removeEmptyDir(dir); } catch (_) {}
+    };
+    await prune(root);
+  };
+  if (kind === 'ps5-ftp') {
+    await withFtp(job.source_ip, ftp, pruneFtp);
+  } else {
+    const src = getSource(job.source_id);
+    if (src?.type === 'ftp') await withSourceFtp(src, pruneFtp);
+    // SMB: emptied folders are left behind (smbclient has no "rmdir if empty"
+    // we can trust across servers).
+  }
+}
+
 async function executeFtpUploadJob(job) {
   const { ip, dest_path, file_name } = job;
   const ftp = loadFtp();
+  const destKind = job.dest_kind || 'ps5-ftp';
+  const needsFetch = (job.source_kind || 'local') !== 'local';
+  const destLabel = destKind === 'local' ? dest_path : `${ip}:${dest_path}`;
   let stagedPath = job.local_path || null;
   let stagedTmpDir = null;
+  let partPath = null;
   try {
-    // Stage from remote source (SMB / external FTP) into a tmp file first when
-    // the queue item points at a remote origin. The actual PS5 push reuses the
-    // same uploadFileResilient code path as for local files.
-    if (job.source_kind === 'remote-smb' || job.source_kind === 'remote-ftp') {
-      const src = getSource(job.source_id);
-      if (!src) throw new Error(`Source ${job.source_id} no longer exists`);
-      stagedTmpDir = fs.mkdtempSync(path.join(getDiskTmpRoot(), 'mm-upl-'));
-      stagedPath = path.join(stagedTmpDir, file_name);
-      appendFtpJobLog(job, `[manager] Staging ${file_name} from ${src.name} (${src.type})\n`);
-      if (src.type === 'ftp') {
-        await withSourceFtp(src, async (client) => {
-          await client.downloadTo(stagedPath, job.source_remote_path);
-        });
-      } else if (src.type === 'smb') {
-        const relRemote = (job.source_remote_path || '').replace(/\\/g, '/').replace(/^\/+/, '');
-        const args = [...buildSmbArgs(src), '-c', `get "${smbEscape(relRemote)}" "${smbEscape(stagedPath)}"`];
-        const { stdout, code } = await runSmbClient(args);
-        const err = smbClientError(stdout, code);
-        if (err) throw new Error(`SMB stage: ${err.message}`);
+    // Origin is not on this disk: pull it down first. Straight into the
+    // destination folder (as a .part) when that is the server disk,
+    // otherwise into a temp dir it gets pushed from.
+    if (needsFetch) {
+      if (destKind === 'local') {
+        fs.mkdirSync(dest_path, { recursive: true });
+        partPath = path.join(dest_path, `.${file_name}.part`);
+        stagedPath = partPath;
+        assertFreeSpace(dest_path, job.size);
       } else {
-        throw new Error(`Unsupported remote source type: ${src.type}`);
+        stagedTmpDir = fs.mkdtempSync(path.join(getDiskTmpRoot(), 'mm-upl-'));
+        stagedPath = path.join(stagedTmpDir, file_name);
+        assertFreeSpace(stagedTmpDir, job.size);
       }
+      const from = job.source_kind === 'ps5-ftp' ? job.source_ip : `source ${job.source_id}`;
+      appendFtpJobLog(job, `[manager] Fetching ${file_name} from ${from}\n`);
+      // Plain uploads staged from a remote source keep their 0-100 upload bar.
+      const span = destKind === 'local' ? 100 : job.batch_id ? 50 : 0;
+      await fetchTransferSource(job, ftp, stagedPath, (bytes) => {
+        job.bytes_transferred = bytes;
+        if (job.size > 0) job.progress = Math.min(span, Math.round((bytes / job.size) * span));
+      });
     }
     if (!stagedPath) throw new Error('No source path resolved for upload');
 
     let total = 0;
     try { total = fs.statSync(stagedPath).size; } catch (_) {}
+    // Transfer items know the origin size from the directory walk.
+    if (job.batch_id && needsFetch && job.size > 0 && total !== job.size) {
+      throw new Error(`Fetched ${total} bytes but the source is ${job.size} bytes`);
+    }
     job.bytes_total = total;
-    job.bytes_transferred = 0;
-    job.progress = 0;
-    appendFtpJobLog(job, `[manager] Uploading ${file_name} to ${ip}:${dest_path}\n`);
-    await uploadFileResilient(ip, ftp, stagedPath, dest_path, file_name, {
-      onLog: (line) => appendFtpJobLog(job, line),
-      onProgress: ({ bytes, total: t }) => {
-        job.bytes_transferred = bytes;
-        if (t > 0) job.progress = Math.min(100, Math.round((bytes / t) * 100));
-      },
-    });
+    if (!needsFetch) { job.bytes_transferred = 0; job.progress = 0; }
+
+    if (destKind === 'local') {
+      const finalPath = path.join(dest_path, file_name);
+      if (partPath) {
+        fs.renameSync(partPath, finalPath);
+        partPath = null;
+      } else {
+        fs.mkdirSync(dest_path, { recursive: true });
+        fs.copyFileSync(stagedPath, finalPath);
+      }
+      if (fs.statSync(finalPath).size !== total) throw new Error('Destination size differs from the source');
+    } else {
+      const base = needsFetch && job.batch_id ? 50 : 0;
+      appendFtpJobLog(job, `[manager] Uploading ${file_name} to ${destLabel}\n`);
+      await uploadFileResilient(ip, ftp, stagedPath, dest_path, file_name, {
+        onLog: (line) => appendFtpJobLog(job, line),
+        onProgress: ({ bytes, total: t }) => {
+          job.bytes_transferred = bytes;
+          if (t > 0) job.progress = Math.min(100, base + Math.round((bytes / t) * (100 - base)));
+        },
+      });
+      if (job.op === 'move') {
+        const remoteSize = await withFtp(ip, ftp, (client) => client.size(joinPath(dest_path, file_name)));
+        if (remoteSize !== total) throw new Error(`Destination has ${remoteSize} bytes, expected ${total} - source kept`);
+      }
+    }
+
+    if (job.op === 'move') {
+      await deleteTransferSource(job, ftp);
+      appendFtpJobLog(job, `[manager] Source removed\n`);
+    }
     job.progress = 100;
     job.status = 'completed';
-    appendFtpJobLog(job, `[manager] Upload OK\n`);
-    log('info', `ftp-upload ${job.id} completed: ${file_name} -> ${ip}:${dest_path}`);
+    appendFtpJobLog(job, `[manager] ${job.op === 'move' ? 'Move' : job.batch_id ? 'Copy' : 'Upload'} OK\n`);
+    log('info', `ftp-upload ${job.id} completed: ${file_name} -> ${destLabel}`);
   } catch (e) {
     job.status = 'failed';
     job.error = e.message;
@@ -3888,11 +4117,38 @@ async function executeFtpUploadJob(job) {
     log('error', `ftp-upload ${job.id} failed: ${e.message}`);
   } finally {
     job.finished_at = new Date().toISOString();
+    if (partPath) { try { fs.unlinkSync(partPath); } catch (_) {} }
     if (stagedTmpDir) {
       try { if (stagedPath && fs.existsSync(stagedPath)) fs.unlinkSync(stagedPath); } catch (_) {}
       try { fs.rmSync(stagedTmpDir, { recursive: true, force: true }); } catch (_) {}
     }
   }
+
+  if (job.status === 'completed' && job.op === 'move' && job.source_root) {
+    const batch = ftpUploadQ.items.filter(i => i.batch_id === job.batch_id && i.source_root === job.source_root);
+    if (batch.every(i => i.status === 'completed')) {
+      try { await removeEmptiedSourceDirs(job, ftp); }
+      catch (e) { appendFtpJobLog(job, `[manager] WARN: could not remove emptied folders: ${e.message}\n`); }
+    }
+  }
+}
+
+async function walkPs5DirFiles(ip, basePath) {
+  const out = [];
+  await withFtp(ip, loadFtp(), async (client) => {
+    const walk = async (remoteDir, rel) => {
+      const list = await client.list(remoteDir);
+      for (const e of list) {
+        if (e.name === '.' || e.name === '..') continue;
+        const remote = joinPath(remoteDir, e.name);
+        const relPath = rel ? `${rel}/${e.name}` : e.name;
+        if (e.type === 2 || e.isDirectory === true) await walk(remote, relPath);
+        else out.push({ remotePath: remote, relPath, size: typeof e.size === 'number' ? e.size : 0 });
+      }
+    };
+    await walk(cleanDir(basePath), '');
+  });
+  return out;
 }
 
 // Walk a local directory recursively and return all regular files with their
@@ -4089,6 +4345,153 @@ router.post('/ftp/upload/queue', async (req, res) => {
     res.json({ success: true, items: addedItems, count: addedItems.length, item: addedItems[0] });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// Dual-pane file manager: queue a copy/move of one or more files/folders
+// between two "stores" (server disk, remote source, console). Folders are
+// expanded into one queue item per file, like /ftp/upload/queue does.
+//   { op: 'copy'|'move', overwrite,
+//     src: { kind: 'local'|'ftp'|'smb', ip?, source_id?, items: [{ path, is_dir }] },
+//     dst: { kind: 'local'|'ftp', ip?, path } }
+router.post('/transfer/queue', async (req, res) => {
+  try {
+    const { op = 'copy', overwrite = false, src = {}, dst = {} } = req.body || {};
+    if (op !== 'copy' && op !== 'move') return res.status(400).json({ error: 'op must be copy or move' });
+    if (!['local', 'ftp', 'smb'].includes(src.kind)) return res.status(400).json({ error: 'src.kind must be local, ftp or smb' });
+    if (!['local', 'ftp'].includes(dst.kind)) {
+      return res.status(400).json({ error: 'Destination must be the server disk or a console - remote sources are read-only' });
+    }
+    if (src.kind === 'ftp' && net.isIP(String(src.ip || '')) === 0) return res.status(400).json({ error: 'src.ip must be a valid IP address' });
+    if (dst.kind === 'ftp' && net.isIP(String(dst.ip || '')) === 0) return res.status(400).json({ error: 'dst.ip must be a valid IP address' });
+    if (!dst.path) return res.status(400).json({ error: 'dst.path required' });
+
+    const ftp = loadFtp();
+    const destBase = dst.kind === 'local' ? path.resolve(dst.path) : cleanDir(dst.path);
+    if (dst.kind === 'local') {
+      if (!isLocalPathAllowed(destBase)) return res.status(403).json({ error: `Destination not allowed: ${destBase}` });
+      if (!fs.existsSync(destBase) || !fs.statSync(destBase).isDirectory()) {
+        return res.status(400).json({ error: `Destination folder not found: ${destBase}` });
+      }
+    }
+
+    let remoteSrc = null;
+    if (src.kind === 'smb') {
+      remoteSrc = getSource(src.source_id);
+      if (!remoteSrc) return res.status(404).json({ error: 'Source not found' });
+      if (remoteSrc.type !== 'smb' && remoteSrc.type !== 'ftp') return res.status(400).json({ error: 'Unsupported remote source type' });
+    }
+    const sourceKind = src.kind === 'local' ? 'local'
+      : src.kind === 'ftp' ? 'ps5-ftp'
+      : remoteSrc.type === 'ftp' ? 'remote-ftp' : 'remote-smb';
+
+    const entries = (Array.isArray(src.items) ? src.items : [])
+      .filter(i => i && i.path)
+      .map(i => {
+        const p = src.kind === 'local' ? path.resolve(String(i.path)) : cleanDir(i.path);
+        return { path: p, isDir: !!i.is_dir, name: path.posix.basename(p) };
+      })
+      .filter(e => e.name);
+    if (entries.length === 0) return res.status(400).json({ error: 'Nothing to transfer' });
+
+    // Same store on both sides: catch drops that would land on themselves.
+    const sameStore = (src.kind === 'local' && dst.kind === 'local')
+      || (src.kind === 'ftp' && dst.kind === 'ftp' && src.ip === dst.ip);
+    for (const e of entries) {
+      if (src.kind === 'local') {
+        if (!isLocalPathAllowed(e.path)) return res.status(403).json({ error: `Source not allowed: ${e.path}` });
+        if (!fs.existsSync(e.path)) return res.status(400).json({ error: `Source not found: ${e.path}` });
+      }
+      if (!sameStore) continue;
+      if (e.isDir && isSameOrInside(e.path, destBase)) {
+        return res.status(400).json({ error: `Cannot ${op} "${e.name}" into itself` });
+      }
+      if (cleanDir(path.posix.dirname(e.path)) === cleanDir(destBase)) {
+        return res.status(400).json({ error: `"${e.name}" is already in that folder` });
+      }
+    }
+
+    // Name collisions in the destination folder: nothing is queued until the
+    // caller repeats the request with overwrite=true.
+    let existing;
+    if (dst.kind === 'local') {
+      existing = new Set(fs.readdirSync(destBase));
+    } else {
+      const list = await withFtp(dst.ip, ftp, async (client) => {
+        try { return await client.list(destBase); } catch (_) { return []; }
+      });
+      existing = new Set(list.map(f => f.name));
+    }
+    const conflicts = entries.map(e => e.name).filter(n => existing.has(n));
+    if (conflicts.length > 0 && !overwrite) {
+      return res.status(409).json({
+        error: `${conflicts.length} item(s) already exist in the destination`,
+        conflicts,
+      });
+    }
+
+    const batchId = newFtpJobId();
+    const planned = [];
+    for (const e of entries) {
+      if (!e.isDir) {
+        let size = 0;
+        if (src.kind === 'local') size = fs.statSync(e.path).size;
+        else if (src.kind === 'ftp') {
+          try { size = await withFtp(src.ip, ftp, (client) => client.size(e.path)); } catch (_) {}
+        }
+        planned.push({ from: e.path, destDir: destBase, name: e.name, size, root: null });
+        continue;
+      }
+      let files;
+      if (src.kind === 'local') {
+        files = walkLocalDirFiles(e.path).map(f => ({ from: f.absPath, relPath: f.relPath, size: f.size }));
+      } else if (src.kind === 'ftp') {
+        files = (await walkPs5DirFiles(src.ip, e.path)).map(f => ({ from: f.remotePath, relPath: f.relPath, size: f.size }));
+      } else {
+        files = (await walkSourceDirFiles(remoteSrc, e.path)).map(f => ({
+          from: `${e.path === '/' ? '' : e.path}/${f.relPath}`, relPath: f.relPath, size: f.size,
+        }));
+      }
+      for (const f of files) {
+        planned.push({
+          from: f.from,
+          destDir: destDirFor(destBase, e.name, f.relPath),
+          name: path.posix.basename(f.relPath),
+          size: f.size,
+          root: e.path,
+        });
+      }
+    }
+    if (planned.length === 0) return res.status(400).json({ error: 'Nothing to transfer - the selected folder is empty' });
+
+    for (const f of planned) {
+      ftpUploadQ.add({
+        id: newFtpJobId(),
+        ip: dst.kind === 'ftp' ? dst.ip : null,
+        dest_path: f.destDir,
+        dest_kind: dst.kind === 'ftp' ? 'ps5-ftp' : 'local',
+        file_name: f.name,
+        local_path: sourceKind === 'local' ? f.from : null,
+        source_kind: sourceKind,
+        source_id: remoteSrc ? remoteSrc.id : null,
+        source_remote_path: sourceKind === 'local' ? null : f.from,
+        source_ip: src.kind === 'ftp' ? src.ip : null,
+        source_root: f.root,
+        op,
+        batch_id: batchId,
+        size: f.size || 0,
+        status: 'queued',
+        added_at: new Date().toISOString(),
+        started_at: null,
+        finished_at: null,
+        job_id: null,
+        error: null,
+      });
+    }
+    log('info', `transfer queue add: ${op} ${planned.length} file(s) ${src.kind} -> ${dst.kind}:${destBase}`);
+    res.json({ success: true, count: planned.length, batch_id: batchId });
+  } catch (err) {
+    res.status(err.code === 'ECONNREFUSED' ? 400 : 500).json({ error: err.message });
   }
 });
 
@@ -4796,5 +5199,7 @@ for (const sig of ['SIGTERM', 'SIGINT']) {
 // for user-driven mutations (add / pause / resume / cancel). Keeping this
 // inside the module means there's nothing extra to wire from index.js.
 export { scheduleQueueSave };
+// Used by the downloader's PS5 destination (zftpd's HTTP API shares the FTP port).
+export { loadFtp, startZftpd };
 
 export default router;
