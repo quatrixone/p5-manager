@@ -180,7 +180,7 @@ into the Local file browser instead).
    server and a few more) is downloaded from its authors on first start.
    Add your own with **+ Add**.
 3. **File Ops → Browse**: turn on **Two panes**, pick *Local* on one side
-   and *PS5 FTP* on the other, and drag a file across.
+   and *Console* on the other, and drag a file across.
 4. **Library**: pick the console. If ShadowMountPlus is not running, the
    page offers to start it.
 5. **Console**: pair Remote Play once under **PS Remote Play Settings**,

@@ -20,10 +20,10 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
   // null until a search ran; then whether it came back empty, which is when
   // the "which network" field is offered.
   const [scanEmpty, setScanEmpty] = useState(false);
-  // Single source of truth for the subnet - same value drives both the
-  // "Default subnet" config field and the scan input, so saving in one place
-  // is reflected in the other.
-  const [defaultSubnet, setDefaultSubnet] = useState('10.0.0.0/24');
+  // Network to search when the automatic one found nothing (a console on
+  // another network, or the app in a bridged container). Only offered in
+  // the "No console found" card; consoles are otherwise found without it.
+  const [defaultSubnet, setDefaultSubnet] = useState('');
   // Default destination for the Convert-tab "Auto-upload .ffpfsc to PS5 FTP"
   // checkbox. Moved here from the per-job UI so users configure once and
   // every conversion picks the same target. Empty IP = fall back to the
@@ -94,10 +94,6 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
     setLoading(false);
     setTimeout(() => setMessage(''), 3000);
   };
-
-  const saveConfigSettings = () => saveSettingsKeys([
-    ['default_subnet', defaultSubnet],
-  ], 'Settings saved!');
 
   const saveUploadTarget = () => saveSettingsKeys([
     ['upload_target_ip', uploadTargetIp],
@@ -280,7 +276,7 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
                 placeholder="192.168.1.0/24"
                 value={defaultSubnet}
                 onChange={e => setDefaultSubnet(e.target.value)}
-                onBlur={saveConfigSettings}
+                onBlur={() => putSetting('default_subnet', defaultSubnet).catch(() => {})}
                 style={{ maxWidth: 190 }}
                 aria-label="Network to search"
               />
@@ -438,26 +434,6 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
   const renderConfig = () => (
     <div className="flex-col gap-md">
       <h2 className="font-bold" style={{ fontSize: '1.25rem' }}>Configuration</h2>
-
-      <div className="comp-card">
-        <div className="comp-card-body">
-          <div className="mb-md">
-            <label className="text-sm text-muted mb-sm" style={{ display: 'block' }}>Default Subnet</label>
-            <input
-              className="input"
-              type="text"
-              value={defaultSubnet}
-              onChange={e => setDefaultSubnet(e.target.value)}
-              placeholder="10.0.2.0/24"
-              style={{ maxWidth: 250 }}
-            />
-          </div>
-          <button className="btn btn-primary" onClick={saveConfigSettings} disabled={loading}>
-            {loading ? '⏳ Saving...' : '💾 Save Settings'}
-          </button>
-          {message && <div className="mt-sm text-sm" style={{ color: message.includes('Failed') ? 'var(--red)' : 'var(--green)' }}>{message}</div>}
-        </div>
-      </div>
 
       <div className="comp-card">
         <div className="comp-card-body">

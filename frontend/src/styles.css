@@ -2111,6 +2111,11 @@ pre { padding: 12px; overflow-x: auto; }
 
 @media (max-width: 768px) {
   .fb-wide { display: none !important; }
+  /* A selection can offer six actions (two panes add Copy / Move to the
+     other pane). On one line the last ones ended up off screen with no way
+     to reach them, so here they wrap onto as many rows as they need. */
+  .fb-actionbar { flex-wrap: wrap; }
+  .fb-actionbar > .btn { flex: 1 1 auto; }
   .fb .fb-title { display: none; }
   .fb .file-card-content { min-height: 52px; }
   .fb .file-card-kebab { min-width: 44px !important; min-height: 44px; font-size: 1.1rem; }

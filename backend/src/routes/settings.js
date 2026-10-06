@@ -15,7 +15,6 @@ router.get('/', (req, res) => {
   try {
     const rows = getRepo().queryAll('SELECT key, value FROM settings');
     const settings = Object.fromEntries(rows.map(r => [r.key, r.value]));
-    if (!settings.default_subnet) settings.default_subnet = '10.0.2.0/24';
     if (!settings.default_payloads) settings.default_payloads = JSON.stringify(DEFAULT_PAYLOADS);
     res.json(settings);
   } catch (error) {
