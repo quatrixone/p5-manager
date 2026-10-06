@@ -8,5 +8,8 @@ pyee==8.2.2
 # Video decode/encode for the optional MJPEG live-preview endpoint
 # (/sessions/{sid}/video.mjpeg). PyAV bundles its own ffmpeg shared libs in the
 # binary wheel, Pillow is used for the H.264 -> JPEG re-encode step.
-av==11.0.0
+# PyPI has no av 11 build for Windows / Python 3.11, so the portable Windows
+# package takes the 12.x series; Docker stays on the version it was tested with.
+av==11.0.0 ; sys_platform != "win32"
+av>=12,<13 ; sys_platform == "win32"
 Pillow==10.4.0

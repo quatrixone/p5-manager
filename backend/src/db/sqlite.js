@@ -9,7 +9,9 @@ const __dirname = path.dirname(__filename);
 // dev: /path/to/backend/src/db/sqlite.js -> /path/to
 const isInDocker = __dirname.startsWith('/app');
 const projectRoot = isInDocker ? '/app' : path.resolve(__dirname, '../..');
-const dbPath = path.join(projectRoot, 'data', 'p5manager.db');
+// P5M_DB_DIR: the portable build keeps the database outside the program
+// folder so replacing the app with a newer one keeps the data.
+const dbPath = path.join(process.env.P5M_DB_DIR || path.join(projectRoot, 'data'), 'p5manager.db');
 const dbDir = path.dirname(dbPath);
 // Legacy paths, newest -> oldest. The DB has gone through three filenames:
 //   payloads.db        — original (pre-2026-06)

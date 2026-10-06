@@ -22,12 +22,13 @@ import { uploadDirToSmb as smbUploadDir } from '../lib/smb.js';
 // default) so they're visible in the file-browser quick tabs and the
 // user can scp/rsync into them directly. See backend/src/lib/paths.js
 // for the rationale and migration notes.
-import { payloadsDir, mkpfsWorkDir, downloadsDir, USER_QUICK_TABS } from '../lib/paths.js';
+import { payloadsDir, mkpfsWorkDir, downloadsDir, userDataDir, USER_QUICK_TABS } from '../lib/paths.js';
 import { createExfatImage, unpackExfatImage } from '../lib/exfat.js';
 // Generic FIFO worker + standard CRUD endpoint binder. Replaces four nearly
 // identical hand-rolled queue scaffolds further down in this file.
 import { JobQueue, mountQueueRoutes } from '../lib/JobQueue.js';
 import { cleanDir, joinPath, isSameOrInside, destDirFor } from '../lib/transferPaths.js';
+import { isWindows, toClientPath, mapPosixDefault, isFsRoot, listLocalRoots, isLocalPathAllowed } from '../lib/platform.js';
 
 const router = express.Router();
 
@@ -2009,24 +2010,12 @@ router.post('/pkg/queue', async (req, res) => {
   }
 });
 
-const BLOCKED_LOCAL_PREFIXES = [
-  '/etc', '/root', '/sys', '/proc', '/boot', '/usr', '/bin', '/sbin',
-  '/lib', '/lib32', '/lib64', '/dev', '/run', '/var/run', '/var/cache',
-  '/var/lib/docker', '/var/lib/containers', '/var/lib/snapd', '/snap',
-];
-
-function isLocalPathAllowed(absPath) {
-  const norm = path.resolve(absPath);
-  for (const prefix of BLOCKED_LOCAL_PREFIXES) {
-    if (norm === prefix || norm.startsWith(prefix + path.sep)) return false;
-  }
-  return true;
-}
+// isLocalPathAllowed lives in lib/platform.js (the blocked folders differ per OS).
 
 router.post('/local/browse', (req, res) => {
   try {
     const { path: reqPath = '/mnt' } = req.body || {};
-    const target = path.resolve(reqPath || '/mnt');
+    const target = path.resolve(mapPosixDefault(reqPath || '/mnt', { userDataDir }));
     if (!isLocalPathAllowed(target)) {
       return res.status(403).json({ error: `Path not allowed: ${target}` });
     }
@@ -2052,11 +2041,10 @@ router.post('/local/browse', (req, res) => {
     }
     files.sort((a, b) => Number(b.isDir) - Number(a.isDir) || a.name.localeCompare(b.name));
 
-    const parent = path.dirname(target);
     res.json({
       success: true,
-      path: target,
-      parent: target === '/' ? null : parent,
+      path: toClientPath(target),
+      parent: isFsRoot(target) ? null : toClientPath(path.dirname(target)),
       files,
     });
   } catch (err) {
@@ -2250,22 +2238,14 @@ router.put('/browser-prefs', (req, res) => {
 });
 
 router.get('/local/roots', (req, res) => {
-  const roots = [];
   // User-data dirs come FIRST so the file-browser quick-tab buttons
-  // surface them as the primary entry points. Order: payloads, mkpfs,
-  // downloads — matches how the UI groups "what you uploaded /
-  // converted / downloaded".
-  for (const r of USER_QUICK_TABS) {
-    try {
-      if (fs.existsSync(r) && fs.statSync(r).isDirectory()) roots.push(r);
-    } catch (_) {}
-  }
-  for (const r of ['/mnt', '/home', '/data', '/tmp', '/media']) {
-    try {
-      if (fs.existsSync(r) && fs.statSync(r).isDirectory()) roots.push(r);
-    } catch (_) {}
-  }
-  res.json({ roots: [...new Set(roots)] });
+  // surface them as the primary entry points (payloads, mkpfs, downloads),
+  // then the host's own entry points: mount trees on Linux, the home
+  // folder and every drive on Windows.
+  const roots = isWindows
+    ? [...USER_QUICK_TABS.filter(r => fs.existsSync(r)), ...listLocalRoots([])]
+    : listLocalRoots([...USER_QUICK_TABS, '/mnt', '/home', '/data', '/tmp', '/media']);
+  res.json({ roots: [...new Set(roots.map(r => toClientPath(r)))] });
 });
 
 // Tells the frontend where the canonical user-data folders live, so
@@ -2273,9 +2253,9 @@ router.get('/local/roots', (req, res) => {
 // hard-coding the path. Read-only.
 router.get('/paths', (req, res) => {
   res.json({
-    payloads: payloadsDir,
-    mkpfs: mkpfsWorkDir,
-    downloads: downloadsDir,
+    payloads: toClientPath(payloadsDir),
+    mkpfs: toClientPath(mkpfsWorkDir),
+    downloads: toClientPath(downloadsDir),
   });
 });
 
@@ -3717,6 +3697,7 @@ async function executeConvertJob(job) {
       // exFAT image builder — lib/exfat.js does the mkfs.exfat + loop-mount
       // + rsync dance. The same appendLog / updateProgressFromText pipeline
       // is wired through so phase + progress surface in the Tasks UI.
+      if (isWindows) throw new Error('exFAT images can only be created by the Linux/Docker version of P5 Manager');
       result = await createExfatImage(job, { appendLog, updateProgressFromText }, job.source, job.output, {
         volume_label: params.volume_label,
         size_bytes: params.size_bytes,
@@ -4524,7 +4505,10 @@ router.post('/transfer/queue', async (req, res) => {
       .filter(i => i && i.path)
       .map(i => {
         const p = src.kind === 'local' ? path.resolve(String(i.path)) : cleanDir(i.path);
-        return { path: p, isDir: !!i.is_dir, name: path.posix.basename(p) };
+        // Local paths are native (backslashes on Windows); console and
+        // remote paths are always POSIX.
+        const mod = src.kind === 'local' ? path : path.posix;
+        return { path: p, isDir: !!i.is_dir, name: mod.basename(p), dir: mod.dirname(p) };
       })
       .filter(e => e.name);
     if (entries.length === 0) return res.status(400).json({ error: 'Nothing to transfer' });
@@ -4541,7 +4525,7 @@ router.post('/transfer/queue', async (req, res) => {
       if (e.isDir && isSameOrInside(e.path, destBase)) {
         return res.status(400).json({ error: `Cannot ${op} "${e.name}" into itself` });
       }
-      if (cleanDir(path.posix.dirname(e.path)) === cleanDir(destBase)) {
+      if (cleanDir(e.dir) === cleanDir(destBase)) {
         return res.status(400).json({ error: `"${e.name}" is already in that folder` });
       }
     }

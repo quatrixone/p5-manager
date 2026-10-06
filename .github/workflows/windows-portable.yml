@@ -1,0 +1,134 @@
+name: Windows portable
+
+# Builds P5Manager-windows-x64.zip: the app, a private Node and Python
+# runtime and P5Manager.exe, so it runs on Windows without Docker. The
+# packaged app is started on the runner and exercised end to end
+# (scripts/smoke.mjs) before the zip is published.
+
+on:
+  push:
+    branches: [feat/windows-exe]
+    tags: ['v*']
+  workflow_dispatch:
+
+env:
+  NODE_VERSION: '22.20.0'
+  PYTHON_VERSION: '3.11.9'
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Unit tests
+        shell: pwsh
+        run: |
+          Push-Location backend;  npm ci; npm test; Pop-Location
+          Push-Location frontend; npm ci; npm test; Pop-Location
+
+      - name: Build web UI
+        shell: pwsh
+        run: |
+          Push-Location frontend; npm run build; Pop-Location
+          if (-not (Test-Path backend/dist/index.html)) { throw "frontend build did not produce backend/dist" }
+
+      - name: Assemble portable folder
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $out = "dist-portable/P5Manager"
+          New-Item -ItemType Directory -Force "$out/app/backend", "$out/app/pyremoteplay", "$out/runtime/node", "$out/runtime/python" | Out-Null
+
+          # Backend: sources, built UI, production dependencies only.
+          Copy-Item backend/src "$out/app/backend/src" -Recurse
+          Copy-Item backend/dist "$out/app/backend/dist" -Recurse
+          Copy-Item backend/package.json, backend/package-lock.json "$out/app/backend/"
+          Get-ChildItem "$out/app/backend/src" -Recurse -Filter *.test.js | Remove-Item
+          Push-Location "$out/app/backend"; npm ci --omit=dev --no-audit --no-fund; Pop-Location
+          Copy-Item frontend/builtin "$out/app/builtin" -Recurse
+
+          # Node runtime (same version the tests above ran on).
+          Invoke-WebRequest "https://nodejs.org/dist/v$env:NODE_VERSION/win-x64/node.exe" -OutFile "$out/runtime/node/node.exe"
+
+          # Python: the embeddable distribution plus the Remote Play service's
+          # dependencies, installed by the matching full Python on the runner
+          # (netifaces has no Windows wheel and is compiled here).
+          Invoke-WebRequest "https://www.python.org/ftp/python/$env:PYTHON_VERSION/python-$env:PYTHON_VERSION-embed-amd64.zip" -OutFile python-embed.zip
+          Expand-Archive python-embed.zip "$out/runtime/python"
+          python -m pip install --upgrade pip
+          python -m pip install -r pyremoteplay/requirements.txt --target "$out/runtime/python/Lib/site-packages" --no-compile
+          # The embeddable Python only looks where its ._pth file says.
+          $pth = Get-ChildItem "$out/runtime/python" -Filter "python*._pth" | Select-Object -First 1
+          Set-Content $pth.FullName -Encoding ascii -Value @("python311.zip", ".", "Lib\site-packages", "..\..\app\pyremoteplay", "import site")
+          Copy-Item pyremoteplay/server.py, pyremoteplay/pyremoteplay_patches.py "$out/app/pyremoteplay/"
+
+          # Launcher, built with the C# compiler that ships with Windows.
+          & "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /nologo /optimize+ /target:exe "/out:$out\P5Manager.exe" packaging\windows\P5Manager.cs
+          if ($LASTEXITCODE -ne 0) { throw "launcher did not compile" }
+          Copy-Item packaging/windows/README.txt "$out/README.txt"
+
+      - name: Remote Play service imports
+        shell: pwsh
+        run: |
+          $py = "dist-portable/P5Manager/runtime/python/python.exe"
+          & $py -c "import sys, av, PIL, fastapi, uvicorn, netifaces, pyremoteplay; import pyremoteplay_patches; print('python', sys.version.split()[0], 'av', av.__version__, 'pyremoteplay', pyremoteplay.__version__)"
+          if ($LASTEXITCODE -ne 0) { throw "bundled Python cannot import the Remote Play service's modules" }
+
+      - name: Start the packaged app and run the smoke test
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $app = Resolve-Path "dist-portable/P5Manager"
+          $log = "$env:RUNNER_TEMP\p5manager.log"
+          $proc = Start-Process "$app\P5Manager.exe" -ArgumentList "--no-browser" -PassThru -RedirectStandardOutput $log -RedirectStandardError "$log.err"
+          try {
+            $up = $false
+            foreach ($i in 1..90) {
+              try { if ((Invoke-WebRequest "http://127.0.0.1:3001/api/health" -UseBasicParsing -TimeoutSec 2).StatusCode -eq 200) { $up = $true; break } } catch {}
+              if ($proc.HasExited) { break }
+              Start-Sleep -Seconds 1
+            }
+            if (-not $up) { throw "P5 Manager did not come up" }
+            node scripts/smoke.mjs http://127.0.0.1:3001 "$env:RUNNER_TEMP\p5m-smoke" --sidecar
+            if ($LASTEXITCODE -ne 0) { throw "smoke test failed" }
+            if (-not (Test-Path "$app\data\app\p5manager.db")) { throw "database was not created in the portable data folder" }
+          }
+          finally {
+            Write-Host "---- launcher / server log ----"
+            if (Test-Path $log) { Get-Content $log -Tail 80 }
+            if (Test-Path "$log.err") { Get-Content "$log.err" -Tail 40 }
+            if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
+          }
+          # Killing the launcher must take the server and the service with it.
+          Start-Sleep -Seconds 3
+          $left = Get-Process node, python -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "$app*" }
+          if ($left) { throw "child processes survived the launcher: $($left.Id -join ', ')" }
+
+      - name: Zip
+        shell: pwsh
+        run: |
+          Remove-Item "dist-portable/P5Manager/data" -Recurse -Force -ErrorAction SilentlyContinue
+          Compress-Archive -Path "dist-portable/P5Manager" -DestinationPath "P5Manager-windows-x64.zip"
+          "{0:N0} MB" -f ((Get-Item P5Manager-windows-x64.zip).Length / 1MB)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: P5Manager-windows-x64
+          path: P5Manager-windows-x64.zip
+          if-no-files-found: error
+
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: P5Manager-windows-x64.zip

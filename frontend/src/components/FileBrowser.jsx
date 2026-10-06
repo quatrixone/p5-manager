@@ -4,6 +4,7 @@ import Modal from './UI/Modal';
 import { BrowseButton } from './UI/PathField';
 import { api, apiSafe } from '../lib/api.js';
 import { entriesFromInput, topLevelNames, uploadOne } from '../lib/browserUpload.js';
+import { crumbsOf } from '../lib/localPath.js';
 
 const C = {
   bg: 'var(--bg)',
@@ -456,17 +457,7 @@ export default function FileBrowser({
     browse(segmentPath);
   };
 
-  const getBreadcrumbs = () => {
-    if (!path) return [];
-    const parts = path.split('/').filter(Boolean);
-    const crumbs = [];
-    let acc = '';
-    for (const part of parts) {
-      acc += `/${part}`;
-      crumbs.push({ label: part, path: acc });
-    }
-    return crumbs;
-  };
+  const getBreadcrumbs = () => crumbsOf(path);
 
   const toggleSelect = (name) => {
     const next = new Set(selected);

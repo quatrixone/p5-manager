@@ -14,3 +14,6 @@ frontend/builtin/*.tmp-*
 # Vendored PS5 Payload SDK (35 MB binary toolchain — see p5managerclient/README.md).
 # Devs install it locally via the SDK bootstrapper; not committed.
 p5managerclient/sdk/
+
+# Output of the Windows portable build (.github/workflows/windows-portable.yml)
+dist-portable/

@@ -10,7 +10,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 import { log } from '../db/sqlite.js';
 import { buildSmbArgs, runSmbClient, smbClientError, getSmbSource, listSmbSources, uploadDirToSmb } from '../lib/smb.js';
-import { mkpfsWorkDir } from '../lib/paths.js';
+import { mkpfsWorkDir, userDataDir } from '../lib/paths.js';
+import { toClientPath, mapPosixDefault, isFsRoot, listLocalRoots, isLocalPathAllowed } from '../lib/platform.js';
 import net from 'net';
 import { loadFtp, startZftpd } from './convert.js';
 
@@ -26,20 +27,6 @@ function getDlScratch() {
 }
 
 const router = express.Router();
-
-const BLOCKED_LOCAL_PREFIXES = [
-  '/etc', '/root', '/sys', '/proc', '/boot', '/usr', '/bin', '/sbin',
-  '/lib', '/lib32', '/lib64', '/dev', '/run', '/var/run', '/var/cache',
-  '/var/lib/docker', '/var/lib/containers', '/var/lib/snapd', '/snap',
-];
-
-function isLocalPathAllowed(absPath) {
-  const norm = path.resolve(absPath);
-  for (const prefix of BLOCKED_LOCAL_PREFIXES) {
-    if (norm === prefix || norm.startsWith(prefix + path.sep)) return false;
-  }
-  return true;
-}
 
 const MAX_JOBS = 50;
 const jobs = new Map();
@@ -124,20 +111,13 @@ router.get('/local-roots', (req, res) => {
   // and /data are the other two everyday user-data trees on DietPi-style
   // hosts. Anything else (/tmp, /media, /srv) was either an isolation
   // footgun or near-empty on a normal LAN box, so it's not exposed.
-  const candidates = ['/mnt', '/home', '/data'];
-  const found = [];
-  for (const r of candidates) {
-    try {
-      if (fs.existsSync(r) && fs.statSync(r).isDirectory()) found.push(r);
-    } catch (_) {}
-  }
-  res.json({ roots: found });
+  res.json({ roots: listLocalRoots(['/mnt', '/home', '/data']).map(r => toClientPath(r)) });
 });
 
 router.post('/local-browse', (req, res) => {
   try {
     const { path: reqPath = '/mnt' } = req.body || {};
-    const target = path.resolve(reqPath || '/mnt');
+    const target = path.resolve(mapPosixDefault(reqPath || '/mnt', { userDataDir }));
     if (!isLocalPathAllowed(target)) return res.status(403).json({ error: `Path not allowed: ${target}` });
     if (!fs.existsSync(target)) return res.status(404).json({ error: 'Path not found' });
     if (!fs.statSync(target).isDirectory()) return res.status(400).json({ error: 'Not a directory' });
@@ -152,7 +132,7 @@ router.post('/local-browse', (req, res) => {
       } catch (_) {}
     }
     dirs.sort((a, b) => a.name.localeCompare(b.name));
-    res.json({ success: true, path: target, parent: target === '/' ? null : path.dirname(target), dirs });
+    res.json({ success: true, path: toClientPath(target), parent: isFsRoot(target) ? null : toClientPath(path.dirname(target)), dirs });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

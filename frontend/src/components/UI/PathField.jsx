@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import FolderPickerModal from './FolderPickerModal';
+import { isAbsPath } from '../../lib/localPath.js';
 
 // The one way to choose a path on the server's disk: a "Browse" button that
 // opens the folder/file picker, and - as PathField - the text input next to
@@ -12,7 +13,7 @@ const dirOf = (p) => p.replace(/[^/]+$/, '') || '/';
 // value (its folder when picking files), else `fallbackPath`.
 function startPath({ value, browsePath, selectFiles, fallbackPath }) {
   if (browsePath) return browsePath;
-  if (value && value.startsWith('/')) return selectFiles ? dirOf(value) : value;
+  if (isAbsPath(value)) return selectFiles ? dirOf(value) : value;
   return fallbackPath;
 }
 

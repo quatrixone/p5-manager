@@ -22,6 +22,7 @@ import builtinRouter from './routes/builtin.js';
 import libraryRouter from './routes/library.js';
 import { ensureDefaultPayloads } from './lib/defaultPayloads.js';
 import { migratePaths } from './lib/migrate-paths.js';
+import { platformInfo } from './lib/platform.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -143,6 +144,9 @@ const STARTED_AT = new Date().toISOString();
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString(), started_at: STARTED_AT });
 });
+
+// OS and feature flags of this build (Docker/Linux vs portable Windows).
+app.get('/api/platform', (req, res) => res.json(platformInfo()));
 
 const distPath = path.join(__dirname, '../dist');
 if (process.env.NODE_ENV === 'production' && fs.existsSync(distPath)) {

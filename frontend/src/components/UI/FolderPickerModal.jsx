@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import Modal from './Modal';
 import { api, apiSafe } from '../../lib/api.js';
+import { crumbsOf } from '../../lib/localPath.js';
 
 // Lightweight folder-only browser used as a modal picker by the
 // Downloader and Convert tabs. Talks to the same /convert/local/browse
@@ -111,12 +112,7 @@ export default function FolderPickerModal({
     }
   };
 
-  const breadcrumbs = (() => {
-    if (!path) return [];
-    const parts = path.split('/').filter(Boolean);
-    let acc = '';
-    return parts.map(p => { acc += `/${p}`; return { label: p, path: acc }; });
-  })();
+  const breadcrumbs = crumbsOf(path);
 
   // Sort: dirs first, then files greyed out
   const sorted = [...entries].sort((a, b) => {
