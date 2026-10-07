@@ -1,8 +1,12 @@
 import express from 'express';
 import net from 'net';
 import fs from 'fs';
+import { Writable } from 'node:stream';
+import { Client as FtpClient } from 'basic-ftp';
 import { getRepo, log } from '../db/sqlite.js';
 import { tcpPortOpen, sendElfPayload, ELF_LOADER_PORT } from './convert.js';
+import { getFtpPort } from '../lib/ftpPort.js';
+import { parsePs4Library } from '../lib/ps4Library.js';
 import {
   isValidTitleId, isSafeConsoleDir, storageOf, buildVolumes, buildDestinations,
 } from '../lib/libraryModel.js';
@@ -74,6 +78,31 @@ router.param('ip', (req, res, next, ip) => {
 router.param('titleId', (req, res, next, id) => {
   if (!isValidTitleId(id)) return res.status(400).json({ error: 'Invalid title id' });
   next();
+});
+
+// PS4's installed titles are listed in app.db. This endpoint only downloads
+// and reads that database over GoldHEN FTP; it never modifies console data.
+router.get('/:ip/ps4', async (req, res) => {
+  const ftp = new FtpClient(12_000);
+  const chunks = [];
+  let total = 0;
+  const sink = new Writable({
+    write(chunk, _encoding, callback) {
+      total += chunk.length;
+      if (total > 64 * 1024 * 1024) return callback(new Error('PS4 app.db is unexpectedly large'));
+      chunks.push(Buffer.from(chunk));
+      callback();
+    },
+  });
+  try {
+    await ftp.access({ host: req.params.ip, port: getFtpPort(req.params.ip), user: 'anonymous', password: '', secure: false });
+    await ftp.downloadTo(sink, '/system_data/priv/mms/app.db');
+    const games = parsePs4Library(Buffer.concat(chunks));
+    res.json({ platform: 'ps4', source: 'app.db', games, count: games.length });
+  } catch (e) {
+    log('warn', `PS4 library ${req.params.ip}: ${e.message}`);
+    res.status(502).json({ error: `Could not read the PS4 library over FTP: ${e.message}. Make sure GoldHEN FTP is enabled.` });
+  } finally { ftp.close(); }
 });
 
 const iconPath = (ip, g) => {

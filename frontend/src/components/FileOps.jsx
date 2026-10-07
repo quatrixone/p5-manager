@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import Convert from './Convert';
 import Downloader from './Downloader';
 import Queue from './Queue';
@@ -75,11 +75,17 @@ export default function FileOps({ profiles, onNotification }) {
   });
 
   const counts = useQueueCounts();
+  const hasPs5 = profiles.some(p => p.console_type !== 'ps4');
+  const visibleTabs = useMemo(() => TABS.filter(t => t.key !== 'convert' || hasPs5), [hasPs5]);
 
   const switchTab = useCallback((next) => {
     setSubTab(next);
     try { localStorage.setItem(STORAGE_TAB, next); } catch (_) {}
   }, []);
+
+  useEffect(() => {
+    if (subTab === 'convert' && !hasPs5) switchTab('files');
+  }, [subTab, hasPs5, switchTab]);
 
   const openQueue = useCallback(() => switchTab('queue'), [switchTab]);
   const sendToConvert = useCallback((pick) => {
@@ -95,7 +101,7 @@ export default function FileOps({ profiles, onNotification }) {
           <div className="fileops-title-text">
             <div className="fileops-title-h">Files &amp; Operations</div>
             <div className="fileops-title-sub">
-              Browse local, SMB and PS5 FTP · Upload / Download / Convert / Extract — all from one ⋮ menu
+              Browse local, SMB and PS4/PS5 FTP · Upload / Download / Convert / Extract — all from one ⋮ menu
             </div>
           </div>
         </div>
@@ -105,7 +111,7 @@ export default function FileOps({ profiles, onNotification }) {
       </header>
 
       <nav className="fileops-tabs" role="tablist">
-        {TABS.map(t => {
+        {visibleTabs.map(t => {
           const n = (t.countKeys || []).reduce((acc, k) => acc + (counts[k] || 0), 0);
           const active = subTab === t.key;
           return (
@@ -159,10 +165,10 @@ export default function FileOps({ profiles, onNotification }) {
             )}
           </>
         )}
-        {subTab === 'convert' && (
+        {subTab === 'convert' && hasPs5 && (
           <GameCompressor profiles={profiles} onNotification={onNotification} />
         )}
-        {subTab === 'convert' && (
+        {subTab === 'convert' && hasPs5 && (
           <Convert
             profiles={profiles}
             onNotification={onNotification}

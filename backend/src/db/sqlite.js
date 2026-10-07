@@ -24,6 +24,7 @@ const dbDir = path.dirname(dbPath);
 const LEGACY_DB_NAMES = ['ps5webmanager.db', 'payloads.db'];
 
 let db = null;
+let SqlJs = null;
 
 export async function initDatabase() {
   if (db) return db;
@@ -53,13 +54,13 @@ export async function initDatabase() {
     }
   }
 
-  const SQL = await initSqlJs();
+  SqlJs = await initSqlJs();
 
   if (fs.existsSync(dbPath)) {
     const buffer = fs.readFileSync(dbPath);
-    db = new SQL.Database(buffer);
+    db = new SqlJs.Database(buffer);
   } else {
-    db = new SQL.Database();
+    db = new SqlJs.Database();
   }
 
   db.run(`
@@ -396,6 +397,11 @@ let _repo = null;
 export function getRepo() {
   if (!_repo) _repo = new DatabaseRepo(getDatabase());
   return _repo;
+}
+
+export function openSqliteBuffer(buffer) {
+  if (!SqlJs) throw new Error('Database is not initialized');
+  return new SqlJs.Database(buffer);
 }
 
 export function log(level, message) {

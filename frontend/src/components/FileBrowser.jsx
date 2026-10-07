@@ -88,6 +88,8 @@ export default function FileBrowser({
   const [kind, setKind] = useState(initialLocation?.kind || defaultKind);
   const [smbId, setSmbId] = useState(initialLocation?.smbId ? String(initialLocation.smbId) : '');
   const [ftpIp, setFtpIp] = useState(initialLocation?.ftpIp || '');
+  const ftpProfile = profiles.find(p => p.ip_address === ftpIp);
+  const ftpPlatform = ftpProfile?.console_type === 'ps4' ? 'PS4' : 'PS5';
   // Folder to reopen for the store `initialLocation` points at; dropped as
   // soon as the user switches to another store.
   const initialRef = useRef(initialLocation?.path ? initialLocation : null);
@@ -98,8 +100,8 @@ export default function FileBrowser({
   const [parent, setParent] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  // PS5 FTP only: the backend may be sending zftpd and waiting for its port,
-  // which takes a few seconds - say so instead of a silent "loading…".
+  // The backend may start PS5 zftpd while connecting; PS4 GoldHEN FTP must
+  // already be running. Give either console a useful connection hint.
   const [ftpSlow, setFtpSlow] = useState(false);
   useEffect(() => {
     if (!(loading && kind === 'ftp')) { setFtpSlow(false); return; }
@@ -122,7 +124,7 @@ export default function FileBrowser({
     (async () => {
       const data = await apiSafe.get('/settings');
       if (cancelled || !data) return;
-      if (data.upload_target_ip) setUploadIp(data.upload_target_ip);
+      if (data.upload_target_ip && profiles.some(p => p.ip_address === data.upload_target_ip && p.console_type !== 'ps4')) setUploadIp(data.upload_target_ip);
       if (data.upload_target_path) setUploadDest(data.upload_target_path);
     })();
     return () => { cancelled = true; };
@@ -132,7 +134,7 @@ export default function FileBrowser({
   // visit Settings → Config first.
   useEffect(() => {
     if (!uploadIp && profiles.length) {
-      const def = profiles.find(p => p.is_default) || profiles[0];
+      const def = profiles.find(p => p.is_default && p.console_type !== 'ps4') || profiles.find(p => p.console_type !== 'ps4');
       if (def) setUploadIp(def.ip_address);
     }
   }, [profiles, uploadIp]);
@@ -282,7 +284,7 @@ export default function FileBrowser({
         if (!smbId) { setLoading(false); setError('Select SMB source'); return; }
         d = await api.post(`/convert/sources/${smbId}/browse`, { subPath: p });
       } else {
-        if (!ftpIp) { setLoading(false); setError('Select PS5 IP'); return; }
+        if (!ftpIp) { setLoading(false); setError('Select a console'); return; }
         d = await api.post('/convert/ftp/browse', { ip: ftpIp, path: p });
         if (d.ftp_started) onNotification?.('FTP was not running on the console - started zftpd', 'info');
       }
@@ -305,10 +307,10 @@ export default function FileBrowser({
       const def = (initHere && init.path) || browserPrefs.smb?.[smbId] || '';
       setPathInput(def); setPath(def); browse(def);
     } else if (kind === 'ftp' && ftpIp) {
-      const p = (initHere && init.path) || '/data';
+      const p = (initHere && init.path) || (ftpProfile?.console_type === 'ps4' ? '/' : '/data');
       setPathInput(p); setPath(p); browse(p);
     } else { setFiles([]); setPath(''); setParent(null); }
-  }, [kind, smbId, ftpIp, browserPrefs.local]);
+  }, [kind, smbId, ftpIp, browserPrefs.local, ftpProfile?.console_type]);
 
   // ─── Dual-pane plumbing ──────────────────────────────────────────────
   const onLocationChangeRef = useRef(onLocationChange);
@@ -547,7 +549,7 @@ export default function FileBrowser({
       if (kind === 'local') {
         await api.post('/convert/local/move', { src, dst, isDir: !!target.isDir });
       } else if (kind === 'ftp') {
-        if (!ftpIp) throw new Error('Select PS5 first');
+        if (!ftpIp) throw new Error('Select a console first');
         await api.post('/convert/ftp/move', { ip: ftpIp, src, dst });
       } else {
         if (!smbId) throw new Error('Select remote source first');
@@ -775,7 +777,7 @@ export default function FileBrowser({
       const sub = path ? `${path.replace(/\/+$/, '')}/${entry.name}` : entry.name;
       url = `${API}/convert/sources/${smbId}/download?path=${encodeURIComponent(sub)}&isDir=${entry.isDir ? 1 : 0}`;
     } else if (kind === 'ftp') {
-      if (!ftpIp) { onNotification?.('Pick a PS5 first', 'error'); return; }
+      if (!ftpIp) { onNotification?.('Pick a console first', 'error'); return; }
       const fullPath = path === '/' ? `/${entry.name}` : `${path.replace(/\/$/, '')}/${entry.name}`;
       url = `${API}/convert/ftp/download?ip=${encodeURIComponent(ftpIp)}&path=${encodeURIComponent(fullPath)}&isDir=${entry.isDir ? 1 : 0}`;
     } else {
@@ -906,7 +908,7 @@ export default function FileBrowser({
       push_after: false,
     };
     if (kind === 'ftp') {
-      if (!ftpIp) { onNotification?.('Select a PS5 first', 'error'); return false; }
+      if (!ftpIp) { onNotification?.('Select a console first', 'error'); return false; }
       body.source_ftp = { ip: ftpIp, path: fullPath };
     } else if (kind === 'smb') {
       if (!smbId) { onNotification?.('Pick an SMB source first', 'error'); return false; }
@@ -1004,7 +1006,7 @@ export default function FileBrowser({
     }
     if (clipboard.operation === 'copy' && kind !== 'local') {
       onNotification?.(
-        `Copy on ${kind === 'ftp' ? 'PS5 FTP' : 'SMB'} is not supported. Use the upload / import queue instead.`,
+        `Copy on ${kind === 'ftp' ? `${ftpPlatform} FTP` : 'SMB'} is not supported. Use the upload / import queue instead.`,
         'error',
       );
       return;
@@ -1441,8 +1443,8 @@ export default function FileBrowser({
 
         {kind === 'ftp' && (
           <select className="select" value={ftpIp} onChange={e => setFtpIp(e.target.value)}>
-            <option value="">— pick PS5 —</option>
-            {profiles.map(p => <option key={p.id} value={p.ip_address}>{p.name} ({p.ip_address})</option>)}
+            <option value="">— pick console —</option>
+            {profiles.map(p => <option key={p.id} value={p.ip_address}>{p.console_type === 'ps4' ? 'PS4' : 'PS5'} · {p.name} ({p.ip_address})</option>)}
           </select>
         )}
 
@@ -1593,7 +1595,7 @@ export default function FileBrowser({
 
         {ftpSlow && (
           <div className="p-sm text-sm text-muted">
-            ⏳ Connecting to the console… starting zftpd if FTP is not running.
+            ⏳ Connecting to {ftpPlatform}… {ftpPlatform === 'PS5' ? 'starting zftpd if FTP is not running.' : 'make sure GoldHEN FTP is enabled.'}
           </div>
         )}
 
@@ -1755,7 +1757,7 @@ export default function FileBrowser({
           const transportLabel = kind === 'local'
             ? 'Local filesystem'
             : kind === 'ftp'
-              ? `PS5 FTP (${ftpIp || '—'})`
+              ? `${ftpPlatform} FTP (${ftpIp || '—'})`
               : `Remote source #${smbId || '—'}`;
           const rows = [
             ['Name', infoTarget.name],

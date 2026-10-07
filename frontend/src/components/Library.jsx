@@ -3,12 +3,8 @@ import Modal from './UI/Modal';
 import useVisiblePolling from '../hooks/useVisiblePolling';
 import { api, apiSafe } from '../lib/api.js';
 
-// Game library of a console, backed by the ShadowMountPlus API through
-// /api/library/:ip (see backend/src/routes/library.js). Shows every title
-// ShadowMount knows with its icon, where its files live (internal, extended
-// storage, USB) and lets the user mount, move, copy, unpack, uninstall or
-// delete it. Move / copy / unpack / delete run as ShadowMount's single
-// storage job, shown as a progress bar at the top.
+// PS5 library comes from ShadowMountPlus and supports storage operations.
+// PS4 library is an informational view read from app.db over FTP.
 
 const fmtBytes = (n) => {
   if (!n && n !== 0) return '';
@@ -30,6 +26,8 @@ function GameIcon({ game }) {
 
 export default function Library({ profiles = [], onNotification }) {
   const [ip, setIp] = useState('');
+  const selectedProfile = profiles.find(p => p.ip_address === ip);
+  const isPs4Profile = selectedProfile?.console_type === 'ps4';
   const [data, setData] = useState(null);
   const [error, setError] = useState(null); // { message, reason, can_start, has_payload }
   const [starting, setStarting] = useState(false);
@@ -54,15 +52,15 @@ export default function Library({ profiles = [], onNotification }) {
     if (!ip) return;
     if (!quiet) setLoading(true);
     try {
-      const d = await api.get(`/library/${ip}/overview`);
-      setData(d);
+      const d = await api.get(isPs4Profile ? `/library/${ip}/ps4` : `/library/${ip}/overview`);
+      setData(isPs4Profile ? { ...d, volumes: [], destinations: [], job: null } : d);
       setError(null);
     } catch (e) {
       if (!quiet) { setData(null); setError({ message: e.message, ...(e.data || {}) }); }
     } finally {
       if (!quiet) setLoading(false);
     }
-  }, [ip]);
+  }, [ip, isPs4Profile]);
 
   useEffect(() => { setData(null); setSelected(null); load(); }, [load]);
 
@@ -105,19 +103,19 @@ export default function Library({ profiles = [], onNotification }) {
   const games = data?.games || [];
   const counts = useMemo(() => {
     const c = {};
-    for (const g of games) c[g.storage.id] = (c[g.storage.id] || 0) + 1;
+    for (const g of games) if (g.storage?.id) c[g.storage.id] = (c[g.storage.id] || 0) + 1;
     return c;
   }, [games]);
   const storages = useMemo(() => {
     const seen = new Map();
     for (const v of data?.volumes || []) seen.set(v.id, v.label);
-    for (const g of games) if (!seen.has(g.storage.id)) seen.set(g.storage.id, g.storage.label);
+    for (const g of games) if (g.storage?.id && !seen.has(g.storage.id)) seen.set(g.storage.id, g.storage.label);
     return Array.from(seen, ([id, label]) => ({ id, label }));
   }, [data, games]);
   const shown = useMemo(() => {
     const q = query.trim().toLowerCase();
     return games
-      .filter(g => storage === 'all' || g.storage.id === storage)
+      .filter(g => storage === 'all' || g.storage?.id === storage)
       .filter(g => !q || `${g.title_name} ${g.title_id}`.toLowerCase().includes(q))
       .sort((a, b) => (a.title_name || a.title_id).localeCompare(b.title_name || b.title_id));
   }, [games, query, storage]);
@@ -202,22 +200,22 @@ export default function Library({ profiles = [], onNotification }) {
           <div>
             <span className="comp-card-title">🎮 Library</span>
             <div className="text-xs text-muted mt-xs">
-              Games ShadowMount knows on the console{data?.version ? ` · ShadowMount ${data.version}` : ''}
+              {isPs4Profile ? 'Installed titles read from the PS4 app database over FTP · view only' : `Games ShadowMount knows on the console${data?.version ? ` · ShadowMount ${data.version}` : ''}`}
             </div>
           </div>
           <div className="flex gap-xs items-center flex-wrap">
             <select className="select" style={{ width: 'auto' }} value={ip} onChange={e => setIp(e.target.value)} aria-label="Console">
               <option value="">— pick console —</option>
-              {profiles.map(p => <option key={p.id} value={p.ip_address}>{p.name} ({p.ip_address})</option>)}
+              {profiles.map(p => <option key={p.id} value={p.ip_address}>{p.console_type === 'ps4' ? 'PS4' : 'PS5'} · {p.name} ({p.ip_address})</option>)}
             </select>
-            <button className="btn btn-secondary btn-sm" onClick={rescan} disabled={!data} title="Ask ShadowMount to rescan its folders">🔍 Rescan</button>
+            {!isPs4Profile && <button className="btn btn-secondary btn-sm" onClick={rescan} disabled={!data} title="Ask ShadowMount to rescan its folders">🔍 Rescan</button>}
             <button className="btn btn-ghost btn-sm" onClick={() => load()} disabled={loading || !ip}>↻</button>
           </div>
         </div>
 
         {data && (
           <div className="comp-card-body flex-col gap-md">
-            <div className="lib-volumes">
+            {!isPs4Profile && <div className="lib-volumes">
               {data.volumes.map(v => {
                 const used = v.total_bytes - v.available_bytes;
                 const p = v.total_bytes ? Math.round((used / v.total_bytes) * 100) : 0;
@@ -231,7 +229,7 @@ export default function Library({ profiles = [], onNotification }) {
                   </div>
                 );
               })}
-            </div>
+            </div>}
 
             {/* Only a running job: ShadowMount keeps reporting its last job
                 forever, so a failure from days ago would otherwise sit here.
@@ -258,14 +256,14 @@ export default function Library({ profiles = [], onNotification }) {
 
             <div className="flex gap-sm items-center flex-wrap">
               <input className="input" style={{ flex: '1 1 220px' }} type="search" placeholder="Search games…" value={query} onChange={e => setQuery(e.target.value)} />
-              <div className="tabs" style={{ flex: '0 1 auto' }}>
+              {!isPs4Profile && <div className="tabs" style={{ flex: '0 1 auto' }}>
                 <button className={`tab-item ${storage === 'all' ? 'active' : ''}`} onClick={() => setStorage('all')}>All ({games.length})</button>
                 {storages.map(s => (
                   <button key={s.id} className={`tab-item ${storage === s.id ? 'active' : ''}`} onClick={() => setStorage(s.id)}>
                     {s.label} ({counts[s.id] || 0})
                   </button>
                 ))}
-              </div>
+              </div>}
             </div>
           </div>
         )}
@@ -302,7 +300,7 @@ export default function Library({ profiles = [], onNotification }) {
         <div className="empty-state">
           <div className="empty-state-icon">🎮</div>
           <div className="empty-state-title">{games.length === 0 ? 'No games found' : 'Nothing matches'}</div>
-          <div className="empty-state-text">{games.length === 0 ? 'ShadowMount has not registered any title yet - try Rescan.' : 'Change the search or the storage filter.'}</div>
+          <div className="empty-state-text">{games.length === 0 ? (isPs4Profile ? 'No installed titles were found in the PS4 app database.' : 'ShadowMount has not registered any title yet - try Rescan.') : 'Change the search or the storage filter.'}</div>
         </div>
       )}
 
@@ -313,12 +311,12 @@ export default function Library({ profiles = [], onNotification }) {
             <div className="lib-card-main">
               <div className="lib-card-title truncate" title={g.title_name}>{g.title_name || g.title_id}</div>
               <div className="text-xs text-muted">{g.title_id}{sizeOf(g) ? ` · ${fmtBytes(sizeOf(g))}` : ''}</div>
-              <div className="lib-badges">
+              {!isPs4Profile && <div className="lib-badges">
                 <span className={`badge ${g.storage.id === 'internal' ? 'badge-info' : g.storage.id === 'other' ? 'badge-muted' : 'badge-success'}`}>{g.storage.label}</span>
                 {g.mounted && <span className="badge badge-warning">Mounted</span>}
                 {!g.source_available && <span className="badge badge-danger">Source missing</span>}
                 {!g.installed && <span className="badge badge-muted">Not installed</span>}
-              </div>
+              </div>}
             </div>
           </button>
         ))}
@@ -334,13 +332,15 @@ export default function Library({ profiles = [], onNotification }) {
             <div className="flex gap-md items-center">
               <GameIcon game={game} />
               <div style={{ minWidth: 0 }}>
-                <div className="text-sm">{game.title_id} · {(game.platform || '').toUpperCase()} · {game.image_type || game.source_type}</div>
-                <div className="text-xs text-muted">{fmtBytes(sizeOf(game))} · {game.storage.label}</div>
-                <div className="text-xs text-muted" style={{ wordBreak: 'break-all' }}>{game.path}</div>
+                <div className="text-sm">{game.title_id} · {isPs4Profile ? 'PS4 · Installed app' : `${(game.platform || '').toUpperCase()} · ${game.image_type || game.source_type}`}</div>
+                {!isPs4Profile && <>
+                  <div className="text-xs text-muted">{fmtBytes(sizeOf(game))} · {game.storage.label}</div>
+                  <div className="text-xs text-muted" style={{ wordBreak: 'break-all' }}>{game.path}</div>
+                </>}
               </div>
             </div>
             {jobActive && <div className="text-xs text-muted">A storage operation is running - move, copy, unpack and delete are available when it finishes.</div>}
-            <div className="lib-actions">
+            {!isPs4Profile && <div className="lib-actions">
               {game.mounted
                 ? <button className="btn btn-secondary" disabled={busy} onClick={() => run(game, 'unmount', {}, `Unmounted ${game.title_name || game.title_id}`)}>⏏ Unmount</button>
                 : <button className="btn btn-primary" disabled={busy || !game.source_available} onClick={() => mount(game)}>▶ Mount</button>}
@@ -349,9 +349,11 @@ export default function Library({ profiles = [], onNotification }) {
               {game.image_backed && (
                 <button className="btn btn-secondary" disabled={busy || jobActive || !game.source_available} onClick={() => openPicker(game, 'unpack')}>📂 Unpack to…</button>
               )}
-              <button className="btn btn-secondary" disabled={busy || !game.installed} onClick={() => uninstall(game)} title="Remove the title from the console's home screen; files stay">✖ Uninstall</button>
-              <button className="btn btn-danger" disabled={busy || jobActive} onClick={() => setDeleting(game)} title="Delete the game's files for good">🗑 Delete</button>
-            </div>
+              {!isPs4Profile && <>
+                <button className="btn btn-secondary" disabled={busy || !game.installed} onClick={() => uninstall(game)} title="Remove the title from the console's home screen; files stay">✖ Uninstall</button>
+                <button className="btn btn-danger" disabled={busy || jobActive} onClick={() => setDeleting(game)} title="Delete the game's files for good">🗑 Delete</button>
+              </>}
+            </div>}
           </div>
         )}
       </Modal>
@@ -418,9 +420,10 @@ export default function Library({ profiles = [], onNotification }) {
         {deleting && (
           <div className="flex-col gap-sm">
             <div className="text-sm">
-              Delete <b>{deleting.title_name || deleting.title_id}</b> ({fmtBytes(sizeOf(deleting))}) from the console? It cannot be undone.
+              {isPs4Profile ? <>Uninstall <b>{deleting.title_name || deleting.title_id}</b> ({deleting.title_id}) from the PS4? This removes the installed app and cannot be undone.</>
+                : <>Delete <b>{deleting.title_name || deleting.title_id}</b> ({fmtBytes(sizeOf(deleting))}) from the console? It cannot be undone.</>}
             </div>
-            <div className="text-xs text-muted" style={{ wordBreak: 'break-all' }}>{deleting.path}</div>
+            {!isPs4Profile && <div className="text-xs text-muted" style={{ wordBreak: 'break-all' }}>{deleting.path}</div>}
           </div>
         )}
       </Modal>

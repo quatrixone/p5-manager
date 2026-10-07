@@ -1664,9 +1664,10 @@ pre { padding: 12px; overflow-x: auto; }
   .fileops-title-icon { font-size: 1.3rem; }
   .fileops-title-h { font-size: 0.98rem; }
   .fileops-title-sub { display: none; }
-  .fileops-tab { padding: 7px 10px; font-size: 0.8rem; }
-  .fileops-tab-label { display: none; }
-  .fileops-tab.is-active .fileops-tab-label { display: inline; }
+  .fileops-tabs { display: flex; flex-wrap: nowrap; gap: 2px; overflow: hidden; }
+  .fileops-tab { flex: 1 1 0; min-width: 0; flex-direction: column; justify-content: center; gap: 2px; padding: 7px 2px; font-size: 0.72rem; white-space: nowrap; }
+  .fileops-tab-icon { line-height: 1.1; }
+  .fileops-tab-label { display: inline; }
 }
 
 /* ---------- subtle reveal animation ---------- */
@@ -2243,6 +2244,7 @@ pre { padding: 12px; overflow-x: auto; }
   .fileops--files .dual-pane .fb > .comp-card-body { padding-top: var(--space-sm); }
   .fileops--files .dual-pane .fb .fb-nav { position: static; background: none; }
   .fileops--files .dual-pane .fb .fb-list { max-height: 34vh; max-height: 34dvh; overflow-y: auto; }
+
 }
 
 /* ─── Live Session tab bar dropdowns (SessionTabBar.jsx) ─────────────── */
