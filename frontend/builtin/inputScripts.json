@@ -17,6 +17,6 @@
     "name": "Restart PS5",
     "description": "Long-press PS to open the Power menu, then Restart PS5.",
     "notes": "Holding PS for ~1500 ms opens the PS5 Power overlay, where the default highlighted option is \"Enter Rest Mode\". From there:\n  one  down + cross  -> Restart PS5\n  just       cross    -> Enter Rest Mode\n  two  down + cross  -> Turn Off PS5\nTweak the `ps` hold duration or the `wait`s if your console reacts faster or slower - a hold that's too short just opens Control Center instead of the Power overlay.",
-    "script": "ps 1500\nwait 800\ndown\nwait 400\ncross\nwait 2000"
+    "script": "ps\nwait 800\ndown\nwait 400\nright 10x\nwait 400\ncross\nwait 400\ndown 2x\nwait 400\ncross"
   }
 ]
