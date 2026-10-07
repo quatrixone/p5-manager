@@ -5,7 +5,7 @@ import Badge from './UI/Badge';
 import ProgressBar from './UI/ProgressBar';
 import { usePlatform } from '../contexts/PlatformContext';
 import { api } from '../lib/api.js';
-import { payloadMatchesPlatform } from '../lib/payloadPlatform.js';
+import { inferPayloadPlatform, payloadMatchesPlatform } from '../lib/payloadPlatform.js';
 
 // Filenames the app itself depends on by name, outside the auto-fetched
 // ESSENTIAL_PAYLOADS list (those come from GET /payloads/defaults below).
@@ -207,6 +207,7 @@ function PayloadList({ payloads, profiles, onFetchUrl, onSend, onDelete, onUpdat
   const hiddenCount = payloads.length - platformFiltered.length;
 
   const renderPayloadCard = (payload) => {
+    const targetPlatform = inferPayloadPlatform(payload);
     const info = updateInfo[payload.id];
     const isExpanded = expandedId === payload.id;
     const isSelected = selected.has(payload.id);
@@ -249,9 +250,9 @@ function PayloadList({ payloads, profiles, onFetchUrl, onSend, onDelete, onUpdat
           <div className="flex-1" style={{ minWidth: 0 }}>
             <div className="flex items-center gap-xs">
               <span className="truncate" style={{ fontWeight: 600, fontSize: '0.88rem' }}>{payload.name}</span>
-              {payload.console_type && (
-                <span className="console-type-badge" title={`Targets ${payload.console_type.toUpperCase()}`}>
-                  {payload.console_type.toUpperCase()}
+              {targetPlatform && (
+                <span className="console-type-badge" title={`Targets ${targetPlatform.toUpperCase()}`}>
+                  {targetPlatform.toUpperCase()}
                 </span>
               )}
               {hasUpdate && <Badge variant="info">Update</Badge>}
