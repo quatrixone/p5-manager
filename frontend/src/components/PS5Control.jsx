@@ -6,7 +6,7 @@ import useVisiblePolling from '../hooks/useVisiblePolling';
 // every non-Sony-signed controller during the post-pair HID handshake
 // (BD_ADDR + Sony controller-auth chip required), so the feature is
 // shelved indefinitely. The DS4-via-DietPi BT bridge was also removed
-// because its output still flows through pyremoteplay's RP feedback
+// because its output still flows through Remote Play's feedback
 // channel, which shares the PS2 Classics input filter, making the
 // extra Bluetooth machinery useless for the original problem. The
 // planned replacement is a Pi Zero 2 W + Brook auth chip mounted in

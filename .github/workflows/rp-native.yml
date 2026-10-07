@@ -1,0 +1,80 @@
+name: Remote Play helper
+
+# Builds p5rp (rpnative/, AGPL, on libchiaki) for Linux and Windows.
+
+on:
+  push:
+    branches: [main, 'feat/rp-**']
+    paths:
+      - 'rpnative/**'
+      - '.github/workflows/rp-native.yml'
+  workflow_dispatch:
+  # The Windows package takes p5rp from here.
+  workflow_call:
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ninja-build pkg-config libjson-c-dev libminiupnpc-dev libevent-dev libssl-dev python3-protobuf protobuf-compiler
+      - name: Build
+        run: |
+          cmake -S rpnative -B build-rp -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-rp --target p5rp
+          ./build-rp/p5rp 2>&1 | head -2 || true
+          ldd build-rp/p5rp
+      - uses: actions/upload-artifact@v4
+        with:
+          name: p5rp-linux-x64
+          path: build-rp/p5rp
+          if-no-files-found: error
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - name: Disable autocrlf
+        shell: pwsh
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+      - uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: mingw64
+          update: true
+          install: git
+          pacboy: >-
+            cc:p
+            cmake:p
+            ninja:p
+            json-c:p
+            libevent:p
+            miniupnpc:p
+            openssl:p
+            pkgconf:p
+            protobuf:p
+            python:p
+            python-protobuf:p
+      - name: Build
+        run: |
+          cmake -S rpnative -B build-rp -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-rp --target p5rp
+          mkdir out && cp build-rp/p5rp.exe out/
+          # The DLLs it needs that Windows does not have.
+          ldd out/p5rp.exe | grep -i mingw64 | awk '{print $3}' | while read f; do cp "$f" out/; done
+          ls -la out
+          ./out/p5rp.exe 2>&1 | head -2 || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: p5rp-windows-x64
+          path: out/*
+          if-no-files-found: error

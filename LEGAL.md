@@ -31,6 +31,15 @@ They are used here only to describe what the software works with.
     and will be removed if its author asks.
 - `backend/src/lib/unpkg.py`, a public-domain script by flatz, in the
   Python 3 port by CelesteBlue.
+- `rpnative/`, the source of `p5rp`, the Remote Play session helper. It is
+  written for this project but links
+  [libchiaki](https://github.com/streetpea/chiaki-ng) (chiaki-ng), which is
+  under the GNU Affero General Public License version 3, and is therefore
+  under the **AGPL version 3** too (see [rpnative/LICENSE](rpnative/LICENSE)),
+  not the MIT licence. The rest of P5 Manager only starts it as a separate
+  program and talks to it through its standard input and output. The
+  libchiaki source it is built from is the chiaki-ng release named in
+  `rpnative/CMakeLists.txt`; the build fetches it from there unchanged.
 
 To the best of the maintainers' knowledge it contains **no** Sony source
 code, firmware, system files, encryption keys, signing keys or account
@@ -40,7 +49,12 @@ package files or links to them.
 The Windows package (`P5Manager-windows-x64.zip`) additionally carries
 unmodified copies of the programs it runs on: Node.js, Python with the
 packages of the Remote Play service, and 7-Zip (`runtime/7zip/`, GNU LGPL
-with the unRAR restriction; its `License.txt` is next to it).
+with the unRAR restriction; its `License.txt` is next to it). It and the
+Remote Play image (`ghcr.io/quatrixone/p5-manager-remoteplay`) also carry
+`p5rp` built from `rpnative/` (AGPL version 3, licence next to it; in the
+Windows package with the MSYS2 libraries it needs, each under its own
+licence). Its complete source is this repository's `rpnative/` at the same
+version, plus the chiaki-ng release it names.
 
 Other third-party tools (payloads, converters, libraries) are not
 redistributed from this repository. The application downloads a small set

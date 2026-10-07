@@ -9,6 +9,7 @@
 //   app\backend\src\index.js      backend (serves the UI from app\backend\dist)
 //   app\builtin\                  built-in scripts
 //   app\pyremoteplay\server.py    Remote Play service (optional)
+//   runtime\p5rp\p5rp.exe         its session helper (AGPL, rpnative\)
 //   runtime\node\node.exe
 //   runtime\python\python.exe     (optional)
 //   runtime\7zip\7z.exe           (optional) extracts archives for the backend
@@ -224,7 +225,11 @@ static class P5Manager
             : "-c \"import os, runpy, sys; sys.path.insert(0, sys.argv[1]); runpy.run_path(os.path.join(sys.argv[1], 'server.py'), run_name='__main__')\" \"" + dir + "\"";
         Emit("[launcher] starting Remote Play service on 127.0.0.1:" + sidecarPort
             + (dir == packaged ? "" : " (updated copy)"));
+        // p5rp, the session helper, is part of the runtime, not of the app:
+        // an updated copy of the service finds it here too.
+        string p5rp = Path.GetFullPath(Path.Combine(packaged, "..", "..", "runtime", "p5rp", "p5rp.exe"));
         return Start(python, args, dir, new string[][] {
+            new string[] { "P5RP_BIN", p5rp },
             new string[] { "PYREMOTEPLAY_SIDECAR_HOST", "127.0.0.1" },
             new string[] { "PYREMOTEPLAY_SIDECAR_PORT", sidecarPort },
             new string[] { "PYTHONUNBUFFERED", "1" },

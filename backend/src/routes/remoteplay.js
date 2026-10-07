@@ -7,6 +7,8 @@ import { getRepo, log } from '../db/sqlite.js';
 import { pushKernelLogEntry } from './kernelLogServer.js';
 import { payloadsDir } from '../lib/paths.js';
 import { getFtpPort } from '../lib/ftpPort.js';
+import { createViewer, answerViewer, closeViewer, closeViewersOf } from '../lib/webrtc.js';
+import { discoverConsole } from '../lib/consoleStatus.js';
 
 const router = express.Router();
 
@@ -72,11 +74,10 @@ const SIDECAR_URL = process.env.PYREMOTEPLAY_SIDECAR_URL
 // Remote Play session across many quick-input calls. The session is verified
 // on each ensure-call against the sidecar before being trusted.
 //
-// We also track whether the cached session has video enabled - the sidecar
-// only attaches a video receiver when `enable_video=true` is passed at start,
-// so reusing a no-video session when the caller wants video gives them a
-// session whose /video.mjpeg endpoint returns 400. Tracking the bit lets us
-// force a fresh start in that case.
+// We also track whether the cached session was opened to be watched
+// (`enable_video`). Every session carries the picture - the sidecar adds the
+// JPEG decoder to a live one when asked - so the bit only decides what the
+// UI shows.
 const ipToSession = new Map(); // ip -> { sid, started, video }
 const SESSION_REUSE_MS = 5 * 60 * 1000;
 // Per-IP in-flight Start promise so two near-simultaneous callers
@@ -141,7 +142,7 @@ async function sidecar(method, urlPath, body, { timeout = 30000 } = {}) {
   }
 }
 
-const PROFILE_COLS = 'id, ip_address, rp_user_profile, psn_account_id, psn_online_id';
+const PROFILE_COLS = 'id, ip_address, rp_user_profile, psn_account_id, psn_online_id, console_type';
 
 function loadProfileByIp(ip) {
   return getRepo().queryOne(`SELECT ${PROFILE_COLS} FROM profiles WHERE ip_address = ? LIMIT 1`, [ip]);
@@ -157,18 +158,20 @@ function loadProfileById(id) {
 // implicit auto-open inside quick-input / run-script. Keeping the logic in
 // one place means caching, credential lookup, error reporting, and the
 // wakeup-before-connect handshake all behave identically everywhere.
-// PS5 Remote Play stream knobs. Mirrors the whitelists on the sidecar;
-// we re-validate here so a bad request body doesn't make it all the way
-// to pyremoteplay before being rejected. We expose only 360p / 540p /
-// 720p — 1080p was removed because the MJPEG re-encode is too slow on a
-// Pi-class CPU. FPS is no longer user-configurable; the sidecar always
-// runs at its default (30 fps).
-const RP_RESOLUTIONS = new Set(['360p', '540p', '720p']);
+// Remote Play stream knobs. Mirrors the allowlists on the sidecar; we
+// re-validate here so a bad request body doesn't make it all the way to the
+// console before being rejected. 1080p needs a PS5 or a PS4 Pro; with
+// WebRTC the browser decodes, so neither it nor 60 fps costs the server
+// anything, only the MJPEG fallback re-encodes.
+const RP_RESOLUTIONS = new Set(['360p', '540p', '720p', '1080p']);
 const RP_DEFAULT_RESOLUTION = '720p';
+const RP_FPS = new Set([30, 60]);
+const RP_DEFAULT_FPS = 30;
 
-function normalizeStreamParams({ resolution } = {}) {
+function normalizeStreamParams({ resolution, fps } = {}) {
   const res = RP_RESOLUTIONS.has(resolution) ? resolution : RP_DEFAULT_RESOLUTION;
-  return { resolution: res };
+  const f = RP_FPS.has(Number(fps)) ? Number(fps) : RP_DEFAULT_FPS;
+  return { resolution: res, fps: f };
 }
 
 async function ensureSessionForIp(ip, opts = {}) {
@@ -177,8 +180,9 @@ async function ensureSessionForIp(ip, opts = {}) {
     forceNew = false,
     enableVideo = false,
     resolution: rawResolution,
+    fps: rawFps,
   } = opts;
-  const { resolution } = normalizeStreamParams({ resolution: rawResolution });
+  const { resolution, fps } = normalizeStreamParams({ resolution: rawResolution, fps: rawFps });
 
   // Coalesce concurrent callers onto the same in-flight Start. forceNew
   // bypasses the cache (above) but it does NOT bypass dedupe - if a Start
@@ -206,6 +210,7 @@ async function ensureSessionForIp(ip, opts = {}) {
             session_id: cached.sid, ip, cached: true,
             video: !!cached.video,
             resolution: s.resolution || cached.resolution,
+            fps: s.fps || cached.fps,
           };
         }
       } catch (e) {
@@ -216,6 +221,7 @@ async function ensureSessionForIp(ip, opts = {}) {
           session_id: cached.sid, ip, cached: true, transient: true,
           video: !!cached.video,
           resolution: cached.resolution,
+          fps: cached.fps,
         };
       }
     } else if (cached) {
@@ -263,6 +269,7 @@ async function ensureSessionForIp(ip, opts = {}) {
       account_id: accountId,
       enable_video: enableVideo,
       resolution,
+      fps,
       ...(hostTypeOverride ? { host_type: hostTypeOverride } : {}),
     },
     { timeout: 180000 });
@@ -271,18 +278,20 @@ async function ensureSessionForIp(ip, opts = {}) {
     started: Date.now(),
     video: !!data.video,
     resolution: data.resolution || resolution,
+    fps: data.fps || fps,
   });
   // `resumed:true` means the sidecar handed us a warm-cached session that
   // was never actually disconnected on the PS5 side - reconnect was O(ms).
   // `reused:true` means a sibling caller's Start completed first and we
   // got handed its session_id back without firing a second handshake.
   const mediaBits = data.video ? 'video' : '';
-  const streamTag = data.resolution ? ` @ ${data.resolution}` : '';
+  const streamTag = data.resolution ? ` @ ${data.resolution}${data.fps ? `/${data.fps}` : ''}` : '';
   log('info', `${data.resumed ? 'Resumed' : data.reused ? 'Reused' : 'Started'} Remote Play session ${data.session_id} for ${ip}${mediaBits ? ` (with ${mediaBits})` : ''}${streamTag}`);
   return { session_id: data.session_id, ip, cached: false, state: data.state,
            resumed: !!data.resumed, reused: !!data.reused,
            video: !!data.video,
-           resolution: data.resolution || resolution };
+           resolution: data.resolution || resolution,
+           fps: data.fps || fps };
   })();
 
   // Tag the in-flight promise with its media mode so a concurrent caller
@@ -300,7 +309,7 @@ async function ensureSessionForIp(ip, opts = {}) {
   }
 }
 
-// Map ScriptRunner.jsx commands → sidecar (pyremoteplay) button names.
+// Map ScriptRunner.jsx commands → sidecar button names.
 const BUTTON_ALIASES = {
   cross: 'cross', x: 'cross',
   circle: 'circle', o: 'circle',
@@ -314,7 +323,7 @@ const BUTTON_ALIASES = {
 
 // ─── PS5 on-screen keyboard emulation ────────────────────────────────────────
 //
-// PS5 native software keyboard ("OSK") layout we emulate. pyremoteplay has no
+// PS5 native software keyboard ("OSK") layout we emulate. Remote Play has no
 // public API for the keyboard protocol so we type by walking the d-pad over
 // the visible keys. Layout matches the default QWERTY view; rows are anchored
 // to the same left column so deltas work cleanly.
@@ -476,7 +485,10 @@ router.get('/discover', async (req, res) => {
   try {
     const ip = req.query.ip;
     if (!ip) return res.status(400).json({ success: false, error: 'ip required' });
-    const data = await sidecar('GET', `/discover?ip=${encodeURIComponent(ip)}`, undefined, { timeout: 8000 });
+    const profile = loadProfileByIp(ip);
+    const hostType = profile?.console_type === 'ps4' ? 'PS4' : profile?.console_type === 'ps5' ? 'PS5' : null;
+    const data = await discoverConsole(ip, { hostType });
+    if (!data) return res.status(502).json({ success: false, error: `no answer from ${ip} - the console is off or not on the network` });
     res.json({ success: true, ...data });
   } catch (err) {
     res.status(err.status || 502).json({ success: false, error: err.message });
@@ -511,7 +523,11 @@ router.post('/wake', async (req, res) => {
     if (!ip && profile) ip = profile.ip_address;
     if (!ip) return res.status(400).json({ success: false, error: 'ip or profile_id required' });
     if (!profile) profile = loadProfileByIp(ip);
-    if (!profile?.psn_account_id) return res.status(400).json({ success: false, error: 'PS5 must be PSN-linked first (Remote Play tab)' });
+    // The pairing holds what waking needs (the regist key, and the account
+    // id LAUNCH is made from), so a paired console wakes without more.
+    if (!profile?.psn_account_id && !profile?.rp_user_profile) {
+      return res.status(400).json({ success: false, error: 'The console must be paired first (Remote Play tab)' });
+    }
 
     let userProfile = null;
     if (profile.rp_user_profile) {
@@ -550,8 +566,7 @@ router.post('/standby', async (req, res) => {
     if (!ip && profile) ip = profile.ip_address;
     if (!ip) return res.status(400).json({ success: false, error: 'ip or profile_id required' });
     if (!profile) profile = loadProfileByIp(ip);
-    if (!profile?.psn_account_id) return res.status(400).json({ success: false, error: 'PS5 must be PSN-linked first' });
-    if (!profile?.rp_user_profile) return res.status(400).json({ success: false, error: 'PS5 must be paired (Remote Play tab) first' });
+    if (!profile?.rp_user_profile) return res.status(400).json({ success: false, error: 'The console must be paired first (Remote Play tab)' });
 
     let userProfile = null;
     try { userProfile = JSON.parse(profile.rp_user_profile); } catch (_) {}
@@ -561,6 +576,7 @@ router.post('/standby', async (req, res) => {
       account_id: profile.psn_account_id,
       online_id: profile.psn_online_id || null,
       user_profile: userProfile,
+      ...(profile.console_type === 'ps4' ? { host_type: 'PS4' } : profile.console_type === 'ps5' ? { host_type: 'PS5' } : {}),
     }, { timeout: 45000 });
     res.json({ success: true, ...data });
   } catch (err) {
@@ -578,7 +594,7 @@ router.post('/register', async (req, res) => {
     let acctId = account_id;
     let onlineId = online_id;
     let pidInt = profile_id ? parseInt(profile_id) : null;
-    // Look up console_type alongside account info so we can hand pyremoteplay
+    // Look up console_type alongside account info so we can hand the sidecar
     // an explicit host_type during pair. Falls back to auto-detect when null.
     let storedConsoleType = null;
     if (pidInt) {
@@ -1111,6 +1127,7 @@ router.post('/sessions/start', async (req, res) => {
       forceNew: !!req.body?.force_new,
       enableVideo: !!req.body?.enable_video,
       resolution: req.body?.resolution,
+      fps: req.body?.fps,
     });
     res.json({ success: true, ...data });
   } catch (err) {
@@ -1183,6 +1200,42 @@ router.get('/sessions/:sid/video.mjpeg', async (req, res) => {
     req.off('close', onClose);
     try { res.end(); } catch (_) {}
   }
+});
+
+// WebRTC viewer of a session: the backend offers, the browser answers.
+// The picture and sound go to the browser as the console encoded them; see
+// lib/webrtc.js. A browser that cannot (or a service without the chiaki
+// engine, which answers 501) keeps to the MJPEG stream above.
+router.post('/sessions/:sid/webrtc', async (req, res) => {
+  const sid = req.params.sid;
+  try {
+    const offer = await createViewer({
+      sid,
+      upstreamUrl: `${SIDECAR_URL}/sessions/${encodeURIComponent(sid)}/stream`,
+      onKeyRequest: () => {
+        sidecar('POST', `/sessions/${encodeURIComponent(sid)}/idr`, {}, { timeout: 3000 }).catch(() => {});
+      },
+      log,
+    });
+    res.json({ success: true, ...offer });
+  } catch (err) {
+    res.status(err.status || 502).json({ success: false, error: err.message });
+  }
+});
+
+router.post('/sessions/:sid/webrtc/:vid/answer', (req, res) => {
+  try {
+    if (!req.body?.sdp) return res.status(400).json({ success: false, error: 'sdp required' });
+    answerViewer(req.params.vid, req.body.sdp);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(err.status || 500).json({ success: false, error: err.message });
+  }
+});
+
+router.post('/sessions/:sid/webrtc/:vid/close', (req, res) => {
+  closeViewer(req.params.vid);
+  res.json({ success: true });
 });
 
 // What the browser currently holds down per session: sid -> { buttons, sticks }.
@@ -1273,6 +1326,7 @@ router.post('/sessions/:sid/stop', async (req, res) => {
     // Sidecar waits up to ~12 s for the PS5 to ack the disconnect, so give
     // the HTTP call enough headroom to deliver the result.
     const data = await sidecar('POST', `/sessions/${encodeURIComponent(req.params.sid)}/stop`, {}, { timeout: 20000 });
+    closeViewersOf(req.params.sid);
     // Evict the cache so the next quick-input/script call starts fresh.
     for (const [ip, v] of ipToSession.entries()) {
       if (v.sid === req.params.sid) ipToSession.delete(ip);
@@ -1287,7 +1341,7 @@ router.post('/sessions/:sid/stop', async (req, res) => {
 
 // Open (or reuse) the cached Remote Play session for an IP. Returns the
 // session id and current cached state without requiring the caller to know
-// anything about pyremoteplay.
+// anything about the sidecar.
 // Pre-warm: open a full Remote Play session, then immediately park it in
 // the sidecar's warm cache. Used by the "Wake PS5" buttons everywhere - the
 // user gets a console that is genuinely ready (RP auth handshake done, slot
@@ -1314,6 +1368,7 @@ router.post('/prewarm', async (req, res) => {
 
     const prewarmStream = normalizeStreamParams({
       resolution: req.body?.resolution,
+      fps: req.body?.fps,
     });
     const data = await sidecar('POST', '/sessions/prewarm', {
       ip,
@@ -1321,6 +1376,7 @@ router.post('/prewarm', async (req, res) => {
       account_id: profile.psn_account_id || null,
       enable_video: !!req.body?.enable_video,
       resolution: prewarmStream.resolution,
+      fps: prewarmStream.fps,
     }, { timeout: 180000 });
 
     // Drop the local cache - the session is now in the sidecar's warm
@@ -1449,6 +1505,7 @@ router.get('/quick-status', async (req, res) => {
             state: s.state,
             video: !!s.video,
             resolution: s.resolution || cached.resolution || null,
+            fps: s.fps || cached.fps || null,
           });
         }
         // Session exists but isn't connected - drop the stale local cache
@@ -1487,6 +1544,7 @@ router.get('/quick-status', async (req, res) => {
           started: Date.now(),
           video: !!w.video,
           resolution: w.resolution || null,
+          fps: w.fps || null,
         });
         return res.json({
           success: true,
@@ -1496,6 +1554,7 @@ router.get('/quick-status', async (req, res) => {
           session_id: w.session_id,
           video: !!w.video,
           resolution: w.resolution || null,
+          fps: w.fps || null,
         });
       }
       if (w.warm) {
@@ -1509,6 +1568,7 @@ router.get('/quick-status', async (req, res) => {
           warm_ttl_remaining_s: w.ttl_remaining_s,
           video: !!w.video,
           resolution: w.resolution || null,
+          fps: w.fps || null,
         });
       }
     } catch (_) { /* sidecar transient - report as "nothing" */ }

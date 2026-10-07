@@ -1,13 +1,10 @@
-pyremoteplay==0.7.6
 fastapi==0.111.0
 uvicorn[standard]==0.30.1
 pydantic==2.7.4
 aiohttp==3.9.5
-async-timeout==4.0.3
-pyee==8.2.2
-# Video decode/encode for the optional MJPEG live-preview endpoint
-# (/sessions/{sid}/video.mjpeg). PyAV bundles its own ffmpeg shared libs in the
-# binary wheel, Pillow is used for the H.264 -> JPEG re-encode step.
+# Decode/encode for the MJPEG stream (/sessions/{sid}/video.mjpeg), the
+# fallback for browsers without WebRTC: PyAV decodes the console's H.264
+# (its binary wheel brings ffmpeg along), Pillow makes the JPEGs.
 # PyPI has no av 11 build for Windows / Python 3.11, so the portable Windows
 # package takes the 12.x series; Docker stays on the version it was tested with.
 av==11.0.0 ; sys_platform != "win32"

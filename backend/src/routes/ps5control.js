@@ -7,7 +7,7 @@ import { getRepo } from '../db/sqlite.js';
 
 const router = Router();
 
-// Discovery / status run through the Python sidecar (pyremoteplay) for
+// Discovery / status run through the Remote Play sidecar for
 // single-host queries. All wake and credential-capture functionality moved to
 // /api/remoteplay/* (which uses the sidecar's DDP WAKEUP + DDP LAUNCH packets
 // driven by the stored PSN account id - no manual credential capture needed
@@ -59,7 +59,7 @@ function getBroadcastAddress(explicitSubnet) {
   ].join('.');
 }
 
-// pyremoteplay's local listen port. PS5 will only reply to *unicast* SRCH
+// The local port DDP answers go to (the sidecar uses it too). PS5 will only reply to *unicast* SRCH
 // when the source port equals 9303 (broadcasts get a reply regardless).
 // Binding here means subnet sweeps actually work; we keep the fallback to an
 // ephemeral port in case 9303 is already taken on the host (e.g. the sidecar
@@ -143,7 +143,7 @@ router.post('/input', async (req, res) => {
     // Delegate to the Remote Play sidecar via the /api/remoteplay/quick-input
     // route, which transparently auto-starts (and caches) the RP session for
     // this IP using stored pair credentials. Keeps the legacy ScriptRunner UI
-    // working without it knowing about pyremoteplay sessions.
+    // working without it knowing about Remote Play sessions.
     const r = await fetch(`http://127.0.0.1:${process.env.PORT || 3001}/api/remoteplay/quick-input`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

@@ -4,67 +4,31 @@ import path from 'path';
 import net from 'net';
 import { getRepo, log } from '../db/sqlite.js';
 import { payloadsDir } from '../lib/paths.js';
+import { discoverConsole } from '../lib/consoleStatus.js';
 
 const router = express.Router();
 
 const PAYLOADS_ROOT = path.resolve(payloadsDir) + path.sep;
 
-// pyremoteplay sidecar URL (host-networked in compose). Used as a
-// fallback for the /status probe: TCP payload ports (lua/elf listeners
-// at 9021/9020/8080/6970) are only open while a payload is actually
-// running on the PS5. When the console is awake but idle, all four are
-// closed — the old probe then reported `reachable: false`, which made
-// the topbar pill flip to "offline" even though pyremoteplay's UDP
-// discovery could still see the PS5. We now consult the sidecar after a
-// failed TCP scan so the indicator reflects discoverability, not just
-// payload-listener presence.
-const SIDECAR_URL = process.env.PYREMOTEPLAY_SIDECAR_URL
-  || process.env.CHIAKI_SIDECAR_URL
-  || 'http://127.0.0.1:9555';
-
-// Per-IP discover cache. PS5 discovery uses UDP and typically takes
-// 100-500ms; the topbar polls every 10s, and PS5Control polls on its
-// own, so without caching we'd hit the sidecar twice every 10s per
-// open tab. 6s TTL keeps the topbar feeling live while still
-// collapsing duplicate calls.
-const DISCOVER_CACHE_TTL_MS = 6_000;
-const discoverCache = new Map(); // ip -> { ts, data }
-const discoverInFlight = new Map(); // ip -> Promise<data|null>
-
-async function probeDiscover(ip) {
-  const cached = discoverCache.get(ip);
-  if (cached && (Date.now() - cached.ts) < DISCOVER_CACHE_TTL_MS) {
-    return cached.data;
+// When no payload listener answers, the console may still be on (or in rest
+// mode): its DDP answer, through the Remote Play sidecar, says so. The TCP
+// payload ports (lua/elf listeners) are only open while a payload is
+// running; an awake, idle console has them all closed. lib/consoleStatus.js
+// shares one search per poll cycle and rides out a single lost answer.
+function profileHostType(ip) {
+  try {
+    const row = getRepo().queryOne('SELECT console_type FROM profiles WHERE ip_address = ? LIMIT 1', [ip]);
+    return row?.console_type === 'ps4' ? 'PS4' : row?.console_type === 'ps5' ? 'PS5' : null;
+  } catch (_) {
+    return null;
   }
-  if (discoverInFlight.has(ip)) return discoverInFlight.get(ip);
-  const promise = (async () => {
-    const controller = new AbortController();
-    // 2s is enough for a PS5 on the same LAN (typical response <500ms)
-    // and keeps the worst-case "fully offline" probe at ~4s total
-    // (2s tcp scan + 2s discover) so the topbar's 10s poll never piles up.
-    const t = setTimeout(() => controller.abort(), 2000);
-    try {
-      const r = await fetch(`${SIDECAR_URL}/discover?ip=${encodeURIComponent(ip)}`, {
-        signal: controller.signal,
-      });
-      if (!r.ok) return null;
-      const data = await r.json().catch(() => null);
-      if (!data || typeof data !== 'object') return null;
-      // pyremoteplay reports status='Ok' (awake) or 'Standby' (rest);
-      // either counts as "the box is on the network", which is what we
-      // need to say "not offline".
-      discoverCache.set(ip, { ts: Date.now(), data });
-      return data;
-    } catch (_) {
-      return null;
-    } finally {
-      clearTimeout(t);
-      discoverInFlight.delete(ip);
-    }
-  })();
-  discoverInFlight.set(ip, promise);
-  return promise;
 }
+
+// The port a payload host last answered on, per console: a busy loader can
+// miss one connect, so it gets a second, longer chance before the console
+// stops counting as running a payload.
+const lastOpenPort = new Map(); // ip -> { port, at }
+const LAST_OPEN_MS = 60_000;
 
 router.post('/send', async (req, res) => {
   try {
@@ -145,9 +109,9 @@ router.get('/status/:ip', async (req, res) => {
     const net = await import('net');
 
     // Check multiple ports - if any is open, PS5 is reachable with payload
-    const checkPort = (port) => new Promise((resolve) => {
+    const checkPort = (port, timeout = 2000) => new Promise((resolve) => {
       const client = new net.Socket();
-      client.setTimeout(2000);
+      client.setTimeout(timeout);
 
       client.on('connect', () => {
         client.destroy();
@@ -168,16 +132,23 @@ router.get('/status/:ip', async (req, res) => {
     });
 
     // Check all ports in parallel
-    const results = await Promise.all(ports.map(checkPort));
-    const openPort = results.find(r => r.reachable);
+    const results = await Promise.all(ports.map((p) => checkPort(p)));
+    let openPort = results.find(r => r.reachable);
+    const last = lastOpenPort.get(ip);
+    if (!openPort && last && Date.now() - last.at < LAST_OPEN_MS) {
+      const again = await checkPort(last.port, 3500);
+      if (again.reachable) openPort = again;
+    }
+    if (openPort) lastOpenPort.set(ip, { port: openPort.port, at: Date.now() });
+    else lastOpenPort.delete(ip);
 
-    // Fallback: even if no payload listener is up, pyremoteplay's UDP
+    // Fallback: even if no payload listener is up, the sidecar's UDP
     // discovery can still see the PS5 (awake or in standby). We only
     // pay this probe when the TCP scan turned up nothing, so the fast
     // path (payload running) is unchanged.
     let discoverResult = null;
     if (!openPort) {
-      discoverResult = await probeDiscover(ip);
+      discoverResult = await discoverConsole(ip, { hostType: profileHostType(ip) });
     }
 
     const reachableViaPayload = !!openPort;

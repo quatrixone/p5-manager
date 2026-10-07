@@ -13,7 +13,7 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
   const [restoreFile, setRestoreFile] = useState(null);
   const [showProfileModal, setShowProfileModal] = useState(false);
   const [editingProfile, setEditingProfile] = useState(null);
-  // `consoleType` is null = "auto-detect via pyremoteplay /discover on next
+  // `consoleType` is null = "auto-detect via the Remote Play service's /discover on next
   // status poll" (default for newly-added profiles); explicit 'ps4' / 'ps5'
   // is the manual override. The status route already auto-fills it when
   // discovery succeeds, so leaving this blank is usually fine.
@@ -584,14 +584,14 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
               value={profileForm.consoleType}
               onChange={e => setProfileForm(p => ({ ...p, consoleType: e.target.value }))}
             >
-              <option value="">Auto-detect (pyremoteplay)</option>
+              <option value="">Auto-detect</option>
               <option value="ps5">PS5</option>
               <option value="ps4">PS4</option>
             </select>
             <div className="text-xs text-muted mt-sm">
               Drives which payloads, autoload templates and Convert sub-tabs the UI offers when
               this profile is the default. Auto-detect resolves on the next status poll via
-              pyremoteplay /discover and persists into the profile.
+              the Remote Play service's /discover and persists into the profile.
             </div>
           </div>
           <div>

@@ -4,12 +4,29 @@ import { usePs5Status } from '../contexts/Ps5StatusContext';
 import { parseLine, buildOskInputs, AVAILABLE_COMMANDS } from '../lib/inputScriptDsl.js';
 import ScriptRunner from './ScriptRunner';
 import SessionTabBar from './SessionTabBar';
+import RemotePlayVideo, { webrtcPlayable } from './RemotePlayVideo';
 import { detectFocusedControlCenterIcon, shortestPathOnRing, CONTROL_CENTER_SLOT_COUNT, CONTROL_CENTER_HOME_INDEX } from '../lib/controlCenterNav.js';
 
 const API = '/api/remoteplay';
 // Paths used with `api.*` are relative to /api, so the Remote Play sidecar's
 // routes are prefixed once here instead of building them inline.
 const RP = '/remoteplay';
+
+const RP_RESOLUTIONS = ['360p', '540p', '720p', '1080p'];
+const RP_FPS = [30, 60];
+
+function readPref(key, allowed, fallback) {
+  try {
+    const v = localStorage.getItem(key);
+    return allowed.includes(v) ? v : fallback;
+  } catch (_) {
+    return fallback;
+  }
+}
+
+function writePref(key, value) {
+  try { localStorage.setItem(key, value); } catch (_) { /* private mode */ }
+}
 
 const PS5_BUTTONS = [
   { id: 'cross', label: 'X', color: 'var(--accent)' },
@@ -335,11 +352,14 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
   // decide whether to render the <img> at all.
   const [enableVideo, setEnableVideo] = useState(false);
   const [sessionHasVideo, setSessionHasVideo] = useState(false);
-  // PS5 Remote Play stream resolution. pyremoteplay supports up to 1080p
-  // but we only expose 360p / 540p / 720p — anything higher saturates a
-  // Pi-class CPU on the MJPEG re-encode pass and the gain is marginal
-  // for a preview tile. 720p is the default sweet spot.
-  const [rpResolution, setRpResolution] = useState('720p');
+  // Remote Play stream resolution and frame rate, remembered in this
+  // browser. With WebRTC the browser decodes, so 1080p and 60 fps cost the
+  // backend nothing; the MJPEG fallback re-encodes every picture and is
+  // happier at 720p / 30. 1080p needs a PS5 or a PS4 Pro.
+  const [rpResolution, setRpResolutionState] = useState(() => readPref('rp.resolution', RP_RESOLUTIONS, '720p'));
+  const [rpFps, setRpFpsState] = useState(() => Number(readPref('rp.fps', RP_FPS.map(String), '30')));
+  const setRpResolution = (r) => { setRpResolutionState(r); writePref('rp.resolution', r); };
+  const setRpFps = (f) => { setRpFpsState(f); writePref('rp.fps', String(f)); };
   // Once a session is live, report what the sidecar actually negotiated.
   // Warm-cached resume may differ from the picker if the warm session was
   // started with different params; we keep the picker value as the user
@@ -355,6 +375,10 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
   // browser to actually re-open the stream instead of using the cached
   // connection. Bumped on every successful start.
   const [videoNonce, setVideoNonce] = useState(0);
+  // How the picture comes: 'webrtc' (the console's own stream, with sound)
+  // or 'mjpeg' (the fallback). Sound starts muted.
+  const [videoMode, setVideoMode] = useState(null);
+  const [rpMuted, setRpMuted] = useState(true);
 
   // ─── Input Scripts tab (script list/editor + step-by-step runner) ──────
   // Lives inside the Live Session card, sharing the SAME video img/session
@@ -1107,9 +1131,11 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
         ip: profile.ip_address,
         profile_id: profile.id,
         enable_video: forceVideo || enableVideo,
-        // Pass the user-chosen resolution. The sidecar normalises it,
-        // so out-of-range values are coerced rather than rejected.
+        // Pass the user-chosen resolution and frame rate. The sidecar
+        // normalises them, so out-of-range values are coerced rather than
+        // rejected.
         resolution: rpResolution,
+        fps: rpFps,
       });
       if (!r.success) throw new Error(r.error);
       setSessionId(r.session_id);
@@ -1117,6 +1143,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
       setSessionHasVideo(!!r.video);
       setLiveStream({
         resolution: r.resolution || rpResolution,
+        fps: r.fps || rpFps,
       });
       setVideoNonce(n => n + 1);
       const resumeTag = r.resumed ? ' (resumed from warm cache)' : r.reused ? ' (reused existing)' : '';
@@ -1204,6 +1231,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
         // the user. Wake is always input-only — no video decoder
         // attached so the receiver doesn't burn CPU while parked.
         resolution: rpResolution,
+        fps: rpFps,
       });
       if (!r.success) throw new Error(r.error);
       if (r.already_live) {
@@ -1324,8 +1352,8 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
           // that lost local liveStream state).
           if (r.resolution) {
             setLiveStream(prev => {
-              const next = { resolution: r.resolution || prev?.resolution };
-              if (prev && prev.resolution === next.resolution) return prev;
+              const next = { resolution: r.resolution || prev?.resolution, fps: r.fps || prev?.fps };
+              if (prev && prev.resolution === next.resolution && prev.fps === next.fps) return prev;
               return next;
             });
           }
@@ -1539,11 +1567,14 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
     let steps = 0;
     let direction = 'left';
     try {
+      // An <img> (MJPEG) or a <video> (WebRTC), whichever is shown.
       const img = videoImgRef.current;
-      if (img && img.naturalWidth) {
+      const frameW = img?.naturalWidth || img?.videoWidth;
+      const frameH = img?.naturalHeight || img?.videoHeight;
+      if (img && frameW) {
         const canvas = document.createElement('canvas');
-        canvas.width = img.naturalWidth;
-        canvas.height = img.naturalHeight;
+        canvas.width = frameW;
+        canvas.height = frameH;
         const ctx = canvas.getContext('2d');
         ctx.drawImage(img, 0, 0);
         const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
@@ -1745,10 +1776,9 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
             games ignore the Options button *and* the touchpad click
             — they look for a finger landing on the LEFT or RIGHT
             half of the touchpad SURFACE (X≈400 = Select; X≈1500 =
-            Start, per Brook UFB documentation). The patched
-            touchpad_click in pyremoteplay_patches.py emits the
-            correct chiaki surface-down → click → surface-up
-            sequence at the requested pixel; the standard "Tch"
+            Start, per Brook UFB documentation). With touch_x/touch_y
+            the Remote Play service puts a finger on the surface at
+            that pixel, without the click; the standard "Tch"
             button above stays at centre (960×471) so existing
             touchpad-menu games are unaffected. */}
         <div
@@ -1794,13 +1824,16 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
 
   const renderTabVideo = () => (
     sessionHasVideo && sessionId ? (
-      <img
-        ref={videoImgRef}
-        key={videoNonce}
-        src={`${API}/sessions/${encodeURIComponent(sessionId)}/video.mjpeg?fps=15&nonce=${videoNonce}`}
+      <RemotePlayVideo
+        sessionId={sessionId}
+        nonce={videoNonce}
+        mjpegFps={15}
+        muted={rpMuted}
+        mediaRef={videoImgRef}
         alt="PS5 preview"
         style={{ width: '100%', borderRadius: 8, display: 'block', background: '#000' }}
-        onError={() => onNotification?.('Video stream dropped - try 🔄 restarting the session', 'warning')}
+        onError={(msg, level) => onNotification?.(msg, level)}
+        onModeChange={setVideoMode}
       />
     ) : (
       <div className="text-muted text-sm">No video session yet - hit Start session above.</div>
@@ -2377,7 +2410,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
             <span style={{ color: health?.ok ? 'var(--green)' : 'var(--red)' }}>
               ● sidecar {health?.ok ? 'OK' : 'offline'}
             </span>
-            {health?.pyremoteplay === false && <span style={{ color: 'var(--red)' }}>(pyremoteplay missing!)</span>}
+            {health?.ok && health?.helper === false && <span style={{ color: 'var(--red)' }}>(p5rp missing!)</span>}
           </span>
         }
       >
@@ -2913,7 +2946,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
         title={liveSession ? '🟢 Live session' : '3 · Start session'}
         status={paired
           ? liveSession
-            ? (liveStream ? liveStream.resolution : sessionState)
+            ? (liveStream ? `${liveStream.resolution}${liveStream.fps ? ` · ${liveStream.fps} fps` : ''}` : sessionState)
             : warmCache
               ? `warm · ${Math.round(warmCache.ttl_s)}s${warmCache.resolution ? ` · ${warmCache.resolution}` : ''}`
               : sessionState
@@ -2934,22 +2967,41 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
       >
         {!liveSession && (
           <>
-            {/* Resolution picker. pyremoteplay supports up to 1080p but
-                we cap at 720p — the MJPEG re-encode pass at 1080p on a
-                Pi-class CPU drops to single-digit fps and looks worse
-                than 720p anyway. 720p is the default sweet spot. */}
+            {/* Resolution and frame rate of the console's stream. With
+                WebRTC the browser decodes it; the MJPEG fallback
+                re-encodes every picture on the server and is happier at
+                720p / 30. */}
             <div className="flex items-center gap-sm text-sm flex-wrap" style={{ marginBottom: 6 }}>
               <span style={{ minWidth: 90 }}>📐 Resolution:</span>
-              {['360p', '540p', '720p'].map(r => (
+              {RP_RESOLUTIONS.map(r => (
                 <button
                   key={r}
                   type="button"
                   className={`btn btn-sm ${rpResolution === r ? 'btn-primary' : 'btn-ghost'}`}
                   disabled={!paired || sessionState === 'connecting'}
                   onClick={() => setRpResolution(r)}
-                  title={r === '720p' ? 'Best quality on this build (1080p removed because the MJPEG re-encode is too slow on a Pi).' : r === '360p' ? 'Lowest bandwidth / CPU.' : ''}
+                  title={
+                    r === '1080p' ? 'Sharpest. Needs a PS5 or a PS4 Pro; heavy for the MJPEG fallback.'
+                      : r === '720p' ? 'Good balance - the default.'
+                        : r === '360p' ? 'Lowest bandwidth.' : ''
+                  }
                 >
                   {r}
+                </button>
+              ))}
+            </div>
+            <div className="flex items-center gap-sm text-sm flex-wrap" style={{ marginBottom: 6 }}>
+              <span style={{ minWidth: 90 }}>🎞 Frame rate:</span>
+              {RP_FPS.map(f => (
+                <button
+                  key={f}
+                  type="button"
+                  className={`btn btn-sm ${rpFps === f ? 'btn-primary' : 'btn-ghost'}`}
+                  disabled={!paired || sessionState === 'connecting'}
+                  onClick={() => setRpFps(f)}
+                  title={f === 60 ? 'Smoother motion, about twice the bandwidth. The MJPEG fallback stays at its own cap.' : 'Lighter on the network - the default.'}
+                >
+                  {f} fps
                 </button>
               ))}
             </div>
@@ -2961,7 +3013,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
                 disabled={!paired || sessionState === 'connecting'}
               />
               <span>
-                📺 Stream video preview ({rpResolution} MJPEG, ~{videoFps} fps)
+                📺 Stream video ({rpResolution}, {rpFps} fps{webrtcPlayable() ? ', WebRTC with sound' : ', MJPEG'})
               </span>
             </label>
           </>
@@ -3021,10 +3073,10 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
       {liveSession && (
         <Section
           title={sessionHasVideo && sessionId ? '📺 Live session' : '🎮 Controller'}
-          status={sessionHasVideo && sessionId && liveStream ? liveStream.resolution : null}
+          status={sessionHasVideo && sessionId && liveStream ? `${liveStream.resolution}${liveStream.fps ? ` · ${liveStream.fps} fps` : ''}` : null}
           hint={
             sessionHasVideo && sessionId
-              ? `Live MJPEG stream from the PS5 (~1-2 s latency)${liveStream ? `, RP stream is ${liveStream.resolution}` : ''}. Tap ⛶ on the video for fullscreen with touch controls.`
+              ? `${videoMode === 'webrtc' ? 'Live WebRTC stream from the console (sound muted until you unmute it)' : 'Live MJPEG stream from the console (~1-2 s latency)'}${liveStream ? `, RP stream is ${liveStream.resolution}` : ''}. Tap ⛶ on the video for fullscreen with touch controls.`
               : undefined
           }
         >
@@ -3066,6 +3118,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
                   much shorter than the 16:9 preview, so putting it on top keeps
                   the FPS toggles in thumb reach and the video itself fills the
                   vertical space immediately. */}
+              {videoMode === 'mjpeg' && (
               <div className="rp-live-chips flex items-center gap-sm text-xs text-muted flex-wrap">
                 <span>MJPEG cap:</span>
                 {[6, 12, 18, 24, 30].map(f => (
@@ -3080,6 +3133,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
                   </button>
                 ))}
               </div>
+              )}
 
               <div
                 ref={videoContainerRef}
@@ -3102,19 +3156,48 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
                   touchAction: fsActive ? 'none' : undefined,
                 }}
               >
-                <img
-                  key={videoNonce}
-                  src={`${API}/sessions/${encodeURIComponent(sessionId)}/video.mjpeg?fps=${videoFps}&nonce=${videoNonce}`}
+                <RemotePlayVideo
+                  sessionId={sessionId}
+                  nonce={videoNonce}
+                  mjpegFps={videoFps}
+                  muted={rpMuted}
                   alt="PS5 Remote Play preview"
                   style={{
                     width: '100%', height: '100%', display: 'block',
                     objectFit: 'contain',
                     pointerEvents: 'none',
                   }}
-                  onError={() => {
-                    onNotification?.('Video stream dropped - try restarting the session', 'warning');
-                  }}
+                  onError={(msg, level) => onNotification?.(msg, level)}
+                  onModeChange={setVideoMode}
                 />
+
+                {/* ─── Sound (WebRTC only; muted until asked for) ─────────── */}
+                {videoMode === 'webrtc' && (
+                  <button
+                    type="button"
+                    onClick={() => setRpMuted(m => !m)}
+                    aria-label={rpMuted ? 'Unmute' : 'Mute'}
+                    title={rpMuted ? 'Turn the console\'s sound on' : 'Mute'}
+                    style={{
+                      position: 'absolute',
+                      // Inline: the bottom-right corner (the top row holds
+                      // recording and scripts). Fullscreen: under ✕, as
+                      // L1/L2 sit beside it.
+                      top: fsActive ? 'calc(max(12px, env(safe-area-inset-top)) + 52px)' : 'auto',
+                      bottom: fsActive ? 'auto' : 8,
+                      left: fsActive ? 'max(12px, env(safe-area-inset-left))' : 'auto',
+                      right: fsActive ? 'auto' : 8,
+                      width: 44, height: 44, borderRadius: 8,
+                      background: 'rgba(0,0,0,0.55)',
+                      color: '#fff', border: '1px solid rgba(255,255,255,0.3)',
+                      fontSize: 20, cursor: 'pointer',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      touchAction: 'none', userSelect: 'none',
+                    }}
+                  >
+                    {rpMuted ? '🔇' : '🔊'}
+                  </button>
+                )}
 
                 {/* ─── Fullscreen toggle (always visible on the video) ───── */}
                 <button
@@ -3516,7 +3599,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
 
       {health?.success === false && (
         <div className="text-xs text-muted">
-          Sidecar error: {health.error}. Check the <code>pyremoteplay</code> container logs.
+          Sidecar error: {health.error}. Check the logs of the <code>pyremoteplay</code> container (the Remote Play service).
         </div>
       )}
 
