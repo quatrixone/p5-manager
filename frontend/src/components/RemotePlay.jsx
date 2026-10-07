@@ -6,7 +6,7 @@ import ScriptRunner from './ScriptRunner';
 import SessionTabBar from './SessionTabBar';
 import RemotePlayVideo, { webrtcPlayable } from './RemotePlayVideo';
 import RemotePlayPairing from './RemotePlayPairing';
-import { pairRemotePlay } from '../lib/remotePlayPairing.js';
+import { pairRemotePlay, sameAccountId } from '../lib/remotePlayPairing.js';
 import { detectFocusedControlCenterIcon, shortestPathOnRing, CONTROL_CENTER_SLOT_COUNT, CONTROL_CENTER_HOME_INDEX } from '../lib/controlCenterNav.js';
 
 const API = '/api/remoteplay';
@@ -891,7 +891,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
         account_id: manualAccount,
         online_id: manualOnlineId,
       });
-      setLocalProfile((prev) => ({ ...(prev || profile), psn_account_id: r.account_id, psn_online_id: r.online_id }));
+      setLocalProfile((prev) => ({ ...(prev || profile), psn_account_id: r.psn_account_id, psn_online_id: r.psn_online_id, sony_account_id: r.sony_account_id, sony_online_id: r.sony_online_id }));
       setManualAccount('');
       setManualOnlineId('');
       onProfilesChanged?.();
@@ -918,7 +918,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
       // Optimistic overlay — let `view` reflect the linked state immediately,
       // then ask the parent to refetch profiles so the new field reaches the
       // rest of the tree and our overlay resets cleanly on the next render.
-      setLocalProfile((prev) => ({ ...(prev || profile), psn_account_id: r.account_id, psn_online_id: r.online_id }));
+      setLocalProfile((prev) => ({ ...(prev || profile), psn_account_id: r.psn_account_id, psn_online_id: r.psn_online_id, sony_account_id: r.sony_account_id, sony_online_id: r.sony_online_id }));
       onProfilesChanged?.();
     } catch (e) {
       onNotification?.(`OAuth exchange failed: ${e.message}`, 'error');
@@ -1082,7 +1082,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
     }
   };
 
-  const oneClickPair = async (offline) => {
+  const oneClickPair = async (offline, activationAccount = null) => {
     if (!profile || liveSession || pairingGuard.current || autoPinBusy || offactBusy || pairBusy || oauthBusy) return;
     pairingGuard.current = true;
     const target = { ...profileView };
@@ -1097,6 +1097,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
         post: api.post,
         profile: target,
         offline,
+        activationAccount,
         onProgress: text => { if (isCurrent()) setPairProgress(text); },
         onAccount: account => {
           if (!isCurrent()) return;
@@ -1139,22 +1140,17 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
     }
   };
 
-  // Wipes the OAuth-derived (or offact-derived) PSN account from this
-  // profile. Pairing credentials are kept intact so the user can re-link
-  // a different PSN account onto the same paired console without
-  // re-doing the PIN dance. Mirrors forgetPair but talks to the new
-  // /forget-account endpoint.
+  // Remove only the imported Sony identity; retain console identity and pairing.
   const forgetAccount = async () => {
     if (!profile) return;
     if (!confirm(
-      'Forget the linked PSN account on this profile?\n\n' +
-      'Pairing credentials will be kept - you can link a different ' +
-      'PSN account without re-pairing.'
+      'Forget the imported Sony account on this profile?\n\n' +
+      'The console account and pairing will be kept.'
     )) return;
     try {
       const r = await api.post(`${RP}/forget-account`, { profile_id: profile.id });
       if (!r.success) throw new Error(r.error || 'forget-account failed');
-      setLocalProfile((prev) => ({ ...(prev || profile), psn_account_id: null, psn_online_id: null }));
+      setLocalProfile((prev) => ({ ...(prev || profile), sony_account_id: null, sony_online_id: null }));
       onProfilesChanged?.();
       onNotification?.('PSN account forgotten', 'success');
     } catch (e) {
@@ -2536,14 +2532,18 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
       )}
 
       {(view === 'settings' || (view === 'all' && effectiveShowSetup)) && (
-        <RemotePlayPairing
+        <RemotePlayPairing key={profile?.id}
           consoleLabel={pairConsoleLabel} menuPath={pairMenuPath} paired={paired} liveSession={liveSession}
           disabled={!profile?.ip_address} busy={oneClickBusy || autoPinBusy || offactBusy || pairBusy || oauthBusy}
           progress={pairProgress} result={oneClickResult} pairTab={pairTab} setPairTab={setPairTab}
           pin={pin} setPin={setPin} pinResult={autoPinResult} activationResult={offactResult}
           onOneClickPair={oneClickPair} onFetchPin={autoFetchPin} onActivate={activateOffline}
           onPair={pair} onForgetPair={forgetPair}
-          account={{ linked: accountLinked, name: profileView?.psn_online_id || profileView?.psn_account_id,
+          account={{ linked: accountLinked, sonyLinked: !!profileView?.sony_account_id,
+            sonyName: profileView?.sony_online_id || profileView?.sony_account_id,
+            sonyId: profileView?.sony_account_id, consoleId: profileView?.psn_account_id,
+            mismatch: !!profileView?.sony_account_id && !!profileView?.psn_account_id && !sameAccountId(profileView.sony_account_id, profileView.psn_account_id),
+            onSwitch: () => oneClickPair(true, profileView?.sony_account_id), name: profileView?.psn_online_id || profileView?.psn_account_id,
             busy: oauthBusy, loginUrl, redirectUrl, setRedirectUrl, onLogin: startOAuth, onExchange: finishOAuth,
             manualId: manualAccount, setManualId: setManualAccount, manualName: manualOnlineId,
             setManualName: setManualOnlineId, onSave: saveManualAccount, onForget: forgetAccount }}

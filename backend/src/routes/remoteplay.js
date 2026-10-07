@@ -10,6 +10,7 @@ import { getFtpPort } from '../lib/ftpPort.js';
 import { createViewer, answerViewer, closeViewer, closeViewersOf } from '../lib/webrtc.js';
 import { discoverConsole } from '../lib/consoleStatus.js';
 import { parsePsnAccountId, psnAccountBase64 } from '../lib/psnAccount.js';
+import { linkSonyIdentity } from '../lib/remotePlayIdentity.js';
 import { runPs4RemotePlay } from '../lib/ps4RemotePlay.js';
 
 const router = express.Router();
@@ -185,7 +186,7 @@ async function sidecar(method, urlPath, body, { timeout = 30000 } = {}) {
   }
 }
 
-const PROFILE_COLS = 'id, ip_address, rp_user_profile, psn_account_id, psn_online_id, console_type';
+const PROFILE_COLS = 'id, ip_address, rp_user_profile, psn_account_id, psn_online_id, sony_account_id, sony_online_id, console_type';
 
 function loadProfileByIp(ip) {
   return getRepo().queryOne(`SELECT ${PROFILE_COLS} FROM profiles WHERE ip_address = ? LIMIT 1`, [ip]);
@@ -504,19 +505,24 @@ router.get('/oauth/login-url', async (req, res) => {
   }
 });
 
+function saveSonyIdentity(profileId, accountId, onlineId) {
+  const profile = loadProfileById(profileId);
+  if (!profile) throw new Error('Profile not found');
+  const identity = linkSonyIdentity(profile, accountId, onlineId);
+  getRepo().runAndSave(
+    'UPDATE profiles SET sony_account_id = ?, sony_online_id = ?, psn_account_id = ?, psn_online_id = ? WHERE id = ?',
+    [identity.sony_account_id, identity.sony_online_id, identity.psn_account_id, identity.psn_online_id, parseInt(profileId)],
+  );
+  return identity;
+}
+
 router.post('/oauth/exchange', async (req, res) => {
   try {
     const { redirect_url, profile_id } = req.body || {};
     if (!redirect_url) return res.status(400).json({ success: false, error: 'redirect_url required' });
     const data = await sidecar('POST', '/oauth/exchange', { redirect_url }, { timeout: 20000 });
-    if (profile_id && data.account_id) {
-      getRepo().runAndSave(
-        'UPDATE profiles SET psn_account_id = ?, psn_online_id = ? WHERE id = ?',
-        [data.account_id, data.online_id || null, parseInt(profile_id)],
-      );
-      log('info', `Linked PSN account ${data.online_id || data.account_id} to profile ${profile_id}`);
-    }
-    res.json({ success: true, account_id: data.account_id, online_id: data.online_id });
+    const identity = profile_id && data.account_id ? saveSonyIdentity(profile_id, data.account_id, data.online_id) : {};
+    res.json({ success: true, account_id: data.account_id, online_id: data.online_id, ...identity });
   } catch (err) {
     res.status(err.status || 500).json({ success: false, error: err.message });
   }
@@ -771,7 +777,7 @@ router.post('/get-pin', async (req, res) => {
       // never wipe an existing OAuth-derived id on a soft failure.
       if (profile_id && accountId) {
         try {
-          getRepo().run(
+          getRepo().runAndSave(
             'UPDATE profiles SET psn_account_id = ?, psn_online_id = COALESCE(?, psn_online_id) WHERE id = ?',
             [accountId, onlineId, parseInt(profile_id)],
           );
@@ -1816,13 +1822,7 @@ router.post('/forget', (req, res) => {
   }
 });
 
-// Counterpart of /oauth/exchange + /activate-account: drops the PSN
-// account binding from the profile. We deliberately do NOT touch
-// rp_user_profile here - the pairing credential is independent and
-// users may want to re-link a different PSN account onto the same
-// pairing (e.g. to fix an account_id mismatch from upstream OAuth).
-// The account typed in by hand, for someone who knows the id and does not
-// want to go through Sony's sign-in: the decimal number or its base64 form.
+// Import a Sony identity without replacing the console account or registration.
 router.post('/set-account', (req, res) => {
   try {
     const { profile_id, account_id, online_id } = req.body || {};
@@ -1835,12 +1835,8 @@ router.post('/set-account', (req, res) => {
       });
     }
     const name = String(online_id || '').trim().slice(0, 32) || null;
-    getRepo().runAndSave(
-      'UPDATE profiles SET psn_account_id = ?, psn_online_id = ? WHERE id = ?',
-      [id, name, parseInt(profile_id)],
-    );
-    log('info', `PSN account set by hand on profile ${profile_id}`);
-    res.json({ success: true, account_id: id, online_id: name });
+    const identity = saveSonyIdentity(profile_id, id, name);
+    res.json({ success: true, account_id: id, online_id: name, ...identity });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
@@ -1851,7 +1847,7 @@ router.post('/forget-account', (req, res) => {
     const { profile_id } = req.body || {};
     if (!profile_id) return res.status(400).json({ success: false, error: 'profile_id required' });
     getRepo().runAndSave(
-      'UPDATE profiles SET psn_account_id = NULL, psn_online_id = NULL WHERE id = ?',
+      'UPDATE profiles SET sony_account_id = NULL, sony_online_id = NULL WHERE id = ?',
       [parseInt(profile_id)],
     );
     log('info', `Forgotten PSN account on profile ${profile_id}`);

@@ -102,13 +102,17 @@ export async function initDatabase() {
     if (!/duplicate column/i.test(e.message)) throw e;
   }
 
-  // Remote Play identity. psn_account_id is the OAuth-derived ID,
+  // Remote Play identity. psn_account_id is the effective console account ID,
   // rp_user_profile holds the pairing profile dict (pyremoteplay's layout, kept) with registration
   // credentials (kept as JSON text). Only "duplicate column" is benign - any
   // other ALTER error (syntax, missing table, ...) should bubble up so we
   // don't silently corrupt the schema on a typo.
   try { db.run(`ALTER TABLE profiles ADD COLUMN psn_account_id TEXT`); } catch (e) { if (!/duplicate column/i.test(e.message)) throw e; }
   try { db.run(`ALTER TABLE profiles ADD COLUMN psn_online_id TEXT`); } catch (e) { if (!/duplicate column/i.test(e.message)) throw e; }
+  // Imported Sony identity is separate from the account used on the console.
+  for (const column of ['sony_account_id', 'sony_online_id']) {
+    try { db.run(`ALTER TABLE profiles ADD COLUMN ${column} TEXT`); } catch (e) { if (!/duplicate column/i.test(e.message)) throw e; }
+  }
   try { db.run(`ALTER TABLE profiles ADD COLUMN rp_user_profile TEXT`); } catch (e) { if (!/duplicate column/i.test(e.message)) throw e; }
   // Platform: 'ps4' | 'ps5' | NULL (auto-detect via the Remote Play service's /discover).
   // Drives which payloads, autoload templates, FTP defaults and Convert

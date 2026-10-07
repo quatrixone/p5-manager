@@ -380,3 +380,5 @@ support piracy. Details, intended use and how to report a content problem:
 [MIT](LICENSE), except `p5managerclient/offact/` (GPL-3.0-or-later) and
 `p5managerclient/rp-get-pin/` (third-party, no licence stated upstream).
 Details in [LEGAL.md](LEGAL.md).
+
+Sony accounts imported in Remote Play Settings are stored separately from the console account. Adding or forgetting Sony preserves the console identity and pairing. When IDs differ, settings show both IDs. Automatic pairing uses the account read from the console. Switching to Sony requires the explicit “Activate Sony account & re-pair” action and jailbreak.

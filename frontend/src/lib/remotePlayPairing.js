@@ -1,5 +1,5 @@
 // One shared sequence for PS4 and PS5. The backend chooses the console payload.
-export async function pairRemotePlay({ post, profile, offline = false, onProgress = () => {}, onAccount = () => {}, onPin = () => {}, wait = ms => new Promise(resolve => setTimeout(resolve, ms)) }) {
+export async function pairRemotePlay({ post, profile, offline = false, activationAccount = null, onProgress = () => {}, onAccount = () => {}, onPin = () => {}, wait = ms => new Promise(resolve => setTimeout(resolve, ms)) }) {
   const target = { ip: profile.ip_address, profile_id: profile.id };
   const checked = async (route, body) => {
     const result = await post(`/remoteplay/${route}`, body);
@@ -12,7 +12,7 @@ export async function pairRemotePlay({ post, profile, offline = false, onProgres
   };
   if (offline) {
     onProgress('Activating account…');
-    const activation = await checked('activate-account', target);
+    const activation = await checked('activate-account', { ...target, ...(activationAccount ? { account_id: activationAccount } : {}) });
     onAccount(activation);
   }
   onProgress('Getting PIN…');
@@ -43,4 +43,21 @@ export async function pairRemotePlay({ post, profile, offline = false, onProgres
       await wait(1500 * (attempt + 1));
     }
   }
+}
+
+// Compare decimal and little-endian base64 IDs without losing 64-bit precision.
+export function sameAccountId(a, b) {
+  const normalize = value => {
+    try {
+      const text = String(value || '').trim();
+      if (/^\d{1,20}$/.test(text)) return BigInt(text).toString();
+      if (!/^[A-Za-z0-9+/]{11}=$/.test(text)) return null;
+      const bytes = atob(text);
+      let id = 0n;
+      for (let i = 7; i >= 0; i--) id = (id << 8n) | BigInt(bytes.charCodeAt(i));
+      return id.toString();
+    } catch { return null; }
+  };
+  const id = normalize(a);
+  return id !== null && id === normalize(b);
 }

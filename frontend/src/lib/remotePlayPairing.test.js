@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { pairRemotePlay } from './remotePlayPairing.js';
+import { pairRemotePlay, sameAccountId } from './remotePlayPairing.js';
 
 for (const console_type of ['ps4', 'ps5']) {
   for (const offline of [false, true]) {
@@ -69,4 +69,20 @@ test('service discovery retries reuse the same PIN without repeating activation'
   assert.equal(calls.filter(c => c.route.endsWith('/register')).length, 3);
   assert.ok(calls.filter(c => c.route.endsWith('/register')).every(c => c.body.pin === '00010023'));
   assert.deepEqual(waits, [1000, 1500, 3000]);
+});
+
+test('identity comparison supports decimal, base64 and 64-bit precision', () => {
+  assert.equal(sameAccountId('Z8JhcG9sbG8=', '8028911461577376359'), true);
+  assert.equal(sameAccountId('Z8JhcG9sbG8=', '123456789'), false);
+  assert.equal(sameAccountId(null, null), false);
+});
+test('explicit Sony switch activates the selected ID then registers the captured console ID', async () => {
+  const calls = [];
+  await pairRemotePlay({ profile: { id: 1, ip_address: 'console' }, offline: true,
+    activationAccount: '123456789', wait: async () => {}, post: async (route, body) => {
+      calls.push({ route, body });
+      return route.endsWith('/get-pin') ? { success: true, pin: '00010023', account_id: 'captured' } : { success: true };
+    } });
+  assert.equal(calls[0].body.account_id, '123456789');
+  assert.equal(calls[2].body.account_id, 'captured');
 });

@@ -3,6 +3,7 @@ import { useState } from 'react';
 export default function RemotePlayPairing({ consoleLabel, menuPath, paired, liveSession, disabled,
   busy, progress, result, pairTab, setPairTab, pin, setPin, onOneClickPair, onFetchPin,
   onActivate, onPair, onForgetPair, account, pinResult, activationResult }) {
+  const [switchConfirm, setSwitchConfirm] = useState(false);
   const [method, setMethod] = useState('automatic');
   const automatic = method === 'automatic';
   const offline = pairTab === 'unactivated';
@@ -75,18 +76,31 @@ export default function RemotePlayPairing({ consoleLabel, menuPath, paired, live
         <summary className="text-sm text-muted" style={{ cursor: 'pointer' }}>Diagnostic output</summary>
         <pre style={{ maxHeight: 180, overflow: 'auto', whiteSpace: 'pre-wrap', fontSize: '0.75rem' }}>{details.join('\n')}</pre>
       </details>}
+      {account.mismatch && <div className="text-sm" role="status" style={{ color: 'var(--yellow)' }}>
+        <p>Sony account differs from the console account. Your console account and pairing are preserved.</p>
+        <p>Console ID: {account.consoleId}<br />Sony ID: {account.sonyId}</p>
+        {automatic && <>
+          <button type="button" className="btn btn-secondary btn-sm" disabled={!canAct}
+            onClick={() => setSwitchConfirm(!switchConfirm)}>Switch console to Sony account…</button>
+          {switchConfirm && <div>
+            <p>This changes the console account for offline use and pairs it again. It requires jailbreak.</p>
+            <button type="button" className="btn btn-primary btn-sm" disabled={!canAct}
+              onClick={() => { setSwitchConfirm(false); account.onSwitch(); }}>Activate Sony account & re-pair</button>
+          </div>}
+        </>}
+      </div>}
       <details open={!account.linked && (!automatic || !!error)}>
         <summary className="text-sm" style={{ cursor: 'pointer' }}>
-          {account.linked ? `✓ Account: ${account.name}` : 'Link PSN account · Sony login or account ID'}
+          {account.sonyLinked ? `✓ Sony account: ${account.sonyName}` : account.linked ? `Console account: ${account.name} · Add Sony account` : 'Link PSN account · Sony login or account ID'}
         </summary>
         <div className="flex-col gap-sm" style={{ marginTop: 8 }}>
           <p className="text-sm text-muted" style={{ margin: 0 }}>
-            {automatic ? 'The automatic flow reads an existing account from the console. Link one here if none is available or you want to use a different account.'
+            {automatic ? 'The automatic flow uses the console account. Adding a Sony account preserves the console account and existing pairing.'
               : 'Use the same PSN account as the console. Sign in with Sony, then paste the complete redirect URL here.'}
           </p>
           <div className="flex gap-sm flex-wrap">
             <button type="button" className="btn btn-primary btn-sm" disabled={busy || account.busy || disabled} onClick={account.onLogin}>Open Sony login</button>
-            {account.linked && <button type="button" className="btn btn-ghost btn-sm" disabled={busy || account.busy} onClick={account.onForget}>Forget account</button>}
+            {account.sonyLinked && <button type="button" className="btn btn-ghost btn-sm" disabled={busy || account.busy} onClick={account.onForget}>Forget Sony account</button>}
           </div>
           {account.loginUrl && <a href={account.loginUrl} target="_blank" rel="noopener noreferrer">Continue Sony sign-in</a>}
           <label className="text-sm">Redirect URL after sign-in</label>
