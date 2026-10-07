@@ -5,8 +5,7 @@ aiohttp==3.9.5
 # Decode/encode for the MJPEG stream (/sessions/{sid}/video.mjpeg), the
 # fallback for browsers without WebRTC: PyAV decodes the console's H.264
 # (its binary wheel brings ffmpeg along), Pillow makes the JPEGs.
-# PyPI has no av 11 build for Windows / Python 3.11, so the portable Windows
-# package takes the 12.x series; Docker stays on the version it was tested with.
-av==11.0.0 ; sys_platform != "win32"
-av>=12,<13 ; sys_platform == "win32"
+# One version for Docker and the Windows package. 11.0.0, which Docker used
+# to pin, is on PyPI only as source by now and would have to be compiled.
+av==12.3.0
 Pillow==10.4.0
