@@ -347,18 +347,33 @@ function findZftpdPayload() {
     .sort((a, b) => b.filename.localeCompare(a.filename, undefined, { numeric: true }))[0] || null;
 }
 
-function sendElfPayload(ip, port, filepath) {
+// The loader hands a payload's output back on the same socket. With
+// outputMs the call waits that long for it (or until the payload closes the
+// socket) and resolves with what was said; without, it returns once the
+// file is sent.
+function sendElfPayload(ip, port, filepath, { outputMs = 0 } = {}) {
   const data = fs.readFileSync(filepath);
   return new Promise((resolve, reject) => {
     const sock = new net.Socket();
+    let output = '';
     sock.setTimeout(15_000);
     sock.once('error', reject);
     sock.once('timeout', () => { sock.destroy(); reject(new Error('ELF loader timed out')); });
+    sock.on('data', (d) => { if (output.length < 8192) output += d.toString('utf8'); });
+    sock.once('close', () => resolve(output));
     sock.connect(port, ip, () => {
-      sock.end(data, () => resolve());
+      sock.end(data, () => {
+        if (!outputMs) return resolve('');
+        setTimeout(() => { sock.destroy(); resolve(output); }, outputMs);
+      });
     });
   });
 }
+
+// zftpd lets only one copy of itself run. A copy that hangs - it happens
+// after rest mode: the process is there, its FTP port is not - keeps every
+// new one from starting, and only the console's restart gets rid of it.
+const ZFTPD_STUCK = /refusing a second instance|previous instance is stuck/i;
 
 function startZftpd(ip, ftpPort) {
   if (zftpdStartInFlight.has(ip)) return zftpdStartInFlight.get(ip);
@@ -375,13 +390,18 @@ function startZftpd(ip, ftpPort) {
       throw new Error(`FTP is not running on ${ip}:${ftpPort} and no zftpd payload is in the payload library`);
     }
     log('info', `FTP refused on ${ip}:${ftpPort}; sending ${payload.filename} to the ELF loader`);
-    await sendElfPayload(ip, ELF_LOADER_PORT, payload.filepath);
+    const said = await sendElfPayload(ip, ELF_LOADER_PORT, payload.filepath, { outputMs: 2000 });
+    if (ZFTPD_STUCK.test(said)) {
+      log('warn', `zftpd on ${ip} refused to start: an earlier copy is still there without its FTP port`);
+      throw new Error(`zftpd is already on ${ip}, but it has hung: its FTP port ${ftpPort} is closed and it keeps a new copy from starting. This happens after rest mode. Restart the console, then run the jailbreak and FTP again.`);
+    }
     const deadline = Date.now() + ZFTPD_START_TIMEOUT_MS;
     while (Date.now() < deadline) {
       if (await tcpPortOpen(ip, ftpPort, 1000)) return;
       await new Promise(r => setTimeout(r, 500));
     }
-    throw new Error(`Sent ${payload.filename} but FTP port ${ftpPort} did not open within ${ZFTPD_START_TIMEOUT_MS / 1000} s (zftpd listens on 2120 by default; check the FTP port setting)`);
+    const lastLine = said.trim().split(/\r?\n/).filter(Boolean).pop();
+    throw new Error(`Sent ${payload.filename} but FTP port ${ftpPort} did not open within ${ZFTPD_START_TIMEOUT_MS / 1000} s (zftpd listens on 2120 by default; check the FTP port setting)${lastLine ? `. The payload said: ${lastLine.slice(0, 200)}` : ''}`);
   })().finally(() => zftpdStartInFlight.delete(ip));
   zftpdStartInFlight.set(ip, promise);
   return promise;
