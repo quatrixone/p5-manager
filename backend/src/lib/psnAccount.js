@@ -16,3 +16,14 @@ export function parsePsnAccountId(text) {
   }
   return null;
 }
+
+// The base64 form of an id given in either form: what the console's own
+// tools (rp-get-pin, offact) and other Remote Play apps use. Null when the
+// text is no account id.
+export function psnAccountBase64(text) {
+  const dec = parsePsnAccountId(text);
+  if (!dec) return null;
+  const buf = Buffer.alloc(8);
+  buf.writeBigUInt64LE(BigInt(dec));
+  return buf.toString('base64');
+}

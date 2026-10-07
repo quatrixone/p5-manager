@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parsePsnAccountId } from './psnAccount.js';
+import { parsePsnAccountId, psnAccountBase64 } from './psnAccount.js';
 
 test('the decimal number is kept', () => {
   assert.equal(parsePsnAccountId(' 1234567890123456789 '), '1234567890123456789');
@@ -15,4 +15,12 @@ test('anything else is refused', () => {
   for (const bad of ['', '0', 'my-psn-name', '12345678901234567890123', 'AAAA', 'AAAAAAAAAAA=']) {
     assert.equal(parsePsnAccountId(bad), null, bad);
   }
+});
+
+test('either form gives the base64 the console tools read', () => {
+  // The same conversion as chiaki's scripts/psn-account-id.py:
+  // base64(user_id.to_bytes(8, "little")).
+  assert.equal(psnAccountBase64('1234567890123456789'), 'FYHpffQQIhE=');
+  assert.equal(psnAccountBase64('FYHpffQQIhE='), 'FYHpffQQIhE=');
+  assert.equal(psnAccountBase64('nonsense'), null);
 });

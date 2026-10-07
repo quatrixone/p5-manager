@@ -9,7 +9,7 @@ import { payloadsDir } from '../lib/paths.js';
 import { getFtpPort } from '../lib/ftpPort.js';
 import { createViewer, answerViewer, closeViewer, closeViewersOf } from '../lib/webrtc.js';
 import { discoverConsole } from '../lib/consoleStatus.js';
-import { parsePsnAccountId } from '../lib/psnAccount.js';
+import { parsePsnAccountId, psnAccountBase64 } from '../lib/psnAccount.js';
 
 const router = express.Router();
 
@@ -916,7 +916,9 @@ router.post('/activate-account', async (req, res) => {
     let triggerWritten = false;
     if (psnAccountId) {
       try {
-        await writeOffactTrigger(ip, triggerPath, psnAccountId, psnOnlineId || null);
+        // offact reads base64 only. Sony's sign-in stores the id as a
+        // decimal number, which offact took for no id at all.
+        await writeOffactTrigger(ip, triggerPath, psnAccountBase64(psnAccountId) || psnAccountId, psnOnlineId || null);
         triggerWritten = true;
         log('info', `[offact] trigger file written to ${ip}:${triggerPath} (account=${psnOnlineId || psnAccountId})`);
       } catch (e) {
