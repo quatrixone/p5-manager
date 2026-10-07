@@ -69,7 +69,7 @@ export default function GameCompressor({ profiles = [], onNotification }) {
         <div className="comp-card-body flex-col gap-md">
           <div className="flex gap-sm items-center flex-wrap">
             <select className="select" style={{ width: 'auto' }} value={ip} onChange={e => setIp(e.target.value)} aria-label="Console">
-              <option value="">— pick console —</option>
+              <option value="">— Select a console —</option>
               {ps5Profiles.map(p => <option key={p.id} value={p.ip_address}>{p.name} ({p.ip_address})</option>)}
             </select>
             {st && (

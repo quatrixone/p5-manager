@@ -287,8 +287,8 @@ function PS5Control({ profiles, onNotification, onProfilesChanged }) {
         <div className="comp-card-body">
           <div className="empty-state">
             <div className="empty-state-icon">🎮</div>
-            <div className="empty-state-title">No Console Profile</div>
-            <div className="empty-state-text">Create a profile in Settings first</div>
+            <div className="empty-state-title">No console selected</div>
+            <div className="empty-state-text">Add a console in Settings → Your consoles to get started.</div>
           </div>
         </div>
       </div>
@@ -296,14 +296,9 @@ function PS5Control({ profiles, onNotification, onProfilesChanged }) {
   }
 
   return (
-    <div>
+    <div className="screen screen-console-control">
       {notification && (
-        <div style={{
-          position: 'fixed', top: 80, left: '50%', transform: 'translateX(-50%)',
-          padding: 'var(--space-sm) var(--space-lg)', borderRadius: 8,
-          background: notification.type === 'error' ? 'var(--red)' : notification.type === 'success' ? 'var(--green)' : 'var(--blue)',
-          color: 'var(--text)', zIndex: 3000, fontSize: '0.9rem', fontWeight: 500,
-        }}>
+        <div className={`app-toast ${notification.type || 'info'}`} role="status" aria-live="polite">
           {notification.message}
         </div>
       )}
@@ -312,14 +307,14 @@ function PS5Control({ profiles, onNotification, onProfilesChanged }) {
         <div className="comp-card mb-md" role="status">
           <div className="comp-card-body flex gap-md items-center flex-wrap">
             <div className="flex-1" style={{ minWidth: 200 }}>
-              <div className="font-medium">⏳ Busy - Autoload is running</div>
+              <div className="font-medium">⏳ A sequence is running</div>
               <div className="text-sm text-muted" style={{ wordBreak: 'break-word' }}>
                 {autoloadRun.sequence_name} · step {Math.min((autoloadRun.current_step || 0) + 1, autoloadRun.total)}/{autoloadRun.total}
                 {autoloadRun.current_step_name ? `: ${autoloadRun.current_step_name}` : ''}
               </div>
-              <div className="text-xs text-muted">PS Control is locked until the sequence finishes.</div>
+              <div className="text-xs text-muted">Console controls will be available when it finishes.</div>
             </div>
-            <button className="btn btn-secondary btn-sm" onClick={cancelAutoloadRun}>Cancel sequence</button>
+            <button className="btn btn-secondary btn-sm" onClick={cancelAutoloadRun}>Stop sequence</button>
           </div>
         </div>
       )}
@@ -331,10 +326,10 @@ function PS5Control({ profiles, onNotification, onProfilesChanged }) {
           mental model of "PS5 power buttons are part of the PS5 status
           card". flex-wrap lets the action row drop below the identity
           block on narrow viewports. */}
-      <div className="comp-card mb-md">
-        <div className="flex items-center gap-md p-md flex-wrap">
-          <span style={{ fontSize: '3rem' }}>🎮</span>
-          <div className="flex-1" style={{ minWidth: 180 }}>
+      <div className="comp-card mb-md ps5control-status-card">
+        <div className="flex items-center gap-md p-md flex-wrap ps5control-status-row">
+          <span className="ps5control-console-icon" aria-hidden="true">🎮</span>
+          <div className="flex-1 ps5control-identity">
             <div className="flex items-center gap-sm flex-wrap">
               <span className="font-bold" style={{ fontSize: '1.2rem' }}>{defaultProfile.name}</span>
               {getStatusBadge()}
@@ -352,15 +347,15 @@ function PS5Control({ profiles, onNotification, onProfilesChanged }) {
               to match the sub-tab selector below - the user asked for
               every clickable element on this surface to share one
               consistent height. */}
-          <div className="flex gap-sm flex-wrap" style={{ justifyContent: 'flex-end' }}>
+          <div className="flex gap-sm flex-wrap ps5control-actions">
             <button
               className="btn btn-primary"
               onClick={handleWake}
               disabled={waking || standbyBusy || stoppingSession}
               title={
-                rpSession.state === 'live' ? 'A live RP session already exists - this is a no-op.'
-                : rpSession.state === 'warm' ? 'Re-warm: refreshes the warm cache TTL back to 180 s.'
-                : 'Pre-warm: wakes from rest, logs in, parks an RP session in the sidecar warm cache so the next Start is ~20 ms.'
+                rpSession.state === 'live' ? 'A Remote Play session is already active.'
+                : rpSession.state === 'warm' ? 'Refresh the ready-to-use Remote Play session.'
+                : 'Wake the console and prepare a Remote Play session for a faster start.'
               }
             >
               {waking ? '⏳ Waking…'
@@ -414,6 +409,7 @@ function PS5Control({ profiles, onNotification, onProfilesChanged }) {
           two feel native to one another. */}
       <div
         className="flex gap-xs flex-wrap mb-md"
+        data-ps5control-tabs
         role="tablist"
         aria-label="P5 Control sub-tabs"
         style={{
@@ -451,7 +447,7 @@ function PS5Control({ profiles, onNotification, onProfilesChanged }) {
           RemotePlay.view="main" hides the OAuth / Pair sections so they
           don't reappear here. */}
       {subTab === 'control' && (
-        <div className="comp-card mb-md">
+        <div className="comp-card mb-md ps5control-main-card">
           <div className="comp-card-header">
             <span className="comp-card-title">🕹️ PS Remote Play</span>
           </div>

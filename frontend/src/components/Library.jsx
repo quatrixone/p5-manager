@@ -138,7 +138,7 @@ export default function Library({ profiles = [], onNotification }) {
     // ShadowMount keeps one image mounted at a time; its own page unmounts
     // the current one first, so do the same - after asking.
     const others = games.filter(x => x.mounted && x.title_id !== g.title_id);
-    if (others.length && !window.confirm(`${others.map(x => x.title_name || x.title_id).join(', ')} is mounted. Unmount it and mount ${g.title_name || g.title_id}?`)) return;
+    if (others.length && !window.confirm(`${others.map(x => x.title_name || x.title_id).join(', ')} is currently mounted. Unmount it and mount ${g.title_name || g.title_id}?`)) return;
     setBusy(true);
     try {
       for (const o of others) await api.post(`/library/${ip}/games/${o.title_id}/unmount`, {});
@@ -150,7 +150,7 @@ export default function Library({ profiles = [], onNotification }) {
   };
 
   const uninstall = (g) => {
-    if (!window.confirm(`Remove ${g.title_name || g.title_id} from the console's home screen?\n\nThe game files stay where they are.`)) return;
+    if (!window.confirm(`Uninstall ${g.title_name || g.title_id}?\n\nThis removes it from the console’s home screen. The game files will stay on the drive.`)) return;
     run(g, 'uninstall', {}, `Uninstalled ${g.title_name || g.title_id}`).then(ok => { if (ok) setSelected(null); });
   };
 
@@ -206,18 +206,18 @@ export default function Library({ profiles = [], onNotification }) {
   const tooSmall = !!pickedDest && pickedDest.available_bytes != null && pickerSize > pickedDest.available_bytes;
 
   return (
-    <div className="flex-col gap-md">
+    <div className="flex-col gap-md screen screen-library">
       <div className="comp-card">
         <div className="comp-card-header">
           <div>
-            <span className="comp-card-title">🎮 Library</span>
+            <span className="comp-card-title screen-section-title">🎮 Library</span>
             <div className="text-xs text-muted mt-xs">
               {isPs4Profile ? 'Installed titles read from the PS4 app database over FTP · view only' : `Games ShadowMount knows on the console${data?.version ? ` · ShadowMount ${data.version}` : ''}`}
             </div>
           </div>
           <div className="flex gap-xs items-center flex-wrap">
             <select className="select" style={{ width: 'auto' }} value={ip} onChange={e => setIp(e.target.value)} aria-label="Console">
-              <option value="">— pick console —</option>
+              <option value="">— Select a console —</option>
               {profiles.map(p => <option key={p.id} value={p.ip_address}>{String(p.console_type || '').toLowerCase() === 'ps4' ? 'PS4' : 'PS5'} · {p.name} ({p.ip_address})</option>)}
             </select>
             {!isPs4Profile && <button className="btn btn-secondary btn-sm" onClick={rescan} disabled={!data} title="Ask ShadowMount to rescan its folders">🔍 Rescan</button>}
@@ -311,8 +311,8 @@ export default function Library({ profiles = [], onNotification }) {
       {data && shown.length === 0 && (
         <div className="empty-state">
           <div className="empty-state-icon">🎮</div>
-          <div className="empty-state-title">{games.length === 0 ? 'No games found' : 'Nothing matches'}</div>
-          <div className="empty-state-text">{games.length === 0 ? (isPs4Profile ? 'No installed titles were found in the PS4 app database.' : 'ShadowMount has not registered any title yet - try Rescan.') : 'Change the search or the storage filter.'}</div>
+          <div className="empty-state-title">{games.length === 0 ? 'No games found' : 'No games match your search'}</div>
+          <div className="empty-state-text">{games.length === 0 ? (isPs4Profile ? 'No installed games were found on this PS4.' : 'No games have been added to the library yet. Try refreshing the library.') : 'Try a different search or storage filter.'}</div>
         </div>
       )}
 
@@ -436,8 +436,8 @@ export default function Library({ profiles = [], onNotification }) {
         {deleting && (
           <div className="flex-col gap-sm">
             <div className="text-sm">
-              {isPs4Profile ? <>Delete <b>{deleting.title_name || deleting.title_id}</b> ({deleting.title_id}) from the PS4? This uninstalls the app and cannot be undone.</>
-                : <>Delete <b>{deleting.title_name || deleting.title_id}</b> ({fmtBytes(sizeOf(deleting))}) from the console? It cannot be undone.</>}
+              {isPs4Profile ? <>Permanently delete <b>{deleting.title_name || deleting.title_id}</b> ({deleting.title_id}) from this PS4? The game and its files will be removed. This can’t be undone.</>
+                : <>Permanently delete <b>{deleting.title_name || deleting.title_id}</b> ({fmtBytes(sizeOf(deleting))}) from this console? This can’t be undone.</>}
             </div>
             {!isPs4Profile && <div className="text-xs text-muted" style={{ wordBreak: 'break-all' }}>{deleting.path}</div>}
           </div>

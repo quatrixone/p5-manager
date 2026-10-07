@@ -6,6 +6,14 @@ import { api, apiSafe, putSetting } from '../lib/api.js';
 
 // Same defaults as backend/src/lib/ftpPort.js.
 const defaultFtpPort = (consoleType) => (consoleType === 'ps4' ? 2121 : 2120);
+const FULLSCREEN_TRANSPARENCY_KEY = 'p5manager.fullscreenControllerTransparency';
+
+function readFullscreenTransparencySetting() {
+  try {
+    const value = Number(localStorage.getItem(FULLSCREEN_TRANSPARENCY_KEY));
+    return Number.isFinite(value) && value >= 0 && value <= 90 ? value : 72;
+  } catch (_) { return 72; }
+}
 
 function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete, onProfileSetDefault }) {
   const [activeTab, setActiveTab] = useState('profiles');
@@ -34,16 +42,7 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
   // current default profile at submit time (legacy behaviour).
   const [uploadTargetIp, setUploadTargetIp] = useState('');
   const [uploadTargetPath, setUploadTargetPath] = useState('/data/homebrew');
-  // PKG installer settings. The install queue stages .pkg files to
-  // `pkg_stage_dir` on the PS5 via FTP, drops a trigger file with the path
-  // at `pkg_trigger_file`, then sends `pkg_installer_payload_id` over the
-  // ELF loader port — that payload (user-supplied for now; build instructions
-  // in p5managerclient/pkg-install/) reads the trigger file and calls
-  // sceAppInstUtilInstallByPackage.
-  const [pkgInstallerPayloadId, setPkgInstallerPayloadId] = useState('');
-  const [pkgStageDir, setPkgStageDir] = useState('/data/pkg-stage');
-  const [pkgTriggerFile, setPkgTriggerFile] = useState('/data/.p5manager-install');
-  const [availablePayloads, setAvailablePayloads] = useState([]);
+  const [fullscreenTransparency, setFullscreenTransparency] = useState(readFullscreenTransparencySetting);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
   const [restarting, setRestarting] = useState(false);
@@ -56,27 +55,12 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
         if (data.default_subnet) setDefaultSubnet(data.default_subnet);
         if (data.upload_target_ip !== undefined) setUploadTargetIp(data.upload_target_ip || '');
         if (data.upload_target_path) setUploadTargetPath(data.upload_target_path);
-        if (data.pkg_installer_payload_id) setPkgInstallerPayloadId(String(data.pkg_installer_payload_id));
-        if (data.pkg_stage_dir) setPkgStageDir(data.pkg_stage_dir);
-        if (data.pkg_trigger_file) setPkgTriggerFile(data.pkg_trigger_file);
-      }
-      // Auto-bind the PKG installer to the payload literally named
-      // `pkg-install.elf` instead of making the user pick it from a
-      // dropdown — there's only ever one correct choice (sendInstallerPayload
-      // only works with .elf on port 9021), so a manual picker was just an
-      // extra step that could be pointed at the wrong file.
-      const list = await apiSafe.get('/payloads');
-      if (Array.isArray(list)) {
-        const elfs = list.filter(p => /\.elf$/i.test(p.name || ''));
-        setAvailablePayloads(elfs);
-        const installer = elfs.find(p => (p.name || '').toLowerCase() === 'pkg-install.elf');
-        if (installer) setPkgInstallerPayloadId(String(installer.id));
       }
     })();
   }, []);
 
-  // Generic helper for the "save N settings keys + flash a status banner"
-  // pattern. Centralised so the three save buttons below don't each carry
+  // Generic helper for saving settings and showing a status message.
+  // Centralised so the save buttons below don't each carry
   // their own setLoading / try-catch / setTimeout boilerplate.
   const saveSettingsKeys = async (entries, successMsg) => {
     setLoading(true);
@@ -96,15 +80,12 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
     ['upload_target_path', uploadTargetPath],
   ], 'Upload target saved!');
 
-  // Three keys in one button so the user always saves a consistent install
-  // setup: empty payload id is allowed (clears the binding so the install
-  // queue errors out cleanly with "no installer configured" instead of
-  // silently failing on /api/payloads/<old-id>).
-  const savePkgInstaller = () => saveSettingsKeys([
-    ['pkg_installer_payload_id', pkgInstallerPayloadId],
-    ['pkg_stage_dir', pkgStageDir],
-    ['pkg_trigger_file', pkgTriggerFile],
-  ], 'PKG installer saved!');
+  const updateFullscreenTransparency = (event) => {
+    const value = Number(event.target.value);
+    setFullscreenTransparency(value);
+    try { localStorage.setItem(FULLSCREEN_TRANSPARENCY_KEY, String(value)); } catch (_) {}
+    window.dispatchEvent(new CustomEvent('fullscreen-controller-transparency-change', { detail: value }));
+  };
 
   // One search, nothing to fill in: the backend works out this machine's
   // networks itself and asks every address plus the broadcast. `subnet` is
@@ -215,7 +196,7 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
       const arrayBuffer = await restoreFile.arrayBuffer();
       const base64 = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
       await api.post('/backup', { zip: base64 });
-      setBackupStatus('Restore completed!');
+      setBackupStatus('Restore complete.');
       setTimeout(() => setBackupStatus(''), 3000);
     } catch (err) {
       setBackupStatus('Restore failed: ' + err.message);
@@ -223,10 +204,13 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
   };
 
   const renderProfiles = () => (
-    <div>
-      <div className="flex justify-between items-center mb-md">
-        <h2 className="font-bold" style={{ fontSize: '1.25rem' }}>Profiles</h2>
-        <button className="btn btn-primary" onClick={openAddProfile}>+ Add</button>
+    <div className="settings-profiles">
+      <div className="screen-heading">
+        <div className="screen-heading-copy">
+          <h1 className="screen-title">Your consoles</h1>
+          <span className="screen-subtitle">Manage saved consoles and connection details</span>
+        </div>
+        <button className="btn btn-primary screen-heading-primary" onClick={openAddProfile}>+ Add console</button>
       </div>
 
       {profiles.length === 0 && discoveredDevices.length === 0 && !scanEmpty && (
@@ -255,12 +239,12 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
       {scanEmpty && (
         <div className="comp-card mb-md" style={{ borderLeft: '3px solid var(--yellow, var(--blue))' }}>
           <div className="comp-card-header">
-            <span className="comp-card-title">No console found</span>
+            <span className="comp-card-title">We couldn’t find a console</span>
           </div>
           <div className="comp-card-body flex-col gap-sm">
             <div className="text-sm">
-              Check that the console is switched on or in rest mode and connected to the same network, then look again.
-              If it sits on another network, enter that network here.
+              Make sure your console is on or in rest mode and connected to the same network, then try again.
+              To search another network, enter its address below.
             </div>
             <div className="flex gap-sm items-center flex-wrap">
               <input
@@ -276,7 +260,7 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
               <button className="btn btn-primary" onClick={() => findConsoles(defaultSubnet)} disabled={scanning}>
                 {scanning ? '⏳ Looking…' : '🔍 Look again'}
               </button>
-              <button className="btn btn-ghost btn-sm" onClick={openAddProfile}>add manually</button>
+              <button className="btn btn-ghost btn-sm" onClick={openAddProfile}>Add manually</button>
             </div>
           </div>
         </div>
@@ -321,7 +305,7 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
       <div className="flex-col gap-sm">
         {profiles.map(profile => (
           <div key={profile.id} className="comp-card" style={{ borderLeft: profile.is_default ? '3px solid var(--green)' : '3px solid transparent' }}>
-            <div className="flex items-center gap-md p-md">
+            <div className="flex items-center gap-md p-md settings-profile-row">
               <span style={{ fontSize: '2rem' }}>🎮</span>
               <div className="flex-1" style={{ minWidth: 0 }}>
                 <div className="flex items-center gap-sm">
@@ -336,7 +320,7 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
                 <div className="list-item-subtitle">{profile.ip_address} · FTP {profile.ftp_port || defaultFtpPort(profile.console_type)}</div>
                 {profile.mac_address && <div className="text-xs text-muted">MAC: {profile.mac_address}</div>}
               </div>
-              <div className="flex gap-sm">
+              <div className="flex gap-sm settings-profile-actions">
                 {!profile.is_default && (
                   <button className="btn btn-sm btn-ghost" onClick={() => onProfileSetDefault(profile.id)}>⭐</button>
                 )}
@@ -353,7 +337,7 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
   // The backend exits and Docker's restart policy brings it back; we poll
   // /health until started_at changes, then reload so the UI re-syncs.
   const restartApp = async () => {
-    if (!window.confirm('Restart the app? Running jobs are interrupted and go back to the queue.')) return;
+    if (!window.confirm('Restart P5 Manager? Any running tasks will stop and return to the queue.')) return;
     setRestarting(true);
     setRestartMessage('');
     const before = (await apiSafe.get('/health'))?.started_at;
@@ -374,7 +358,7 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
       }
     }
     setRestarting(false);
-    setRestartMessage('Failed: the app did not come back within 60 s. Check the container.');
+    setRestartMessage('P5 Manager did not restart in time. Check that its Docker container is running.');
   };
 
   const renderBackup = () => (
@@ -469,49 +453,27 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
 
       <div className="comp-card">
         <div className="comp-card-body">
-          <div className="font-bold mb-sm">Installing .pkg files (PS5)</div>
+          <div className="font-bold mb-sm">Remote Play fullscreen controls</div>
           <div className="text-xs text-muted mb-md">
-            <strong>Install</strong> in Files copies the .pkg to the console and then sends a small
-            payload, <code>pkg-install.elf</code>, that installs it there. It comes with P5 Manager;
-            the two paths below rarely need changing.
+            Adjust how see-through the fullscreen buttons and sticks look over the game. Pressed buttons stay bright so you can see when an input is active.
           </div>
-          <div className="mb-md">
-            <label className="text-sm text-muted mb-sm" style={{ display: 'block' }}>Installer payload</label>
-            {pkgInstallerPayloadId ? (
-              <div className="text-sm">
-                ✅ <code>pkg-install.elf</code> is in the payload library
-              </div>
-            ) : (
-              <div className="text-xs text-muted">
-                <code>pkg-install.elf</code> is missing from the payload library. Restart P5 Manager to get it back, or upload it in the Payloads tab.
-              </div>
-            )}
+          <label className="text-sm" htmlFor="fullscreen-controller-transparency">
+            Button transparency <strong>{fullscreenTransparency}%</strong>
+          </label>
+          <input
+            id="fullscreen-controller-transparency"
+            className="settings-transparency-slider"
+            type="range"
+            min="0"
+            max="90"
+            step="1"
+            value={fullscreenTransparency}
+            onChange={updateFullscreenTransparency}
+            aria-describedby="fullscreen-controller-transparency-help"
+          />
+          <div id="fullscreen-controller-transparency-help" className="text-xs text-muted">
+            Higher values make the controls more transparent. This setting is saved in this browser.
           </div>
-          <div className="mb-md">
-            <label className="text-sm text-muted mb-sm" style={{ display: 'block' }}>Folder on the console the .pkg is copied to</label>
-            <input
-              className="input"
-              type="text"
-              value={pkgStageDir}
-              onChange={e => setPkgStageDir(e.target.value)}
-              placeholder="/data/pkg-stage"
-              style={{ maxWidth: 420 }}
-            />
-          </div>
-          <div className="mb-md">
-            <label className="text-sm text-muted mb-sm" style={{ display: 'block' }}>File that tells the payload what to install</label>
-            <input
-              className="input"
-              type="text"
-              value={pkgTriggerFile}
-              onChange={e => setPkgTriggerFile(e.target.value)}
-              placeholder="/data/.p5manager-install"
-              style={{ maxWidth: 420 }}
-            />
-          </div>
-          <button className="btn btn-primary" onClick={savePkgInstaller} disabled={loading}>
-            {loading ? '⏳ Saving...' : '💾 Save'}
-          </button>
         </div>
       </div>
 
@@ -521,8 +483,7 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
         <div className="comp-card-body">
           <div className="font-bold mb-sm">Restart app</div>
           <div className="text-xs text-muted mb-md">
-            Restarts the P5 Manager backend. Running jobs are interrupted and return to the queue;
-            the page reloads once the app is back.
+            Restarting stops any running tasks and returns them to the queue. This page reloads when P5 Manager is ready.
           </div>
           <button className="btn btn-danger" onClick={restartApp} disabled={restarting}>
             {restarting ? '⏳ Restarting...' : '🔄 Restart app'}
@@ -534,8 +495,8 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
   );
 
   return (
-    <div>
-      <div className="tabs mb-md">
+    <div className="screen screen-settings">
+      <div className="tabs mb-md settings-tabs">
         <button className={`tab-item ${activeTab === 'profiles' ? 'active' : ''}`} onClick={() => setActiveTab('profiles')}>
           🎮 Profiles
         </button>

@@ -50,7 +50,7 @@ export function BrowseButton({
           initialPath={startPath({ value, browsePath, selectFiles, fallbackPath })}
           selectFiles={selectFiles}
           fileFilter={fileFilter}
-          title={pickerTitle || (selectFiles ? 'Pick file' : 'Pick folder')}
+          title={pickerTitle || (selectFiles ? 'Choose a file' : 'Choose a folder')}
         />
       )}
     </>

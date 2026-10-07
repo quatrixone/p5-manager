@@ -345,7 +345,7 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
       return;
     }
     if (needsProfile && !selectedProfile) {
-      onNotification('This sequence uses PS5-specific steps — pick a profile', 'error');
+      onNotification('This sequence needs a PS5. Select a PS5 console first.', 'error');
       return;
     }
     try {
@@ -374,7 +374,7 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
       return;
     }
     if (needsProfile && !selectedProfile) {
-      onNotification('This sequence uses PS5-specific steps — pick a profile', 'error');
+      onNotification('This sequence needs a PS5. Select a PS5 console first.', 'error');
       return;
     }
     try {
@@ -521,19 +521,19 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
   };
 
   return (
-    <div className="flex-col gap-md">
+    <div className="flex-col gap-md screen screen-autoload">
       {activeView === 'list' && (
         <>
           {/* Compact list header. Same shrink ratio as the Payloads tab
               (h2 1.25rem → 1rem, subtitle 0.72rem) so both lists feel
               like siblings of the same design system. */}
-          <div className="flex justify-between items-center gap-sm flex-wrap">
-            <div style={{ minWidth: 0 }}>
-              <h2 className="font-bold" style={{ fontSize: '1rem', margin: 0, lineHeight: 1.2 }}>Sequences</h2>
-              <span className="text-muted" style={{ fontSize: '0.72rem' }}>{sequences.length} saved</span>
+          <div className="screen-heading autoload-heading">
+            <div className="screen-heading-copy">
+              <h1 className="screen-title">Sequences</h1>
+              <span className="screen-subtitle">{sequences.length} saved</span>
             </div>
             <button
-              className="btn btn-success"
+              className="btn btn-success screen-heading-primary"
               onClick={() => { resetForm(); setActiveView('create'); }}
             >
               + New sequence
@@ -545,7 +545,7 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
               <div className="comp-card-header" style={{ padding: '8px 12px' }}>
                 <span className="comp-card-title" style={{ fontSize: '0.88rem' }}>⚡ Templates</span>
                 <span className="text-muted" style={{ fontSize: '0.7rem' }}>
-                  Tap to load &amp; edit
+                  Choose a template to start
                   {hiddenTemplateCount > 0 && ` · ${hiddenTemplateCount} hidden by ${mode.toUpperCase()} filter`}
                 </span>
               </div>
@@ -589,7 +589,7 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
                 <div className="empty-state">
                   <div className="empty-state-icon">📋</div>
                   <div className="empty-state-title">No sequences yet</div>
-                  <div className="empty-state-text">Pick a template above or create your own</div>
+                  <div className="empty-state-text">Choose a template above or create a sequence from scratch.</div>
                 </div>
               </div>
             </div>
@@ -655,7 +655,7 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
                   value={selectedProfile}
                   onChange={e => setSelectedProfile(e.target.value)}
                 >
-                  <option value="">{profiles.length === 0 ? 'No profiles yet — only download/extract/convert/upload steps available' : 'No profile (host-only steps)'}</option>
+                  <option value="">{profiles.length === 0 ? 'No console added — only computer-based steps are available' : 'No console (computer-based steps only)'}</option>
                   {profiles.map(p => (
                     <option key={p.id} value={p.id}>{p.name}</option>
                   ))}
@@ -936,7 +936,7 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
                     💾 Saved
                   </div>
                   {inputScripts.length === 0 ? (
-                    <p className="text-sm text-muted">No saved input scripts. Create them in PS5 Remote.</p>
+                    <p className="text-sm text-muted">No saved input scripts yet. Create one in PS Control → Input Scripts.</p>
                   ) : (
                     <div className="flex-col gap-sm">
                       {inputScripts.map(script => (
@@ -1248,7 +1248,7 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
                                     patchStep(index, { scriptId: id });
                                   }}
                                 >
-                                  <option value="">— pick a script —</option>
+                                  <option value="">— Select a script —</option>
                                   {builtinInputScripts.length > 0 && (
                                     <optgroup label="🧩 Built-in">
                                       {builtinInputScripts.map(s => (
@@ -1277,7 +1277,7 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
                                     patchStep(index, { payloadId: v ? parseInt(v) : null, payloadName: v ? null : step.payloadName });
                                   }}
                                 >
-                                  <option value="">— pick a payload —</option>
+                                  <option value="">— Select a payload —</option>
                                   {(payloads || []).map(p => (
                                     <option key={p.id} value={p.id}>{p.filename || p.name}</option>
                                   ))}

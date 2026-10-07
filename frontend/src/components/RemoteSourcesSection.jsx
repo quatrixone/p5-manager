@@ -217,8 +217,7 @@ function RemoteSourcesSection({ profiles = [] }) {
         <p className="text-xs text-muted" style={{ margin: 0 }}>
           {net.supported
             ? <>FTP servers to browse in the <strong>Files</strong> tab under Remote.</>
-            : <>SMB shares and FTP servers. They show up in the <strong>Files</strong> tab
-              under Remote, where you can browse them and push files to the PS5 over FTP.</>}
+            : <>SMB shares and FTP servers appear in <strong>Files → Remote</strong>. Browse them there and copy files to your console over FTP.</>}
         </p>
 
         {editing && (
@@ -315,7 +314,7 @@ function RemoteSourcesSection({ profiles = [] }) {
         )}
 
         {sources.filter(s => !(net.supported && s.type === 'smb')).length === 0 && !editing && !net.supported && (
-          <div className="text-sm text-muted">No sources yet. Click ＋ Add source to create one.</div>
+          <div className="text-sm text-muted">No remote sources yet. Add one to browse files from another device or server.</div>
         )}
 
         <div className="flex-col gap-sm">

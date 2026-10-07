@@ -168,7 +168,7 @@ function App() {
     // households).
     const profile = profiles.find(p => p.is_default) || profiles[0];
     if (!profile) {
-      showNotification('Please create a profile first', 'error');
+      showNotification('Add a console in Settings before continuing.', 'error');
       return;
     }
     try {
@@ -222,7 +222,7 @@ function App() {
         const a = data.added?.length || 0;
         const s = data.skipped?.length || 0;
         const f = data.failed?.length || 0;
-        showNotification(`Defaults: +${a} added, ${s} kept${f ? `, ${f} failed` : ''}`, f ? 'warning' : 'success');
+        showNotification(`Built-in payloads restored: ${a} added, ${s} already present${f ? `, ${f} failed` : ''}`, f ? 'warning' : 'success');
         fetchPayloads();
         fetchLogs();
       } else {
@@ -321,7 +321,7 @@ function App() {
   const setDefaultProfile = async (id) => {
     try {
       await api.post(`/profiles/${id}/set-default`);
-      showNotification('Default profile set', 'success');
+      showNotification('Default console updated', 'success');
       fetchProfiles();
     } catch (err) {
       showNotification(err.message, 'error');
@@ -331,7 +331,7 @@ function App() {
   const deleteProfile = async (id) => {
     try {
       await api.del(`/profiles/${id}`);
-      showNotification('Profile deleted', 'success');
+      showNotification('Console removed', 'success');
       fetchProfiles();
       fetchLogs();
     } catch (err) {
@@ -342,7 +342,8 @@ function App() {
   const checkPs5Status = async (ip, port) => {
     try {
       const data = await api.get(`/ps5/status/${ip}?port=${port || 9021}`);
-      showNotification(data.reachable ? 'PS5 is reachable' : 'PS5 not reachable', data.reachable ? 'success' : 'warning');
+      const consoleName = profiles.find(profile => profile.ip_address === ip)?.name || 'Console';
+      showNotification(data.reachable ? `${consoleName} is reachable` : `${consoleName} is not reachable`, data.reachable ? 'success' : 'warning');
       fetchLogs();
       return data.reachable;
     } catch (err) {
@@ -506,7 +507,7 @@ function TopbarPs5Status({ profile, profiles = [], onSwitch, onManage }) {
       <button
         type="button"
         className="app-status"
-        title={`${profile.name} — ${label}. Click to switch console.`}
+        title={`${profile.name} — ${label}. Select to switch consoles.`}
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => setOpen(o => !o)}
@@ -595,21 +596,81 @@ function Sidebar({ activeTab, setActiveTab }) {
 
 function MobileNav({ activeTab, setActiveTab }) {
   const { mode } = usePlatform();
+  const [moreOpen, setMoreOpen] = useState(false);
+  const primaryIds = ['files', 'library', 'remote', 'payloads'];
+  const primaryTabs = tabs.filter(tab => primaryIds.includes(tab.id));
+  const moreTabs = tabs.filter(tab => !primaryIds.includes(tab.id));
+  const selectTab = (id) => {
+    setActiveTab(id);
+    setMoreOpen(false);
+  };
+  useEffect(() => {
+    if (!moreOpen) return undefined;
+    const previousOverflow = document.body.style.overflow;
+    const closeOnEscape = (event) => { if (event.key === 'Escape') setMoreOpen(false); };
+    document.body.style.overflow = 'hidden';
+    window.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [moreOpen]);
   return (
-    <nav className="bottom-nav">
-      <div className="bottom-nav-inner">
-        {tabs.map(tab => (
+    <>
+      <nav className="bottom-nav" aria-label="Main navigation">
+        <div className="bottom-nav-inner">
+          {primaryTabs.map(tab => (
+            <button
+              key={tab.id}
+              className={`bottom-nav-item ${activeTab === tab.id ? 'active' : ''}`}
+              onClick={() => selectTab(tab.id)}
+              aria-current={activeTab === tab.id ? 'page' : undefined}
+            >
+              <span className="bottom-nav-icon" aria-hidden="true">{tab.icon}</span>
+              <span>{effectiveTabLabel(tab.id, mode) || tab.label}</span>
+            </button>
+          ))}
           <button
-            key={tab.id}
-            className={`bottom-nav-item ${activeTab === tab.id ? 'active' : ''}`}
-            onClick={() => setActiveTab(tab.id)}
+            className={`bottom-nav-item bottom-nav-more ${moreOpen || moreTabs.some(tab => tab.id === activeTab) ? 'active' : ''}`}
+            onClick={() => setMoreOpen(open => !open)}
+            aria-expanded={moreOpen}
+            aria-haspopup="dialog"
           >
-            <span className="bottom-nav-icon">{tab.icon}</span>
-            <span>{effectiveTabLabel(tab.id, mode) || tab.label}</span>
+            <span className="bottom-nav-icon" aria-hidden="true">···</span>
+            <span>More</span>
           </button>
-        ))}
-      </div>
-    </nav>
+        </div>
+      </nav>
+      {moreOpen && createPortal(
+        <>
+          <button className="mobile-more-backdrop" aria-label="Close more navigation" onClick={() => setMoreOpen(false)} />
+          <section className="mobile-more-sheet" role="dialog" aria-modal="true" aria-label="More sections">
+            <div className="mobile-more-sheet-head">
+              <div>
+                <strong>More</strong>
+                <div className="text-xs text-muted">Tools and settings</div>
+              </div>
+              <button className="btn btn-icon btn-ghost" onClick={() => setMoreOpen(false)} aria-label="Close">×</button>
+            </div>
+            <div className="mobile-more-grid">
+              {moreTabs.map(tab => (
+                <button
+                  key={tab.id}
+                  className={`mobile-more-item ${activeTab === tab.id ? 'active' : ''}`}
+                  onClick={() => selectTab(tab.id)}
+                  aria-current={activeTab === tab.id ? 'page' : undefined}
+                >
+                  <span className="mobile-more-icon" aria-hidden="true">{tab.icon}</span>
+                  <span>{effectiveTabLabel(tab.id, mode) || tab.label}</span>
+                  {activeTab === tab.id && <span className="mobile-more-check" aria-hidden="true">✓</span>}
+                </button>
+              ))}
+            </div>
+          </section>
+        </>,
+        document.body,
+      )}
+    </>
   );
 }
 
@@ -638,9 +699,8 @@ function FirstRunOnboarding({ profiles, onStart }) {
       <div className="onboarding-card">
         <h2 id="onboarding-title" className="onboarding-title">Welcome to P5 Manager</h2>
         <p className="onboarding-body">
-          Let's add your first console. Pick PS4 or PS5 in the profile form on the next screen —
-          the rest of the UI then adapts to that platform automatically (payloads, autoload
-          templates, Convert tools). Auto-detect via Remote Play discovery works too.
+          Add your PS4 or PS5 from the next screen. The app will show the tools and payloads
+          for that console automatically. You can find it on your network or add it yourself.
         </p>
         <div className="onboarding-actions">
           <button className="btn btn-primary" onClick={finish}>

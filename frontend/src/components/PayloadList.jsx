@@ -218,7 +218,7 @@ function PayloadList({ payloads, profiles, onFetchUrl, onSend, onDelete, onUpdat
         key={payload.id}
         className="comp-card"
         style={{
-          marginBottom: 6,
+          marginBottom: 8,
           transition: 'all 0.2s',
           transform: isSelected ? 'scale(0.98)' : 'scale(1)',
           borderLeft: hasUpdate ? '3px solid var(--accent)' : '3px solid transparent',
@@ -231,11 +231,20 @@ function PayloadList({ payloads, profiles, onFetchUrl, onSend, onDelete, onUpdat
             more entries on screen without scrolling. */}
         <div
           className="flex items-center gap-sm"
+          role="button"
+          tabIndex={0}
           onClick={() => {
             if (multiSelect) toggleSelect(payload.id);
             else toggleExpand(payload.id);
           }}
-          style={{ cursor: 'pointer', padding: '6px 10px' }}
+          onKeyDown={e => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              if (multiSelect) toggleSelect(payload.id);
+              else toggleExpand(payload.id);
+            }
+          }}
+          style={{ cursor: 'pointer', padding: '10px 14px' }}
         >
           {multiSelect && (
             <input
@@ -249,7 +258,7 @@ function PayloadList({ payloads, profiles, onFetchUrl, onSend, onDelete, onUpdat
           <span style={{ fontSize: '1.25rem', lineHeight: 1 }}>📦</span>
           <div className="flex-1" style={{ minWidth: 0 }}>
             <div className="flex items-center gap-xs">
-              <span className="truncate" style={{ fontWeight: 600, fontSize: '0.88rem' }}>{payload.name}</span>
+              <span className="truncate" style={{ fontWeight: 600, fontSize: '0.94rem' }}>{payload.name}</span>
               {targetPlatform && (
                 <span className="console-type-badge" title={`Targets ${targetPlatform.toUpperCase()}`}>
                   {targetPlatform.toUpperCase()}
@@ -257,7 +266,7 @@ function PayloadList({ payloads, profiles, onFetchUrl, onSend, onDelete, onUpdat
               )}
               {hasUpdate && <Badge variant="info">Update</Badge>}
             </div>
-            <div className="text-muted" style={{ fontSize: '0.72rem', lineHeight: 1.3 }}>
+            <div className="text-muted" style={{ fontSize: '0.76rem', lineHeight: 1.4 }}>
               {formatSize(payload.size)}
               {payload.version && <span> • v{payload.version}</span>}
             </div>
@@ -268,7 +277,7 @@ function PayloadList({ payloads, profiles, onFetchUrl, onSend, onDelete, onUpdat
         {isExpanded && (
           <div
             className="comp-card-footer"
-            style={{ flexWrap: 'wrap', gap: 6, padding: '6px 10px' }}
+            style={{ flexWrap: 'wrap', gap: 8, padding: '10px 14px' }}
           >
             {/* Inline check result. First in the row with an auto right
                 margin: the footer right-aligns its children, so putting it
@@ -353,28 +362,25 @@ function PayloadList({ payloads, profiles, onFetchUrl, onSend, onDelete, onUpdat
   };
 
   return (
-    <div>
-      {/* Compact list header. h2 shrunk from 1.25rem to 1rem and the
-          count subtitle to 0.72rem so the chrome above the list takes
-          maybe ~30 % less vertical space, leaving more room for items. */}
-      <div className="flex justify-between items-center mb-sm">
-        <div>
-          <h2 className="font-bold" style={{ fontSize: '1rem', margin: 0, lineHeight: 1.2 }}>Payloads</h2>
-          <span className="text-muted" style={{ fontSize: '0.72rem' }}>
+    <div className="screen screen-payloads">
+      <div className="screen-heading payloads-heading">
+        <div className="screen-heading-copy">
+          <h1 className="screen-title">Payloads</h1>
+          <span className="screen-subtitle">
             {visiblePayloads.length} loaded
             {hiddenCount > 0 && (
               <> · <span title={`${hiddenCount} payload(s) hidden by the ${mode.toUpperCase()} platform filter`}>{hiddenCount} hidden</span></>
             )}
           </span>
         </div>
-        <div className="flex gap-sm">
+        <div className="screen-heading-actions">
           {onRestoreDefaults && (
             <button
               className="btn btn-sm btn-ghost"
-              title="Re-download the built-in payloads (log + templates)"
+              title="Restore the payloads included with P5 Manager"
               onClick={() => onRestoreDefaults(false)}
             >
-              ✨ Defaults
+              ✨ Restore built-ins
             </button>
           )}
           <button className="btn btn-sm btn-secondary" onClick={() => setMultiSelect(!multiSelect)}>
@@ -415,8 +421,8 @@ function PayloadList({ payloads, profiles, onFetchUrl, onSend, onDelete, onUpdat
         <EmptyState
           icon="🧷"
           title="No built-in payloads present"
-          text="None of the app-required payloads (log viewer, FTP server, PIN pairing, offline activation, PKG installer) are on disk yet. Hit ✨ Defaults to put them back: the app's own ones come with it, the others are fetched from GitHub."
-          action={onRestoreDefaults && <button className="btn btn-primary" onClick={() => onRestoreDefaults(false)}>✨ Defaults</button>}
+          text="These payloads are needed by built-in features such as logs, Remote Play pairing and account activation. Restore them to make those features available again."
+          action={onRestoreDefaults && <button className="btn btn-primary" onClick={() => onRestoreDefaults(false)}>✨ Restore built-ins</button>}
         />
       ) : visiblePayloads.length === 0 ? (
         <EmptyState

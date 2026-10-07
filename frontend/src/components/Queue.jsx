@@ -233,7 +233,7 @@ function QueueItem({ item, queuePaused, onRemove, onRetry, onMove, onStart, onPa
         <div
           style={{ flex: 1, minWidth: 0, cursor: needsPassword ? 'pointer' : undefined }}
           onClick={needsPassword ? () => onPassword(item) : undefined}
-          title={needsPassword ? 'Click to enter the archive password' : undefined}
+          title={needsPassword ? 'Select to enter the archive password' : undefined}
         >
           <div className="text-sm truncate" style={{ fontWeight: 500 }} title={itemTitle(item)}>
             {itemTitle(item)}
@@ -570,9 +570,9 @@ export default function Queue() {
         {filtered.length === 0 ? (
           <div className="empty-state">
             <div className="empty-state-icon">📋</div>
-            <div className="empty-state-title">No active tasks</div>
+            <div className="empty-state-title">You’re all caught up</div>
             <div className="empty-state-text">
-              Add tasks from the Files, Convert or Download tabs and start them here.
+              Tasks you add from Files, Convert or Downloads will appear here.
             </div>
           </div>
         ) : (

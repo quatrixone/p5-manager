@@ -7,6 +7,7 @@ import DualPane from './DualPane';
 import GameCompressor from './GameCompressor';
 import useVisiblePolling from '../hooks/useVisiblePolling';
 import { apiSafe } from '../lib/api.js';
+import { usePlatform } from '../contexts/PlatformContext';
 
 const STORAGE_TAB = 'fileops.tab';
 const STORAGE_DUAL = 'fileops.dualPane';
@@ -58,15 +59,14 @@ const TABS = [
 ];
 
 export default function FileOps({ profiles, onNotification }) {
+  const { mode } = usePlatform();
   const [subTab, setSubTab] = useState(() => {
     try { return localStorage.getItem(STORAGE_TAB) || 'files'; } catch (_) { return 'files'; }
   });
   // When a file is "Convert now"-d from a different sub-tab, we stash it and
   // bounce to the Convert tab which picks it up via `initialPick`.
   const [pendingConvertPick, setPendingConvertPick] = useState(null);
-  const [activeConsoleType, setActiveConsoleType] = useState(() =>
-    String((profiles.find(p => p.is_default) || profiles[0])?.console_type || '').toLowerCase() || null,
-  );
+  const [browsedConsoleType, setBrowsedConsoleType] = useState(null);
 
   // Browse tab: one browser, or two side by side with drag & drop between them.
   const [dualPane, setDualPane] = useState(() => {
@@ -79,6 +79,9 @@ export default function FileOps({ profiles, onNotification }) {
 
   const counts = useQueueCounts();
   const hasPs5 = profiles.some(p => String(p.console_type || 'ps5').toLowerCase() !== 'ps4');
+  const activeConsoleType = browsedConsoleType || (mode === 'all'
+    ? String((profiles.find(p => p.is_default) || profiles[0])?.console_type || '').toLowerCase() || null
+    : mode);
   const showConvert = hasPs5 && activeConsoleType !== 'ps4';
   const visibleTabs = useMemo(() => TABS.filter(t => t.key !== 'convert' || showConvert), [showConvert]);
 
@@ -88,17 +91,11 @@ export default function FileOps({ profiles, onNotification }) {
   }, []);
 
   useEffect(() => {
-    if (!activeConsoleType && profiles.length) {
-      setActiveConsoleType(String((profiles.find(p => p.is_default) || profiles[0])?.console_type || '').toLowerCase() || null);
-    }
-  }, [activeConsoleType, profiles]);
-
-  useEffect(() => {
     if (subTab === 'convert' && !showConvert) switchTab('files');
   }, [subTab, showConvert, switchTab]);
 
   const onConsolePlatformChange = useCallback((platform) => {
-    setActiveConsoleType(String(platform || '').toLowerCase() || null);
+    setBrowsedConsoleType(String(platform || '').toLowerCase() || null);
   }, []);
 
   const openQueue = useCallback(() => switchTab('queue'), [switchTab]);
@@ -108,14 +105,14 @@ export default function FileOps({ profiles, onNotification }) {
   }, [switchTab]);
 
   return (
-    <div className={`fileops ${subTab === 'files' ? 'fileops--files' : ''}`}>
+    <div className={`screen screen-fileops fileops ${subTab === 'files' ? 'fileops--files' : ''}`}>
       <header className="fileops-header">
         <div className="fileops-title">
           <span className="fileops-title-icon" aria-hidden>📂</span>
           <div className="fileops-title-text">
             <div className="fileops-title-h">Files &amp; Operations</div>
             <div className="fileops-title-sub">
-              Browse local, SMB and PS4/PS5 FTP · Upload / Download / Convert / Extract — all from one ⋮ menu
+              Browse files · Install PKG on PS4 · Upload, download, convert and extract
             </div>
           </div>
         </div>
@@ -158,7 +155,7 @@ export default function FileOps({ profiles, onNotification }) {
                 ◫ Two panes
               </button>
               {dualPane && (
-                <span className="text-xs text-muted">Drag files from one pane to the other, then pick Copy or Move. On touch screens use Select, then Copy / Move to other pane.</span>
+                <span className="text-xs text-muted">Drag files between panels, then choose Copy or Move. On a phone or tablet, tap Select and choose Copy or Move.</span>
               )}
             </div>
             {dualPane ? (

@@ -58,7 +58,7 @@ function ScriptRunner({ ip, liveSession, onStartSession, onStopSession, sendComm
 
   const runCommand = async (cmd, params = '') => {
     if (!liveSession) {
-      addOutput('No live Remote Play session - hit Start session above first', 'error');
+      addOutput('Start a Remote Play session before running this script.', 'error');
       return false;
     }
     try {
@@ -402,7 +402,7 @@ function ScriptRunner({ ip, liveSession, onStartSession, onStopSession, sendComm
           {scriptsTab === 'saved' && (
             !scripts || scripts.length === 0 ? (
               <div className="text-sm text-muted">
-                No saved scripts yet. Press <b>＋ New</b> above to create one.
+                No saved scripts yet. Choose <b>＋ New</b> above to create one.
               </div>
             ) : (
               <div className="flex-col" style={{ gap: 6, maxHeight: 260, overflowY: 'auto' }}>
@@ -443,7 +443,7 @@ function ScriptRunner({ ip, liveSession, onStartSession, onStopSession, sendComm
       <div className="comp-card">
         <div className="comp-card-header" style={{ alignItems: 'center' }}>
           <span className="comp-card-title" style={{ fontSize: '0.85rem' }}>🎮 Manual controls</span>
-          {!liveSession && <span className="text-xs text-muted">Tap a button to start a session</span>}
+          {!liveSession && <span className="text-xs text-muted">Choose a control to start a Remote Play session.</span>}
         </div>
         <div className="comp-card-body">
           <div className="gamepad">

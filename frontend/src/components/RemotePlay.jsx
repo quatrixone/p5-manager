@@ -8,6 +8,7 @@ import RemotePlayVideo, { webrtcPlayable } from './RemotePlayVideo';
 import RemotePlayPairing from './RemotePlayPairing';
 import { pairRemotePlay, sameAccountId } from '../lib/remotePlayPairing.js';
 import { detectFocusedControlCenterIcon, shortestPathOnRing, CONTROL_CENTER_SLOT_COUNT, CONTROL_CENTER_HOME_INDEX } from '../lib/controlCenterNav.js';
+import { payloadMatchesPlatform } from '../lib/payloadPlatform.js';
 
 const API = '/api/remoteplay';
 // Paths used with `api.*` are relative to /api, so the Remote Play sidecar's
@@ -16,6 +17,14 @@ const RP = '/remoteplay';
 
 const RP_RESOLUTIONS = ['360p', '540p', '720p', '1080p'];
 const RP_FPS = [30, 60];
+const FULLSCREEN_TRANSPARENCY_KEY = 'p5manager.fullscreenControllerTransparency';
+
+function readFullscreenTransparency() {
+  try {
+    const value = Number(localStorage.getItem(FULLSCREEN_TRANSPARENCY_KEY));
+    return Number.isFinite(value) && value >= 0 && value <= 90 ? value : 72;
+  } catch (_) { return 72; }
+}
 
 function readPref(key, allowed, fallback) {
   try {
@@ -108,7 +117,7 @@ function HoldButton({
   // For colour-coded face buttons we get a tinted background prop. Default
   // is a neutral glass panel. The pressed state simply boosts opacity +
   // adds a soft glow so the same visual works on any tint.
-  const baseBg = background || 'rgba(18, 22, 32, 0.28)';
+  const baseBg = background || 'rgba(18, 22, 32, var(--fs-control-alpha, 0.28))';
   const pressedBg = background
     ? background.replace(/rgba?\(([^)]+)\)/, (_, parts) => {
         // bump the alpha of the supplied colour to ~0.95 on press
@@ -221,7 +230,7 @@ function AnalogStick({ side, onChange, size = 130, showLabel = true, compact = f
       style={{
         width: size, height: size,
         borderRadius: '50%',
-        background: transparent ? 'rgba(18, 22, 32, 0.25)' : 'var(--panel2)',
+        background: transparent ? 'rgba(18, 22, 32, var(--fs-control-alpha, 0.25))' : 'var(--panel2)',
         position: 'relative',
         border: transparent
           ? `1px solid rgba(255,255,255,${active ? 0.45 : 0.20})`
@@ -430,12 +439,28 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
   const [payloadsList, setPayloadsList] = useState([]);
   const [payloadsLoaded, setPayloadsLoaded] = useState(false);
   const [sendingPayloadId, setSendingPayloadId] = useState(null);
+  const payloadPlatform = String(profile?.console_type || '').toLowerCase();
+  const sessionPayloads = useMemo(
+    () => ['ps4', 'ps5'].includes(payloadPlatform)
+      ? payloadsList.filter(payload => payloadMatchesPlatform(payload, payloadPlatform))
+      : payloadsList,
+    [payloadsList, payloadPlatform]
+  );
 
   // Fullscreen video + touch-controls overlay. `fsActive` is the *user
   // intent* (toggled by the button). We also listen to fullscreenchange so
   // Esc / browser back / OS gestures collapse the overlay cleanly.
   const videoContainerRef = useRef(null);
   const [fsActive, setFsActive] = useState(false);
+  const [fullscreenTransparency, setFullscreenTransparency] = useState(readFullscreenTransparency);
+  useEffect(() => {
+    const sync = (event) => {
+      const value = Number(event.detail);
+      if (Number.isFinite(value)) setFullscreenTransparency(Math.max(0, Math.min(90, value)));
+    };
+    window.addEventListener('fullscreen-controller-transparency-change', sync);
+    return () => window.removeEventListener('fullscreen-controller-transparency-change', sync);
+  }, []);
   // The Scripts-tab <img> (renderTabVideo) - resetToMainScreen() below
   // draws its current frame to a canvas to see which Control Center icon
   // is focused.
@@ -905,7 +930,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
 
   const finishOAuth = async () => {
     if (!redirectUrl.trim()) return;
-    if (!profile) { onNotification?.('Pick a profile first', 'warning'); return; }
+    if (!profile) { onNotification?.('Select a console first.', 'warning'); return; }
     setOauthBusy(true);
     try {
       const r = await api.post(`${RP}/oauth/exchange`, {
@@ -1035,7 +1060,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
 
   // Activate/read the foreground account through the console-specific payload.
   const activateOffline = async () => {
-    if (!profile) { onNotification?.('Pick a profile first', 'warning'); return; }
+    if (!profile) { onNotification?.('Select a console first.', 'warning'); return; }
     if (liveSession || pairingGuard.current) return;
     setOffactBusy(true);
     setOneClickResult(null);
@@ -1167,17 +1192,17 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
   const explainStartError = (msg) => {
     const m = (msg || '').toLowerCase();
     if (/another remote play session/.test(m))
-      return ' Tip: click 📡 Wake PS5 to claim the slot, or close any other Remote Play / Chiaki-ng client connected to this PS5.';
+      return ` Try Wake ${pairConsoleLabel}, or close any other Remote Play / Chiaki-ng client connected to it.`;
     if (/connection refused|errno 111/.test(m))
-      return ' Tip: PS5 Remote Play service is restarting. Wait ~30 s and try 📡 Wake PS5. If it persists, hard-reset the console (hold power 7 s).';
+      return ` ${pairConsoleLabel}’s Remote Play service may be restarting. Wait about 30 seconds, then try Wake ${pairConsoleLabel} again.`;
     if (/didn.?t wake up|standby/.test(m))
-      return ' Tip: PS5 stayed in rest mode - check it has network access (Settings → System → Power Saving → Features in Rest Mode → Stay Connected to the Internet).';
+      return ` Make sure ${pairConsoleLabel} can connect to the network while in rest mode.`;
     if (/credentials|profile|re-pair|no remote play/.test(m))
       return ' Tip: re-pair the console in Remote Play Settings.';
     if (/timeout/.test(m))
-      return ' Tip: sidecar took too long. Try 🧹 Force reset, then 📡 Wake PS5.';
+      return ` The Remote Play service took too long to respond. Try Force reset, then Wake ${pairConsoleLabel}.`;
     if (/not reachable|no status/.test(m))
-      return ' Tip: PS5 is offline. Check it is powered on and on the same network as this server.';
+      return ` Check that ${pairConsoleLabel} is on and connected to the same network as this app.`;
     return '';
   };
 
@@ -1900,7 +1925,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
         onModeChange={setVideoMode}
       />
     ) : (
-      <div className="text-muted text-sm">No video session yet - hit Start session above.</div>
+        <div className="text-muted text-sm">Start a Remote Play session to see the stream here.</div>
     )
   );
 
@@ -2202,14 +2227,15 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
 
   function renderFullscreenOverlay() {
     const handleStick = (side) => ({ x, y }) => onStick(side)({ x, y });
+    const controlAlpha = Math.max(0.1, 1 - fullscreenTransparency / 100);
 
     // PS5-themed translucent tints. Press state brings each to ~0.95 alpha
     // automatically (see HoldButton).
     const btnBg = {
-      cross: 'rgba(94, 156, 255, 0.30)',
-      circle: 'rgba(231, 76, 76, 0.30)',
-      square: 'rgba(255, 128, 230, 0.30)',
-      triangle: 'rgba(100, 220, 140, 0.30)',
+      cross: `rgba(94, 156, 255, ${controlAlpha})`,
+      circle: `rgba(231, 76, 76, ${controlAlpha})`,
+      square: `rgba(255, 128, 230, ${controlAlpha})`,
+      triangle: `rgba(100, 220, 140, ${controlAlpha})`,
     };
 
     // Responsive sizing - clamp(min, vh-based, max). Landscape phones tend
@@ -2256,20 +2282,20 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
             size={numHint('shoulder')} style={{ width: SZ.shoulder, height: SZ.shoulder }} />
         </div>
 
-        {/* ─── Top-center: system buttons (PS / Touch / Opt / Share) ────
-            Moved up from the bottom so the bottom half is free for the
-            primary face / d-pad / stick clusters - matches most mobile
-            game overlays (Steam Link, Moonlight). */}
+        {/* ─── Lower-center: system buttons (PS / Touch / Opt / Share) ───
+            A compact two-row cluster keeps the upper edge of the game clear
+            and stays between the two analog sticks on a phone in landscape. */}
         <div style={{
           position: 'absolute',
-          top: 'max(12px, env(safe-area-inset-top))',
+          bottom: 'max(8px, env(safe-area-inset-bottom))',
           left: '50%', transform: 'translateX(-50%)',
-          display: 'flex', gap: 6,
+          display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: 6,
+          width: 'min(92vw, 320px)',
           pointerEvents: 'auto',
-          background: 'rgba(10, 12, 18, 0.30)',
+          background: `rgba(10, 12, 18, ${controlAlpha})`,
           WebkitBackdropFilter: 'blur(10px) saturate(140%)',
           backdropFilter: 'blur(10px) saturate(140%)',
-          padding: '4px 8px', borderRadius: 999,
+          padding: '5px 8px', borderRadius: 18,
           border: '1px solid rgba(255,255,255,0.15)',
         }}>
           <HoldButton id="ps" label="PS" onPress={overlayPress} onRelease={overlayRelease}
@@ -2309,17 +2335,12 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
           <HoldButton id="shake" label="Shk"
             onPress={() => sendShake(700, 0.85)}
             onRelease={() => { /* one-shot, daemon thread on sidecar */ }}
-            background="rgba(245, 166, 35, 0.30)"
+            background={`rgba(245, 166, 35, ${controlAlpha})`}
             size={numHint('sys')} fontSize={13}
             style={{ width: SZ.sys, height: SZ.sys }} />
         </div>
 
-        {/* ─── Record toggle (just below the system-button strip) ────────
-            A dedicated REC button is needed here because the inline button
-            (top-right on the video) is hidden in fullscreen — that corner
-            is now occupied by the R1/R2 cluster. Centred below the system
-            row sits in an empty band on every supported viewport and never
-            crosses into the d-pad / face / shoulder territory. */}
+        {/* ─── Record toggle in the upper-right corner ────────────────── */}
         <button
           type="button"
           onClick={recording ? stopRecording : startRecording}
@@ -2327,11 +2348,11 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
           className={recording ? 'rp-rec-btn rp-rec-active' : 'rp-rec-btn'}
           style={{
             position: 'absolute',
-            top: 'calc(max(12px, env(safe-area-inset-top)) + clamp(48px, 7vh, 60px))',
-            left: '50%', transform: 'translateX(-50%)',
+            top: 'max(12px, env(safe-area-inset-top))',
+            right: 'calc(max(12px, env(safe-area-inset-right)) + 104px)',
             height: 36, minWidth: 36, padding: recording ? '0 10px' : 0,
             borderRadius: 999,
-            background: recording ? 'rgba(220, 50, 50, 0.85)' : 'rgba(10, 12, 18, 0.55)',
+            background: recording ? 'rgba(220, 50, 50, 0.85)' : `rgba(10, 12, 18, ${controlAlpha})`,
             color: '#fff', border: '1px solid rgba(255,255,255,0.25)',
             fontSize: recording ? 12 : 14, fontWeight: 700, cursor: 'pointer',
             display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
@@ -2451,8 +2472,8 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
     return (
       <div className="empty-state">
         <div className="empty-state-icon">🎮</div>
-        <div className="empty-state-title">No profile yet</div>
-        <div className="empty-state-text">Create a console profile in Settings first.</div>
+        <div className="empty-state-title">No console selected</div>
+        <div className="empty-state-text">Add a console in Settings → Your consoles to get started.</div>
       </div>
     );
   }
@@ -2583,9 +2604,9 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
                 : warmCache
                   ? `⚡ Warm cache ready (${Math.round(warmCache.ttl_s)}s left${warmCache.resolution ? `, ${warmCache.resolution}` : ''}) — Start session will resume in milliseconds.`
                 : ps5State?.error
-                  ? '⚠ PS5 is offline / unreachable — check network and power on the console.'
+                  ? `⚠ ${pairConsoleLabel} is offline or unreachable. Check its power and network connection.`
                   : (ps5State?.code === 620 || /standby/i.test(ps5State?.status || ''))
-                    ? '🌙 PS5 is in rest mode. Start session will wake it (15-90 s). Tip: 📡 Wake PS5 first if you want it ready in the background.'
+                    ? `🌙 ${pairConsoleLabel} is in rest mode. Starting a session will wake it. Use Wake ${pairConsoleLabel} to prepare it in advance.`
                     : 'Start a control-only Remote Play session. By default the video stream is ignored - tick "Stream video" below if you want a live preview (uses more CPU).'
         }
       >
@@ -2716,12 +2737,13 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
           onOpenScripts={fetchExistingScripts}
           onRunScript={(sc) => runFullScript(sc.script, sc.name)}
           scriptRunning={runningPickedScript}
-          payloads={payloadsList}
+          payloads={sessionPayloads}
           payloadsLoaded={payloadsLoaded}
           onOpenPayloads={() => { if (!payloadsLoaded) fetchPayloadsList(); }}
           onSendPayload={sendPayload}
           sendingPayloadId={sendingPayloadId}
           targetName={profile?.name}
+          payloadPlatform={payloadPlatform}
         />
 
         {sessionViewTab === 'control' && (
@@ -2776,8 +2798,12 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
                   maxWidth: fsActive ? undefined : 'var(--rp-video-max, 640px)',
                   margin: fsActive ? 0 : '0 auto',
                   width: fsActive ? '100vw' : '100%',
-                  height: fsActive ? '100vh' : undefined,
+                  // dvh tracks the visible mobile viewport as browser chrome
+                  // and the on-screen controls change; 100vh can leave a
+                  // black strip or clip controls on iOS/Android.
+                  height: fsActive ? '100dvh' : undefined,
                   touchAction: fsActive ? 'none' : undefined,
+                  '--fs-control-alpha': fsActive ? String(Math.max(0.1, 1 - fullscreenTransparency / 100)) : undefined,
                 }}
               >
                 <RemotePlayVideo
@@ -2812,7 +2838,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
                       left: fsActive ? 'max(12px, env(safe-area-inset-left))' : 'auto',
                       right: fsActive ? 'auto' : 8,
                       width: 44, height: 44, borderRadius: 8,
-                      background: 'rgba(0,0,0,0.55)',
+                      background: `rgba(0,0,0,${fsActive ? Math.max(0.1, 1 - fullscreenTransparency / 100) : 0.55})`,
                       color: '#fff', border: '1px solid rgba(255,255,255,0.3)',
                       fontSize: 20, cursor: 'pointer',
                       display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -2834,7 +2860,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
                     left: fsActive ? 'max(12px, env(safe-area-inset-left))' : 'auto',
                     right: fsActive ? 'auto' : 8,
                     width: 44, height: 44, borderRadius: 8,
-                    background: 'rgba(0,0,0,0.55)',
+                    background: `rgba(0,0,0,${fsActive ? Math.max(0.1, 1 - fullscreenTransparency / 100) : 0.55})`,
                     color: '#fff', border: '1px solid rgba(255,255,255,0.3)',
                     fontSize: 22, fontWeight: 700, cursor: 'pointer',
                     display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -2954,7 +2980,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
             </datalist>
             {stepPanel ? (
               <>
-                <div className="flex items-center justify-between mb-sm" style={{ flexWrap: 'wrap', gap: 6 }}>
+                <div className="flex items-center justify-between mb-sm step-editor-heading" style={{ flexWrap: 'wrap', gap: 6 }}>
                   <span className="font-bold" style={{ fontSize: '0.9rem' }}>👣 {stepPanel.name}</span>
                   <div className="flex gap-sm">
                     <button className="btn btn-ghost btn-sm" onClick={closeStepPanel}>✕ Close</button>
@@ -2998,7 +3024,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
                         moved out of the manual pad and the panel header
                         respectively so every step-editor action lives in
                         one place. */}
-                    <div className="flex items-center gap-sm mb-sm" style={{ flexWrap: 'wrap' }}>
+                    <div className="flex items-center gap-sm mb-sm step-editor-actions" style={{ flexWrap: 'wrap' }}>
                       <button
                         type="button"
                         className="btn btn-secondary btn-sm"
@@ -3031,7 +3057,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
                         script. Next/Prev/Restart just move the cursor;
                         "Replay to" runs forward from wherever the cursor
                         already is through the chosen step number. */}
-                    <div className="flex items-center gap-sm mb-sm" style={{ flexWrap: 'wrap' }}>
+                    <div className="flex items-center gap-sm mb-sm step-editor-navigation" style={{ flexWrap: 'wrap' }}>
                       <button
                         className="btn btn-ghost btn-sm"
                         onClick={stepPrev}
@@ -3120,7 +3146,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
 
                       {stepPanel.steps.length === 0 && (
                         <div className="text-sm text-muted" style={{ padding: '8px 0' }}>
-                          No commands yet - use the ＋ above to add the first one.
+                          No steps yet. Choose ＋ above to add the first command.
                         </div>
                       )}
 
@@ -3245,7 +3271,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
             <div className="rp-rec-modal-body">
               {recExistingScripts.length === 0 ? (
                 <div className="text-sm text-muted">
-                  No scripts yet - record one (● above) or create one in the Scripts tab.
+                  No scripts yet. Record one above or create one in the Input Scripts tab.
                 </div>
               ) : (
                 <div className="flex-col" style={{ gap: 6, maxHeight: 320, overflowY: 'auto' }}>

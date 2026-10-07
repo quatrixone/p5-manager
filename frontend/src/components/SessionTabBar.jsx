@@ -10,7 +10,7 @@ export default function SessionTabBar({
   viewTab, onSelectTab,
   scripts, onOpenScripts, onRunScript, scriptRunning,
   payloads, payloadsLoaded, onOpenPayloads, onSendPayload, sendingPayloadId,
-  targetName,
+  targetName, payloadPlatform,
 }) {
   const [menu, setMenu] = useState(null); // null | 'scripts' | 'payloads'
   const [scriptId, setScriptId] = useState(null);
@@ -38,6 +38,10 @@ export default function SessionTabBar({
 
   const script = scripts.find(s => s.id === scriptId) || null;
   const payload = payloads.find(p => p.id === payloadId) || null;
+
+  useEffect(() => {
+    if (payloadId != null && !payloads.some(p => p.id === payloadId)) setPayloadId(null);
+  }, [payloads, payloadId]);
 
   return (
     <div className="session-tabbar mb-sm" ref={wrapRef}>
@@ -121,7 +125,9 @@ export default function SessionTabBar({
               value={payloadId}
               onChange={setPayloadId}
               placeholder="Search payloads…"
-              emptyText="No payloads found - add some in the Payloads tab"
+              emptyText={payloads.length
+                ? 'No matching payloads found'
+                : `No ${payloadPlatform?.toUpperCase() || 'console'} payloads available - add some in the Payloads tab`}
               autoFocus
             />
           )}

@@ -17,7 +17,7 @@ export default function RemotePlayPairing({ consoleLabel, menuPath, paired, live
   return (
     <section className="card flex-col gap-md" aria-label={`Pair ${consoleLabel}`}>
       <div className="flex gap-sm flex-wrap items-center justify-between">
-        <h3 style={{ margin: 0 }}>Pair {consoleLabel}</h3>
+        <h3 style={{ margin: 0 }}>Pair {consoleLabel} for Remote Play</h3>
         <span className="text-sm" style={{ color: paired ? 'var(--green)' : 'var(--muted)' }}>
           {paired ? '✓ Paired for Remote Play' : 'Not paired yet'}
         </span>
@@ -32,9 +32,9 @@ export default function RemotePlayPairing({ consoleLabel, menuPath, paired, live
       </p>
       <div className="flex gap-sm flex-wrap" role="group" aria-label="Pairing method">
         <button type="button" className={`btn btn-sm ${automatic ? 'btn-secondary' : 'btn-ghost'}`}
-          aria-pressed={automatic} disabled={busy} onClick={() => setMethod('automatic')}>Jailbreak ON · Automatic</button>
+          aria-pressed={automatic} disabled={busy} onClick={() => setMethod('automatic')}>Jailbreak enabled · Automatic</button>
         <button type="button" className={`btn btn-sm ${!automatic ? 'btn-secondary' : 'btn-ghost'}`}
-          aria-pressed={!automatic} disabled={busy} onClick={() => setMethod('manual')}>Jailbreak OFF · Manual</button>
+          aria-pressed={!automatic} disabled={busy} onClick={() => setMethod('manual')}>No jailbreak · Manual</button>
       </div>
       {liveSession && <div className="text-sm" role="status" style={{ color: 'var(--yellow)' }}>
         Stop the live Remote Play session before pairing.
@@ -52,8 +52,8 @@ export default function RemotePlayPairing({ consoleLabel, menuPath, paired, live
         <details>
           <summary className="text-sm text-muted" style={{ cursor: 'pointer' }}>Individual steps</summary>
           <div className="flex gap-sm flex-wrap" style={{ marginTop: 8 }}>
-            <button type="button" className="btn btn-secondary btn-sm" disabled={!canAct} onClick={onActivate}>Read / activate account</button>
-            <button type="button" className="btn btn-secondary btn-sm" disabled={!canAct} onClick={onFetchPin}>Auto-fetch PIN</button>
+          <button type="button" className="btn btn-secondary btn-sm" disabled={!canAct} onClick={onActivate}>Check / activate account</button>
+          <button type="button" className="btn btn-secondary btn-sm" disabled={!canAct} onClick={onFetchPin}>Get PIN from console</button>
           </div>
           {activationResult?.success && <p className="text-sm" style={{ color: 'var(--green)' }}>
             ✓ {activationResult.user || 'Account'}: {activationResult.activated === 'already' ? 'Already activated' : 'Activated'}
@@ -66,7 +66,7 @@ export default function RemotePlayPairing({ consoleLabel, menuPath, paired, live
           Offline activation requires jailbreak. For an account already activated on the console, choose PSN Activated and use its PIN.
         </p>}
         <p className="text-sm text-muted" style={{ margin: 0 }}>{menuPath}. Enter the eight-digit PIN shown on the console.</p>
-        {!account.linked && <p className="text-sm" style={{ margin: 0 }}>Link your PSN account below before pairing manually.</p>}
+        {!account.linked && <p className="text-sm" style={{ margin: 0 }}>Link your PSN account below before entering the PIN.</p>}
         <ManualPin pin={pin} setPin={setPin} disabled={!canAct || !account.linked || offline} onPair={onPair} />
       </>)}
       {progress && <div className="text-sm" role="status" aria-live="polite" style={{ color: result?.success ? 'var(--green)' : 'var(--text)' }}>{progress}</div>}
@@ -76,7 +76,7 @@ export default function RemotePlayPairing({ consoleLabel, menuPath, paired, live
         <pre style={{ maxHeight: 180, overflow: 'auto', whiteSpace: 'pre-wrap', fontSize: '0.75rem' }}>{details.join('\n')}</pre>
       </details>}
       {account.mismatch && <div className="text-sm" role="status" style={{ color: 'var(--yellow)' }}>
-        <p>Sony account differs from the console account. The Sony account is saved, while pairing and activation continue to use the existing console account. Sony is only adopted if the console slot has no account.</p>
+        <p>A different Sony account is linked. Pairing and activation will keep using the account already on the console. The Sony account is used only if the console has no account.</p>
         <p>Console ID: {account.consoleId}<br />Sony ID: {account.sonyId}</p>
       </div>}
       <details open={!account.linked && (!automatic || !!error)}>
@@ -92,7 +92,7 @@ export default function RemotePlayPairing({ consoleLabel, menuPath, paired, live
               {account.id && <span style={{ fontSize: '0.9em', opacity: 0.8 }}>ID: {account.id}</span>}
               <span style={{ marginTop: 4 }}>Add Sony account</span>
             </span>
-          ) : 'Link PSN account · Sony login or account ID'}
+          ) : 'Link a PSN account'}
         </summary>
         <div className="flex-col gap-sm" style={{ marginTop: 8 }}>
           <p className="text-sm text-muted" style={{ margin: 0 }}>
@@ -101,7 +101,7 @@ export default function RemotePlayPairing({ consoleLabel, menuPath, paired, live
           </p>
           <div className="flex gap-sm flex-wrap">
             <button type="button" className="btn btn-primary btn-sm" disabled={busy || account.busy || disabled} onClick={account.onLogin}>Open Sony login</button>
-            {account.sonyLinked && <button type="button" className="btn btn-ghost btn-sm" disabled={busy || account.busy} onClick={account.onForget}>Forget Sony account</button>}
+            {account.sonyLinked && <button type="button" className="btn btn-ghost btn-sm" disabled={busy || account.busy} onClick={account.onForget}>Remove Sony account</button>}
           </div>
           {account.loginUrl && <a href={account.loginUrl} target="_blank" rel="noopener noreferrer">Continue Sony sign-in</a>}
           <label className="text-sm">Redirect URL after sign-in</label>
@@ -117,7 +117,7 @@ export default function RemotePlayPairing({ consoleLabel, menuPath, paired, live
           </div>
         </div>
       </details>
-      {paired && <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={onForgetPair}>Forget pairing</button>}
+      {paired && <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={onForgetPair}>Remove pairing</button>}
     </section>
   );
 }
