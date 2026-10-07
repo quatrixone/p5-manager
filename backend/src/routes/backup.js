@@ -3,7 +3,7 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import AdmZip from 'adm-zip';
-import { getRepo, log } from '../db/sqlite.js';
+import { getRepo, log, migrateLegacySettings } from '../db/sqlite.js';
 import { payloadsDir } from '../lib/paths.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -116,6 +116,8 @@ router.post('/', (req, res) => {
           [setting.key, setting.value],
         );
       }
+      // An older backup still has the settings under their former names.
+      migrateLegacySettings();
     }
 
     if (data.payloads && data.payloads.length > 0) {

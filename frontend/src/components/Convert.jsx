@@ -588,8 +588,8 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
         </div>
         <div className="convert-intro-hint">
           Pack a single file or a game-dump folder into a PS5-mountable image:
-          {' '}<code>.ffpfsc</code> via <code>mkpfs</code> for ShadowMount+ /
-          MicroMount, or raw <code>.exfat</code> via <code>mkfs.exfat</code> +
+          {' '}<code>.ffpfsc</code> via <code>mkpfs</code> for ShadowMount+,
+          or raw <code>.exfat</code> via <code>mkfs.exfat</code> +
           loop-mount. Pick the target format below. Sources are scanned from
           <code> {workdir || 'data/mkpfs'}</code>.
         </div>
@@ -739,7 +739,7 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
               <strong style={{ color: C.text }}>exFAT image build:</strong> formats a sparse
               container with <code>mkfs.exfat</code>, loop-mounts it inside the manager and
               <code>rsync</code>s your source in. Image size is auto-computed (payload + ~10% headroom,
-              min 64 MiB). Mountable on PS5 directly via ShadowMount+ / MicroMount.
+              min 64 MiB). Mountable on PS5 directly via ShadowMount+.
             </div>
           )}
 

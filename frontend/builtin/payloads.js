@@ -65,15 +65,6 @@ export const ESSENTIAL_PAYLOADS = [
     port: 9021,
     description: 'PS5 ShadowMountPlus 1.7beta3 (game mounting + Library API)',
   },
-  {
-    filename: 'micromount.elf',
-    // MicroMount releases ship a zip; the fetcher takes micromount.elf out of it.
-    url: 'https://github.com/PSBrew/MicroMount/releases/download/0.0.3/micromount_0.0.3.zip',
-    tag: 'community',
-    console_type: 'ps5',
-    port: 9021,
-    description: 'PS5 MicroMount ELF loader',
-  },
 
   // ===========================================================================
   // PS4 payloads — modern GoldHEN ecosystem (FW 5.05 → 11.00).

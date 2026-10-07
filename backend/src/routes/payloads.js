@@ -168,7 +168,7 @@ function detectConsoleTypeFromHints({ filename, url } = {}) {
   if (/(\b)(ps4|fw9\.00|fw5\.05|fw7\.55|fw6\.72)(\b)/.test(blob)) return 'ps4';
 
   // Strong PS5 keywords / repos.
-  if (/ps5-payload-dev|ps5_payload|byepervisor|kstuff|backpork|micromount|p2jb/.test(blob)) return 'ps5';
+  if (/ps5-payload-dev|ps5_payload|byepervisor|kstuff|backpork|p2jb/.test(blob)) return 'ps5';
   if (/(\b)ps5(\b)/.test(blob)) return 'ps5';
   if (lc.endsWith('.lua')) return 'ps5';
 

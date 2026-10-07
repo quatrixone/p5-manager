@@ -216,6 +216,8 @@ export async function initDatabase() {
     )
   `);
 
+  migrateLegacySettings(db);
+
   // Source registry (SMB + FTP origins used by the file browser). Previously
   // named `micromount_sources`; renamed to `convert_sources` to match the
   // /api/convert URL surface. The migration below renames legacy tables so
@@ -257,6 +259,21 @@ export async function initDatabase() {
 
   saveDatabase();
   return db;
+}
+
+// Settings that carried the name of a feature the app no longer has: the two
+// still in use move to a name of their own, the other two are dropped. Run
+// on start and after a backup is restored, which may bring the old names back.
+const RENAMED_SETTINGS = { micromount_ftp: 'ftp_login', micromount_browser_prefs: 'file_browser_prefs' };
+const DROPPED_SETTINGS = ['micromount_config', 'micromount_release_state'];
+export function migrateLegacySettings(target = db) {
+  try {
+    for (const [old, now] of Object.entries(RENAMED_SETTINGS)) {
+      target.run('INSERT OR IGNORE INTO settings (key, value) SELECT ?, value FROM settings WHERE key = ?', [now, old]);
+      target.run('DELETE FROM settings WHERE key = ?', [old]);
+    }
+    for (const key of DROPPED_SETTINGS) target.run('DELETE FROM settings WHERE key = ?', [key]);
+  } catch (_) { /* a database without the settings table yet */ }
 }
 
 export function getDatabase() {

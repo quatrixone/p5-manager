@@ -309,8 +309,6 @@ repos:
 
 - [PSBrew / MkPFS](https://github.com/PSBrew/MkPFS) — `mkpfs`,
   PFS packer/unpacker driving the `.ffpfsc` modes
-- [PSBrew / MicroMount](https://github.com/PSBrew/MicroMount) — one of
-  the built-in payloads
 - [kerrdec97 / ps5-exfat-builder](https://github.com/kerrdec97/ps5-exfat-builder)
   — Windows-side reference for the exFAT image pipeline
 - [ps5-payload-dev / sdk](https://github.com/ps5-payload-dev/sdk) —

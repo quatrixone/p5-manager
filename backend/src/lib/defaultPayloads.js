@@ -149,7 +149,7 @@ function detectConsoleTypeFromFilename(name) {
   if (lc.endsWith('.bin')) return 'ps4';
   if (/(^|[^a-z])(goldhen|mira|gold_hen|jkpatch)([^a-z]|$)/.test(lc)) return 'ps4';
   if (/(\b)(ps4|fw9\.00|fw5\.05|fw7\.55|fw6\.72)(\b)/.test(lc)) return 'ps4';
-  if (/ps5-payload-dev|ps5_payload|byepervisor|kstuff|backpork|micromount|p2jb/.test(lc)) return 'ps5';
+  if (/ps5-payload-dev|ps5_payload|byepervisor|kstuff|backpork|p2jb/.test(lc)) return 'ps5';
   if (/(\b)ps5(\b)/.test(lc)) return 'ps5';
   if (lc.endsWith('.lua')) return 'ps5';
   return null;

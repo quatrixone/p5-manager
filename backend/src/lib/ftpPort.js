@@ -25,7 +25,7 @@ export function ftpPortOf(profile) {
     const repo = getRepo();
     const legacy = valid(repo.queryScalar("SELECT value FROM settings WHERE key = 'ftp_control_port'"));
     if (legacy) return legacy;
-    const older = repo.queryScalar("SELECT value FROM settings WHERE key = 'micromount_ftp'");
+    const older = repo.queryScalar("SELECT value FROM settings WHERE key = 'ftp_login'");
     return valid(older && JSON.parse(older).port) || DEFAULT_FTP_PORTS.ps5;
   } catch (_) {
     return DEFAULT_FTP_PORTS.ps5;

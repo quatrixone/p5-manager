@@ -1,6 +1,6 @@
 // PS5-friendly exFAT image builder.
 //
-// ShadowMount+ / MicroMount on PS5 can mount a raw `.exfat` image straight
+// ShadowMount+ on PS5 can mount a raw `.exfat` image straight
 // off external storage — no UFS / PFS wrapper needed. The original Windows
 // pipeline (kerrdec97/ps5-exfat-builder) does this by:
 //

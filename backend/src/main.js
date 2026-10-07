@@ -131,13 +131,9 @@ app.use('/api/sequences', sequencesRouter);
 app.use('/api/settings', settingsRouter);
 app.use('/api/update', updateRouter);
 app.use('/api/input-scripts', inputScriptsRouter);
-// Mounted at /api/convert (was /api/micromount before the rename); kept as a
-// single big router covering FS browse, FTP upload queue, extract, convert
+// One big router covering FS browse, FTP upload queue, extract, convert
 // (pack/unpack via mkpfs) and the remote sources used by the file browser.
 app.use('/api/convert', convertRouter);
-// Backwards-compatibility alias so old browser tabs / scripts still work
-// against the previous URL prefix. Remove once everyone has refreshed.
-app.use('/api/micromount', convertRouter);
 app.use('/api/downloader', downloaderRouter);
 app.use('/api/events', eventsRouter);
 app.use('/api/remoteplay', remoteplayRouter);

@@ -63,7 +63,7 @@ function PayloadList({ payloads, profiles, onFetchUrl, onSend, onDelete, onUpdat
         if (cancelled || !Array.isArray(list)) return;
         // Only 'log' and 'template' entries are actual app dependencies
         // (Log viewer, Autoload templates). 'community' entries (kstuff,
-        // ps5-backpork, micromount) are pre-curated convenience downloads -
+        // ps5-backpork) are pre-curated convenience downloads -
         // nothing in the app breaks without them, so they belong in All,
         // not Built-in.
         const required = list.filter(p => p.tag === 'log' || p.tag === 'template');

@@ -43,7 +43,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     dumb-init python3 python3-pip python3-venv curl smbclient ftp rsync coreutils \
     p7zip-full unrar-free unar sudo \
     # exfatprogs ships mkfs.exfat for the Convert -> PS5 exFAT path
-    # (ShadowMount+ / MicroMount mountable images). util-linux gives us
+    # (ShadowMount+ mountable images). util-linux gives us
     # losetup so we can loop-mount the freshly-formatted image and inject
     # files via cp/rsync.
     #
