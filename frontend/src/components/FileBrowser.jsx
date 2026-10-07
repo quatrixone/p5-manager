@@ -35,6 +35,8 @@ const API = '/api';
 
 const isArchive = (n) => /\.(rar|7z|zip|tar\.gz|tgz|tar|r\d{2}|part\d+\.rar)$/i.test(n);
 const isPfsImage = (n) => /\.(ffpfs|ffpfsc|pfs|dat|bin)$/i.test(n);
+// An exFAT image unpacks too, through the backend's own mode for it.
+const isExfatImage = (n) => /\.exfat$/i.test(n);
 const isPkgFile  = (n) => /\.pkg$/i.test(n);
 
 export default function FileBrowser({
@@ -882,18 +884,25 @@ export default function FileBrowser({
   // <basename>-extracted. SMB sources need to be imported first (mkpfs needs
   // a local seekable input); PS5 FTP is supported via the staging dance.
   const enqueueUnpackDefault = async (entry) => {
-    if (entry.isDir || !isPfsImage(entry.name)) {
-      onNotification?.('Unpack expects a .ffpfsc/.ffpfs/.pfs file', 'error');
+    const exfat = !entry.isDir && isExfatImage(entry.name);
+    if (entry.isDir || !(isPfsImage(entry.name) || exfat)) {
+      onNotification?.('Unpack expects a .ffpfsc/.ffpfs/.pfs or .exfat file', 'error');
       return false;
     }
     const fullPath = path === '/' ? `/${entry.name}` : `${path.replace(/\/$/, '')}/${entry.name}`;
     // Output folder mirrors the pack convention (Game.exfat → Game.ffpfsc),
     // so .ffpfsc → folder named exactly Game/. No `-extracted` / `-final`
     // suffix — keep round-trips clean.
-    const base = entry.name.replace(/\.(ffpfs|ffpfsc|pfs|dat|bin)$/i, '').replace(/[^A-Za-z0-9_.\-]/g, '_');
+    const base = entry.name.replace(/\.(ffpfs|ffpfsc|pfs|dat|bin|exfat)$/i, '').replace(/[^A-Za-z0-9_.\-]/g, '_');
+    // The backend replaces whatever carries the output's name. A folder of
+    // that name next to the image - often the very one it was packed from -
+    // must not be the price of unpacking, so the output steps aside.
+    const taken = new Set(files.map(x => x.name.toLowerCase()));
+    let outName = base;
+    for (let n = 1; taken.has(outName.toLowerCase()); n++) outName = `${base}-unpacked${n > 1 ? n : ''}`;
     const body = {
-      mode: 'unpack',
-      output_name: base,
+      mode: exfat ? 'exfat-unpack' : 'unpack',
+      output_name: outName,
       push_after: false,
     };
     if (kind === 'ftp') {
@@ -1095,7 +1104,7 @@ export default function FileBrowser({
     // Unpack works on local, PS5 FTP, and SMB (backend stages SMB → local
     // temp dir via smbclient before mkpfs runs). SMB only requires that an
     // SMB source is selected.
-    const canUnpack   = !f.isDir && pfsImage && (kind !== 'smb' || !!smbId);
+    const canUnpack   = !f.isDir && (pfsImage || isExfatImage(f.name)) && (kind !== 'smb' || !!smbId);
     // Install only applies to .pkg files. ftp = already on PS5 (no stage);
     // local + smb get staged into pkg_stage_dir then triggered.
     const pkgFile     = !f.isDir && isPkgFile(f.name);
@@ -1167,12 +1176,12 @@ export default function FileBrowser({
       canUnpack && {
         label: '📂 Unpack now',
         action: () => runUnpack(true),
-        title: 'Unpack .ffpfsc back into a folder (mkpfs unpack) and start now',
+        title: 'Unpack the image (.ffpfsc, .exfat) back into a folder and start now',
       },
       canUnpack && {
         label: '🕒 Unpack queue',
         action: () => runUnpack(false),
-        title: 'Unpack .ffpfsc back into a folder and pause — press ▶ in Queue when ready',
+        title: 'Unpack the image back into a folder and pause — press ▶ in Queue when ready',
       },
       canInstall && {
         label: '📥 Install now',
