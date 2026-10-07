@@ -55,6 +55,7 @@ def apply() -> None:
     _patch_controller_state_heartbeat()
     _patch_send_event_hexdump()
     _patch_stream_receive_buffer()
+    _patch_stream_arrival_stats()
     _quieten_repeating_messages()
 
     _APPLIED = True
@@ -112,6 +113,70 @@ def _patch_stream_receive_buffer() -> None:
     async_connect._p5m_rcvbuf = True  # type: ignore[attr-defined]
     RPStream.async_connect = async_connect
     log.info("patched RPStream.async_connect (receive buffer %d MB)", STREAM_RCVBUF // (1024 * 1024))
+
+
+# ─── What reaches the socket ────────────────────────────────────────────────
+#
+# "Received unit out of order" is said by the frame assembler, which sits
+# behind a queue and a worker thread; it cannot tell a packet that never
+# reached this machine from one that got lost or shuffled on the way through
+# the process. This counts at the socket itself: for the video packets, how
+# many units of a frame never came and how many came after a later one. One
+# line every ten seconds while something is off, one a minute otherwise.
+
+def _patch_stream_arrival_stats() -> None:
+    try:
+        from struct import unpack_from
+        from pyremoteplay.stream import RPStream
+    except Exception as e:  # noqa: BLE001
+        log.warning("stream arrival stats skipped: %s", e)
+        return
+    Protocol = RPStream.Protocol
+    original = Protocol.datagram_received
+    if getattr(original, "_p5m_stats", False):
+        return
+
+    def datagram_received(self, data, addr):
+        try:
+            if len(data) > 9 and (data[0] & 0x0F) == 0x02:  # video
+                st = self.__dict__.get("_p5m_arrival")
+                now = time.monotonic()
+                if st is None:
+                    st = self._p5m_arrival = {
+                        "since": now, "said": now, "datagrams": 0, "frames": 0,
+                        "missing": 0, "late": 0, "frame": -1, "next": 0, "total": 0, "seen": 0,
+                    }
+                st["datagrams"] += 1
+                frame = unpack_from("!H", data, 3)[0]
+                dword = unpack_from("!I", data, 5)[0]
+                unit = (dword >> 21) & 0x7FF
+                if frame != st["frame"]:
+                    if st["frame"] >= 0 and st["seen"] < st["total"]:
+                        st["missing"] += st["total"] - st["seen"]
+                    st["frames"] += 1
+                    st["frame"] = frame
+                    st["next"] = 0
+                    st["seen"] = 0
+                    st["total"] = ((dword >> 10) & 0x7FF) + 1
+                if unit < st["next"]:
+                    st["late"] += 1
+                else:
+                    st["next"] = unit + 1
+                st["seen"] += 1
+                wrong = st["missing"] or st["late"]
+                if now - st["said"] >= (10.0 if wrong else 60.0):
+                    log.info(
+                        "stream at the socket, last %d s: %d video packets in %d frames; %d never arrived, %d arrived late",
+                        int(now - st["since"]), st["datagrams"], st["frames"], st["missing"], st["late"],
+                    )
+                    st.update(since=now, said=now, datagrams=0, frames=0, missing=0, late=0)
+        except Exception:  # noqa: BLE001 - counting must never disturb the stream
+            pass
+        original(self, data, addr)
+
+    datagram_received._p5m_stats = True  # type: ignore[attr-defined]
+    Protocol.datagram_received = datagram_received
+    log.info("patched RPStream.Protocol.datagram_received (arrival statistics)")
 
 
 # ─── Messages that come by the hundred ──────────────────────────────────────
