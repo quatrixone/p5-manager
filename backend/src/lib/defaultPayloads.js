@@ -14,7 +14,7 @@ import { fileURLToPath } from 'url';
 // when they are not there, like the downloaded ones.
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const VENDORED_PAYLOADS = [
-  { filename: 'rp-get-pin-ps4.bin', dir: 'rp-get-pin-ps4', console_type: 'ps4', version: '2' },
+  { filename: 'rp-get-pin-ps4.bin', dir: 'rp-get-pin-ps4', console_type: 'ps4', version: '3' },
   { filename: 'offact-ps4.bin', dir: 'offact-ps4', console_type: 'ps4' },
   { filename: 'rp-get-pin.elf', dir: 'rp-get-pin', console_type: 'ps5' },
   { filename: 'offact.elf', dir: 'offact', console_type: 'ps5' },

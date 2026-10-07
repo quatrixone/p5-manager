@@ -299,8 +299,10 @@ GPL-3.0-or-later) and `pkg-install.elf` (package install queue, written
 for this project). See [LEGAL.md](LEGAL.md) for their licences.
 
 PS4 profiles also include `offact-ps4.bin` and `rp-get-pin-ps4.bin` in
-Defaults. In PS Control → Remote Play Settings, use **Read / activate PS4
-account**, then **Auto-fetch PIN** and **Pair**. GoldHEN BinLoader (9090,
+Defaults. PS Control → Remote Play Settings shows the same **PSN Activated**
+and **Not Activated / Offline** paths for PS4 and PS5. With jailbreak, use
+**Pair in one click** (or **Activate & pair in one click**). Manual PIN pairing,
+Sony login and individual payload steps remain available. GoldHEN BinLoader (9090,
 with 9020 fallback) and FTP must be enabled. Firmware 11.00 was tested;
 see the [PS4 payload notes](p5managerclient/ps4-rp/README.md) for current limits.
 

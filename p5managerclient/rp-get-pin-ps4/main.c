@@ -41,10 +41,10 @@ int _main(void) {
   pin_generated=1;
   if(rp_trace_read(&tracer,tracer.buffer,buffers,sizeof(buffers))) goto end;
   if(buffers[0]>99999999) { rp_log("Error: invalid PIN value\n"); goto end; }
-  rp_log("Pin code: %04u %04u\nTimeout: 120 seconds\n",buffers[0]/10000,buffers[0]%10000);
-  printf_notification("P5 Manager PS4 PIN: %04u %04u",buffers[0]/10000,buffers[0]%10000);
   /* Keep ShellUI running between calls while the client pairs. */
   if(rp_trace_resume(&tracer)) goto end;
+  rp_log("Pin code: %04u %04u\nTimeout: 120 seconds\n",buffers[0]/10000,buffers[0]%10000);
+  printf_notification("P5 Manager PS4 PIN: %04u %04u",buffers[0]/10000,buffers[0]%10000);
   uint64_t deadline=sceKernelGetProcessTime()+120000000ULL;
   while(sceKernelGetProcessTime()<deadline) {
     sceKernelUsleep(250000);

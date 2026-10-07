@@ -284,7 +284,7 @@ function PS5Control({ profiles, onNotification, onProfilesChanged }) {
         <div className="comp-card-body">
           <div className="empty-state">
             <div className="empty-state-icon">🎮</div>
-            <div className="empty-state-title">No PS5 Profile</div>
+            <div className="empty-state-title">No Console Profile</div>
             <div className="empty-state-text">Create a profile in Settings first</div>
           </div>
         </div>
@@ -314,7 +314,7 @@ function PS5Control({ profiles, onNotification, onProfilesChanged }) {
                 {autoloadRun.sequence_name} · step {Math.min((autoloadRun.current_step || 0) + 1, autoloadRun.total)}/{autoloadRun.total}
                 {autoloadRun.current_step_name ? `: ${autoloadRun.current_step_name}` : ''}
               </div>
-              <div className="text-xs text-muted">PS5 Control is locked until the sequence finishes.</div>
+              <div className="text-xs text-muted">PS Control is locked until the sequence finishes.</div>
             </div>
             <button className="btn btn-secondary btn-sm" onClick={cancelAutoloadRun}>Cancel sequence</button>
           </div>
@@ -363,20 +363,20 @@ function PS5Control({ profiles, onNotification, onProfilesChanged }) {
               {waking ? '⏳ Waking…'
                 : rpSession.state === 'live' ? '✓ Live'
                 : rpSession.state === 'warm' ? `✓ Warm ${rpSession.warmTtl}s`
-                : '📡 Wake PS5'}
+                : '📡 Wake console'}
             </button>
             <button
               className="btn btn-secondary"
               onClick={handleStandby}
               disabled={standbyBusy || waking || stoppingSession}
-              title="Put the PS5 into rest mode."
+              title="Put the console into rest mode."
             >
               {standbyBusy ? '⏳' : '🌙'} Rest mode
             </button>
             <button
               className="btn btn-ghost"
               onClick={() => { ps5Status.refresh(false); pollRpSession(); }}
-              title="Refresh PS5 status (DDP discover + RP session probe)"
+              title="Refresh console status"
             >
               🔄
             </button>
@@ -397,7 +397,7 @@ function PS5Control({ profiles, onNotification, onProfilesChanged }) {
             title={
               rpSession.state === 'live'
                 ? 'Soft stop the live RP session - parks it in the warm cache for instant restart.'
-                : 'Clear the warm cache for this PS5.'
+                : 'Clear the warm cache for this console.'
             }
           >
             {stoppingSession ? '⏳' : '⏹'}{' '}
