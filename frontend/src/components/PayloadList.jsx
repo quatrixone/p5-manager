@@ -413,7 +413,7 @@ function PayloadList({ payloads, profiles, onFetchUrl, onSend, onDelete, onUpdat
         <EmptyState
           icon="🧷"
           title="No built-in payloads present"
-          text="None of the app-required payloads (log viewer, PIN pairing, offline activation, PKG installer) are on disk yet. Hit ✨ Defaults to fetch the ones that come from GitHub, or upload the vendored ones (rp-get-pin.elf, offact.elf, pkg-install.elf) manually."
+          text="None of the app-required payloads (log viewer, PIN pairing, offline activation, PKG installer) are on disk yet. Hit ✨ Defaults to put them back: the app's own ones come with it, the others are fetched from GitHub."
           action={onRestoreDefaults && <button className="btn btn-primary" onClick={() => onRestoreDefaults(false)}>✨ Defaults</button>}
         />
       ) : visiblePayloads.length === 0 ? (

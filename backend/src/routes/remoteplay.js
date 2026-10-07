@@ -669,7 +669,7 @@ router.post('/get-pin', async (req, res) => {
       return res.status(404).json({
         success: false,
         error:
-          'rp-get-pin.elf not found in data/payloads/. Build it from the vendored source at p5managerclient/rp-get-pin/ (make + copy) or upload via the Payloads tab.',
+          'rp-get-pin.elf not found in data/payloads/. Press Defaults on the Payloads tab to put the copy that comes with the app back, or upload one there.',
       });
     }
 
@@ -928,7 +928,7 @@ router.post('/activate-account', async (req, res) => {
       return res.status(404).json({
         success: false,
         error:
-          'offact.elf not found in data/payloads/. Build it from the vendored source at p5managerclient/offact/ (make + copy) or upload via the Payloads tab.',
+          'offact.elf not found in data/payloads/. Press Defaults on the Payloads tab to put the copy that comes with the app back, or upload one there.',
       });
     }
 

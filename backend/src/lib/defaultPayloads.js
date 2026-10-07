@@ -5,6 +5,26 @@ import AdmZip from 'adm-zip';
 import { getRepo, log } from '../db/sqlite.js';
 import { loadBuiltin } from './builtinLoader.js';
 import { payloadsDir } from './paths.js';
+import { fileURLToPath } from 'url';
+
+// The app's own payloads (p5managerclient/). They are not downloaded from
+// anywhere: the built files ship with the app - in vendored/ next to src/ in
+// the Docker image, the Windows package and an update bundle, in
+// p5managerclient/ in a checkout - and are copied into the payloads folder
+// when they are not there, like the downloaded ones.
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+export const VENDORED_PAYLOADS = [
+  { filename: 'rp-get-pin.elf', dir: 'rp-get-pin', console_type: 'ps5' },
+  { filename: 'offact.elf', dir: 'offact', console_type: 'ps5' },
+  { filename: 'pkg-install.elf', dir: 'pkg-install', console_type: 'ps5' },
+];
+function vendoredSource(entry) {
+  const candidates = [
+    path.resolve(__dirname, '../../vendored', entry.filename),
+    path.resolve(__dirname, '../../../p5managerclient', entry.dir, entry.filename),
+  ];
+  return candidates.find(p => fs.existsSync(p)) || null;
+}
 
 // Authoritative list lives in /frontend/builtin/payloads.js — single source
 // of truth so the user only edits one file to change what gets auto-fetched.
@@ -233,6 +253,26 @@ export async function ensureDefaultPayloads({ force = false } = {}) {
   // this, every essential payload was being re-downloaded into the
   // already-present file (wasteful but otherwise harmless).
   try { await scanPayloadsDir(); } catch (e) { log('error', `scanPayloadsDir at boot failed: ${e.message}`); }
+
+  for (const entry of VENDORED_PAYLOADS) {
+    try {
+      if (!force && payloadExists(entry.filename)) {
+        summary.skipped.push(entry.filename);
+        continue;
+      }
+      const source = vendoredSource(entry);
+      if (!source) throw new Error('not shipped with this installation');
+      const filepath = path.join(payloadsDir, entry.filename);
+      fs.copyFileSync(source, filepath);
+      const size = fs.statSync(filepath).size;
+      insertPayload({ name: entry.filename, filename: entry.filename, filepath, size, console_type: entry.console_type });
+      log('info', `Added the app's own payload: ${entry.filename}`);
+      summary.added.push({ filename: entry.filename, size });
+    } catch (e) {
+      log('warn', `Own payload ${entry.filename} unavailable: ${e.message}`);
+      summary.failed.push({ filename: entry.filename, error: e.message });
+    }
+  }
 
   const list = await getEssentialPayloads();
   for (const entry of list) {

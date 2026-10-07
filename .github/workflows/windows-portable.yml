@@ -67,6 +67,9 @@ jobs:
           Get-ChildItem "$out/app/backend/src" -Recurse -Filter *.test.js | Remove-Item
           Push-Location "$out/app/backend"; npm ci --omit=dev --no-audit --no-fund; Pop-Location
           Copy-Item frontend/builtin "$out/app/builtin" -Recurse
+          # The app's own payloads, put into data\payloads on the first start.
+          New-Item -ItemType Directory -Force "$out/app/backend/vendored" | Out-Null
+          Copy-Item p5managerclient/rp-get-pin/rp-get-pin.elf, p5managerclient/offact/offact.elf, p5managerclient/pkg-install/pkg-install.elf "$out/app/backend/vendored/"
 
           # Node runtime (same version the tests above ran on).
           Invoke-WebRequest "https://nodejs.org/dist/v$env:NODE_VERSION/win-x64/node.exe" -OutFile "$out/runtime/node/node.exe"

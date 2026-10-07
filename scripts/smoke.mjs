@@ -159,7 +159,12 @@ await step('a folder cannot be copied into itself', async () => {
 });
 
 await step('payloads, profiles, settings and the user-data paths answer', async () => {
-  assert.ok(Array.isArray(await ok('GET', '/api/payloads')));
+  // The app's own payloads come with it and are there without a download.
+  const payloads = await ok('GET', '/api/payloads');
+  assert.ok(Array.isArray(payloads));
+  for (const name of ['rp-get-pin.elf', 'offact.elf', 'pkg-install.elf']) {
+    assert.ok(payloads.some(p => p.filename === name), `${name} is not among the payloads`);
+  }
   assert.ok(Array.isArray(await ok('GET', '/api/profiles')));
   await ok('GET', '/api/settings');
   const p = await ok('GET', '/api/convert/paths');

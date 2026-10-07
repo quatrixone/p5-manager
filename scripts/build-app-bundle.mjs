@@ -3,7 +3,7 @@
 // backend/src/routes/update.js), one per platform:
 //
 //   p5-manager-app-<version>-docker-level<n>-deps<hash>.zip
-//       backend sources + built web UI
+//       backend sources + built web UI + the app's own payloads
 //   p5-manager-app-<version>-windows-level<n>-deps<hash>-py<hash>.zip
 //       the same plus the Remote Play service, which in the portable
 //       Windows package lives next to the app (in Docker it is its own
@@ -50,6 +50,8 @@ for (const platform of ['docker', 'windows']) {
   const zip = new AdmZip();
   zip.addLocalFolder(path.join(backend, 'src'), 'src', (name) => !name.endsWith('.test.js'));
   zip.addLocalFolder(path.join(backend, 'dist'), 'dist');
+  // The app's own payloads (see backend/src/lib/defaultPayloads.js).
+  for (const name of ['rp-get-pin', 'offact', 'pkg-install']) zip.addLocalFile(path.join(root, 'p5managerclient', name, `${name}.elf`), 'vendored');
   zip.addFile('package.json', Buffer.from(JSON.stringify({ ...pkg, version }, null, 2)));
   const manifest = { version, platform, image_level: level, deps };
   let name = `p5-manager-app-${version}-${platform}-level${level}-deps${deps}`;
