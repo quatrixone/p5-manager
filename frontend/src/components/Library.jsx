@@ -27,7 +27,7 @@ function GameIcon({ game }) {
 export default function Library({ profiles = [], onNotification }) {
   const [ip, setIp] = useState('');
   const selectedProfile = profiles.find(p => p.ip_address === ip);
-  const isPs4Profile = selectedProfile?.console_type === 'ps4';
+  const isPs4Profile = String(selectedProfile?.console_type || '').toLowerCase() === 'ps4';
   const [data, setData] = useState(null);
   const [error, setError] = useState(null); // { message, reason, can_start, has_payload }
   const [starting, setStarting] = useState(false);
@@ -171,6 +171,18 @@ export default function Library({ profiles = [], onNotification }) {
   };
   const confirmDelete = async () => {
     const g = deleting;
+    if (isPs4Profile) {
+      setBusy(true);
+      try {
+        await api.post(`/library/${ip}/ps4/${g.title_id}/uninstall`, { confirm: true });
+        onNotification?.(`Deleted ${g.title_name || g.title_id} from the PS4`, 'success');
+        setDeleting(null);
+        setSelected(null);
+        await load(true);
+      } catch (e) { onNotification?.(e.message, 'error'); }
+      finally { setBusy(false); }
+      return;
+    }
     const ok = await run(g, 'delete', { confirm: true }, `Deleting ${g.title_name || g.title_id}`);
     if (ok) { setDeleting(null); setSelected(null); }
   };
@@ -206,7 +218,7 @@ export default function Library({ profiles = [], onNotification }) {
           <div className="flex gap-xs items-center flex-wrap">
             <select className="select" style={{ width: 'auto' }} value={ip} onChange={e => setIp(e.target.value)} aria-label="Console">
               <option value="">— pick console —</option>
-              {profiles.map(p => <option key={p.id} value={p.ip_address}>{p.console_type === 'ps4' ? 'PS4' : 'PS5'} · {p.name} ({p.ip_address})</option>)}
+              {profiles.map(p => <option key={p.id} value={p.ip_address}>{String(p.console_type || '').toLowerCase() === 'ps4' ? 'PS4' : 'PS5'} · {p.name} ({p.ip_address})</option>)}
             </select>
             {!isPs4Profile && <button className="btn btn-secondary btn-sm" onClick={rescan} disabled={!data} title="Ask ShadowMount to rescan its folders">🔍 Rescan</button>}
             <button className="btn btn-ghost btn-sm" onClick={() => load()} disabled={loading || !ip}>↻</button>
@@ -340,7 +352,11 @@ export default function Library({ profiles = [], onNotification }) {
               </div>
             </div>
             {jobActive && <div className="text-xs text-muted">A storage operation is running - move, copy, unpack and delete are available when it finishes.</div>}
-            {!isPs4Profile && <div className="lib-actions">
+            {isPs4Profile ? (
+              <div className="lib-actions">
+                <button className="btn btn-danger" disabled={busy} onClick={() => setDeleting(game)}>🗑 Delete</button>
+              </div>
+            ) : <div className="lib-actions">
               {game.mounted
                 ? <button className="btn btn-secondary" disabled={busy} onClick={() => run(game, 'unmount', {}, `Unmounted ${game.title_name || game.title_id}`)}>⏏ Unmount</button>
                 : <button className="btn btn-primary" disabled={busy || !game.source_available} onClick={() => mount(game)}>▶ Mount</button>}
@@ -420,7 +436,7 @@ export default function Library({ profiles = [], onNotification }) {
         {deleting && (
           <div className="flex-col gap-sm">
             <div className="text-sm">
-              {isPs4Profile ? <>Uninstall <b>{deleting.title_name || deleting.title_id}</b> ({deleting.title_id}) from the PS4? This removes the installed app and cannot be undone.</>
+              {isPs4Profile ? <>Delete <b>{deleting.title_name || deleting.title_id}</b> ({deleting.title_id}) from the PS4? This uninstalls the app and cannot be undone.</>
                 : <>Delete <b>{deleting.title_name || deleting.title_id}</b> ({fmtBytes(sizeOf(deleting))}) from the console? It cannot be undone.</>}
             </div>
             {!isPs4Profile && <div className="text-xs text-muted" style={{ wordBreak: 'break-all' }}>{deleting.path}</div>}

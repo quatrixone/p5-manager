@@ -97,12 +97,37 @@ router.get('/:ip/ps4', async (req, res) => {
   try {
     await ftp.access({ host: req.params.ip, port: getFtpPort(req.params.ip), user: 'anonymous', password: '', secure: false });
     await ftp.downloadTo(sink, '/system_data/priv/mms/app.db');
-    const games = parsePs4Library(Buffer.concat(chunks));
+    const games = parsePs4Library(Buffer.concat(chunks)).map(g => ({
+      ...g,
+      icon: `/api/library/${req.params.ip}/icon/${g.title_id}`,
+    }));
     res.json({ platform: 'ps4', source: 'app.db', games, count: games.length });
   } catch (e) {
     log('warn', `PS4 library ${req.params.ip}: ${e.message}`);
     res.status(502).json({ error: `Could not read the PS4 library over FTP: ${e.message}. Make sure GoldHEN FTP is enabled.` });
   } finally { ftp.close(); }
+});
+
+// Use Remote Package Installer's supported app removal endpoint. Never delete
+// /user/app files through FTP because that would leave the PS4 app database
+// inconsistent.
+router.post('/:ip/ps4/:titleId/uninstall', async (req, res) => {
+  try {
+    if (req.body?.confirm !== true) return res.status(400).json({ error: 'confirm required' });
+    const response = await fetch(`http://${req.params.ip}:12800/api/uninstall_game`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title_id: req.params.titleId }),
+      signal: AbortSignal.timeout(20_000),
+    });
+    const body = await response.json().catch(() => null);
+    if (!response.ok || body?.error || body?.success === false) {
+      throw new Error(body?.error || `Remote Package Installer returned HTTP ${response.status}`);
+    }
+    res.json({ success: true, title_id: req.params.titleId, result: body });
+  } catch (e) {
+    res.status(502).json({ error: `PS4 uninstall failed: ${e.message}. Make sure Remote Package Installer is running on the console.` });
+  }
 });
 
 const iconPath = (ip, g) => {
@@ -177,11 +202,31 @@ router.get('/:ip/icon/:titleId', async (req, res) => {
     const key = `${ip}|${titleId}|${req.query.v || ''}`;
     let buf = iconCache.get(key);
     if (!buf) {
-      const r = await fetch(`http://${ip}:${apiPort()}/api/v1/games/icon?title_id=${titleId}&size=thumb`, {
-        signal: AbortSignal.timeout(15_000),
-      });
-      if (!r.ok || !(r.headers.get('content-type') || '').startsWith('image/')) return res.status(404).end();
-      buf = Buffer.from(await r.arrayBuffer());
+      const profile = getRepo().queryOne('SELECT console_type FROM profiles WHERE TRIM(ip_address) = ? LIMIT 1', [ip]);
+      if (String(profile?.console_type || '').toLowerCase() === 'ps4') {
+        const ftp = new FtpClient(10_000);
+        const chunks = [];
+        let total = 0;
+        const sink = new Writable({
+          write(chunk, _encoding, callback) {
+            total += chunk.length;
+            if (total > 8 * 1024 * 1024) return callback(new Error('PS4 title icon is unexpectedly large'));
+            chunks.push(Buffer.from(chunk));
+            callback();
+          },
+        });
+        try {
+          await ftp.access({ host: ip, port: getFtpPort(ip), user: 'anonymous', password: '', secure: false });
+          await ftp.downloadTo(sink, `/user/appmeta/${titleId}/icon0.png`);
+          buf = Buffer.concat(chunks);
+        } finally { ftp.close(); }
+      } else {
+        const r = await fetch(`http://${ip}:${apiPort()}/api/v1/games/icon?title_id=${titleId}&size=thumb`, {
+          signal: AbortSignal.timeout(15_000),
+        });
+        if (!r.ok || !(r.headers.get('content-type') || '').startsWith('image/')) return res.status(404).end();
+        buf = Buffer.from(await r.arrayBuffer());
+      }
       if (iconCache.size >= ICON_CACHE_MAX) iconCache.delete(iconCache.keys().next().value);
       iconCache.set(key, buf);
     }

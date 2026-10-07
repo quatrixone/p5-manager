@@ -64,6 +64,9 @@ export default function FileOps({ profiles, onNotification }) {
   // When a file is "Convert now"-d from a different sub-tab, we stash it and
   // bounce to the Convert tab which picks it up via `initialPick`.
   const [pendingConvertPick, setPendingConvertPick] = useState(null);
+  const [activeConsoleType, setActiveConsoleType] = useState(() =>
+    String((profiles.find(p => p.is_default) || profiles[0])?.console_type || '').toLowerCase() || null,
+  );
 
   // Browse tab: one browser, or two side by side with drag & drop between them.
   const [dualPane, setDualPane] = useState(() => {
@@ -75,8 +78,9 @@ export default function FileOps({ profiles, onNotification }) {
   });
 
   const counts = useQueueCounts();
-  const hasPs5 = profiles.some(p => p.console_type !== 'ps4');
-  const visibleTabs = useMemo(() => TABS.filter(t => t.key !== 'convert' || hasPs5), [hasPs5]);
+  const hasPs5 = profiles.some(p => String(p.console_type || 'ps5').toLowerCase() !== 'ps4');
+  const showConvert = hasPs5 && activeConsoleType !== 'ps4';
+  const visibleTabs = useMemo(() => TABS.filter(t => t.key !== 'convert' || showConvert), [showConvert]);
 
   const switchTab = useCallback((next) => {
     setSubTab(next);
@@ -84,8 +88,18 @@ export default function FileOps({ profiles, onNotification }) {
   }, []);
 
   useEffect(() => {
-    if (subTab === 'convert' && !hasPs5) switchTab('files');
-  }, [subTab, hasPs5, switchTab]);
+    if (!activeConsoleType && profiles.length) {
+      setActiveConsoleType(String((profiles.find(p => p.is_default) || profiles[0])?.console_type || '').toLowerCase() || null);
+    }
+  }, [activeConsoleType, profiles]);
+
+  useEffect(() => {
+    if (subTab === 'convert' && !showConvert) switchTab('files');
+  }, [subTab, showConvert, switchTab]);
+
+  const onConsolePlatformChange = useCallback((platform) => {
+    setActiveConsoleType(String(platform || '').toLowerCase() || null);
+  }, []);
 
   const openQueue = useCallback(() => switchTab('queue'), [switchTab]);
   const sendToConvert = useCallback((pick) => {
@@ -151,6 +165,8 @@ export default function FileOps({ profiles, onNotification }) {
               <DualPane
                 profiles={profiles}
                 onNotification={onNotification}
+                enableConvertActions={showConvert}
+                onConsolePlatformChange={onConsolePlatformChange}
                 onOpenQueue={openQueue}
                 onPickConvert={sendToConvert}
               />
@@ -158,6 +174,8 @@ export default function FileOps({ profiles, onNotification }) {
               <FileBrowser
                 profiles={profiles}
                 onNotification={onNotification}
+                enableConvertActions={showConvert}
+                onConsolePlatformChange={onConsolePlatformChange}
                 enableFtp enableExtract enableDelete enableFtpUpload enableDeviceUpload
                 onOpenQueue={openQueue}
                 onPickConvert={sendToConvert}
@@ -165,10 +183,10 @@ export default function FileOps({ profiles, onNotification }) {
             )}
           </>
         )}
-        {subTab === 'convert' && hasPs5 && (
+        {subTab === 'convert' && showConvert && (
           <GameCompressor profiles={profiles} onNotification={onNotification} />
         )}
-        {subTab === 'convert' && hasPs5 && (
+        {subTab === 'convert' && showConvert && (
           <Convert
             profiles={profiles}
             onNotification={onNotification}

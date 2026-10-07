@@ -8,7 +8,7 @@ import { api, apiSafe } from '../lib/api.js';
 // installs, starts and stops it; every operation happens in its UI, on the
 // console, and keeps running when this page is closed.
 export default function GameCompressor({ profiles = [], onNotification }) {
-  const ps5Profiles = profiles.filter(p => p.console_type !== 'ps4');
+  const ps5Profiles = profiles.filter(p => String(p.console_type || 'ps5').toLowerCase() !== 'ps4');
   const [ip, setIp] = useState('');
   const [st, setSt] = useState(null);
   const [busy, setBusy] = useState(null); // 'start' | 'stop'

@@ -55,6 +55,8 @@ export default function FileBrowser({
   onImported,
   onPickDir,
   onPickConvert,
+  enableConvertActions = true,
+  onConsolePlatformChange,
   // Invoked when the user picks "Upload/Download/Convert queue" from the
   // kebab menu. Parent decides how to navigate to the Queue view
   // (e.g. by switching its sub-tab). Signature: (type: 'upload' | 'download' | 'convert')
@@ -89,7 +91,10 @@ export default function FileBrowser({
   const [smbId, setSmbId] = useState(initialLocation?.smbId ? String(initialLocation.smbId) : '');
   const [ftpIp, setFtpIp] = useState(initialLocation?.ftpIp || '');
   const ftpProfile = profiles.find(p => p.ip_address === ftpIp);
-  const ftpPlatform = ftpProfile?.console_type === 'ps4' ? 'PS4' : 'PS5';
+  const ftpPlatform = String(ftpProfile?.console_type || '').toLowerCase() === 'ps4' ? 'PS4' : 'PS5';
+  useEffect(() => {
+    if (kind === 'ftp' && ftpIp) onConsolePlatformChange?.(ftpProfile?.console_type || 'ps5');
+  }, [kind, ftpIp, ftpProfile?.console_type, onConsolePlatformChange]);
   // Folder to reopen for the store `initialLocation` points at; dropped as
   // soon as the user switches to another store.
   const initialRef = useRef(initialLocation?.path ? initialLocation : null);
@@ -1100,7 +1105,7 @@ export default function FileBrowser({
     // are filtered out entirely so the menu only shows actionable options.
     const canUpload   = kind !== 'ftp' && enableFtpUpload;       // not already on PS5
     const canDownload = kind !== 'local';                        // local files don't need a "download to your device" round-trip
-    const canConvert  = kind !== 'smb';                          // SMB pack still needs Import (mkpfs needs seekable local source + folder traversal)
+    const canConvert  = enableConvertActions && kind !== 'smb';   // SMB pack still needs Import (mkpfs needs seekable local source + folder traversal)
     const canExtract  = enableExtract && kind !== 'ftp' && !f.isDir && archiveFile;
     const pfsImage    = !f.isDir && isPfsImage(f.name);
     // Unpack works on local, PS5 FTP, and SMB (backend stages SMB → local
@@ -1444,7 +1449,7 @@ export default function FileBrowser({
         {kind === 'ftp' && (
           <select className="select" value={ftpIp} onChange={e => setFtpIp(e.target.value)}>
             <option value="">— pick console —</option>
-            {profiles.map(p => <option key={p.id} value={p.ip_address}>{p.console_type === 'ps4' ? 'PS4' : 'PS5'} · {p.name} ({p.ip_address})</option>)}
+            {profiles.map(p => <option key={p.id} value={p.ip_address}>{String(p.console_type || '').toLowerCase() === 'ps4' ? 'PS4' : 'PS5'} · {p.name} ({p.ip_address})</option>)}
           </select>
         )}
 

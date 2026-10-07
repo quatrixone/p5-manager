@@ -18,7 +18,7 @@ const joinPath = (loc, name) => (loc.kind === 'local'
 // other (or onto a folder in it) asks Copy / Move / Cancel and then runs the
 // route planTransfer() picks: an instant rename, a direct copy/move on the
 // server disk, or the server-side transfer queue.
-export default function DualPane({ profiles, onNotification, onOpenQueue, onPickConvert }) {
+export default function DualPane({ profiles, onNotification, onOpenQueue, onPickConvert, enableConvertActions, onConsolePlatformChange }) {
   const [locs, setLocs] = useState({ left: null, right: null });
   const [reload, setReload] = useState(0);
   const [pending, setPending] = useState(null); // { src, dst, items, point, op?, conflicts?, busy? }
@@ -76,6 +76,8 @@ export default function DualPane({ profiles, onNotification, onOpenQueue, onPick
     setLocs(l => ({ ...l, right: loc }));
     try { localStorage.setItem(RIGHT_KEY, JSON.stringify(loc)); } catch (_) {}
   }, []);
+  const onLeftPlatform = useCallback(platform => onConsolePlatformChange?.(platform), [onConsolePlatformChange]);
+  const onRightPlatform = useCallback(platform => onConsolePlatformChange?.(platform), [onConsolePlatformChange]);
 
   const profileName = (ip) => profiles.find(p => p.ip_address === ip)?.name || ip;
   const describe = (loc) => {
@@ -220,6 +222,7 @@ export default function DualPane({ profiles, onNotification, onOpenQueue, onPick
     enableDelete: true,
     enableFtpUpload: true,
     enableDeviceUpload: true,
+    enableConvertActions,
     onOpenQueue,
     onPickConvert,
     reloadSignal: reload,
@@ -250,6 +253,7 @@ export default function DualPane({ profiles, onNotification, onOpenQueue, onPick
         paneId="left"
         title="Pane 1"
         onLocationChange={onLeftLoc}
+        onConsolePlatformChange={onLeftPlatform}
         onDropItems={handleDrop('left')}
         onSendToOther={sendToOther('left')}
       />
@@ -262,6 +266,7 @@ export default function DualPane({ profiles, onNotification, onOpenQueue, onPick
         enableSaveDefault={false}
         jobKeyPrefix="mm.fb.right"
         onLocationChange={onRightLoc}
+        onConsolePlatformChange={onRightPlatform}
         onDropItems={handleDrop('right')}
         onSendToOther={sendToOther('right')}
       />
