@@ -3599,7 +3599,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
 
       {health?.success === false && (
         <div className="text-xs text-muted">
-          Sidecar error: {health.error}. Check the logs of the <code>pyremoteplay</code> container (the Remote Play service).
+          Sidecar error: {health.error}. Check the logs of the <code>remoteplay</code> container (the Remote Play service).
         </div>
       )}
 

@@ -36,8 +36,8 @@ COPY --from=p5rp /build/p5rp /usr/local/bin/p5rp
 COPY --from=rpnative LICENSE /usr/local/share/p5rp/LICENSE
 COPY server.py chiaki_engine.py ddp.py psn_oauth.py /app/
 
-ENV PYREMOTEPLAY_SIDECAR_HOST=0.0.0.0 \
-    PYREMOTEPLAY_SIDECAR_PORT=9555 \
+ENV REMOTEPLAY_HOST=0.0.0.0 \
+    REMOTEPLAY_PORT=9555 \
     P5RP_BIN=/usr/local/bin/p5rp
 
 EXPOSE 9555

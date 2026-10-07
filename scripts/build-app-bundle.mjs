@@ -28,7 +28,7 @@ import { depsHash, fileHash } from '../backend/deps-hash.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const backend = path.join(root, 'backend');
-const sidecar = path.join(root, 'pyremoteplay');
+const sidecar = path.join(root, 'remoteplay');
 const args = process.argv.slice(2);
 const flag = (name) => { const i = args.indexOf(name); return i === -1 ? null : args.splice(i, 2)[1]; };
 const versionOverride = flag('--version');
@@ -56,7 +56,7 @@ for (const platform of ['docker', 'windows']) {
   const manifest = { version, platform, image_level: level, deps };
   let name = `p5-manager-app-${version}-${platform}-level${level}-deps${deps}`;
   if (platform === 'windows') {
-    for (const f of ['server.py', 'chiaki_engine.py', 'ddp.py', 'psn_oauth.py']) zip.addLocalFile(path.join(sidecar, f), 'pyremoteplay');
+    for (const f of ['server.py', 'chiaki_engine.py', 'ddp.py', 'psn_oauth.py']) zip.addLocalFile(path.join(sidecar, f), 'remoteplay');
     manifest.pydeps = pydeps;
     name += `-py${pydeps}`;
   }

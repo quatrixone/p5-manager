@@ -18,7 +18,7 @@
 //                    (e.g. generic download-then-upload pipelines).
 
 // Convention for PS5 / cross-platform templates:
-//   - First step is always `rp_session start` — pyremoteplay's quick-start
+//   - First step is always `rp_session start` — the Remote Play service's quick-start
 //     wakes the console from rest (DDP), opens the RP session, dismisses
 //     the account picker, and parks it in the warm cache. Replaces the old
 //     `wol + wait` header in one step and guarantees the console is fully
@@ -28,7 +28,7 @@
 //     doesn't return to a screen-on PS5.
 // Both bookends require the profile to be PSN-linked + RP-paired (do that
 // once in P5 Control → Remote Play Settings). PS4 templates skip this
-// because they don't go through pyremoteplay.
+// because they don't go through Remote Play.
 
 export const DEFAULT_TEMPLATES = [
     {

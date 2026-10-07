@@ -120,12 +120,17 @@ Remote Play of the console work without port forwarding:
 | Service        | What it is                                             |
 |----------------|--------------------------------------------------------|
 | `app`          | The web app and its API                                |
-| `pyremoteplay` | The Remote Play service the app talks to: pairing, waking, sessions (on `p5rp`/libchiaki; the name is from its first version) |
+| `remoteplay`   | The Remote Play service the app talks to: pairing, waking, sessions (on `p5rp`/libchiaki) |
 
 Your data survives updates. The database is in `./data/`; payloads,
 downloads and conversion work files are in `/data/payloads`,
 `/data/downloads` and `/data/mkpfs` on the host. To update: `git pull &&
-docker compose pull && docker compose up -d`.
+docker compose pull && docker compose up -d --remove-orphans`.
+
+Coming from an earlier version: the Remote Play service was called
+`pyremoteplay` then. `--remove-orphans` stops its old container, which
+would otherwise keep port 9555 and leave the new `remoteplay` one unable
+to start.
 
 **Update from inside the app.** When a newer release is out, the app shows
 a bar with **Update** and *What's new*. Update downloads the new version of
@@ -148,7 +153,7 @@ What an in-app update cannot change in Docker is the image underneath:
 system tools, the Node runtime, the installed libraries and the Remote Play
 service (its own image). When a release needs a newer image, the bar says so
 instead of offering Update; then use `git pull && docker compose pull &&
-docker compose up -d`.
+docker compose up -d --remove-orphans`.
 
 ### Windows (portable)
 
@@ -302,7 +307,7 @@ for this project). See [LEGAL.md](LEGAL.md) for their licences.
 cd backend  && npm install && npm run dev   # API on :3001
 cd frontend && npm install && npm run dev   # UI on :3000
 cmake -S rpnative -B build-rp -G Ninja && cmake --build build-rp --target p5rp
-cd pyremoteplay && pip install -r requirements.txt && P5RP_BIN=../build-rp/p5rp python server.py
+cd remoteplay && pip install -r requirements.txt && P5RP_BIN=../build-rp/p5rp python server.py
 ```
 
 `p5rp` needs a C compiler, CMake, json-c, miniupnpc, libevent, OpenSSL and

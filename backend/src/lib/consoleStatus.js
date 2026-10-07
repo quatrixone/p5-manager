@@ -8,7 +8,8 @@
 // answer stands for one more miss, as long as it is recent (marked `stale`),
 // and only the second miss in a row reports nothing.
 
-const SIDECAR_URL = process.env.PYREMOTEPLAY_SIDECAR_URL
+const SIDECAR_URL = process.env.REMOTEPLAY_URL
+  || process.env.PYREMOTEPLAY_SIDECAR_URL // older names, kept for existing setups
   || process.env.CHIAKI_SIDECAR_URL
   || 'http://127.0.0.1:9555';
 

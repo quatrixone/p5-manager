@@ -11,7 +11,7 @@ on:
     paths:
       - 'backend/**'
       - 'frontend/**'
-      - 'pyremoteplay/**'
+      - 'remoteplay/**'
       - 'rpnative/**'
       - 'packaging/**'
       - 'scripts/smoke.mjs'
@@ -72,7 +72,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $out = "dist-portable/P5Manager"
-          New-Item -ItemType Directory -Force "$out/app/backend", "$out/app/pyremoteplay", "$out/runtime/node", "$out/runtime/python" | Out-Null
+          New-Item -ItemType Directory -Force "$out/app/backend", "$out/app/remoteplay", "$out/runtime/node", "$out/runtime/python" | Out-Null
 
           # Backend: sources, built UI, production dependencies only.
           Copy-Item backend/src "$out/app/backend/src" -Recurse
@@ -104,11 +104,11 @@ jobs:
           Invoke-WebRequest "https://www.python.org/ftp/python/$env:PYTHON_VERSION/python-$env:PYTHON_VERSION-embed-amd64.zip" -OutFile python-embed.zip
           Expand-Archive python-embed.zip "$out/runtime/python"
           python -m pip install --upgrade pip
-          python -m pip install -r pyremoteplay/requirements.txt --target "$out/runtime/python/Lib/site-packages" --no-compile
+          python -m pip install -r remoteplay/requirements.txt --target "$out/runtime/python/Lib/site-packages" --no-compile
           # The embeddable Python only looks where its ._pth file says.
           $pth = Get-ChildItem "$out/runtime/python" -Filter "python*._pth" | Select-Object -First 1
-          Set-Content $pth.FullName -Encoding ascii -Value @("python311.zip", ".", "Lib\site-packages", "..\..\app\pyremoteplay", "import site")
-          Copy-Item pyremoteplay/server.py, pyremoteplay/chiaki_engine.py, pyremoteplay/ddp.py, pyremoteplay/psn_oauth.py "$out/app/pyremoteplay/"
+          Set-Content $pth.FullName -Encoding ascii -Value @("python311.zip", ".", "Lib\site-packages", "..\..\app\remoteplay", "import site")
+          Copy-Item remoteplay/server.py, remoteplay/chiaki_engine.py, remoteplay/ddp.py, remoteplay/psn_oauth.py "$out/app/remoteplay/"
           # p5rp and the MSYS2 DLLs it needs, where chiaki_engine.find_helper()
           # looks: <home>\runtime\p5rp. AGPL - its licence goes along.
           New-Item -ItemType Directory -Force "$out/runtime/p5rp" | Out-Null
@@ -117,8 +117,8 @@ jobs:
           if (-not (Test-Path "$out/runtime/p5rp/p5rp.exe")) { throw "p5rp.exe is missing" }
           # Which Python packages this service was built with: an in-app update
           # brings a newer service only when it was built against the same ones.
-          node -e "import('./backend/deps-hash.mjs').then(m => process.stdout.write(m.fileHash('pyremoteplay/requirements.txt')))" | Set-Content "$out/app/pyremoteplay/pydeps"
-          if (-not (Get-Content "$out/app/pyremoteplay/pydeps")) { throw "could not fingerprint requirements.txt" }
+          node -e "import('./backend/deps-hash.mjs').then(m => process.stdout.write(m.fileHash('remoteplay/requirements.txt')))" | Set-Content "$out/app/remoteplay/pydeps"
+          if (-not (Get-Content "$out/app/remoteplay/pydeps")) { throw "could not fingerprint requirements.txt" }
 
           # Launcher, built with the C# compiler that ships with Windows. Its
           # icon is the app's (frontend/public/icon-512.svg drawn at 16 to 256 px).
@@ -174,7 +174,7 @@ jobs:
           & "$app\P5Manager.exe" --prepare
           if ($LASTEXITCODE -ne 0) { throw "the launcher could not unpack P5Manager.pak" }
           if (Test-Path "$app\P5Manager.pak") { throw "P5Manager.pak is still there after unpacking" }
-          foreach ($f in "runtime\node\node.exe", "runtime\python\python.exe", "runtime\p5rp\p5rp.exe", "app\backend\src\index.js", "app\pyremoteplay\server.py") {
+          foreach ($f in "runtime\node\node.exe", "runtime\python\python.exe", "runtime\p5rp\p5rp.exe", "app\backend\src\index.js", "app\remoteplay\server.py") {
             if (-not (Test-Path "$app\$f")) { throw "$f is missing after unpacking" }
           }
 
