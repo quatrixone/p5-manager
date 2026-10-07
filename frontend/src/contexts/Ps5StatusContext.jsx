@@ -75,7 +75,9 @@ export function Ps5StatusProvider({ profile, children }) {
     }
   }, [profile?.ip_address, profile?.port]);
 
-  useVisiblePolling(refresh, profile ? 15000 : 0, [profile?.ip_address, profile?.port]);
+  // Every 15 s; every 4 s while a wake is under way, so the dot turns as
+  // soon as the console answers instead of up to 15 s later.
+  useVisiblePolling(refresh, profile ? (manualWaking ? 4000 : 15000) : 0, [profile?.ip_address, profile?.port, manualWaking]);
 
   const state = useMemo(() => {
     if (!profile) return 'offline';
