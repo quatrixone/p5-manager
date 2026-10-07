@@ -43,7 +43,7 @@ from one browser tab on your PC or phone.
 | **Autoload** | Build a sequence of steps (wake the console, run a button script, wait for a port, send a payload, download, extract, convert, upload) and run it as one action - or let it start by itself when the console is on but not jailbroken. |
 | **File Ops** | Browse this computer, a network share and the console side by side. Drag files between two panes to copy or move them, upload from your device, download from a URL, convert and extract. Long jobs run in a queue you can pause and resume. |
 | **Library** | See every title ShadowMountPlus knows on the console, with icon, size and the drive it is on. Mount, move, copy, unpack, uninstall or delete a title, with a progress bar for the long ones. |
-| **Console** | Remote Play in the browser: wake the console, see the screen, use an on-screen controller, record and replay button sequences, send a payload without leaving the view. The tab is named *PS5 Control* or *PS4 Control* once your default profile is one of those. |
+| **Console** | Remote Play in the browser: wake the console, see the screen (WebRTC with sound, up to 1080p at 60 fps; MJPEG where WebRTC is not available), use an on-screen controller, record and replay button sequences, send a payload without leaving the view. The tab is named *PS5 Control* or *PS4 Control* once your default profile is one of those. |
 | **Logs** | Live log streams from the console. |
 | **Settings** | Console profiles, backup and restore, defaults, restart. |
 
@@ -120,7 +120,7 @@ Remote Play of the console work without port forwarding:
 | Service        | What it is                                             |
 |----------------|--------------------------------------------------------|
 | `app`          | The web app and its API                                |
-| `pyremoteplay` | The Remote Play service the app talks to               |
+| `pyremoteplay` | The Remote Play service the app talks to: pairing, waking, sessions (on `p5rp`/libchiaki; the name is from its first version) |
 
 Your data survives updates. The database is in `./data/`; payloads,
 downloads and conversion work files are in `/data/payloads`,
@@ -159,8 +159,9 @@ docker compose up -d`.
    and your browser opens `http://localhost:3001/`. The first start unpacks
    the app's files from `P5Manager.pak`, which takes a moment.
 
-Allow `node.exe` and `python.exe` through Windows Firewall on private
-networks when asked. Your data is kept in the `data` folder next to the
+Allow `node.exe`, `python.exe` and `p5rp.exe` through Windows Firewall on
+private networks when asked (`p5rp.exe` receives the console's picture,
+`node.exe` sends it on to the browser). Your data is kept in the `data` folder next to the
 exe. Close the console window to stop the app.
 
 The **Update** bar works here too, with a bundle made for the Windows
@@ -245,6 +246,12 @@ Open on the computer running P5 Manager:
 | 8080 | UDP   | Log receiver                                     |
 | 3232 | TCP   | Kernel log receiver                              |
 | 9303 | UDP   | Replies from consoles when searching for them    |
+| any  | UDP   | WebRTC picture and sound to the browser (random ports; `P5M_WEBRTC_PORTS=50000-50100` fixes a range) |
+
+A browser on another network (through a VPN without the local network's
+addresses, for instance) may need a STUN or TURN server to reach the
+backend: list them in `P5M_WEBRTC_ICE`, comma-separated
+(`stun:stun.example.org:3478`). On the local network none is needed.
 
 On the console, P5 Manager connects to:
 
@@ -294,10 +301,12 @@ for this project). See [LEGAL.md](LEGAL.md) for their licences.
 ```bash
 cd backend  && npm install && npm run dev   # API on :3001
 cd frontend && npm install && npm run dev   # UI on :3000
-cd pyremoteplay && pip install -r requirements.txt && python server.py
-# the service needs p5rp: build rpnative/ (see rpnative/README.md) and put
-# it on the PATH or point P5RP_BIN at it
+cmake -S rpnative -B build-rp -G Ninja && cmake --build build-rp --target p5rp
+cd pyremoteplay && pip install -r requirements.txt && P5RP_BIN=../build-rp/p5rp python server.py
 ```
+
+`p5rp` needs a C compiler, CMake, json-c, miniupnpc, libevent, OpenSSL and
+Python's `protobuf` module; see [rpnative/README.md](rpnative/README.md).
 
 Tests: `npm test` in `backend/` and in `frontend/`. An end-to-end check
 against a running instance: `node scripts/smoke.mjs http://127.0.0.1:3001

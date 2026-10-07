@@ -60,6 +60,8 @@ Tables: `profiles`, `payloads`, `autoload_sequences`, `logs`, `settings`, `input
 
 - `PORT` — backend port (default 3001)
 - `PYREMOTEPLAY_SIDECAR_URL` — sidecar URL (default http://127.0.0.1:9555)
+- `P5M_WEBRTC_PORTS` (`50000-50100`), `P5M_WEBRTC_ICE` (comma-separated STUN/TURN) — WebRTC to the browser
+- `P5RP_BIN` — where the sidecar finds p5rp (else next to it or on the PATH)
 - `DATA_DIR` — internal data directory (database; default /app/data in the image)
 - `USER_DATA_DIR` — payloads, downloads and mkpfs work files (default /data)
 - `NODE_ENV=production` — enables static file serving + PWA service worker
