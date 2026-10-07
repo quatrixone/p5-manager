@@ -66,9 +66,7 @@ async function deleteOffactTrigger(ip, triggerPath) {
   } catch (_) { /* ignored — see comment above */ }
 }
 
-const SIDECAR_URL = process.env.REMOTEPLAY_URL
-  || process.env.PYREMOTEPLAY_SIDECAR_URL // older names, kept for existing setups
-  || process.env.CHIAKI_SIDECAR_URL
+const SIDECAR_URL = process.env.REMOTEPLAY_SIDECAR_URL
   || 'http://127.0.0.1:9555';
 
 // Per-IP session cache so script runs can transparently reuse a single

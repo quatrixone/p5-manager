@@ -12,9 +12,9 @@ services:
     # and stream from it directly on the LAN (no port forwarding pain).
     network_mode: host
     environment:
-      - REMOTEPLAY_HOST=127.0.0.1
-      - REMOTEPLAY_PORT=9555
-      - REMOTEPLAY_LOG=info
+      - REMOTEPLAY_SIDECAR_HOST=127.0.0.1
+      - REMOTEPLAY_SIDECAR_PORT=9555
+      - REMOTEPLAY_SIDECAR_LOG=info
 
   app:
     build:
@@ -57,7 +57,7 @@ services:
       - NODE_ENV=production
       - PORT=3001
       - DATA_DIR=/app/data
-      - REMOTEPLAY_URL=http://127.0.0.1:9555
+      - REMOTEPLAY_SIDECAR_URL=http://127.0.0.1:9555
       # Memory + CPU footprint tuning. Defaults (V8 picks heap target from
       # host RAM = 11 GB here) leave Node sitting on ~115 MB RSS at idle
       # because GC is lazy. Capping the old-space at 512 MB + semi-space

@@ -12,9 +12,7 @@ const router = Router();
 // /api/remoteplay/* (which uses the sidecar's DDP WAKEUP + DDP LAUNCH packets
 // driven by the stored PSN account id - no manual credential capture needed
 // any more).
-const SIDECAR_URL = process.env.REMOTEPLAY_URL
-  || process.env.PYREMOTEPLAY_SIDECAR_URL // older names, kept for existing setups
-  || process.env.CHIAKI_SIDECAR_URL
+const SIDECAR_URL = process.env.REMOTEPLAY_SIDECAR_URL
   || 'http://127.0.0.1:9555';
 async function sidecarDiscover(ip) {
   const res = await fetch(`${SIDECAR_URL}/discover?ip=${encodeURIComponent(ip)}`, { method: 'GET' });

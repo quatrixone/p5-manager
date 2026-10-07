@@ -59,7 +59,7 @@ Tables: `profiles`, `payloads`, `autoload_sequences`, `logs`, `settings`, `input
 ## Environment
 
 - `PORT` — backend port (default 3001)
-- `REMOTEPLAY_URL` — sidecar URL (default http://127.0.0.1:9555); the sidecar takes `REMOTEPLAY_HOST` / `REMOTEPLAY_PORT` / `REMOTEPLAY_LOG`. The older `PYREMOTEPLAY_SIDECAR_*` names still work.
+- `REMOTEPLAY_SIDECAR_URL` — sidecar URL (default http://127.0.0.1:9555); the sidecar itself takes `REMOTEPLAY_SIDECAR_HOST` / `REMOTEPLAY_SIDECAR_PORT` / `REMOTEPLAY_SIDECAR_LOG`
 - `P5M_WEBRTC_PORTS` (`50000-50100`), `P5M_WEBRTC_ICE` (comma-separated STUN/TURN) — WebRTC to the browser
 - `P5RP_BIN` — where the sidecar finds p5rp (else next to it or on the PATH)
 - `DATA_DIR` — internal data directory (database; default /app/data in the image)
