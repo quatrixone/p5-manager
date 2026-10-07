@@ -24,6 +24,11 @@
 //                                 l1 r1 l3 r3 options share touchpad ps
 //           trigger <l2|r2> <0..255>
 //           stick <l|r> <x> <y>   -32768..32767
+//           touch down <x> <y>    a finger on the touchpad (0..1919, 0..941)
+//           touch move <x> <y>
+//           touch up
+//           idr                   ask the console for a key frame (a viewer
+//                                 that joins late needs one to start from)
 //           idle                  everything released
 //           standby               put the console into rest mode
 //           stop                  end the session
@@ -118,17 +123,53 @@ static int is_key_frame(const uint8_t *b, size_t n, int h265)
 
 static int codec_h265 = 0;
 
+// The console sends the decoder's parameter sets (SPS and PPS, for H.265 the
+// VPS too) once, as a record of their own ahead of the first frame. Key
+// frames come without them - and a viewer who joins later cannot start. So
+// they are kept, and put in front of every key frame that lacks them.
+static uint8_t params[4096];
+static size_t params_len = 0;
+
+// Length of the leading run of parameter-set NAL units in an Annex B frame.
+static size_t leading_params(const uint8_t *b, size_t n, int h265)
+{
+	size_t i = 0, end = 0;
+	while(i + 4 < n)
+	{
+		size_t s = 0;
+		if(b[i] == 0 && b[i + 1] == 0 && b[i + 2] == 1) s = i + 3;
+		else if(b[i] == 0 && b[i + 1] == 0 && b[i + 2] == 0 && b[i + 3] == 1) s = i + 4;
+		if(!s) { i++; continue; }
+		int t = h265 ? (b[s] >> 1) & 0x3f : b[s] & 0x1f;
+		int is_param = h265 ? (t >= 32 && t <= 34) : (t == 7 || t == 8);
+		if(!is_param) return i > end ? i : end;
+		end = s;
+		i = s;
+		// Up to the next start code belongs to this parameter set.
+		while(i + 3 < n && !(b[i] == 0 && b[i + 1] == 0 && (b[i + 2] == 1 || (b[i + 2] == 0 && b[i + 3] == 1)))) i++;
+		if(i + 3 >= n) return n; // nothing but parameter sets, which is how the console sends them
+		end = i;
+	}
+	return end;
+}
+
 static bool video_cb(uint8_t *buf, size_t size, int32_t lost, bool recovered, void *user)
 {
 	(void)user;
 	uint8_t head[14];
 	uint64_t t = now_us();
+	int key = is_key_frame(buf, size, codec_h265);
+	size_t own = leading_params(buf, size, codec_h265);
+	if(own > 0 && own <= sizeof params) { memcpy(params, buf, own); params_len = own; }
+	size_t prefix = (key && own == 0) ? params_len : 0;
+	size_t total = prefix + size;
 	head[0] = 'V';
-	head[1] = (uint8_t)((is_key_frame(buf, size, codec_h265) ? 1 : 0) | (lost > 0 ? 2 : 0) | (recovered ? 4 : 0));
-	head[2] = (uint8_t)(size >> 24); head[3] = (uint8_t)(size >> 16); head[4] = (uint8_t)(size >> 8); head[5] = (uint8_t)size;
+	head[1] = (uint8_t)((key ? 1 : 0) | (lost > 0 ? 2 : 0) | (recovered ? 4 : 0));
+	head[2] = (uint8_t)(total >> 24); head[3] = (uint8_t)(total >> 16); head[4] = (uint8_t)(total >> 8); head[5] = (uint8_t)total;
 	for(int i = 0; i < 8; i++) head[6 + i] = (uint8_t)(t >> (56 - 8 * i));
 	LOCK(out_lock);
 	fwrite(head, 1, sizeof head, stdout);
+	if(prefix) fwrite(params, 1, prefix, stdout);
 	fwrite(buf, 1, size, stdout);
 	fflush(stdout);
 	frames++; bytes_out += size;
@@ -218,6 +259,7 @@ static int command(char *line)
 	if(n < 1) return 0;
 	if(!strcmp(a, "stop")) return 1;
 	if(!strcmp(a, "standby")) { chiaki_session_goto_bed(&session); return 0; }
+	if(!strcmp(a, "idr")) { chiaki_session_request_idr(&session); return 0; }
 	if(!strcmp(a, "idle")) chiaki_controller_state_set_idle(&controller);
 	else if(!strcmp(a, "btn") && n >= 3)
 	{
@@ -235,6 +277,18 @@ static int command(char *line)
 	{
 		if(b[0] == 'l') { controller.left_x = (int16_t)clamp(x, -32768, 32767); controller.left_y = (int16_t)clamp(y, -32768, 32767); }
 		else { controller.right_x = (int16_t)clamp(x, -32768, 32767); controller.right_y = (int16_t)clamp(y, -32768, 32767); }
+	}
+	else if(!strcmp(a, "touch"))
+	{
+		static int touch_id = -1;
+		uint16_t tx = (uint16_t)clamp(x, 0, 1919), ty = (uint16_t)clamp(y, 0, 941);
+		if(!strcmp(b, "down") && n >= 4)
+		{
+			if(touch_id >= 0) chiaki_controller_state_stop_touch(&controller, (uint8_t)touch_id);
+			touch_id = chiaki_controller_state_start_touch(&controller, tx, ty);
+		}
+		else if(!strcmp(b, "move") && n >= 4 && touch_id >= 0) chiaki_controller_state_set_touch_pos(&controller, (uint8_t)touch_id, tx, ty);
+		else if(!strcmp(b, "up") && touch_id >= 0) { chiaki_controller_state_stop_touch(&controller, (uint8_t)touch_id); touch_id = -1; }
 	}
 	else { event_line("command", line, "{\"event\":\"error\",\"what\":\"unknown command\""); return 0; }
 	chiaki_session_set_controller_state(&session, &controller);

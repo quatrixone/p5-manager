@@ -28,6 +28,7 @@ import io
 import logging
 import os
 import secrets
+import struct
 import threading
 import time
 from typing import Any, Dict, List, Optional
@@ -89,6 +90,22 @@ app = FastAPI(title="pyremoteplay-sidecar", version="0.2.0")
 
 # session_id -> { device: RPDevice, user: dict, created: ts, last_used: ts }
 SESSIONS: Dict[str, Dict[str, Any]] = {}
+
+# Which library holds the Remote Play session: "pyremoteplay" (the default,
+# all in Python) or "chiaki" - the p5rp helper on libchiaki (rpnative/),
+# native transport with error correction, and the only one that can hand the
+# encoded video on for WebRTC. Pairing, discovery and wake-up are done by
+# pyremoteplay with either. Without the helper the choice falls back.
+try:
+    import chiaki_engine  # type: ignore
+except Exception as _e:  # noqa: BLE001
+    chiaki_engine = None  # type: ignore
+RP_ENGINE = os.environ.get("RP_ENGINE", "pyremoteplay").strip().lower()
+if RP_ENGINE == "chiaki" and (chiaki_engine is None or not chiaki_engine.find_helper()):
+    log.warning("RP_ENGINE=chiaki but p5rp was not found - using pyremoteplay")
+    RP_ENGINE = "pyremoteplay"
+if RP_ENGINE not in ("pyremoteplay", "chiaki"):
+    RP_ENGINE = "pyremoteplay"
 
 # ip -> monotonic timestamp of when we last disconnected a session for this IP.
 # pyremoteplay/PS5 have no protocol-level "session bye" message: when we close
@@ -254,6 +271,7 @@ class MjpegReceiver(AVReceiver if AVReceiver is not None else object):
 async def health():
     return {
         "ok": True,
+        "engine": RP_ENGINE,
         "pyremoteplay": PYREMOTEPLAY_OK,
         "pyremoteplay_error": PYREMOTEPLAY_ERR,
         "video_stack": VIDEO_STACK_OK,
@@ -550,6 +568,9 @@ class StartSessionReq(BaseModel):
     # legacy auto-detect path (discover before LAUNCH so the host_type
     # is filled in from the live device).
     host_type: Optional[str] = None
+    # Sound, for a WebRTC viewer. Only the chiaki engine has it; off unless
+    # asked for.
+    enable_audio: Optional[bool] = False
 
 # Resolution allowlist for the stream knob above. Anything outside falls
 # back to the default - pyremoteplay raises a confusing AttributeError if
@@ -923,6 +944,9 @@ async def _session_start_impl(req: StartSessionReq):
     # Skipping this breaks every cold start.
     await _prime_rp_control_port(device, req.ip, name, profiles, aid, was_standby, host_type_hint=req.host_type)
 
+    if RP_ENGINE == "chiaki":
+        return await _chiaki_session_start(req, device, wants_video, req_resolution)
+
     # Build the media receiver up-front if video was requested. It has to
     # be passed to create_session() (we can't attach it later), and
     # creating it before the retry loop means a retry doesn't churn
@@ -1192,6 +1216,108 @@ class ShakeReq(BaseModel):
 
     duration_ms: Optional[int] = None
     intensity: Optional[float] = None
+
+
+async def _chiaki_session_start(req: StartSessionReq, device, wants_video: bool, req_resolution: str):
+    """Open the session through p5rp. The console is awake and primed by now."""
+    try:
+        regist, morning, is_ps4 = chiaki_engine.keys_from_profile(req.user_profile, getattr(device, "mac_address", None))
+    except chiaki_engine.ChiakiError as e:
+        raise HTTPException(400, str(e))
+    if req.host_type:
+        is_ps4 = str(req.host_type).upper() == "PS4"
+    last: Optional[Exception] = None
+    session = None
+    # The console keeps a finished session's place for a while ("in use");
+    # one quiet wait and a second try, as with pyremoteplay, but libchiaki's
+    # own handshake needs no priming in between.
+    for attempt in range(2):
+        session = chiaki_engine.ChiakiSession(
+            req.ip, regist, morning, ps4=is_ps4, resolution=req_resolution, fps=_PS5_FPS,
+            audio=bool(req.enable_audio),
+        )
+        try:
+            await session.start()
+            last = None
+            break
+        except chiaki_engine.ChiakiError as e:
+            last = e
+            await session.close()
+            if attempt == 0 and "in use" in (e.reason or "").lower():
+                wait_s = 30.0
+                RETRY_STATUS[req.ip] = {"reason": "lock", "wait_started": time.monotonic(), "wait_s": wait_s}
+                log.info("PS5 %s says Remote Play is in use - quiet wait %ds", req.ip, int(wait_s))
+                await asyncio.sleep(wait_s)
+                RETRY_STATUS.pop(req.ip, None)
+                continue
+            break
+    if last is not None:
+        log.warning("session connect failed (chiaki): %s", last)
+        msg = str(last)
+        if "Another Remote Play session" in msg:
+            msg += " - close any active Remote Play / Chiaki-ng client and try again in ~30s"
+        raise HTTPException(502, f"Session connect failed: {msg}")
+
+    cdevice = chiaki_engine.ChiakiDevice(session)
+    receiver = chiaki_engine.ChiakiReceiver(session, enable_video=True) if wants_video else None
+    sid = _new_session_id()
+    SESSIONS[sid] = {
+        "device": cdevice,
+        "user": req.user_profile,
+        "ip": req.ip,
+        "receiver": receiver,
+        "resolution": req_resolution,
+        "created": time.time(),
+        "last_used": time.time(),
+    }
+    log.info("session %s started -> %s (chiaki, video=%s, audio=%s, %s)",
+             sid, req.ip, wants_video, bool(req.enable_audio), req_resolution)
+    return {
+        "session_id": sid,
+        "state": "connected",
+        "video": wants_video,
+        "resolution": req_resolution,
+        "engine": "chiaki",
+    }
+
+
+@app.get("/sessions/{session_id}/stream")
+async def session_stream(session_id: str):
+    """The session's video (and sound, when it was asked for) as the console
+    encoded it, in p5rp's records - what the backend packs into WebRTC. Starts
+    at a key frame, which is asked for here."""
+    s = SESSIONS.get(session_id)
+    if not s:
+        raise HTTPException(404, "session not found")
+    session = getattr(s["device"], "session", None)
+    if chiaki_engine is None or not isinstance(session, chiaki_engine.ChiakiSession):
+        raise HTTPException(501, "this session has no encoded stream (the chiaki engine is not in use)")
+    queue = session.subscribe()
+    session.request_key_frame()
+
+    async def gen():
+        try:
+            if session.audio_format:
+                yield b"H" + b"\x00" + struct.pack(">I", len(session.audio_format)) + b"\x00" * 8 + session.audio_format
+            while True:
+                item = await queue.get()
+                if item is None or session_id not in SESSIONS:
+                    return
+                head, data = item
+                yield head + data
+                if queue.waiting_for_key:
+                    # It fell behind and lost frames: begin again from a key frame.
+                    session.request_key_frame()
+        except (asyncio.CancelledError, GeneratorExit):
+            return
+        finally:
+            session.unsubscribe(queue)
+
+    return StreamingResponse(gen(), media_type="application/octet-stream", headers={
+        "Cache-Control": "no-cache, no-store",
+        "X-Accel-Buffering": "no",
+        "X-Stream-Resolution": str(s.get("resolution") or ""),
+    })
 
 
 @app.post("/sessions/{session_id}/shake")
@@ -1760,6 +1886,20 @@ async def standby(req: StartSessionReq):
     # priming helper as /sessions/start so cold standby works after the
     # console has been idle for a while.
     await _prime_rp_control_port(device, req.ip, name, profiles, aid, was_standby=False, host_type_hint=req.host_type)
+
+    if RP_ENGINE == "chiaki":
+        try:
+            regist, morning, is_ps4 = chiaki_engine.keys_from_profile(req.user_profile, getattr(device, "mac_address", None))
+            temp = chiaki_engine.ChiakiSession(req.ip, regist, morning, ps4=is_ps4, resolution="360p", fps=_PS5_FPS)
+            await temp.start()
+        except chiaki_engine.ChiakiError as e:
+            raise HTTPException(502, f"standby connect failed: {e}")
+        try:
+            ok = await _send_standby_and_wait(temp, timeout=8.0)
+            log.info("standby: sent to %s through chiaki (ok=%s)", req.ip, ok)
+        finally:
+            await temp.close()
+        return {"ok": True, "via": "temporary_session"}
 
     try:
         await _try_connect_once(device, name, profiles)

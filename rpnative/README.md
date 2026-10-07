@@ -44,6 +44,7 @@ The pairing keys come in the environment (`P5RP_REGIST_KEY`,
 - **stderr** - one JSON object per line: `starting`, `connected`, `stats`
   (every 5 s), `log`, `fec_failure`, `quit` (with the reason).
 - **stdin** - one command per line: `btn <name> <0|1>`,
-  `trigger <l2|r2> <0..255>`, `stick <l|r> <x> <y>`, `idle`, `standby`,
-  `stop`. End of input ends the session, so the helper never outlives the
+  `trigger <l2|r2> <0..255>`, `stick <l|r> <x> <y>`,
+  `touch down|move <x> <y>`, `touch up`, `idle`, `idr` (ask for a key
+  frame), `standby`, `stop`. End of input ends the session, so the helper never outlives the
   program that started it.
