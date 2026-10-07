@@ -697,7 +697,36 @@ router.get('/sources/:id/download', async (req, res) => {
   }
 });
 
-router.post('/local/delete', (req, res) => {
+// Jobs whose tool is working on `abs`, in it, or in a folder that holds it:
+// they are stopped before it is deleted. Left running, the tool keeps the
+// files open - on Windows the delete then fails - and goes on writing into
+// what is being removed. Paths come from the tool's own arguments.
+function stopJobsUsing(abs) {
+  const within = (parent, child) => {
+    const rel = path.relative(parent, child);
+    return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+  };
+  const stopped = [];
+  for (const map of [extractJobs, jobs, folderImportJobs]) {
+    for (const job of map.values()) {
+      const proc = job._proc;
+      if (!proc || proc.exitCode !== null || proc.signalCode !== null) continue;
+      const used = (proc.spawnargs || []).slice(1)
+        .map(a => String(a).replace(/^-o/, ''))
+        .filter(a => path.isAbsolute(a))
+        .map(a => path.resolve(a));
+      if (!used.some(p => within(abs, p) || within(p, abs))) continue;
+      job.status = 'cancelled';
+      job.finished_at = new Date().toISOString();
+      appendLog(job, `[manager] Stopped: ${abs} is being deleted\n`);
+      try { proc.kill('SIGTERM'); } catch (_) {}
+      stopped.push(job.id);
+    }
+  }
+  return stopped;
+}
+
+router.post('/local/delete', async (req, res) => {
   try {
     const { path: target, isDir } = req.body || {};
     if (!target) return res.status(400).json({ error: 'path required' });
@@ -707,9 +736,14 @@ router.post('/local/delete', (req, res) => {
     const st = fs.statSync(abs);
     if (st.isDirectory() && !isDir) return res.status(400).json({ error: 'Path is a directory; pass isDir=true' });
     if (!st.isDirectory() && isDir) return res.status(400).json({ error: 'Path is a file; do not pass isDir=true' });
-    fs.rmSync(abs, { recursive: !!isDir, force: true });
-    log('info', `local delete ${abs}${isDir ? ' (dir)' : ''}`);
-    res.json({ success: true });
+    const stopped = stopJobsUsing(abs);
+    // A tool that was just stopped lets go of its files a moment later.
+    await fs.promises.rm(abs, {
+      recursive: !!isDir || stopped.length > 0, force: true,
+      maxRetries: stopped.length ? 20 : 0, retryDelay: 200,
+    });
+    log('info', `local delete ${abs}${isDir ? ' (dir)' : ''}${stopped.length ? ` - stopped ${stopped.length} running task(s) using it` : ''}`);
+    res.json({ success: true, stopped_jobs: stopped.length });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -2440,9 +2474,11 @@ async function executeExtractJob(job) {
       // A protected archive: the tool asks for the password (and gets none,
       // its input is closed) or says the one it was given does not fit.
       if (/Enter password|Wrong password|password is incorrect|encrypted file/i.test(job.log.slice(-4000))) {
+        // The Tasks list offers to take the password and run it again.
+        job.needs_password = true;
         job.error = password
           ? 'The password does not open this archive'
-          : 'The archive is protected by a password - choose "Extract with password" in its menu';
+          : 'The archive is protected by a password';
       } else {
         job.error = result.error || `exit ${result.code}`;
       }
@@ -2464,6 +2500,48 @@ async function executeExtractJob(job) {
     log('info', `extract ${job.id} ${job.status}`);
   }
 }
+
+// Does the archive ask for a password? true / false, or null when that cannot
+// be told (an SMB source, a format no tool here can list). Asked before a
+// job is queued, so the browser can ask the user first.
+function archiveNeedsPassword(archivePath) {
+  const list = (cmd, args) => new Promise((resolve) => {
+    let out = '';
+    let proc;
+    try { proc = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] }); } catch (_) { return resolve(null); }
+    const timer = setTimeout(() => { try { proc.kill(); } catch (_) {} }, 20_000);
+    const take = (d) => { if (out.length < 2_000_000) out += d.toString(); };
+    proc.stdout.on('data', take);
+    proc.stderr.on('data', take);
+    proc.on('error', () => { clearTimeout(timer); resolve(null); });
+    proc.on('close', (code) => { clearTimeout(timer); resolve({ code, out }); });
+  });
+  return (async () => {
+    // 7-Zip: encrypted names end in a password prompt (its input is closed,
+    // so it gives up); encrypted contents are marked entry by entry.
+    const z = await list('7z', ['l', '-slt', archivePath]);
+    if (z) {
+      if (/Enter password|encrypted archive|Wrong password/i.test(z.out)) return true;
+      if (/^Encrypted = \+/m.test(z.out)) return true;
+      if (z.code === 0) return false;
+    }
+    // A rar where 7-Zip has no rar support (Linux): unar's lister knows.
+    const u = await list('lsar', ['-j', archivePath]);
+    if (u && u.code === 0) return /"XADIsEncrypted"\s*:\s*(1|true)/.test(u.out);
+    return null;
+  })();
+}
+
+router.post('/extract/check', async (req, res) => {
+  try {
+    const prep = validateExtractParams(req.body);
+    if (prep.error) return res.status(400).json({ error: prep.error });
+    const needs = prep.source === 'smb' ? null : await archiveNeedsPassword(prep.archivePath);
+    res.json({ needs_password: needs });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 router.post('/extract', async (req, res) => {
   try {
@@ -2518,6 +2596,7 @@ const extractQ = new JobQueue({
     item.exit_code = job.exit_code;
     item.finished_at = job.finished_at;
     item.progress = job.progress;
+    item.needs_password = !!job.needs_password;
     // The extract-specific destLabel (`prep.destLabel`) was stamped on the
     // item right after buildJob succeeded in the old worker — preserve it
     // by mirroring from the job in finalize as a fallback.
@@ -2539,11 +2618,25 @@ const extractQ = new JobQueue({
     item.finished_at = null;
     item.job_id = null;
     item.progress = 0;
+    item.needs_password = false;
     item._job = undefined;
   },
 });
 extractQ.start();
 mountQueueRoutes(router, '/extract/queue', extractQ);
+
+// A task that stopped at a protected archive is given the password and run
+// again; the Tasks list asks for it there.
+router.post('/extract/queue/:id/password', (req, res) => {
+  const item = extractQ.items.find(q => q.id === req.params.id);
+  if (!item) return res.status(404).json({ error: 'Item not found' });
+  const password = String(req.body?.password || '');
+  if (!password) return res.status(400).json({ error: 'password required' });
+  item.params = { ...(item.params || {}), password };
+  const r = extractQ.retry(item.id);
+  if (r.status === 200) extractQ.resume();
+  res.status(r.status).json(r.body);
+});
 
 router.post('/extract/queue', (req, res) => {
   try {

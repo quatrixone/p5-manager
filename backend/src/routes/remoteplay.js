@@ -1568,7 +1568,19 @@ router.post('/run-script', async (req, res) => {
     } catch (e) { return res.status(400).json({ success: false, error: e.message }); }
 
     const events = [];
+    // The caller went away - a cancelled Autoload run, a closed tab: stop
+    // pressing buttons on the console. Waits end early and the loops below
+    // leave at their next turn.
+    let gone = false;
+    let wake = null;
+    res.on('close', () => { if (!res.writableEnded) { gone = true; wake?.(); } });
+    const pause = (ms) => new Promise((resolve) => {
+      if (gone || !(ms > 0)) return resolve();
+      const timer = setTimeout(() => { wake = null; resolve(); }, ms);
+      wake = () => { clearTimeout(timer); resolve(); };
+    });
     const sendButton = async (button, duration) => {
+      if (gone) return 'cancelled';
       try {
         await sidecar('POST', `/sessions/${encodeURIComponent(sid)}/input`, {
           button, action: 'tap', duration_ms: duration,
@@ -1592,12 +1604,12 @@ router.post('/run-script', async (req, res) => {
       }
     };
 
-    for (let i = 0; i < lines.length; i++) {
+    for (let i = 0; i < lines.length && !gone; i++) {
       const parsed = parseScriptLine(lines[i]);
       if (!parsed) continue;
       if (parsed.type === 'wait') {
         events.push({ line: i + 1, type: 'wait', ms: parsed.ms });
-        await new Promise((r) => setTimeout(r, parsed.ms));
+        await pause(parsed.ms);
         continue;
       }
       if (parsed.type === 'unknown') {
@@ -1609,7 +1621,7 @@ router.post('/run-script', async (req, res) => {
         for (const [button, pauseMs] of [['ps', 800], ['down', 400], ['cross', 0]]) {
           const err = await sendButton(button, 80);
           if (err && err !== 'recovered') lastErr = err;
-          if (pauseMs) await new Promise((r) => setTimeout(r, pauseMs));
+          if (pauseMs) await pause(pauseMs);
         }
         events.push({ line: i + 1, type: 'home', ...(lastErr ? { error: lastErr } : {}) });
         continue;
@@ -1619,13 +1631,14 @@ router.post('/run-script', async (req, res) => {
         let typed = 0;
         let errLast = null;
         for (const ev of inputs) {
+          if (gone) break;
           if (ev.note) continue;
           const dur = ev.commit ? 100 : 60;
           const err = await sendButton(ev.button, dur);
           if (err && err !== 'recovered') errLast = err;
           // Spacing between key navigations (small) and after a commit (a bit
           // longer so PS5 can render the inserted character).
-          await new Promise((r) => setTimeout(r, ev.commit ? 140 : 90));
+          await pause(ev.commit ? 140 : 90);
           if (ev.commit) typed++;
         }
         events.push({
@@ -1638,13 +1651,13 @@ router.post('/run-script', async (req, res) => {
         const reps = Math.max(1, parsed.count || 1);
         let lastErr = null;
         let recoveredAny = false;
-        for (let r = 0; r < reps; r++) {
+        for (let r = 0; r < reps && !gone; r++) {
           const err = await sendButton(parsed.button, parsed.duration);
           if (err === 'recovered') recoveredAny = true;
           else if (err) lastErr = err;
           // Spacing between repeats so PS5 menus register each press as a
           // discrete event instead of a long hold.
-          await new Promise((rs) => setTimeout(rs, 60));
+          await pause(60);
         }
         events.push({
           line: i + 1, type: 'button', button: parsed.button, count: reps,
@@ -1658,7 +1671,7 @@ router.post('/run-script', async (req, res) => {
           await sidecar('POST', `/sessions/${encodeURIComponent(sid)}/input`, {
             stick: parsed.side, x: parsed.x, y: parsed.y,
           }, { timeout: 5000 });
-          await new Promise((r) => setTimeout(r, parsed.ms));
+          await pause(parsed.ms);
           // Re-center
           await sidecar('POST', `/sessions/${encodeURIComponent(sid)}/input`, {
             stick: parsed.side, x: 0, y: 0,
@@ -1675,6 +1688,7 @@ router.post('/run-script', async (req, res) => {
       ipToSession.delete(ip);
     }
 
+    if (gone) return;
     res.json({ success: true, session_id: sid, events });
   } catch (err) {
     res.status(err.status || 500).json({ success: false, error: err.message });

@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import useVisiblePolling from '../hooks/useVisiblePolling';
 import { api, apiSafe } from '../lib/api.js';
+import PasswordModal from './UI/PasswordModal';
 
 const TYPE_META = {
   download: { icon: '⬇️', label: 'Download' },
@@ -98,7 +99,7 @@ function itemSubtitle(item) {
   return '';
 }
 
-function QueueItem({ item, queuePaused, onRemove, onRetry, onMove, onStart, onPause, onResume }) {
+function QueueItem({ item, queuePaused, onRemove, onRetry, onMove, onStart, onPause, onResume, onPassword }) {
   const meta = TYPE_META[item.type] || { icon: '📋', label: item.type };
   const statusMeta = STATUS_META[item.status] || { color: 'var(--muted)', label: item.status };
   const progress = Math.max(0, Math.min(100, Number(item.progress || 0)));
@@ -113,6 +114,7 @@ function QueueItem({ item, queuePaused, onRemove, onRetry, onMove, onStart, onPa
   // re-queuing from scratch (executeConvertJob overwrites the existing
   // output, uploadFileResilient overwrites the destination file).
   const canRetry = ['failed', 'cancelled', 'push_failed', 'completed'].includes(item.status);
+  const needsPassword = item.type === 'extract' && item.status === 'failed' && !!item.needs_password;
 
   // ── Log dropdown state ─────────────────────────────────────────────────
   // The log lives on a separate per-job endpoint (`logUrlForItem`). We only
@@ -224,7 +226,13 @@ function QueueItem({ item, queuePaused, onRemove, onRetry, onMove, onStart, onPa
       <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-sm)' }}>
         <span style={{ fontSize: '1.25rem' }} title={meta.label}>{meta.icon}</span>
 
-        <div style={{ flex: 1, minWidth: 0 }}>
+        {/* A task that stopped at a protected archive: a click on it asks
+            for the password. */}
+        <div
+          style={{ flex: 1, minWidth: 0, cursor: needsPassword ? 'pointer' : undefined }}
+          onClick={needsPassword ? () => onPassword(item) : undefined}
+          title={needsPassword ? 'Click to enter the archive password' : undefined}
+        >
           <div className="text-sm truncate" style={{ fontWeight: 500 }} title={itemTitle(item)}>
             {itemTitle(item)}
           </div>
@@ -250,6 +258,9 @@ function QueueItem({ item, queuePaused, onRemove, onRetry, onMove, onStart, onPa
           )}
           {showPause && (
             <button className="btn btn-secondary btn-sm" onClick={() => onPause(item.type)} title={`Pause ${meta.label.toLowerCase()} queue`}>⏸</button>
+          )}
+          {needsPassword && (
+            <button className="btn btn-primary btn-sm" onClick={() => onPassword(item)} title="Enter the archive password and extract again">🔑</button>
           )}
           {canRetry && (
             <button className="btn btn-secondary btn-sm" onClick={() => onRetry(item.type, item.id)} title="Retry">↻</button>
@@ -450,6 +461,15 @@ export default function Queue() {
     fetchQueue();
   };
 
+  // Extract task waiting for its archive's password (see PasswordModal).
+  const [passwordItem, setPasswordItem] = useState(null);
+  const submitPassword = async (password) => {
+    const item = passwordItem;
+    setPasswordItem(null);
+    await apiSafe.post(`/convert/extract/queue/${item.id}/password`, { password });
+    fetchQueue();
+  };
+
   const handleMove = async (type, id, direction) => {
     if (type !== 'download') {
       await apiSafe.post(`/convert/${apiPathForType(type)}/queue/${id}/move`, { direction });
@@ -565,10 +585,17 @@ export default function Queue() {
               onStart={handleStartItem}
               onPause={handlePauseType}
               onResume={handleResumeType}
+              onPassword={setPasswordItem}
             />
           ))
         )}
       </div>
+      <PasswordModal
+        isOpen={!!passwordItem}
+        name={passwordItem ? itemTitle(passwordItem) : ''}
+        onSubmit={submitPassword}
+        onClose={() => setPasswordItem(null)}
+      />
     </div>
   );
 }

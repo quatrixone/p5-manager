@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import Modal from './UI/Modal';
+import PasswordModal from './UI/PasswordModal';
 import { BrowseButton } from './UI/PathField';
 import { api, apiSafe } from '../lib/api.js';
 import { entriesFromInput, topLevelNames, uploadOne } from '../lib/browserUpload.js';
@@ -490,7 +491,8 @@ export default function FileBrowser({
   const deleteOne = async (entry) => {
     if (kind === 'local') {
       const fullPath = path === '/' ? `/${entry.name}` : `${path.replace(/\/$/, '')}/${entry.name}`;
-      await api.post('/convert/local/delete', { path: fullPath, isDir: entry.isDir });
+      const d = await api.post('/convert/local/delete', { path: fullPath, isDir: entry.isDir });
+      if (d?.stopped_jobs) onNotification?.(`Stopped ${d.stopped_jobs} running task(s) that used ${entry.name}`, 'info');
     } else if (kind === 'smb') {
       const sub = path ? `${path.replace(/\/+$/, '')}/${entry.name}` : entry.name;
       await api.post(`/convert/sources/${smbId}/delete`, { path: sub, isDir: entry.isDir });
@@ -622,31 +624,49 @@ export default function FileBrowser({
     clearSelection();
   };
 
+  const extractBody = (filename, password = '') => {
+    if (kind === 'local') {
+      const fullPath = path === '/' ? `/${filename}` : `${path.replace(/\/$/, '')}/${filename}`;
+      return {
+        source: 'local-fs', local_path: fullPath,
+        dest_kind: 'local-fs', dest_local_path: path || '/',
+        password, delete_archive_after: extractDeleteAfter,
+      };
+    }
+    return {
+      source: 'smb', source_id: smbId, smb_path: path, filename,
+      dest_kind: 'smb-back', password, delete_archive_after: extractDeleteAfter,
+    };
+  };
+
   const startExtract = async (filename, password = '') => {
     if (kind === 'ftp') {
       onNotification?.('Extract from FTP not supported (download via Downloader first)', 'info');
       return;
     }
     try {
-      let body;
-      if (kind === 'local') {
-        const fullPath = path === '/' ? `/${filename}` : `${path.replace(/\/$/, '')}/${filename}`;
-        const dest = path || '/';
-        body = {
-          source: 'local-fs', local_path: fullPath,
-          dest_kind: 'local-fs', dest_local_path: dest,
-          password, delete_archive_after: extractDeleteAfter,
-        };
-      } else {
-        body = {
-          source: 'smb', source_id: smbId, smb_path: path, filename,
-          dest_kind: 'smb-back', password, delete_archive_after: extractDeleteAfter,
-        };
-      }
       // Always go through the queue; user controls Start/Pause from the Queue tab.
-      await api.post('/convert/extract/queue', body);
+      await api.post('/convert/extract/queue', extractBody(filename, password));
       onNotification?.(`Extract added to queue: ${filename}`, 'success');
     } catch (e) { onNotification?.(e.message, 'error'); }
+  };
+
+  // Extract now / Extract queue. A protected archive is asked about first:
+  // { name, auto } while the password dialog is open. Closing the dialog
+  // queues the task without a password - it then waits in Tasks, where the
+  // password can still be given.
+  const [passwordAsk, setPasswordAsk] = useState(null);
+  const queueExtract = async (filename, auto, password = '') => {
+    await startExtract(filename, password);
+    await setQueueRunning('extract', auto);
+    if (!auto) onNotification?.(`Extract queued for ${filename} — press ▶ in Queue to start`, 'info');
+  };
+  const beginExtract = async (filename, auto) => {
+    if (kind === 'local') {
+      const check = await apiSafe.post('/convert/extract/check', extractBody(filename));
+      if (check?.needs_password) { setPasswordAsk({ name: filename, auto }); return; }
+    }
+    await queueExtract(filename, auto);
   };
 
   const importFile = async (filename) => {
@@ -1087,11 +1107,7 @@ export default function FileBrowser({
       await setQueueRunning('upload', auto);
       if (!auto) onNotification?.(`Upload queued for ${f.name} — press ▶ in Queue to start`, 'info');
     };
-    const runExtract = async (auto, password = '') => {
-      await startExtract(f.name, password);
-      await setQueueRunning('extract', auto);
-      if (!auto) onNotification?.(`Extract queued for ${f.name} — press ▶ in Queue to start`, 'info');
-    };
+    const runExtract = (auto) => beginExtract(f.name, auto);
     const runUnpack = async (auto) => {
       const ok = await enqueueUnpackDefault(f);
       if (!ok) return;
@@ -1176,14 +1192,6 @@ export default function FileBrowser({
         label: '🕒 Extract queue',
         action: () => runExtract(false),
         title: 'Extract this archive and pause — press ▶ in Queue when ready',
-      },
-      canExtract && {
-        label: '🔑 Extract with password',
-        action: () => {
-          const password = window.prompt(`Password for ${f.name}`);
-          if (password) runExtract(true, password);
-        },
-        title: 'For an archive that is protected by a password: asks for it, then extracts now',
       },
       // Context-specific extras below the standardised actions.
       f.isDir && enablePickDir && kind !== 'ftp' && { label: '✓ Pick folder', action: () => pickDir(f) },
@@ -1701,6 +1709,14 @@ export default function FileBrowser({
           </form>
         )}
       </Modal>
+
+      <PasswordModal
+        isOpen={!!passwordAsk}
+        name={passwordAsk?.name}
+        hint="Not now adds the task anyway; you can give the password later in Tasks."
+        onSubmit={(password) => { const ask = passwordAsk; setPasswordAsk(null); queueExtract(ask.name, ask.auto, password); }}
+        onClose={() => { const ask = passwordAsk; setPasswordAsk(null); if (ask) queueExtract(ask.name, ask.auto); }}
+      />
 
       {/* Show Info modal. Read-only metadata pulled from the entry row
           (already loaded by the parent browse). No extra fetch needed. */}

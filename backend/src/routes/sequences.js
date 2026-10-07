@@ -25,9 +25,12 @@ async function getBuiltinTemplates() {
 const PORT = process.env.PORT || 3001;
 const API = `http://127.0.0.1:${PORT}/api`;
 
-async function apiFetch(method, urlPath, body) {
+// signal: the run's abort signal. A step's request is dropped the moment the
+// run is cancelled; the route on the other end sees its client go away.
+async function apiFetch(method, urlPath, body, signal) {
   const res = await fetch(`${API}${urlPath}`, {
     method,
+    signal,
     ...(body !== undefined ? {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -45,7 +48,14 @@ async function apiFetch(method, urlPath, body) {
   return data;
 }
 
-const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+const cancelError = () => Object.assign(new Error('cancelled'), { cancelled: true });
+// A wait that ends at once, with an error, when the run is cancelled.
+const sleep = (ms, signal) => new Promise((resolve, reject) => {
+  if (signal?.aborted) return reject(cancelError());
+  const onAbort = () => { clearTimeout(timer); reject(cancelError()); };
+  const timer = setTimeout(() => { signal?.removeEventListener('abort', onAbort); resolve(); }, ms);
+  signal?.addEventListener('abort', onAbort, { once: true });
+});
 
 // In-memory live state for currently running / recently completed sequence runs.
 // (Not persisted; the sequence definition itself lives in SQLite.)
@@ -168,9 +178,9 @@ router.delete('/:id', (req, res) => {
 
 // ---- Step executors ----------------------------------------------------------
 
-async function execWait(step) {
+async function execWait(step, ctx) {
   const ms = parseInt(step.duration) || 0;
-  if (ms > 0) await sleep(ms);
+  if (ms > 0) await sleep(ms, ctx.signal);
 }
 
 function checkPortOpen(ip, port, timeoutMs = 3000) {
@@ -200,7 +210,7 @@ async function execCheckPort(step, ctx) {
   const deadline = Date.now() + (parseInt(step.waitSeconds) || 0) * 1000;
   let ok = await checkPortOpen(ctx.profile.ip_address, port);
   while (!ok && Date.now() < deadline && !ctx.run.cancelled) {
-    await sleep(3000);
+    await sleep(3000, ctx.signal);
     ok = await checkPortOpen(ctx.profile.ip_address, port);
   }
   if (!ok) {
@@ -237,7 +247,7 @@ async function execWol(step, ctx) {
   try {
     const r = await apiFetch('POST', '/remoteplay/prewarm', {
       profile_id: ctx.profile.id,
-    });
+    }, ctx.signal);
     if (r?.already_live) {
       runLog(ctx.run, `  · PS5 ${ctx.profile.ip_address} already had a live session - reusing`);
     } else if (r?.warm_cached) {
@@ -252,7 +262,7 @@ async function execWol(step, ctx) {
     // the next step actually needs a session it'll raise on its own.
     runLog(ctx.run, `  · prewarm failed: ${e.message} - falling back to DDP wake`);
     try {
-      await apiFetch('POST', '/remoteplay/wake', { profile_id: ctx.profile.id });
+      await apiFetch('POST', '/remoteplay/wake', { profile_id: ctx.profile.id }, ctx.signal);
     } catch (e2) {
       throw new Error(`wake failed: ${e2.message}`);
     }
@@ -260,10 +270,10 @@ async function execWol(step, ctx) {
 
   if (step.keep_session) {
     try {
-      await sleep(step.keep_session_delay_ms || 1000);
+      await sleep(step.keep_session_delay_ms || 1000, ctx.signal);
       const r = await apiFetch('POST', '/remoteplay/quick-start', {
         ip: ctx.profile.ip_address,
-      });
+      }, ctx.signal);
       if (r?.session_id) {
         ctx.openedSessions.push({ ip: ctx.profile.ip_address, session_id: r.session_id });
         runLog(ctx.run, `  · promoted warm cache to live keep-awake session ${r.session_id.slice(0, 8)}`);
@@ -301,10 +311,10 @@ async function execPayload(step, ctx) {
   await apiFetch('POST', `/payloads/send/${payloadId}`, {
     ip: ctx.profile.ip_address,
     port: ctx.profile.port || 9021,
-  });
+  }, ctx.signal);
 }
 
-async function pollUntilTerminal(getStatus, { timeoutMs = 6 * 60 * 60 * 1000, intervalMs = 1500 } = {}) {
+async function pollUntilTerminal(getStatus, { timeoutMs = 6 * 60 * 60 * 1000, intervalMs = 1500, signal } = {}) {
   const start = Date.now();
   while (true) {
     const s = await getStatus();
@@ -313,11 +323,11 @@ async function pollUntilTerminal(getStatus, { timeoutMs = 6 * 60 * 60 * 1000, in
       throw new Error(`${s.status}: ${s.error || ''}`);
     }
     if (Date.now() - start > timeoutMs) throw new Error('timeout');
-    await sleep(intervalMs);
+    await sleep(intervalMs, signal);
   }
 }
 
-async function execDownload(step) {
+async function execDownload(step, ctx) {
   const body = {
     url: step.url,
     filename: step.filename || undefined,
@@ -328,16 +338,16 @@ async function execDownload(step) {
     overwrite: true,
   };
   // Make sure the queue is not paused so the worker starts our job.
-  await apiFetch('POST', '/downloader/queue/resume').catch(() => {});
-  const r = await apiFetch('POST', '/downloader/start', body);
+  await apiFetch('POST', '/downloader/queue/resume', undefined, ctx.signal).catch(() => {});
+  const r = await apiFetch('POST', '/downloader/start', body, ctx.signal);
   const jobId = r.job_id;
   await pollUntilTerminal(async () => {
-    const j = await apiFetch('GET', `/downloader/${jobId}`);
+    const j = await apiFetch('GET', `/downloader/${jobId}`, undefined, ctx.signal);
     return { status: j.status, error: j.error };
-  });
+  }, { signal: ctx.signal });
 }
 
-async function execExtract(step) {
+async function execExtract(step, ctx) {
   const body = {
     source: step.source || 'local-fs',
     local_path: step.local_path,
@@ -349,15 +359,15 @@ async function execExtract(step) {
     smb_path: step.smb_path,
     filename: step.filename,
   };
-  await apiFetch('POST', '/convert/extract/queue/resume').catch(() => {});
-  const r = await apiFetch('POST', '/convert/extract/queue', body);
+  await apiFetch('POST', '/convert/extract/queue/resume', undefined, ctx.signal).catch(() => {});
+  const r = await apiFetch('POST', '/convert/extract/queue', body, ctx.signal);
   const itemId = r.item.id;
   await pollUntilTerminal(async () => {
-    const list = await apiFetch('GET', '/convert/extract/queue');
+    const list = await apiFetch('GET', '/convert/extract/queue', undefined, ctx.signal);
     const item = (list.items || []).find(i => i.id === itemId);
     if (!item) return { status: 'failed', error: 'item disappeared' };
     return { status: item.status, error: item.error };
-  });
+  }, { signal: ctx.signal });
 }
 
 async function execFtpUpload(step, ctx) {
@@ -368,26 +378,26 @@ async function execFtpUpload(step, ctx) {
     ip,
     local_path: step.local_path,
     dest_path: step.dest_path,
-  });
+  }, ctx.signal);
 }
 
-async function execConvert(step) {
+async function execConvert(step, ctx) {
   if (!step.source_path) throw new Error('convert needs source_path');
-  await apiFetch('POST', '/convert/convert/queue/resume').catch(() => {});
+  await apiFetch('POST', '/convert/convert/queue/resume', undefined, ctx.signal).catch(() => {});
   const r = await apiFetch('POST', '/convert/convert/queue', {
     mode: step.mode || 'pack-file',
     source_path: step.source_path,
     output_name: step.output_name,
     compress: step.compress !== false,
     verify: step.verify !== false,
-  });
+  }, ctx.signal);
   const itemId = r.item.id;
   await pollUntilTerminal(async () => {
-    const list = await apiFetch('GET', '/convert/convert/queue');
+    const list = await apiFetch('GET', '/convert/convert/queue', undefined, ctx.signal);
     const item = (list.items || []).find(i => i.id === itemId);
     if (!item) return { status: 'failed', error: 'item disappeared' };
     return { status: item.status, error: item.error };
-  });
+  }, { signal: ctx.signal });
 }
 
 // Probe Remote Play session state for the profile, log a one-line summary
@@ -403,7 +413,7 @@ async function ensureSessionForStep(ctx, label) {
   const ip = ctx.profile.ip_address;
   let status = null;
   try {
-    status = await apiFetch('GET', `/remoteplay/quick-status?ip=${encodeURIComponent(ip)}`);
+    status = await apiFetch('GET', `/remoteplay/quick-status?ip=${encodeURIComponent(ip)}`, undefined, ctx.signal);
   } catch (_) { /* sidecar may be transient - the actual call will retry */ }
 
   if (status?.active) {
@@ -419,7 +429,7 @@ async function ensureSessionForStep(ctx, label) {
   // Cold path: fail fast if PS5 is unreachable so we don't burn the full
   // 60 s post-disconnect lock waiting on a console that's truly offline.
   try {
-    const ddp = await apiFetch('GET', `/remoteplay/discover?ip=${encodeURIComponent(ip)}`);
+    const ddp = await apiFetch('GET', `/remoteplay/discover?ip=${encodeURIComponent(ip)}`, undefined, ctx.signal);
     if (!ddp?.success) {
       throw new Error(`PS5 ${ip} is offline / unreachable (DDP failed)`);
     }
@@ -453,7 +463,7 @@ async function execInputScript(step, ctx) {
 
   await ensureSessionForStep(ctx, 'input_script');
 
-  const r = await apiFetch('POST', '/remoteplay/run-script', body);
+  const r = await apiFetch('POST', '/remoteplay/run-script', body, ctx.signal);
   if (r?.session_id) {
     runLog(ctx.run, `  · session ${r.session_id.slice(0, 8)} executed ${(r.events || []).length} input event(s)`);
   }
@@ -476,7 +486,7 @@ async function execRpSession(step, ctx) {
       // handshake will be fighting against.
       runLog(ctx.run, '  · opening fresh RP session (first start after standby can take 60-120s)');
     }
-    const r = await apiFetch('POST', '/remoteplay/quick-start', { ip: ctx.profile.ip_address, profile_id: ctx.profile.id });
+    const r = await apiFetch('POST', '/remoteplay/quick-start', { ip: ctx.profile.ip_address, profile_id: ctx.profile.id }, ctx.signal);
     if (r?.session_id) {
       runLog(ctx.run, `  · RP session ${r.session_id.slice(0, 8)} ready (${r.resumed ? 'warm-resumed' : r.reused ? 'reused' : 'fresh'})`);
     }
@@ -484,7 +494,7 @@ async function execRpSession(step, ctx) {
     // Soft stop: sidecar parks the session in the warm cache so it can be
     // resumed cheaply by anything that runs after this step (next sequence
     // iteration, scheduled rerun, the user clicking Start in the UI...).
-    await apiFetch('POST', '/remoteplay/quick-stop', { ip: ctx.profile.ip_address });
+    await apiFetch('POST', '/remoteplay/quick-stop', { ip: ctx.profile.ip_address }, ctx.signal);
     runLog(ctx.run, '  · soft-stopped RP session (parked in warm cache for next start)');
   } else if (action === 'standby') {
     // Hard "go to sleep" — sends the PS5 standby command through the RP
@@ -493,8 +503,8 @@ async function execRpSession(step, ctx) {
     // surfaces a 400 with a readable message when either is missing.
     // We also drop the warm cache first so the next sequence start doesn't
     // try to resume into a now-asleep console.
-    try { await apiFetch('POST', '/remoteplay/quick-stop', { ip: ctx.profile.ip_address }); } catch (_) {}
-    await apiFetch('POST', '/remoteplay/standby', { ip: ctx.profile.ip_address, profile_id: ctx.profile.id });
+    try { await apiFetch('POST', '/remoteplay/quick-stop', { ip: ctx.profile.ip_address }, ctx.signal); } catch (_) {}
+    await apiFetch('POST', '/remoteplay/standby', { ip: ctx.profile.ip_address, profile_id: ctx.profile.id }, ctx.signal);
     runLog(ctx.run, '  · console rest mode command sent');
   } else {
     throw new Error(`rp_session: unknown action "${action}"`);
@@ -529,8 +539,17 @@ async function executeSequence(run, sequence, profile, steps) {
   const ctx = {
     profile,
     run,
+    signal: run.abort.signal,
     openedSessions: [], // [{ ip, session_id }] - closed in the finally block
   };
+  // Cancel has to take effect now, not when the step in progress is done: a
+  // step can be a wait of minutes or a conversion of hours. The waits and
+  // requests of a step end with the signal; this promise covers whatever
+  // does not.
+  const cancelled = new Promise((_, reject) => {
+    ctx.signal.addEventListener('abort', () => reject(cancelError()), { once: true });
+  });
+  cancelled.catch(() => {});
 
   const maxRetriesPerCheck = 3;
   const retryCount = new Map();
@@ -554,10 +573,17 @@ async function executeSequence(run, sequence, profile, steps) {
         continue;
       }
       try {
-        await exec(step, ctx);
+        const running = exec(step, ctx);
+        running.catch(() => {}); // it may still fail after the run has moved on
+        await Promise.race([running, cancelled]);
         runLog(run, `  ✓ ok`);
         i++;
       } catch (e) {
+        if (run.cancelled) {
+          run.status = 'cancelled';
+          runLog(run, `Cancelled during step ${i + 1}`);
+          break;
+        }
         if (e.retry && typeof e.retry.from === 'number') {
           const rc = (retryCount.get(i) || 0) + 1;
           retryCount.set(i, rc);
@@ -633,6 +659,8 @@ function startSequenceRun(sequenceId, startedBy) {
     log: '',
     cancelled: false,
   };
+  // Not enumerable: the run is sent to the browser as it is.
+  Object.defineProperty(run, 'abort', { value: new AbortController() });
   recordRun(run);
   if (startedBy) runLog(run, startedBy);
 
@@ -750,6 +778,7 @@ router.post('/runs/:runId/cancel', (req, res) => {
   const r = sequenceRuns.get(req.params.runId);
   if (!r) return res.status(404).json({ error: 'Run not found' });
   r.cancelled = true;
+  r.abort?.abort();
   res.json({ success: true });
 });
 

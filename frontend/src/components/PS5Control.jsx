@@ -75,7 +75,7 @@ function PS5Control({ profiles, onNotification, onProfilesChanged }) {
   const cancelAutoloadRun = async () => {
     try {
       await api.post(`/sequences/runs/${autoloadRun.id}/cancel`);
-      showToast('Cancel requested - the sequence stops after its current step', 'info');
+      showToast('Sequence cancelled', 'info');
     } catch (e) { showToast(e.message, 'error'); }
   };
 
