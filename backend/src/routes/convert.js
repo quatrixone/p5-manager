@@ -2958,6 +2958,20 @@ function resolveGameRootForPack(srcPath) {
   };
 }
 
+// With --verify mkpfs reads the finished image once more and compares it,
+// without printing anything: minutes during which the task stood at 100 %
+// and looked hung. The line that ends the writing starts the phase the
+// Tasks list shows instead.
+function spawnPack(job, args, opts) {
+  const done = spawnIntoJob(job, MKPFS_BIN, args, mkpfsEnv(job));
+  if (opts.verify && job._proc) {
+    const watch = (d) => { if (/Successfully wrote/i.test(d.toString())) job.phase = 'verifying'; };
+    job._proc.stdout?.on('data', watch);
+    job._proc.stderr?.on('data', watch);
+  }
+  return done;
+}
+
 async function runPackFile(job, opts) {
   const args = ['pack', 'file'];
   args.push(opts.compress ? '--compress' : '--no-compress');
@@ -2971,7 +2985,7 @@ async function runPackFile(job, opts) {
   args.push('--verbose');
   args.push(job.source, job.output);
   job.command = `${MKPFS_BIN} ${args.join(' ')}`;
-  return spawnIntoJob(job, MKPFS_BIN, args, mkpfsEnv(job));
+  return spawnPack(job, args, opts);
 }
 
 async function runPackFolder(job, opts) {
@@ -2991,7 +3005,7 @@ async function runPackFolder(job, opts) {
   args.push('--verbose');
   args.push(job.source, job.output);
   job.command = `${MKPFS_BIN} ${args.join(' ')}`;
-  return spawnIntoJob(job, MKPFS_BIN, args, mkpfsEnv(job));
+  return spawnPack(job, args, opts);
 }
 
 // Reverse operation — extracts a .ffpfsc / .ffpfs / .pfs / .dat / .bin image
@@ -3557,8 +3571,13 @@ async function executeConvertJob(job) {
     cleanupSmbStage(job);
   } else {
     job.status = 'failed';
-    job.error = result.error || `exit ${result.code}`;
-    log('error', `mm job ${job.id} failed (${job.mode}): exit ${result.code}`);
+    // mkpfs --verify: the image was written, but reading it back gave
+    // other contents than the source for some files.
+    const mismatches = (job.log.match(/content mismatch for file/g) || []).length;
+    job.error = mismatches
+      ? `Verification failed: ${mismatches} file(s) in the image differ from the source (see the log)`
+      : (result.error || `exit ${result.code}`);
+    log('error', `mm job ${job.id} failed (${job.mode}): ${job.error}`);
     cleanupFtpStage(job);
     cleanupSmbStage(job);
   }
