@@ -76,9 +76,14 @@ def launch_credential(account_id: str) -> Optional[str]:
     return hashlib.sha256(aid.encode()).hexdigest() if aid else None
 
 
+# One search at a time: a PS5 answers a direct search only when it comes
+# from port 9303, which one socket can hold. (No SO_REUSEADDR - on Windows
+# it would let two sockets share the port and take each other's answers.)
+_search_lock: Optional[asyncio.Lock] = None
+
+
 def _socket() -> socket.socket:
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
     try:
         sock.bind(("0.0.0.0", LOCAL_PORT))
@@ -126,6 +131,14 @@ async def status(ip: str, host_type: Optional[str] = None, timeout: float = 2.0,
     """The console's answer to SRCH, or None when it does not answer (off, or
     asleep too deeply, or not there). The search goes out `tries` times
     within `timeout`, as one UDP packet can get lost."""
+    global _search_lock
+    if _search_lock is None:
+        _search_lock = asyncio.Lock()
+    async with _search_lock:
+        return await _search(ip, host_type, timeout, tries)
+
+
+async def _search(ip: str, host_type: Optional[str], timeout: float, tries: int) -> Optional[Dict[str, object]]:
     loop = asyncio.get_running_loop()
     transport, proto = await loop.create_datagram_endpoint(lambda: _Answers(ip), sock=_socket())
     try:

@@ -30,7 +30,7 @@ const CONNECT_TIMEOUT_MS = 20000;
 let ndcPromise = null;
 // node-datachannel is a native module; a platform without a prebuilt one
 // still runs the rest of the app, and the browser falls back to MJPEG.
-export function loadNdc() {
+function loadNdc() {
   if (!ndcPromise) {
     ndcPromise = import('node-datachannel')
       .then((m) => m.default || m)
@@ -165,7 +165,6 @@ class Viewer {
     this.videoBaseTs = 0;
     this.audioTs = 0;
     this.audioStartUs = null;
-    this.stats = { frames: 0, audio: 0, keyRequests: 0 };
   }
 
   // Opens the stream from the Remote Play service and reads until the first
@@ -329,7 +328,6 @@ class Viewer {
     const elapsed = Math.max(0, timeUs - this.videoStartUs);
     this.videoConfig.timestamp = (this.videoBaseTs + Math.round(elapsed * VIDEO_CLOCK / 1e6)) >>> 0;
     this.video.sendMessageBinary(Buffer.from(data));
-    this.stats.frames++;
   }
 
   sendAudio(timeUs, data) {
@@ -349,7 +347,6 @@ class Viewer {
     }
     this.audioConfig.timestamp = (this.audioBaseTs + this.audioSent) >>> 0;
     this.audio.sendMessageBinary(Buffer.from(data));
-    this.stats.audio++;
   }
 
   close(reason) {
@@ -373,7 +370,6 @@ export async function createViewer({ sid, upstreamUrl, onKeyRequest, log }) {
   const id = String(nextId++);
   const viewer = new Viewer({ id, sid, upstreamUrl, log });
   viewer.onKeyRequest = () => {
-    viewer.stats.keyRequests++;
     onKeyRequest?.();
   };
   viewers.set(id, viewer);
@@ -405,8 +401,4 @@ export function closeViewer(id) {
 // Every viewer of a session, when the session goes.
 export function closeViewersOf(sid) {
   for (const v of [...viewers.values()]) if (v.sid === sid) v.close('session stopped');
-}
-
-export function viewerCount() {
-  return viewers.size;
 }
