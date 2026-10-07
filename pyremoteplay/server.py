@@ -1320,6 +1320,19 @@ async def session_stream(session_id: str):
     })
 
 
+@app.post("/sessions/{session_id}/idr")
+async def session_idr(session_id: str):
+    """Ask the console for a key frame - a WebRTC viewer whose picture broke."""
+    s = SESSIONS.get(session_id)
+    if not s:
+        raise HTTPException(404, "session not found")
+    session = getattr(s["device"], "session", None)
+    if chiaki_engine is None or not isinstance(session, chiaki_engine.ChiakiSession):
+        raise HTTPException(501, "this session has no encoded stream")
+    session.request_key_frame()
+    return {"ok": True}
+
+
 @app.post("/sessions/{session_id}/shake")
 async def session_shake(session_id: str, req: ShakeReq):
     s = SESSIONS.get(session_id)

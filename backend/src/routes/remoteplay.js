@@ -7,6 +7,7 @@ import { getRepo, log } from '../db/sqlite.js';
 import { pushKernelLogEntry } from './kernelLogServer.js';
 import { payloadsDir } from '../lib/paths.js';
 import { getFtpPort } from '../lib/ftpPort.js';
+import { createViewer, answerViewer, closeViewer, closeViewersOf } from '../lib/webrtc.js';
 
 const router = express.Router();
 
@@ -262,6 +263,9 @@ async function ensureSessionForIp(ip, opts = {}) {
       user_profile: userProfile,
       account_id: accountId,
       enable_video: enableVideo,
+      // A session with a picture brings its sound along for a WebRTC viewer,
+      // who can unmute it without a new session; it is muted there at first.
+      enable_audio: enableVideo,
       resolution,
       ...(hostTypeOverride ? { host_type: hostTypeOverride } : {}),
     },
@@ -1185,6 +1189,42 @@ router.get('/sessions/:sid/video.mjpeg', async (req, res) => {
   }
 });
 
+// WebRTC viewer of a session: the backend offers, the browser answers.
+// The picture and sound go to the browser as the console encoded them; see
+// lib/webrtc.js. A browser that cannot (or a service without the chiaki
+// engine, which answers 501) keeps to the MJPEG stream above.
+router.post('/sessions/:sid/webrtc', async (req, res) => {
+  const sid = req.params.sid;
+  try {
+    const offer = await createViewer({
+      sid,
+      upstreamUrl: `${SIDECAR_URL}/sessions/${encodeURIComponent(sid)}/stream`,
+      onKeyRequest: () => {
+        sidecar('POST', `/sessions/${encodeURIComponent(sid)}/idr`, {}, { timeout: 3000 }).catch(() => {});
+      },
+      log,
+    });
+    res.json({ success: true, ...offer });
+  } catch (err) {
+    res.status(err.status || 502).json({ success: false, error: err.message });
+  }
+});
+
+router.post('/sessions/:sid/webrtc/:vid/answer', (req, res) => {
+  try {
+    if (!req.body?.sdp) return res.status(400).json({ success: false, error: 'sdp required' });
+    answerViewer(req.params.vid, req.body.sdp);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(err.status || 500).json({ success: false, error: err.message });
+  }
+});
+
+router.post('/sessions/:sid/webrtc/:vid/close', (req, res) => {
+  closeViewer(req.params.vid);
+  res.json({ success: true });
+});
+
 // What the browser currently holds down per session: sid -> { buttons, sticks }.
 // A press whose release never arrives (page reloaded or sent to the
 // background mid-press, request lost) would otherwise stay held on the
@@ -1273,6 +1313,7 @@ router.post('/sessions/:sid/stop', async (req, res) => {
     // Sidecar waits up to ~12 s for the PS5 to ack the disconnect, so give
     // the HTTP call enough headroom to deliver the result.
     const data = await sidecar('POST', `/sessions/${encodeURIComponent(req.params.sid)}/stop`, {}, { timeout: 20000 });
+    closeViewersOf(req.params.sid);
     // Evict the cache so the next quick-input/script call starts fresh.
     for (const [ip, v] of ipToSession.entries()) {
       if (v.sid === req.params.sid) ipToSession.delete(ip);
