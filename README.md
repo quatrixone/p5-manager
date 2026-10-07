@@ -11,8 +11,8 @@ P5 Manager is an independent hobby project and is not affiliated with Sony Inter
 
 ## Features
 
-- **Console control:** wake and manage PS4 and PS5 consoles; pair Remote Play and use an on-screen controller.
-- **Payloads and automation:** organize, update, and send payloads; build reusable Autoload sequences.
+- **Console control:** wake and manage PS4 and PS5 consoles, pair Remote Play, and control them with an on-screen controller or reusable Input Scripts.
+- **Payloads and automation:** organize, update, and send payloads; build Autoload sequences that run manually or automatically when configured conditions are met.
 - **File Ops:** browse local, network, and console storage; transfer files and run supported install, download, extract, and conversion tasks.
 - **Library:** view and manage titles detected by ShadowMountPlus. Available actions depend on the console.
 - **Mobile-ready:** responsive layout and installable PWA.
