@@ -241,8 +241,7 @@ static class P5Manager
         Console.Title = "P5 Manager - starting...";
         Console.WriteLine("==============================================================");
         Console.WriteLine("  P5 Manager is starting. Please wait...");
-        Console.WriteLine("  The first start can take a minute while Windows checks the");
-        Console.WriteLine("  files. Your browser opens by itself when it is ready.");
+        Console.WriteLine("  Your browser opens by itself when it is ready.");
         Console.WriteLine("  Keep this window open - closing it stops P5 Manager.");
         Console.WriteLine("==============================================================");
         Console.WriteLine();
@@ -294,14 +293,25 @@ static class P5Manager
         Process server = Start(node, "src\\index.js", backend, serverEnv);
 
         string url = "http://localhost:" + port + "/";
+        // Asked by address, not as "localhost": that name means ::1 first, the
+        // server listens on IPv4 only, and Windows takes two seconds to give up
+        // on a refused connection - as long as the request is given, so the
+        // launcher kept waiting for a server that had been up for a while.
+        string health = "http://127.0.0.1:" + port + "/api/health";
         bool up = false;
-        for (int i = 0; i < 240 && !server.HasExited; i++)
+        Stopwatch waited = Stopwatch.StartNew();
+        int told = 0;
+        while (waited.ElapsedMilliseconds < 120000 && !server.HasExited)
         {
-            if (Answers(url + "api/health")) { up = true; break; }
-            Thread.Sleep(500);
+            if (Answers(health)) { up = true; break; }
+            Thread.Sleep(200);
             // A line every 5 seconds so a slow start does not look like a hang.
-            if (i > 0 && i % 10 == 0)
-                Console.WriteLine("[launcher] still starting... (" + (i / 2) + " s)");
+            int seconds = (int)(waited.ElapsedMilliseconds / 1000);
+            if (seconds >= told + 5)
+            {
+                told = seconds - seconds % 5;
+                Console.WriteLine("[launcher] still starting... (" + told + " s)");
+            }
         }
         if (up)
         {

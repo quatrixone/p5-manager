@@ -170,6 +170,15 @@ jobs:
             node scripts/smoke.mjs http://127.0.0.1:3001 "$env:RUNNER_TEMP\p5m-smoke" --sidecar
             if ($LASTEXITCODE -ne 0) { throw "smoke test failed" }
             if (-not (Test-Path "$app\data\app\p5manager.db")) { throw "database was not created in the portable data folder" }
+            # The launcher has to notice that the server is up, or the user's
+            # browser opens late: it once took minutes over a server that
+            # answered after two seconds.
+            $ready = $false
+            foreach ($i in 1..20) {
+              if ((Get-Content $log -Raw) -match 'P5 Manager is ready') { $ready = $true; break }
+              Start-Sleep -Milliseconds 500
+            }
+            if (-not $ready) { throw "the launcher did not report the app as ready" }
           }
           finally {
             Write-Host "---- launcher / server log ----"

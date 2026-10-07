@@ -4,8 +4,8 @@ P5 Manager - portable Windows build
 Start
   Double-click P5Manager.exe. A console window opens (that is the server and
   its log) and says "P5 Manager is starting". On the first start it unpacks
-  its files from P5Manager.pak (the file disappears afterwards) and Windows
-  checks them, which can take up to a minute; later starts take a few seconds.
+  its files from P5Manager.pak (the file disappears afterwards), which takes
+  a moment; later starts take a few seconds.
   Your browser opens http://localhost:3001/ by itself once it is ready.
   Close the console window to stop P5 Manager.
 
