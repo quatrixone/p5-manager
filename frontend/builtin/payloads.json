@@ -1,0 +1,44 @@
+[
+  {
+    "filename": "klogsrv-ps5.elf",
+    "url": "https://github.com/ps5-payload-dev/klogsrv/releases/download/v0.8/klogsrv-ps5.elf",
+    "console_type": "ps5",
+    "port": 9021,
+    "tag": "log",
+    "description": "PS5 Kernel log server (used by Log viewer)"
+  },
+  {
+    "filename": "setlogserver.lua",
+    "url": "https://raw.githubusercontent.com/Gezine/Luac0re/main/payloads/setlogserver.lua",
+    "console_type": "ps5",
+    "port": 9026,
+    "tag": "log",
+    "description": "PS5 Lua log redirector (used by Log viewer)"
+  },
+  {
+    "filename": "ps5-backpork.elf",
+    "url": "https://github.com/BestPig/BackPork/releases/download/0.1/ps5-backpork.elf",
+    "console_type": "ps5",
+    "port": 9021,
+    "tag": "community",
+    "description": "PS5 BackPork ELF"
+  },
+  {
+    "filename": "kstuff.elf",
+    "url": "https://github.com/EchoStretch/kstuff-lite/releases/download/v1.11/kstuff.elf",
+    "console_type": "ps5",
+    "port": 9021,
+    "tag": "community",
+    "description": "PS5 kstuff-lite v1.11",
+    "notes": "Pinned: PS5 Game Compressor (Convert on console) needs kstuff-lite 1.07 or newer."
+  },
+  {
+    "filename": "shadowmountplus.elf",
+    "url": "https://github.com/drakmor/ShadowMountPlus/releases/download/1.7beta3/shadowmountplus.elf",
+    "console_type": "ps5",
+    "port": 9021,
+    "tag": "community",
+    "description": "PS5 ShadowMountPlus 1.7beta3 (game mounting + Library API)",
+    "notes": "Pinned to the release the Library tab's API calls were written against. The Library's \"Start ShadowMount\" button sends this file."
+  }
+]

@@ -1,19 +1,18 @@
 import express from 'express';
 import net from 'net';
 import { getRepo, log } from '../db/sqlite.js';
-import { loadBuiltin } from '../lib/builtinLoader.js';
+import { readBuiltinList } from '../lib/builtinLoader.js';
 import { readBuiltinInputScripts } from './inputScripts.js';
 
 const router = express.Router();
 
-// Built-in templates live in /frontend/builtin/templates.js so the user
+// Built-in templates live in /frontend/builtin/templates.json so the user
 // only edits one place to change what shows up in the Autoload "Templates"
-// menu. loadBuiltin() caches by mtime so file edits via the built-in
-// editor are picked up on the very next request without a restart.
+// menu. readBuiltinList() rereads the file when it changes, so edits via
+// the built-in editor show on the very next request without a restart.
 async function getBuiltinTemplates() {
   try {
-    const mod = await loadBuiltin('templates.js');
-    return Array.isArray(mod.DEFAULT_TEMPLATES) ? mod.DEFAULT_TEMPLATES : [];
+    return readBuiltinList('templates.json');
   } catch (err) {
     log('error', `Failed to load built-in templates: ${err.message}`);
     return [];
@@ -784,7 +783,7 @@ router.post('/runs/:runId/cancel', (req, res) => {
 
 // ---- Built-in templates: always available, no DB rows needed -----------------
 //
-// Source of truth: /frontend/builtin/templates.js (see top of this file).
+// Source of truth: /frontend/builtin/templates.json (see top of this file).
 
 router.get('/templates/list', async (req, res) => {
   try {

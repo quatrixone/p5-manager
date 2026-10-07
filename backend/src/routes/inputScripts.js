@@ -2,7 +2,7 @@ import express from 'express';
 import fs from 'fs';
 import path from 'path';
 import { getRepo, log } from '../db/sqlite.js';
-import { getBuiltinDir } from '../lib/builtinLoader.js';
+import { getBuiltinDir, readBuiltinList } from '../lib/builtinLoader.js';
 
 const router = express.Router();
 
@@ -10,17 +10,14 @@ const BUILTIN_FILE = 'inputScripts.json';
 const BUILTIN_MAX_BYTES = 256 * 1024;
 
 // Built-in scripts live in /frontend/builtin/inputScripts.json - a plain
-// JSON array of { id, name, description, script, notes? }. Read fresh on
-// every call (the file is a few KB; no caching needed) so an edit via
-// PUT /builtin/:id below is visible on the very next request without any
-// module-cache invalidation dance.
+// JSON array of { id, name, description, script, notes? }, reread when it
+// changes, so an edit via PUT /builtin/:id below is visible on the very
+// next request.
 export function readBuiltinInputScripts() {
-  const filePath = path.join(getBuiltinDir(), BUILTIN_FILE);
-  if (!fs.existsSync(filePath)) return [];
   try {
-    const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-    return Array.isArray(data) ? data : [];
+    return readBuiltinList(BUILTIN_FILE);
   } catch (err) {
+    if (/not found/.test(err.message)) return [];
     log('error', `Failed to load built-in input scripts: ${err.message}`);
     return [];
   }

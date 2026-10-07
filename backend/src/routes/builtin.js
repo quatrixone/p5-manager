@@ -1,45 +1,40 @@
 // Editor API for /frontend/builtin/*.
 //
 // Lets the hidden UI editor (frontend BuiltinEditor.jsx) read and write the
-// three built-in source files. Edits are:
+// three built-in JSON files. Edits are:
 //   * restricted to a fixed allow-list of filenames,
-//   * validated before touching the real file - JS files by attempting a
-//     dynamic import of a temp copy (a syntax error or runtime throw
-//     aborts the save), JSON files (inputScripts.json) by JSON.parse,
-//   * atomic (write to tmp, fsync, rename),
-//   * backed up — previous version goes to `<file>.bak` next to it,
-//   * cache-invalidated so loadBuiltin() picks the new file up immediately.
+//   * validated before touching the real file: it has to parse as a JSON
+//     array,
+//   * atomic (write to tmp, rename),
+//   * backed up — previous version goes to `<file>.bak` next to it.
+// readBuiltinList() sees the new mtime and rereads the file.
 
 import express from 'express';
 import fs from 'fs';
 import path from 'path';
-import { pathToFileURL } from 'url';
 import { log } from '../db/sqlite.js';
-import { getBuiltinDir, clearBuiltinCache } from '../lib/builtinLoader.js';
+import { getBuiltinDir } from '../lib/builtinLoader.js';
 
 const router = express.Router();
 
-// Only these files can be read/written. Each entry advertises the named
-// export(s) the editor should expect after a successful save — pure
-// metadata for the UI; the server doesn't enforce the export name beyond
-// confirming the dynamic import doesn't throw.
+// Only these files can be read/written.
 const EDITABLE_FILES = [
   {
-    name: 'payloads.js',
+    name: 'payloads.json',
     title: 'Default Payloads',
-    description: 'Payloads auto-downloaded on startup. Each entry has filename + url + tag + description.',
-    expectsExport: 'ESSENTIAL_PAYLOADS',
+    description: 'Payloads auto-downloaded on startup. Each entry has filename + url + console_type + port + tag + description (+ notes).',
+    format: 'json',
   },
   {
-    name: 'templates.js',
+    name: 'templates.json',
     title: 'Autoload Templates',
     description: 'Sequence templates shown in the Autoload "Templates" panel.',
-    expectsExport: 'DEFAULT_TEMPLATES',
+    format: 'json',
   },
   {
     name: 'inputScripts.json',
     title: 'Built-in Input Scripts',
-    description: 'Script Runner macros (Restart PS5, Rest Mode, …). Plain JSON array, not a JS module.',
+    description: 'Script Runner macros (Restart PS5, Rest Mode, …).',
     format: 'json',
   },
 ];
@@ -109,7 +104,7 @@ router.get('/files/:name', (req, res) => {
 router.put('/files/:name', async (req, res) => {
   let tmpPath = null;
   try {
-    const { filePath, meta } = resolveBuiltinFile(req.params.name);
+    const { filePath } = resolveBuiltinFile(req.params.name);
     const { content } = req.body || {};
     if (typeof content !== 'string') {
       return res.status(400).json({ error: '`content` must be a string' });
@@ -118,37 +113,16 @@ router.put('/files/:name', async (req, res) => {
       return res.status(413).json({ error: `File exceeds ${MAX_BYTES} bytes` });
     }
 
-    // Validate by writing a tmp sibling first and only replacing the real
-    // file if that validates clean. JSON files (inputScripts.json) just
-    // need JSON.parse to succeed - importing them as a module would force
-    // a `.js` extension on the tmp file and validate the wrong thing
-    // entirely. JS files keep the dynamic-import check (same directory so
-    // any sibling imports and relative URLs behave the same; the query
-    // string busts Node's ESM cache each time).
-    if (meta.format === 'json') {
-      tmpPath = `${filePath}.tmp-${Date.now()}-${process.pid}.json`;
-      fs.writeFileSync(tmpPath, content, 'utf8');
-      try {
-        JSON.parse(content);
-      } catch (err) {
-        try { fs.unlinkSync(tmpPath); } catch (_) {}
-        tmpPath = null;
-        return res.status(400).json({ error: `Invalid JSON: ${err.message}` });
-      }
-    } else {
-      tmpPath = `${filePath}.tmp-${Date.now()}-${process.pid}.js`;
-      fs.writeFileSync(tmpPath, content, 'utf8');
-      try {
-        const url = pathToFileURL(tmpPath).href + `?v=${Date.now()}`;
-        await import(url);
-      } catch (err) {
-        try { fs.unlinkSync(tmpPath); } catch (_) {}
-        tmpPath = null;
-        return res.status(400).json({
-          error: `Script failed validation: ${err.message}`,
-        });
-      }
+    // Only a JSON array replaces the real file.
+    let parsed;
+    try {
+      parsed = JSON.parse(content);
+    } catch (err) {
+      return res.status(400).json({ error: `Invalid JSON: ${err.message}` });
     }
+    if (!Array.isArray(parsed)) return res.status(400).json({ error: 'The file has to be a JSON array' });
+    tmpPath = `${filePath}.tmp-${Date.now()}-${process.pid}`;
+    fs.writeFileSync(tmpPath, content, 'utf8');
 
     // Backup current version (best effort) then atomically replace.
     if (fs.existsSync(filePath)) {
@@ -156,8 +130,6 @@ router.put('/files/:name', async (req, res) => {
     }
     fs.renameSync(tmpPath, filePath);
     tmpPath = null;
-
-    clearBuiltinCache(req.params.name);
 
     const stat = fs.statSync(filePath);
     log('info', `Built-in updated: ${req.params.name} (${stat.size} bytes)`);
@@ -179,7 +151,6 @@ router.post('/files/:name/restore-backup', (req, res) => {
       return res.status(404).json({ error: 'No backup available' });
     }
     fs.copyFileSync(bak, filePath);
-    clearBuiltinCache(req.params.name);
     const stat = fs.statSync(filePath);
     log('info', `Built-in restored from backup: ${req.params.name}`);
     res.json({ success: true, size: stat.size, mtime: stat.mtimeMs });

@@ -1,24 +1,34 @@
 # /frontend/builtin
 
 Single source of truth for everything the manager ships **built-in**.
-These files are imported by both the React frontend and the Node backend at
-runtime (see `backend/src/lib/builtinLoader.js`), so editing any file here
+These files are read by the backend at runtime and served to the UI
+(see `backend/src/lib/builtinLoader.js`), so editing any file here
 immediately changes what the app exposes — no rebuild trickery, no DB
-migration. Keep them small, readable, and dependency-free.
+migration.
 
 ## Files
 
 | File                | What lives here                                     | Consumed by                                 |
 | ------------------- | --------------------------------------------------- | ------------------------------------------- |
-| `payloads.js`       | `ESSENTIAL_PAYLOADS` — auto-downloaded on startup   | `backend/src/lib/defaultPayloads.js`        |
-| `templates.js`      | `DEFAULT_TEMPLATES` — Autoload sequence templates   | `backend/src/routes/sequences.js`           |
-| `inputScripts.json` | JSON array of Script Runner macros                  | `frontend ScriptRunner` + backend `/api/input-scripts/builtin` |
+| `payloads.json`     | payloads auto-downloaded on startup                 | `backend/src/lib/defaultPayloads.js`        |
+| `templates.json`    | Autoload sequence templates                         | `backend/src/routes/sequences.js`           |
+| `inputScripts.json` | Script Runner macros                                | `frontend ScriptRunner` + backend `/api/input-scripts/builtin` |
 
 ## Editing rules
 
-* `payloads.js` / `templates.js` are **plain ESM** — `export const FOO = [ ... ]`.
-  No external imports.
-* `inputScripts.json` is **plain JSON** (not a JS module) — an array of
+* All three are **plain JSON arrays**; the editor refuses anything else.
+  JSON has no comments: what is worth saying about an entry goes into its
+  optional `notes` field.
+* `payloads.json`: `{ filename, url, console_type, port, tag, description,
+  notes? }`. `url` may point at a `.zip` (the first `.elf`/`.lua`/`.bin`
+  in it is kept); `console_type` is `ps4` or `ps5` (untagged shows
+  everywhere); `port` is the sender's default (PS5 ELF 9021, Lua 9026,
+  PS4 9020).
+* `templates.json`: `{ id, name, description, console_type?,
+  requiresProfile, autoTrigger?, notes?, steps }`, steps as in a saved
+  sequence. PS5 and cross-platform templates start with `rp_session start`
+  (wakes the console and holds it awake) and end with `rp_session standby`.
+* `inputScripts.json` — an array of
   `{ id, name, description, script, notes? }`. `script` is a single string
   with `\n` between lines (same DSL the editor takes: `<button> [ms] [Nx]`,
   `wait <ms>`, `text <string>`, `lstick` / `rstick <x> <y> [ms]`, `home`,

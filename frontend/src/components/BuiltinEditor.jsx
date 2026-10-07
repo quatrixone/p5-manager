@@ -174,11 +174,6 @@ function BuiltinEditor({ onClose, onNotification }) {
             {dirty && (
               <span className="badge badge-warning" style={{ marginLeft: 8, fontSize: '0.65rem' }}>MODIFIED</span>
             )}
-            {selectedMeta?.expectsExport && (
-              <span className="badge badge-muted font-mono" style={{ marginLeft: 8, fontSize: '0.65rem' }}>
-                export {selectedMeta.expectsExport}
-              </span>
-            )}
           </span>
           <div className="flex gap-sm">
             <button className="btn btn-ghost btn-sm" onClick={() => selected && loadFile(selected)} disabled={loading || !selected}>
