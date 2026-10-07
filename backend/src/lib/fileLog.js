@@ -5,13 +5,15 @@
 // console.log - everything the Windows launcher's window showed, the Remote
 // Play service included.
 //
-// Kept small: at 2 MB the file becomes p5manager.1.log and a new one starts,
-// and a line that repeats is written once with a count.
+// Kept small: at 1 MB the file becomes p5manager.1.log (replacing the one
+// before it) and a new one starts, so the two never hold more than 2 MB -
+// weeks of normal use. A line that repeats is written once with a count.
+// The launcher's console.log is held to 2 x 2 MB the same way.
 import fs from 'fs';
 import path from 'path';
 import { internalDataDir } from './paths.js';
 
-const MAX_BYTES = 2 * 1024 * 1024;
+const MAX_BYTES = 1024 * 1024;
 export const logDir = path.join(internalDataDir, 'logs');
 const current = path.join(logDir, 'p5manager.log');
 const previous = path.join(logDir, 'p5manager.1.log');

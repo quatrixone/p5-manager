@@ -96,24 +96,35 @@ static class P5Manager
     // Everything the children print is shown in this window and kept in
     // <data>\app\logs\console.log, which the app offers as part of its log
     // download: what a user sends along when something does not work.
+    // The file is held to 2 MB: when it is full it becomes console.1.log,
+    // replacing the one before it, and a new one starts - also in the middle
+    // of a long run. The two together never take more than 4 MB.
+    const long ConsoleLogMax = 2 * 1024 * 1024;
     static StreamWriter consoleLog = null;
+    static string consoleLogDir = null;
+    static long consoleLogSize = 0;
     static readonly object consoleLock = new object();
+
+    static void OpenConsoleLogFile()
+    {
+        string file = Path.Combine(consoleLogDir, "console.log");
+        if (File.Exists(file) && new FileInfo(file).Length >= ConsoleLogMax)
+        {
+            string old = Path.Combine(consoleLogDir, "console.1.log");
+            File.Delete(old);
+            File.Move(file, old);
+        }
+        consoleLogSize = File.Exists(file) ? new FileInfo(file).Length : 0;
+        consoleLog = new StreamWriter(new FileStream(file, FileMode.Append, FileAccess.Write, FileShare.ReadWrite), new UTF8Encoding(false));
+    }
 
     static void OpenConsoleLog(string appData)
     {
         try
         {
-            string dir = Path.Combine(appData, "logs");
-            Directory.CreateDirectory(dir);
-            string file = Path.Combine(dir, "console.log");
-            // A new file once the old one has grown: the last run stays readable.
-            if (File.Exists(file) && new FileInfo(file).Length > 4 * 1024 * 1024)
-            {
-                string old = Path.Combine(dir, "console.1.log");
-                File.Delete(old);
-                File.Move(file, old);
-            }
-            consoleLog = new StreamWriter(new FileStream(file, FileMode.Append, FileAccess.Write, FileShare.ReadWrite), new UTF8Encoding(false));
+            consoleLogDir = Path.Combine(appData, "logs");
+            Directory.CreateDirectory(consoleLogDir);
+            OpenConsoleLogFile();
             consoleLog.WriteLine("---- " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + " P5 Manager started");
             consoleLog.Flush();
         }
@@ -126,10 +137,20 @@ static class P5Manager
         lock (consoleLock)
         {
             Console.WriteLine(line);
-            if (consoleLog != null)
+            if (consoleLog == null) return;
+            try
             {
-                try { consoleLog.WriteLine(line); consoleLog.Flush(); } catch { }
+                consoleLog.WriteLine(line);
+                consoleLog.Flush();
+                consoleLogSize += Encoding.UTF8.GetByteCount(line) + 2;
+                if (consoleLogSize >= ConsoleLogMax)
+                {
+                    consoleLog.Dispose();
+                    consoleLog = null;
+                    OpenConsoleLogFile();
+                }
             }
+            catch { }
         }
     }
 

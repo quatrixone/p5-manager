@@ -21,7 +21,8 @@ Your data
 When something does not work
   Open Logs in the app and press "Log file": it saves the app's log, with
   what this window showed, as one text file you can send along. The files
-  themselves are in data\app\logs.
+  themselves are in data\app\logs; they are kept small by themselves (a
+  few megabytes at most, older lines make room for new ones).
 
 Other devices
   Phones and other PCs on your network can open http://<this-pc-ip>:3001/.
