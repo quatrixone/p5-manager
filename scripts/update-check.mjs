@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // End-to-end check of the in-app update against a running instance, without
 // publishing a release. Serves the bundles in <bundle-dir> the way GitHub
-// serves a release, tells the app to update and waits for it to come back
-// as <version>.
+// serves the `updates` release, tells the app to update and waits for it to
+// come back as <version>.
 //
 //   node scripts/update-check.mjs <base-url> <bundle-dir> <version> [--sidecar]
 //
@@ -27,11 +27,11 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 http.createServer((req, res) => {
   if (req.url === '/latest') {
-    const assets = fs.readdirSync(dir).filter(f => f.startsWith(`p5-manager-app-${version}-`)).map(name => ({
+    const assets = fs.readdirSync(dir).filter(f => f.startsWith('p5-manager-app-')).map(name => ({
       name, size: fs.statSync(path.join(dir, name)).size, browser_download_url: `http://127.0.0.1:${FEED_PORT}/${name}`,
     }));
     res.setHeader('content-type', 'application/json');
-    return res.end(JSON.stringify({ tag_name: `v${version}`, name: `check ${version}`, html_url: 'http://127.0.0.1/', body: '', published_at: new Date().toISOString(), assets }));
+    return res.end(JSON.stringify({ tag_name: 'updates', assets }));
   }
   const file = path.join(dir, path.basename(req.url));
   if (!fs.existsSync(file)) { res.statusCode = 404; return res.end(); }

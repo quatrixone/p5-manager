@@ -2,8 +2,10 @@ name: App bundle
 
 # Builds the bundles the in-app Update installs - one for Docker, one for the
 # Windows package (see scripts/build-app-bundle.mjs) - updates a running app
-# from one as a check, and attaches them to the release of a version tag.
-# A manual run or a push to main does everything but the attaching.
+# from one as a check, and for a version tag publishes them in the `updates`
+# release, where the app looks for them. They are kept out of the version's
+# own release so that its page lists only what people download.
+# A manual run or a push to main does everything but the publishing.
 
 on:
   push:
@@ -66,8 +68,26 @@ jobs:
           path: dist-bundle/*
           if-no-files-found: error
 
-      - name: Attach to the release
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: dist-bundle/*
+      - name: Publish in the updates release
+        # Not for a pre-release tag (v1.2.0-rc1): everybody would be offered it.
+        if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release view updates > /dev/null 2>&1 || gh release create updates --prerelease \
+            --title "Update bundles" \
+            --notes "Files the app downloads by itself when you press **Update**. There is nothing to download by hand here - the app is on the [latest release](https://github.com/${GH_REPO}/releases/latest)."
+          # Checksums last: the app takes a bundle only once its checksum is there.
+          gh release upload updates dist-bundle/*.zip --clobber
+          gh release upload updates dist-bundle/*.sha256 --clobber
+          # The app takes the newest version it finds, so older bundles are of
+          # no use any more. Left alone when this run is of an older tag.
+          version="${GITHUB_REF_NAME#v}"
+          names=$(gh release view updates --json assets -q '.assets[].name' | grep '^p5-manager-app-')
+          newest=$(echo "$names" | sed -n 's/^p5-manager-app-\([0-9][0-9A-Za-z.]*\)-.*/\1/p' | sort -V | tail -n 1)
+          if [ "$newest" = "$version" ]; then
+            echo "$names" | grep -v "^p5-manager-app-${version}-" | while read -r old; do
+              gh release delete-asset updates "$old" --yes
+            done
+          fi

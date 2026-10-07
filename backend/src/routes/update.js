@@ -6,15 +6,17 @@ import { fileURLToPath } from 'url';
 import AdmZip from 'adm-zip';
 import { log, saveDatabase } from '../db/sqlite.js';
 import { internalDataDir } from '../lib/paths.js';
+import { pickBundle, isNewerVersion } from '../lib/updateFeed.js';
 
 // "A new version is out" notice plus the Update button.
 //
-// The app updates its own code, not its container. Every release carries
+// The app updates its own code, not its container. Every version comes with
 // one "app bundle" per platform - Docker and the Windows package - named
 // p5-manager-app-<version>-<platform>-level<n>-deps<hash>[-py<hash>].zip
 // (src/ and dist/, on Windows also the Remote Play service; built by
-// scripts/build-app-bundle.mjs). Update downloads
-// it, checks it against the published SHA-256, unpacks it into
+// scripts/build-app-bundle.mjs). They are published in a release of their
+// own, tagged `updates` (see lib/updateFeed.js). Update downloads the one
+// for this platform, checks it against the published SHA-256, unpacks it into
 // <data dir>/app-update/current and exits; the restart policy starts the
 // app again and src/index.js loads the new copy from there. Nothing outside
 // the data directory is touched and no access to Docker is needed.
@@ -30,13 +32,13 @@ import { internalDataDir } from '../lib/paths.js';
 const router = express.Router();
 
 const REPO = 'quatrixone/p5-manager';
-// P5M_UPDATE_FEED: another URL answering like GitHub's "latest release"
-// API, for a mirror or for testing an update without publishing one.
-const FEED_URL = process.env.P5M_UPDATE_FEED || `https://api.github.com/repos/${REPO}/releases/latest`;
+// P5M_UPDATE_FEED: another URL answering like GitHub's API for a release
+// (only its `assets` are read), for a mirror or for testing an update
+// without publishing one.
+const FEED_URL = process.env.P5M_UPDATE_FEED || `https://api.github.com/repos/${REPO}/releases/tags/updates`;
 const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const UPDATE_DIR = path.join(internalDataDir, 'app-update');
 const RESULT_FILE = path.join(UPDATE_DIR, 'result.json');
-const BUNDLE_NAME = /^p5-manager-app-(\d[0-9A-Za-z.]*)-(docker|windows)-level(\d+)-deps([0-9a-f]{12})(?:-py([0-9a-f]{12}))?\.zip$/;
 // Asked of whatever restarts the process: Docker restarts on any exit, the
 // Windows launcher only on this code.
 export const RESTART_EXIT_CODE = 75;
@@ -57,17 +59,7 @@ const DEPS_HASH = process.env.P5M_DEPS_HASH || '';
 const PLATFORM = process.env.P5M_PLATFORM || 'docker';
 const PYDEPS = process.env.P5M_PYDEPS || '';
 
-const parseVersion = (v) => String(v || '').replace(/^v/i, '').split('-')[0].split('.').map(n => parseInt(n, 10) || 0);
-export function isNewerVersion(candidate, current) {
-  const a = parseVersion(candidate);
-  const b = parseVersion(current);
-  for (let i = 0; i < Math.max(a.length, b.length); i++) {
-    if ((a[i] || 0) !== (b[i] || 0)) return (a[i] || 0) > (b[i] || 0);
-  }
-  return false;
-}
-
-let latest = null; // { version, url, name, notes, published_at, bundle }
+let latest = null; // { version, url, name, bundle }
 let checkedAt = 0;
 let checkError = null;
 let job = null; // { version, state: 'downloading' | 'installing' | 'restarting' | 'failed', error? }
@@ -81,25 +73,12 @@ async function checkLatest(force = false) {
       signal: AbortSignal.timeout(10000),
     });
     if (!res.ok) throw new Error(`GitHub answered ${res.status}`);
-    const rel = await res.json();
-    const assets = Array.isArray(rel.assets) ? rel.assets : [];
-    const zip = assets.find(a => a.name.match(BUNDLE_NAME)?.[2] === PLATFORM);
-    const sum = zip && assets.find(a => a.name === `${zip.name}.sha256`);
-    latest = {
-      version: String(rel.tag_name || '').replace(/^v/i, ''),
-      url: rel.html_url,
-      name: rel.name || rel.tag_name,
-      notes: String(rel.body || '').slice(0, 4000),
-      published_at: rel.published_at,
-      bundle: zip && sum ? {
-        name: zip.name,
-        url: zip.browser_download_url,
-        sha256_url: sum.browser_download_url,
-        size: zip.size,
-        image_level: parseInt(zip.name.match(BUNDLE_NAME)[3], 10),
-        deps: zip.name.match(BUNDLE_NAME)[4],
-        pydeps: zip.name.match(BUNDLE_NAME)[5] || '',
-      } : null,
+    const found = pickBundle((await res.json()).assets, PLATFORM);
+    latest = found && {
+      version: found.version,
+      url: `https://github.com/${REPO}/releases/tag/v${found.version}`,
+      name: `P5 Manager ${found.version}`,
+      bundle: found.bundle,
     };
     checkError = null;
   } catch (e) {
@@ -116,7 +95,6 @@ const readJson = (file) => {
 function blocker() {
   if (!latest?.version || !isNewerVersion(latest.version, CURRENT_VERSION)) return 'No newer version to install';
   if (!SELF_UPDATE) return 'This installation cannot update itself';
-  if (!latest.bundle) return `This release has no app bundle for ${PLATFORM === 'windows' ? 'the Windows package' : 'Docker'}`;
   if (latest.bundle.image_level > IMAGE_LEVEL || latest.bundle.deps !== DEPS_HASH || (latest.bundle.pydeps && latest.bundle.pydeps !== PYDEPS)) {
     return 'This version needs a newer image - pull it (docker compose pull && docker compose up -d) or download the new Windows package';
   }
@@ -130,7 +108,7 @@ router.get('/status', async (req, res) => {
   res.json({
     current: CURRENT_VERSION,
     image_version: process.env.P5M_BASE_VERSION || CURRENT_VERSION,
-    latest: latest && { version: latest.version, url: latest.url, name: latest.name, notes: latest.notes, published_at: latest.published_at },
+    latest: latest && { version: latest.version, url: latest.url, name: latest.name },
     update_available: available,
     can_apply: !why,
     blocked_reason: available ? why : null,

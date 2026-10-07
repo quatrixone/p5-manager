@@ -138,7 +138,11 @@ The container has to be allowed to restart for this: the provided
 `docker-compose.yml` uses `restart: unless-stopped`.
 
 Docker and the Windows package each get their own update bundle with every
-release, and an installation only ever takes the one for its platform.
+release, and an installation only ever takes the one for its platform. The
+bundles are not among a release's downloads: they are kept in a separate
+release named
+[Update bundles](https://github.com/quatrixone/p5-manager/releases/tag/updates),
+which only the app reads.
 
 What an in-app update cannot change in Docker is the image underneath:
 system tools, the Node runtime, the installed libraries and the Remote Play
@@ -152,7 +156,8 @@ docker compose up -d`.
    [latest release](https://github.com/quatrixone/p5-manager/releases/latest).
 2. Extract the whole zip anywhere.
 3. Double-click `P5Manager.exe`. A console window opens (that is the app)
-   and your browser opens `http://localhost:3001/`.
+   and your browser opens `http://localhost:3001/`. The first start unpacks
+   the app's files from `P5Manager.pak`, which takes a moment.
 
 Allow `node.exe` and `python.exe` through Windows Firewall on private
 networks when asked. Your data is kept in the `data` folder next to the
