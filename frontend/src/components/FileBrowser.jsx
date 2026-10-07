@@ -103,7 +103,6 @@ export default function FileBrowser({
     return () => clearTimeout(t);
   }, [loading, kind]);
 
-  const [extractPwd, setExtractPwd] = useState('');
   const [extractDeleteAfter, setExtractDeleteAfter] = useState(false);
 
   // Upload-to-PS5 target. Used by the unified Upload action that handles
@@ -623,7 +622,7 @@ export default function FileBrowser({
     clearSelection();
   };
 
-  const startExtract = async (filename) => {
+  const startExtract = async (filename, password = '') => {
     if (kind === 'ftp') {
       onNotification?.('Extract from FTP not supported (download via Downloader first)', 'info');
       return;
@@ -636,12 +635,12 @@ export default function FileBrowser({
         body = {
           source: 'local-fs', local_path: fullPath,
           dest_kind: 'local-fs', dest_local_path: dest,
-          password: extractPwd, delete_archive_after: extractDeleteAfter,
+          password, delete_archive_after: extractDeleteAfter,
         };
       } else {
         body = {
           source: 'smb', source_id: smbId, smb_path: path, filename,
-          dest_kind: 'smb-back', password: extractPwd, delete_archive_after: extractDeleteAfter,
+          dest_kind: 'smb-back', password, delete_archive_after: extractDeleteAfter,
         };
       }
       // Always go through the queue; user controls Start/Pause from the Queue tab.
@@ -1088,8 +1087,8 @@ export default function FileBrowser({
       await setQueueRunning('upload', auto);
       if (!auto) onNotification?.(`Upload queued for ${f.name} — press ▶ in Queue to start`, 'info');
     };
-    const runExtract = async (auto) => {
-      await startExtract(f.name);
+    const runExtract = async (auto, password = '') => {
+      await startExtract(f.name, password);
       await setQueueRunning('extract', auto);
       if (!auto) onNotification?.(`Extract queued for ${f.name} — press ▶ in Queue to start`, 'info');
     };
@@ -1177,6 +1176,14 @@ export default function FileBrowser({
         label: '🕒 Extract queue',
         action: () => runExtract(false),
         title: 'Extract this archive and pause — press ▶ in Queue when ready',
+      },
+      canExtract && {
+        label: '🔑 Extract with password',
+        action: () => {
+          const password = window.prompt(`Password for ${f.name}`);
+          if (password) runExtract(true, password);
+        },
+        title: 'For an archive that is protected by a password: asks for it, then extracts now',
       },
       // Context-specific extras below the standardised actions.
       f.isDir && enablePickDir && kind !== 'ftp' && { label: '✓ Pick folder', action: () => pickDir(f) },

@@ -2379,8 +2379,9 @@ async function executeExtractJob(job) {
         if (password) args.push('-p', password);
         args.push(workingArchive);
       } else {
+        // The Windows package has no unrar; 7-Zip reads rar as well.
         cmd = '7z';
-        args = ['x', workingArchive, `-o${destBase}`, '-y'];
+        args = ['x', workingArchive, `-o${destBase}`, '-y', '-bb1', '-bsp1'];
         if (password) args.splice(2, 0, `-p${password}`);
       }
     } else if (archiveType === 'tgz') {
@@ -2407,6 +2408,9 @@ async function executeExtractJob(job) {
         appendLog(job, `[manager] SMB upload OK\n`);
       }
       job.status = 'completed';
+      // The tools' own percentage stops short of the end (7z's last line
+      // says 99 %).
+      job.progress = 100;
       appendLog(job, `[manager] Done.\n`);
 
       if (delete_archive_after) {
@@ -2433,7 +2437,15 @@ async function executeExtractJob(job) {
       }
     } else if (job.status !== 'cancelled') {
       job.status = 'failed';
-      job.error = result.error || `exit ${result.code}`;
+      // A protected archive: the tool asks for the password (and gets none,
+      // its input is closed) or says the one it was given does not fit.
+      if (/Enter password|Wrong password|password is incorrect|encrypted file/i.test(job.log.slice(-4000))) {
+        job.error = password
+          ? 'The password does not open this archive'
+          : 'The archive is protected by a password - choose "Extract with password" in its menu';
+      } else {
+        job.error = result.error || `exit ${result.code}`;
+      }
     }
   } catch (e) {
     job.status = 'failed';
@@ -2588,7 +2600,10 @@ router.get('/extract', (req, res) => {
 function spawnIntoJob(job, cmd, args, opts = {}) {
   return new Promise((resolve) => {
     appendLog(job, `\n[manager] $ ${maskSecretsForLog(cmd, args)}\n`);
-    const proc = spawn(cmd, args, opts);
+    // No input for the tool: one that stops to ask something (7z for an
+    // archive's password) gets an end of file and gives up, instead of
+    // waiting for an answer nobody can type.
+    const proc = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], ...opts });
     job._proc = proc;
     job.pid = proc.pid;
     proc.stdout.on('data', d => appendLog(job, d));

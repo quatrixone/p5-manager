@@ -191,6 +191,7 @@ await step('an archive is extracted to a folder of the user\'s choice', async ()
     await new Promise(r => setTimeout(r, 500));
   }
   assert.equal(job.status, 'completed', `${job.status}: ${job.error || ''} ${String(job.log || '').slice(-400)}`);
+  assert.equal(job.progress, 100, 'a finished job is at 100 %');
   const out = path.join(dest, 'smoke-archive', 'inner', 'hello.txt');
   assert.equal(fs.readFileSync(out, 'utf8'), 'hello');
 });
