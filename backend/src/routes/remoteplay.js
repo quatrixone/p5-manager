@@ -158,18 +158,20 @@ function loadProfileById(id) {
 // implicit auto-open inside quick-input / run-script. Keeping the logic in
 // one place means caching, credential lookup, error reporting, and the
 // wakeup-before-connect handshake all behave identically everywhere.
-// PS5 Remote Play stream knobs. Mirrors the whitelists on the sidecar;
-// we re-validate here so a bad request body doesn't make it all the way
-// to pyremoteplay before being rejected. We expose only 360p / 540p /
-// 720p — 1080p was removed because the MJPEG re-encode is too slow on a
-// Pi-class CPU. FPS is no longer user-configurable; the sidecar always
-// runs at its default (30 fps).
-const RP_RESOLUTIONS = new Set(['360p', '540p', '720p']);
+// Remote Play stream knobs. Mirrors the allowlists on the sidecar; we
+// re-validate here so a bad request body doesn't make it all the way to the
+// console before being rejected. 1080p needs a PS5 or a PS4 Pro; with
+// WebRTC the browser decodes, so neither it nor 60 fps costs the server
+// anything, only the MJPEG fallback re-encodes.
+const RP_RESOLUTIONS = new Set(['360p', '540p', '720p', '1080p']);
 const RP_DEFAULT_RESOLUTION = '720p';
+const RP_FPS = new Set([30, 60]);
+const RP_DEFAULT_FPS = 30;
 
-function normalizeStreamParams({ resolution } = {}) {
+function normalizeStreamParams({ resolution, fps } = {}) {
   const res = RP_RESOLUTIONS.has(resolution) ? resolution : RP_DEFAULT_RESOLUTION;
-  return { resolution: res };
+  const f = RP_FPS.has(Number(fps)) ? Number(fps) : RP_DEFAULT_FPS;
+  return { resolution: res, fps: f };
 }
 
 async function ensureSessionForIp(ip, opts = {}) {
@@ -178,8 +180,9 @@ async function ensureSessionForIp(ip, opts = {}) {
     forceNew = false,
     enableVideo = false,
     resolution: rawResolution,
+    fps: rawFps,
   } = opts;
-  const { resolution } = normalizeStreamParams({ resolution: rawResolution });
+  const { resolution, fps } = normalizeStreamParams({ resolution: rawResolution, fps: rawFps });
 
   // Coalesce concurrent callers onto the same in-flight Start. forceNew
   // bypasses the cache (above) but it does NOT bypass dedupe - if a Start
@@ -207,6 +210,7 @@ async function ensureSessionForIp(ip, opts = {}) {
             session_id: cached.sid, ip, cached: true,
             video: !!cached.video,
             resolution: s.resolution || cached.resolution,
+            fps: s.fps || cached.fps,
           };
         }
       } catch (e) {
@@ -217,6 +221,7 @@ async function ensureSessionForIp(ip, opts = {}) {
           session_id: cached.sid, ip, cached: true, transient: true,
           video: !!cached.video,
           resolution: cached.resolution,
+          fps: cached.fps,
         };
       }
     } else if (cached) {
@@ -267,6 +272,7 @@ async function ensureSessionForIp(ip, opts = {}) {
       // who can unmute it without a new session; it is muted there at first.
       enable_audio: enableVideo,
       resolution,
+      fps,
       ...(hostTypeOverride ? { host_type: hostTypeOverride } : {}),
     },
     { timeout: 180000 });
@@ -275,18 +281,20 @@ async function ensureSessionForIp(ip, opts = {}) {
     started: Date.now(),
     video: !!data.video,
     resolution: data.resolution || resolution,
+    fps: data.fps || fps,
   });
   // `resumed:true` means the sidecar handed us a warm-cached session that
   // was never actually disconnected on the PS5 side - reconnect was O(ms).
   // `reused:true` means a sibling caller's Start completed first and we
   // got handed its session_id back without firing a second handshake.
   const mediaBits = data.video ? 'video' : '';
-  const streamTag = data.resolution ? ` @ ${data.resolution}` : '';
+  const streamTag = data.resolution ? ` @ ${data.resolution}${data.fps ? `/${data.fps}` : ''}` : '';
   log('info', `${data.resumed ? 'Resumed' : data.reused ? 'Reused' : 'Started'} Remote Play session ${data.session_id} for ${ip}${mediaBits ? ` (with ${mediaBits})` : ''}${streamTag}`);
   return { session_id: data.session_id, ip, cached: false, state: data.state,
            resumed: !!data.resumed, reused: !!data.reused,
            video: !!data.video,
-           resolution: data.resolution || resolution };
+           resolution: data.resolution || resolution,
+           fps: data.fps || fps };
   })();
 
   // Tag the in-flight promise with its media mode so a concurrent caller
@@ -1115,6 +1123,7 @@ router.post('/sessions/start', async (req, res) => {
       forceNew: !!req.body?.force_new,
       enableVideo: !!req.body?.enable_video,
       resolution: req.body?.resolution,
+      fps: req.body?.fps,
     });
     res.json({ success: true, ...data });
   } catch (err) {
@@ -1355,6 +1364,7 @@ router.post('/prewarm', async (req, res) => {
 
     const prewarmStream = normalizeStreamParams({
       resolution: req.body?.resolution,
+      fps: req.body?.fps,
     });
     const data = await sidecar('POST', '/sessions/prewarm', {
       ip,
@@ -1362,6 +1372,7 @@ router.post('/prewarm', async (req, res) => {
       account_id: profile.psn_account_id || null,
       enable_video: !!req.body?.enable_video,
       resolution: prewarmStream.resolution,
+      fps: prewarmStream.fps,
     }, { timeout: 180000 });
 
     // Drop the local cache - the session is now in the sidecar's warm
@@ -1490,6 +1501,7 @@ router.get('/quick-status', async (req, res) => {
             state: s.state,
             video: !!s.video,
             resolution: s.resolution || cached.resolution || null,
+            fps: s.fps || cached.fps || null,
           });
         }
         // Session exists but isn't connected - drop the stale local cache
@@ -1528,6 +1540,7 @@ router.get('/quick-status', async (req, res) => {
           started: Date.now(),
           video: !!w.video,
           resolution: w.resolution || null,
+          fps: w.fps || null,
         });
         return res.json({
           success: true,
@@ -1537,6 +1550,7 @@ router.get('/quick-status', async (req, res) => {
           session_id: w.session_id,
           video: !!w.video,
           resolution: w.resolution || null,
+          fps: w.fps || null,
         });
       }
       if (w.warm) {
@@ -1550,6 +1564,7 @@ router.get('/quick-status', async (req, res) => {
           warm_ttl_remaining_s: w.ttl_remaining_s,
           video: !!w.video,
           resolution: w.resolution || null,
+          fps: w.fps || null,
         });
       }
     } catch (_) { /* sidecar transient - report as "nothing" */ }
