@@ -217,6 +217,22 @@ export async function initDatabase() {
     )
   `);
 
+  // What came from the marketplace (store/ in the repository): which item,
+  // which version. A script lives on in input_scripts (local_id); a
+  // template is kept here whole (data) and listed beside the built-in ones.
+  db.run(`
+    CREATE TABLE IF NOT EXISTS store_installs (
+      kind TEXT NOT NULL,
+      store_id TEXT NOT NULL,
+      version INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      data TEXT NOT NULL,
+      local_id INTEGER,
+      installed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (kind, store_id)
+    )
+  `);
+
   migrateLegacySettings(db);
 
   // Source registry (SMB + FTP origins used by the file browser). Previously

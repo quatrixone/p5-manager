@@ -1,0 +1,28 @@
+name: Marketplace submission
+description: Share an Autoload template, an input script or a homebrew app in the in-app marketplace.
+title: "[store] "
+labels: ["store-submission"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The easiest way is **Tools → Marketplace → Publish** in P5 Manager: it fills this form in.
+        A maintainer reviews the submission; once it gets the `store-accepted` label, a pull request adds it to `store/`.
+
+        Homebrew is only linked: give the download address of each file on the author's release page.
+        The checksum and size are filled in when the submission is accepted.
+  - type: textarea
+    id: item
+    attributes:
+      label: Item
+      description: The item as JSON (see store/README.md).
+      render: json
+    validations:
+      required: true
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Before submitting
+      options:
+        - label: I wrote this, or I have the author's permission to share it, and it contains no pirated content or links to it.
+          required: true

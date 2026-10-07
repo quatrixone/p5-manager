@@ -3,6 +3,7 @@ import net from 'net';
 import { getRepo, log } from '../db/sqlite.js';
 import { readBuiltinList } from '../lib/builtinLoader.js';
 import { readBuiltinInputScripts } from './inputScripts.js';
+import { installedTemplates } from './store.js';
 
 const router = express.Router();
 
@@ -787,8 +788,8 @@ router.post('/runs/:runId/cancel', (req, res) => {
 
 router.get('/templates/list', async (req, res) => {
   try {
-    const templates = await getBuiltinTemplates();
-    res.json(templates);
+    // The built-in ones, then those installed from the marketplace.
+    res.json([...(await getBuiltinTemplates()), ...installedTemplates()]);
   } catch (err) {
     log('error', `templates/list failed: ${err.message}`);
     res.status(500).json({ error: err.message });

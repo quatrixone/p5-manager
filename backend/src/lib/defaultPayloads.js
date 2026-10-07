@@ -59,7 +59,7 @@ function normalizeConsoleType(v) {
   return null;
 }
 
-function insertPayload({ name, filename, filepath, source_url, size, version, console_type }) {
+export function insertPayload({ name, filename, filepath, source_url, size, version, console_type }) {
   const repo = getRepo();
   // If a stale row exists (file missing), refresh it instead of duplicating.
   const existingId = repo.queryScalar(

@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react';
 import LogViewer from './LogViewer';
+import Marketplace from './Marketplace';
 
 const TOOLS = [
   { id: 'logs', label: '📋 Logs' },
+  { id: 'store', label: '🛒 Marketplace' },
 ];
 
 function readTool() {
@@ -14,9 +16,9 @@ function readTool() {
   }
 }
 
-// The Tools tab: things that are not part of the daily flow - the logs, for
-// now.
-export default function Tools({ logs, onRefreshLogs, profiles }) {
+// The Tools tab: things that are not part of the daily flow - the logs and
+// the marketplace.
+export default function Tools({ logs, onRefreshLogs, profiles, onNotification }) {
   const [tool, setTool] = useState(readTool);
   useEffect(() => {
     try { localStorage.setItem('toolsTab', tool); } catch (_) { /* private mode */ }
@@ -32,6 +34,7 @@ export default function Tools({ logs, onRefreshLogs, profiles }) {
         ))}
       </div>
       {tool === 'logs' && <LogViewer logs={logs} onRefresh={onRefreshLogs} profiles={profiles} />}
+      {tool === 'store' && <Marketplace profiles={profiles} onNotification={onNotification} />}
     </div>
   );
 }

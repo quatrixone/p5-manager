@@ -462,7 +462,7 @@ function App() {
             />
           )}
           {!showBuiltinEditor && activeTab === 'tools' && (
-            <Tools logs={logs} onRefreshLogs={fetchLogs} profiles={profiles} />
+            <Tools logs={logs} onRefreshLogs={fetchLogs} profiles={profiles} onNotification={showNotification} />
           )}
         </main>
       </div>

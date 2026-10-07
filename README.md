@@ -44,7 +44,7 @@ from one browser tab on your PC or phone.
 | **File Ops** | Browse this computer, a network share and the console side by side. Drag files between two panes to copy or move them, upload from your device, download from a URL, convert and extract. Long jobs run in a queue you can pause and resume. **Saves**: mount a PS5 save read/write, back saves up to this computer, and move a PS4 save to the PS5 (decrypted on the PS4 with Apollo Save Tool, copied over FTP into a save of the same game on the PS5). |
 | **Library** | See every title ShadowMountPlus knows on the console, with icon, size and the drive it is on. Mount, move, copy, unpack, uninstall or delete a title, with a progress bar for the long ones. |
 | **Console** | Remote Play in the browser: wake the console, see the screen (WebRTC with sound, up to 1080p at 60 fps; MJPEG where WebRTC is not available), use an on-screen controller, record and replay button sequences, send a payload without leaving the view. The tab is named *PS5 Control* or *PS4 Control* once your default profile is one of those. |
-| **Tools** | **Logs**: live log streams from the console. |
+| **Tools** | **Logs**: live log streams from the console. **Marketplace**: homebrew apps (PS4 and PS5), Autoload templates and input scripts shared by users - install with a tap, publish your own (see [store/](store/README.md)). |
 | **Settings** | Console profiles, backup and restore, defaults, restart. |
 
 Highlights:
