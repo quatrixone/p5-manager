@@ -118,23 +118,17 @@ class ChiakiSession:
         self._ended = asyncio.Event()
         self.quit_reason: str = ""
         self.quit_detail: str = ""
-        self.quit_is_error = False
         self.stats: Dict[str, Any] = {}
         self.audio_format: Optional[bytes] = None  # the 'H' record's text
         self._subscribers: list = []
         self.on_video = None  # callable(flags, data), set by the receiver
         self.started_at = time.monotonic()
-        self.first_frame_s: Optional[float] = None
         self._last_idr = 0.0
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
 
-    # ── what server.py reads ──────────────────────────────────────────
     @property
     def is_ready(self) -> bool:
         return self._connected.is_set() and not self._ended.is_set()
-
-    @property
-    def is_running(self) -> bool:
-        return self.is_ready
 
     @property
     def is_stopped(self) -> bool:
@@ -151,6 +145,7 @@ class ChiakiSession:
         if self.audio:
             args.append("--audio")
         env = dict(os.environ, P5RP_REGIST_KEY=self._regist, P5RP_MORNING=self._morning)
+        self._loop = asyncio.get_running_loop()
         self._proc = await asyncio.create_subprocess_exec(
             *args, env=env,
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
@@ -189,7 +184,6 @@ class ChiakiSession:
                 elif kind == "quit":
                     self.quit_reason = str(e.get("reason") or "")
                     self.quit_detail = str(e.get("detail") or "")
-                    self.quit_is_error = bool(e.get("error"))
                     self._ended.set()
                 elif kind == "stats":
                     self.stats = e
@@ -217,8 +211,6 @@ class ChiakiSession:
                 if kind == b"H":
                     self.audio_format = data
                 elif kind == b"V":
-                    if self.first_frame_s is None:
-                        self.first_frame_s = time.monotonic() - self.started_at
                     cb = self.on_video
                     if cb is not None:
                         cb(head[1], data)
@@ -276,6 +268,22 @@ class ChiakiSession:
 
     # ── commands ──────────────────────────────────────────────────────
     def send(self, line: str) -> None:
+        """One command line to p5rp. Safe from any thread: the touchpad taps
+        and the shake run in worker threads, and an asyncio pipe may only be
+        written from its loop."""
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is loop:
+            self._write(line)
+        else:
+            loop.call_soon_threadsafe(self._write, line)
+
+    def _write(self, line: str) -> None:
         p = self._proc
         if p is None or p.stdin is None or p.returncode is not None:
             return
@@ -283,19 +291,6 @@ class ChiakiSession:
             p.stdin.write((line + "\n").encode())
         except Exception:  # noqa: BLE001
             pass
-
-    def stop(self) -> None:
-        self.send("stop")
-
-    def _send_standby(self) -> None:
-        self.send("standby")
-
-    async def async_wait(self, timeout: float = 10.0) -> bool:
-        try:
-            await asyncio.wait_for(self._connected.wait(), timeout)
-        except asyncio.TimeoutError:
-            pass
-        return self.is_ready
 
     async def async_standby(self, timeout: float = 8.0) -> bool:
         """Rest mode. True once the console has let the session go."""
@@ -336,7 +331,9 @@ class ChiakiController:
     def __init__(self, session: ChiakiSession):
         self._s = session
 
-    def button(self, name: str, action: str = "tap", delay: float = 0.1) -> None:
+    def button(self, name: str, action: str = "press") -> None:
+        """Press or release ("press" / "release") a button; L2 and R2 are
+        triggers, pulled all the way."""
         n = (name or "").lower()
         down = action != "release"
         if n in ("l2", "r2"):
@@ -345,21 +342,11 @@ class ChiakiController:
             self._s.send(f"btn {_BUTTONS[n]} {1 if down else 0}")
         else:
             raise ValueError(f"unknown button: {name}")
-        if action == "tap":
-            # server.py presses and releases by itself; a bare tap is not used
-            # there, but keep it meaning what it says.
-            time.sleep(max(0.02, delay))
-            self.button(name, "release")
 
-    def stick(self, stick_name: str, axis: Optional[str] = None, value: Optional[float] = None,
-              point: Optional[Tuple[float, float]] = None) -> None:
+    def stick(self, stick_name: str, point: Tuple[float, float]) -> None:
+        """A stick to (x, y), each -1..1."""
         side = "l" if (stick_name or "").lower().startswith("l") else "r"
-        state = self.__dict__.setdefault("_sticks", {"l": [0.0, 0.0], "r": [0.0, 0.0]})
-        if point is not None:
-            state[side] = [float(point[0]), float(point[1])]
-        elif axis is not None and value is not None:
-            state[side][0 if axis.lower() == "x" else 1] = float(value)
-        x, y = (max(-1.0, min(1.0, v)) for v in state[side])
+        x, y = (max(-1.0, min(1.0, float(v))) for v in point)
         self._s.send(f"stick {side} {int(x * 32767)} {int(y * 32767)}")
 
     def motion(self, gyro: Tuple[float, float, float], accel: Tuple[float, float, float]) -> None:
@@ -413,9 +400,8 @@ class ChiakiReceiver:
 
     IDLE_S = 8.0
 
-    def __init__(self, session: ChiakiSession, jpeg_quality: int = 70, enable_video: bool = True):
+    def __init__(self, session: ChiakiSession, jpeg_quality: int = 70):
         self._session = session
-        self._video_enabled = bool(enable_video)
         self._quality = max(1, min(95, jpeg_quality))
         self._lock = threading.Lock()
         self._codec = None
@@ -426,8 +412,7 @@ class ChiakiReceiver:
         self._encoded_counter = -1
         self._last_asked = 0.0
         self._closed = False
-        if self._video_enabled:
-            session.on_video = self._on_video
+        session.on_video = self._on_video
 
     @property
     def frame_counter(self) -> int:
@@ -440,7 +425,7 @@ class ChiakiReceiver:
         now = time.monotonic()
         starting = self._codec is None or now - self._last_asked > self.IDLE_S
         self._last_asked = now
-        if starting and not self._closed and self._video_enabled:
+        if starting and not self._closed:
             with self._lock:
                 if self._codec is None:
                     import av  # noqa: WPS433 - only where pictures are wanted

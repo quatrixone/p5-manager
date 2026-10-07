@@ -74,11 +74,10 @@ const SIDECAR_URL = process.env.PYREMOTEPLAY_SIDECAR_URL
 // Remote Play session across many quick-input calls. The session is verified
 // on each ensure-call against the sidecar before being trusted.
 //
-// We also track whether the cached session has video enabled - the sidecar
-// only attaches a video receiver when `enable_video=true` is passed at start,
-// so reusing a no-video session when the caller wants video gives them a
-// session whose /video.mjpeg endpoint returns 400. Tracking the bit lets us
-// force a fresh start in that case.
+// We also track whether the cached session was opened to be watched
+// (`enable_video`). Every session carries the picture - the sidecar adds the
+// JPEG decoder to a live one when asked - so the bit only decides what the
+// UI shows.
 const ipToSession = new Map(); // ip -> { sid, started, video }
 const SESSION_REUSE_MS = 5 * 60 * 1000;
 // Per-IP in-flight Start promise so two near-simultaneous callers
@@ -269,9 +268,6 @@ async function ensureSessionForIp(ip, opts = {}) {
       user_profile: userProfile,
       account_id: accountId,
       enable_video: enableVideo,
-      // A session with a picture brings its sound along for a WebRTC viewer,
-      // who can unmute it without a new session; it is muted there at first.
-      enable_audio: enableVideo,
       resolution,
       fps,
       ...(hostTypeOverride ? { host_type: hostTypeOverride } : {}),
