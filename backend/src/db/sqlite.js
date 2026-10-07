@@ -109,6 +109,8 @@ export async function initDatabase() {
   // don't silently corrupt the schema on a typo.
   try { db.run(`ALTER TABLE profiles ADD COLUMN psn_account_id TEXT`); } catch (e) { if (!/duplicate column/i.test(e.message)) throw e; }
   try { db.run(`ALTER TABLE profiles ADD COLUMN psn_online_id TEXT`); } catch (e) { if (!/duplicate column/i.test(e.message)) throw e; }
+  // Username of the active local console user reported by the PS4 offact payload.
+  try { db.run(`ALTER TABLE profiles ADD COLUMN console_user TEXT`); } catch (e) { if (!/duplicate column/i.test(e.message)) throw e; }
   // Imported Sony identity is separate from the account used on the console.
   for (const column of ['sony_account_id', 'sony_online_id']) {
     try { db.run(`ALTER TABLE profiles ADD COLUMN ${column} TEXT`); } catch (e) { if (!/duplicate column/i.test(e.message)) throw e; }

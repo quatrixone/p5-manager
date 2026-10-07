@@ -52,7 +52,7 @@ async function ps4Operation(ip, profileId, operation, accountId, onlineId) {
     };
     const result = await runPs4RemotePlay({ ip, ftpPort: getFtpPort(ip), operation, prepare, data: fs.readFileSync(payloadPath) });
     if (result.success && result.account_id && profileId) {
-      getRepo().runAndSave('UPDATE profiles SET psn_account_id = ? WHERE id = ?', [result.account_id, parseInt(profileId)]);
+      getRepo().runAndSave('UPDATE profiles SET psn_account_id = ?, console_user = COALESCE(?, console_user) WHERE id = ?', [result.account_id, result.user || null, parseInt(profileId)]);
       result.persisted = true;
     }
     return { ...result, trigger_written: triggerWritten, console_type: 'ps4' };

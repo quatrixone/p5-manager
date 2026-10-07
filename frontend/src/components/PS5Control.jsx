@@ -195,6 +195,9 @@ function PS5Control({ profiles, onNotification, onProfilesChanged }) {
   const getStatusBadge = () => {
     switch (ps5Status.state) {
       case 'online': {
+        if (defaultProfile?.console_type === 'ps4' && ps5Status.ddp?.success && /^ok$/i.test(ps5Status.ddp.status || '')) {
+          return <Badge variant="success">Console online</Badge>;
+        }
         // Payload-listener mapping (the old badge mislabelled 9020 as
         // "LUA" - 9020 is actually PS4 GoldHEN, 9026 is the real Lua
         // listener).

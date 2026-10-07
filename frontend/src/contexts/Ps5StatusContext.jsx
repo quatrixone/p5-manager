@@ -85,6 +85,7 @@ export function Ps5StatusProvider({ profile, children }) {
     if (portOpen) return 'online';
     if (manualWaking) return 'waking';
     const ddpOk = ddp?.success && /^ok$/i.test(ddp.status || '');
+    if (ddpOk && profile.console_type === 'ps4') return 'online';
     if (ddpOk) return 'waking'; // console/RP reachable, payload host not loaded yet
     const ddpStandby = ddp?.success && (ddp.status_code === 620 || /standby/i.test(ddp.status || ''));
     if (ddpStandby) return 'standby';

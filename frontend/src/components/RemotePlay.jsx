@@ -1056,6 +1056,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
           setLocalProfile((prev) => ({
             ...(prev || profile),
             ...(r.account_id ? { psn_account_id: r.account_id } : {}),
+            ...(r.user ? { console_user: r.user } : {}),
             ...(!isPs4Profile && r.user ? { psn_online_id: r.user } : {}),
           }));
         }
@@ -2508,7 +2509,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
         {profile && (
           <div className="flex items-center justify-between flex-wrap gap-sm">
             <div className="text-xs text-muted">
-              PSN: {profileView?.psn_online_id || profileView?.psn_account_id || <em>not linked</em>}
+              Console account: {profileView?.console_user || profileView?.psn_account_id || <em>not detected</em>}
               {' · '}
               RP: {paired ? <span style={{ color: 'var(--green)' }}>paired</span> : <em>not paired</em>}
             </div>
@@ -2542,7 +2543,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
             sonyName: profileView?.sony_online_id || profileView?.sony_account_id,
             sonyId: profileView?.sony_account_id, consoleId: profileView?.psn_account_id,
             mismatch: !!profileView?.sony_account_id && !!profileView?.psn_account_id && !sameAccountId(profileView.sony_account_id, profileView.psn_account_id),
-            name: profileView?.psn_online_id || profileView?.psn_account_id,
+            name: profileView?.console_user || profileView?.psn_account_id,
             busy: oauthBusy, loginUrl, redirectUrl, setRedirectUrl, onLogin: startOAuth, onExchange: finishOAuth,
             manualId: manualAccount, setManualId: setManualAccount, manualName: manualOnlineId,
             setManualName: setManualOnlineId, onSave: saveManualAccount, onForget: forgetAccount }}
