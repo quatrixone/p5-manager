@@ -8,6 +8,7 @@ import { pushKernelLogEntry } from './kernelLogServer.js';
 import { payloadsDir } from '../lib/paths.js';
 import { getFtpPort } from '../lib/ftpPort.js';
 import { createViewer, answerViewer, closeViewer, closeViewersOf } from '../lib/webrtc.js';
+import { discoverConsole } from '../lib/consoleStatus.js';
 
 const router = express.Router();
 
@@ -488,7 +489,10 @@ router.get('/discover', async (req, res) => {
   try {
     const ip = req.query.ip;
     if (!ip) return res.status(400).json({ success: false, error: 'ip required' });
-    const data = await sidecar('GET', `/discover?ip=${encodeURIComponent(ip)}`, undefined, { timeout: 8000 });
+    const profile = loadProfileByIp(ip);
+    const hostType = profile?.console_type === 'ps4' ? 'PS4' : profile?.console_type === 'ps5' ? 'PS5' : null;
+    const data = await discoverConsole(ip, { hostType });
+    if (!data) return res.status(502).json({ success: false, error: `no answer from ${ip} - the console is off or not on the network` });
     res.json({ success: true, ...data });
   } catch (err) {
     res.status(err.status || 502).json({ success: false, error: err.message });
