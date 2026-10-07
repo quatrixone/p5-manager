@@ -29,26 +29,15 @@ import { createExfatImage, unpackExfatImage } from '../lib/exfat.js';
 // identical hand-rolled queue scaffolds further down in this file.
 import { JobQueue, mountQueueRoutes } from '../lib/JobQueue.js';
 import { cleanDir, joinPath, isSameOrInside, destDirFor } from '../lib/transferPaths.js';
-import { isWindows, toClientPath, mapPosixDefault, isFsRoot, listLocalRoots, isLocalPathAllowed, isInsideRoots } from '../lib/platform.js';
+import { isWindows, toClientPath, mapPosixDefault, isFsRoot, listLocalRoots, isLocalPathAllowed } from '../lib/platform.js';
 
 const router = express.Router();
 
-// Whitelist of filesystem roots the convert pipeline is allowed to read
-// from or write to. Paths are resolved + symlink-checked against this set
-// to defeat traversal (../../../etc) and symlink redirection. The roots
-// cover the three user-visible working folders plus the external mount
-// points PS5 dumps usually live on.
-const ALLOWED_PATH_ROOTS = (() => {
-  const roots = new Set([payloadsDir, mkpfsWorkDir, downloadsDir, '/data', '/mnt']);
-  for (const r of roots) {} // (kept for symmetry; resolver uses Array.from below)
-  return Array.from(roots).map((r) => path.resolve(r));
-})();
-
-// On Windows the list does not apply: any drive the local browser may use
-// counts (see isInsideRoots).
-function isInsideAllowedRoot(absPath) {
-  return isInsideRoots(absPath, ALLOWED_PATH_ROOTS);
-}
+// Convert and extract jobs may read and write anywhere the local file
+// browser may go - everything but the system folders (isLocalPathAllowed).
+// They used to be held to a short list (the working folders, /data, /mnt),
+// so a game under /home or on a Windows drive could be browsed, copied and
+// deleted, but not extracted or converted where it was.
 
 // Mask secret arguments before logging a command. Matches `-p<password>` form
 // (7z, unrar), `--password=<value>`, and any arg that is just `-p` followed
@@ -2563,7 +2552,6 @@ function validateExtractParams(body) {
       ? path.resolve(dest_local_path)
       : (source === 'local-fs' ? path.dirname(archivePath) : mkpfsWorkDir);
     if (!isLocalPathAllowed(baseDir)) return { error: `Path not allowed: ${baseDir}` };
-    if (!isInsideAllowedRoot(baseDir)) return { error: `Destination must be inside an allowed root: ${baseDir}` };
     plannedDestBase = path.join(baseDir, stripExt(archiveName));
     destLabel = plannedDestBase;
   } else {
@@ -3339,7 +3327,6 @@ function validateConvertParams(params) {
   if (isAbsolute) {
     src = path.resolve(source_path);
     if (!isLocalPathAllowed(src)) return { error: `Path not allowed: ${src}` };
-    if (!isInsideAllowedRoot(src)) return { error: `Source must be inside an allowed root: ${src}` };
   } else {
     src = path.resolve(mkpfsWorkDir, source_path.replace(/\\/g, '/').replace(/^\/+/, ''));
     if (!isInsideWorkDir(src)) return { error: 'Source must be within work dir' };

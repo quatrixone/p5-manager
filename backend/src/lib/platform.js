@@ -62,19 +62,6 @@ export function isLocalPathAllowed(absPath, { win = isWindows, pathMod = path, s
   return true;
 }
 
-// Where convert and extract jobs may read and write. On Linux that is a list
-// of roots: the working folders plus the trees disks are mounted in. Windows
-// has no such tree - a disk is a drive letter, and the local browser offers
-// every one of them - so there any place the browser may use counts.
-export function isInsideRoots(absPath, roots, { win = isWindows, pathMod = path, systemRoot = process.env.SystemRoot } = {}) {
-  const real = pathMod.resolve(absPath);
-  if (win) return isLocalPathAllowed(real, { win, pathMod, systemRoot });
-  return roots.some((r) => {
-    const root = pathMod.resolve(r);
-    return real === root || real.startsWith(root.endsWith(pathMod.sep) ? root : root + pathMod.sep);
-  });
-}
-
 // What this build can do; the UI hides or explains the rest.
 export function platformInfo() {
   return {
