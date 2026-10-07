@@ -54,9 +54,106 @@ def apply() -> None:
     _patch_controller_shake()
     _patch_controller_state_heartbeat()
     _patch_send_event_hexdump()
+    _patch_stream_receive_buffer()
+    _quieten_repeating_messages()
 
     _APPLIED = True
     log.info("pyremoteplay runtime patches applied")
+
+
+# ─── Stream socket receive buffer ───────────────────────────────────────────
+#
+# pyremoteplay/stream.py `RPStream.async_connect` opens the UDP socket the
+# video and audio arrive on with the system's default receive buffer. The
+# console sends a frame as one burst of packets - at 720p / 10 Mbit about
+# 30 of them, some 45 KB. Linux keeps 208 KB for a socket by default and
+# takes that easily. Windows keeps 64 KB: the burst fills it before the
+# event loop has read the first packets, the last one is dropped, and since
+# one missing unit spoils the frame, every frame came out corrupt ("Received
+# unit out of order: 29, expected: 28", "Sending Corrupt Frame
+# Notification", many times a second).
+#
+# We open the socket ourselves with a 4 MB buffer and hand it to the event
+# loop. The system may grant less (Linux caps it at net.core.rmem_max); what
+# it granted is logged.
+
+STREAM_RCVBUF = 4 * 1024 * 1024
+
+
+def _patch_stream_receive_buffer() -> None:
+    try:
+        import socket as _socket
+        from pyremoteplay.stream import RPStream
+    except Exception as e:  # noqa: BLE001
+        log.warning("stream receive buffer patch skipped: %s", e)
+        return
+    if getattr(RPStream.async_connect, "_p5m_rcvbuf", False):
+        return
+
+    async def async_connect(self):
+        sock = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+        try:
+            sock.setblocking(False)
+            try:
+                sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_RCVBUF, STREAM_RCVBUF)
+            except OSError as e:
+                log.warning("could not enlarge the stream receive buffer: %s", e)
+            sock.bind(("0.0.0.0", 0))
+            granted = sock.getsockopt(_socket.SOL_SOCKET, _socket.SO_RCVBUF)
+            _, self._protocol = await self._session.loop.create_datagram_endpoint(
+                lambda: RPStream.Protocol(self), sock=sock
+            )
+        except Exception:
+            sock.close()
+            raise
+        log.info("stream socket receive buffer: %d KB", granted // 1024)
+        self._send_init()
+
+    async_connect._p5m_rcvbuf = True  # type: ignore[attr-defined]
+    RPStream.async_connect = async_connect
+    log.info("patched RPStream.async_connect (receive buffer %d MB)", STREAM_RCVBUF // (1024 * 1024))
+
+
+# ─── Messages that come by the hundred ──────────────────────────────────────
+#
+# A stream that loses packets logs two lines for every damaged frame, up to
+# sixty a second. That buries everything else in the log - and on Windows,
+# where the console and the log file are written line by line, it slows the
+# very loop that should be reading the socket. Each of these messages is
+# let through once, then counted for ten seconds and summed up in one line.
+
+class _OncePerWindow(logging.Filter):
+    def __init__(self, prefixes, window=10.0):
+        super().__init__()
+        self._prefixes = tuple(prefixes)
+        self._window = window
+        self._state = {}  # prefix -> [window start, suppressed]
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.msg if isinstance(record.msg, str) else ""
+        prefix = next((p for p in self._prefixes if msg.startswith(p)), None)
+        if prefix is None:
+            return True
+        now = time.monotonic()
+        state = self._state.get(prefix)
+        if state is None or now - state[0] >= self._window:
+            suppressed = state[1] if state else 0
+            self._state[prefix] = [now, 0]
+            if suppressed:
+                record.msg = f"{record.getMessage()}  ({suppressed} more like this in the last {int(self._window)} s)"
+                record.args = ()
+            return True
+        state[1] += 1
+        return False
+
+
+def _quieten_repeating_messages() -> None:
+    logging.getLogger("pyremoteplay.av").addFilter(_OncePerWindow(["Received unit out of order"]))
+    logging.getLogger("pyremoteplay.stream").addFilter(_OncePerWindow(["Sending Corrupt Frame Notification"]))
+    logging.getLogger("pyremoteplay.protobuf").addFilter(_OncePerWindow(["Version not accepted"]))
+    # Port 9303 taken (a live session holds it): the library then uses any
+    # free port, so this is no error for the user to act on.
+    logging.getLogger("pyremoteplay.ddp").addFilter(_OncePerWindow(["Error getting DDP socket"], window=300.0))
 
 
 # ─── FeedbackState controller-kind flag (PS5 → DualSense, PS4 → DS4) ───────
