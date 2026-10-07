@@ -25,8 +25,11 @@ jobs:
         include:
           - image: p5-manager
             context: .
+            build-contexts: ''
           - image: p5-manager-remoteplay
             context: ./pyremoteplay
+            # p5rp is built from rpnative/ (see pyremoteplay/Dockerfile).
+            build-contexts: rpnative=./rpnative
     steps:
       - uses: actions/checkout@v4
 
@@ -50,6 +53,7 @@ jobs:
       - uses: docker/build-push-action@v6
         with:
           context: ${{ matrix.context }}
+          build-contexts: ${{ matrix.build-contexts }}
           push: ${{ startsWith(github.ref, 'refs/tags/v') }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

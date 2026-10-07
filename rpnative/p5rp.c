@@ -5,11 +5,20 @@
 //
 //   p5rp --host <ip> [--ps4] [--res 360|540|720|1080] [--fps 30|60]
 //        [--bitrate <kbit/s>] [--codec h264|h265] [--audio]
+//   p5rp regist --host <ip> [--ps4] [--target <n>] [--broadcast]
 //
 // The pairing keys come in the environment, not on the command line, where
 // every user of the machine could read them:
 //   P5RP_REGIST_KEY   the console's regist key (up to 16 characters)
 //   P5RP_MORNING      32 hex characters
+//
+// regist pairs with a console that shows its "link device" PIN. It takes
+//   P5RP_ACCOUNT_ID   the PSN account id, 8 bytes in base64 or as a decimal
+//   P5RP_PIN          the 8 digits on the console's screen
+// and writes one JSON line to stdout: {"ok":true,"regist_key":<hex>,
+// "rp_key":<hex>,"rp_key_type":n,"mac":<hex>,"nickname":...,"target":n},
+// or {"ok":false,"error":...}; why it failed is in the log lines on stderr,
+// which come as for a session.
 //
 // stdout  the video, as the console encoded it (Annex B), one record a frame:
 //           'V'  flags(1)  length(4, big endian)  time(8, big endian, us)  data
@@ -29,6 +38,9 @@
 //           touch up
 //           idr                   ask the console for a key frame (a viewer
 //                                 that joins late needs one to start from)
+//           motion <gx> <gy> <gz> <ax> <ay> <az>
+//                                 the controller's gyro (rad/s) and
+//                                 accelerometer (g; at rest 0 1 0)
 //           idle                  everything released
 //           standby               put the console into rest mode
 //           stop                  end the session
@@ -36,7 +48,9 @@
 //         program that started it.
 #include <chiaki/common.h>
 #include <chiaki/controller.h>
+#include <chiaki/base64.h>
 #include <chiaki/log.h>
+#include <chiaki/regist.h>
 #include <chiaki/session.h>
 
 #include <stdarg.h>
@@ -261,6 +275,17 @@ static int command(char *line)
 	if(!strcmp(a, "standby")) { chiaki_session_goto_bed(&session); return 0; }
 	if(!strcmp(a, "idr")) { chiaki_session_request_idr(&session); return 0; }
 	if(!strcmp(a, "idle")) chiaki_controller_state_set_idle(&controller);
+	else if(!strcmp(a, "motion"))
+	{
+		float g[3], ac[3];
+		if(sscanf(line, "%*s %f %f %f %f %f %f", &g[0], &g[1], &g[2], &ac[0], &ac[1], &ac[2]) != 6)
+		{
+			event_line("command", line, "{\"event\":\"error\",\"what\":\"motion needs six numbers\"");
+			return 0;
+		}
+		controller.gyro_x = g[0]; controller.gyro_y = g[1]; controller.gyro_z = g[2];
+		controller.accel_x = ac[0]; controller.accel_y = ac[1]; controller.accel_z = ac[2];
+	}
 	else if(!strcmp(a, "btn") && n >= 3)
 	{
 		uint32_t bit = 0;
@@ -325,6 +350,114 @@ static int arg_flag(int argc, char **argv, const char *name)
 	return 0;
 }
 
+// ── regist ───────────────────────────────────────────────────────────────
+
+static volatile int regist_done = 0;
+
+static void hex_out(const uint8_t *b, size_t n, char *out)
+{
+	static const char digits[] = "0123456789abcdef";
+	for(size_t i = 0; i < n; i++) { out[2 * i] = digits[b[i] >> 4]; out[2 * i + 1] = digits[b[i] & 15]; }
+	out[2 * n] = 0;
+}
+
+static void regist_cb(ChiakiRegistEvent *event, void *user)
+{
+	(void)user;
+	if(event->type == CHIAKI_REGIST_EVENT_TYPE_FINISHED_SUCCESS && event->registered_host)
+	{
+		ChiakiRegisteredHost *h = event->registered_host;
+		// The regist key comes padded with zeros to its full size.
+		size_t key_len = 0;
+		while(key_len < sizeof h->rp_regist_key && h->rp_regist_key[key_len]) key_len++;
+		char regist_key[2 * sizeof h->rp_regist_key + 1], rp_key[2 * sizeof h->rp_key + 1], mac[2 * sizeof h->server_mac + 1];
+		char nickname[sizeof h->server_nickname + 1];
+		hex_out((const uint8_t *)h->rp_regist_key, key_len, regist_key);
+		hex_out(h->rp_key, sizeof h->rp_key, rp_key);
+		hex_out(h->server_mac, sizeof h->server_mac, mac);
+		memcpy(nickname, h->server_nickname, sizeof h->server_nickname);
+		nickname[sizeof h->server_nickname] = 0;
+		LOCK(out_lock);
+		printf("{\"ok\":true,\"regist_key\":\"%s\",\"rp_key\":\"%s\",\"rp_key_type\":%u,\"mac\":\"%s\",\"target\":%d,\"nickname\":\"",
+			regist_key, rp_key, (unsigned)h->rp_key_type, mac, (int)h->target);
+		for(const unsigned char *p = (const unsigned char *)nickname; *p; p++)
+		{
+			if(*p == '"' || *p == '\\') { putchar('\\'); putchar(*p); }
+			else if(*p >= 0x20) putchar(*p);
+		}
+		printf("\"}\n");
+		fflush(stdout);
+		UNLOCK(out_lock);
+	}
+	else
+	{
+		LOCK(out_lock);
+		printf("{\"ok\":false,\"error\":\"%s\"}\n", event->type == CHIAKI_REGIST_EVENT_TYPE_FINISHED_CANCELED
+			? "canceled" : "failed");
+		fflush(stdout);
+		UNLOCK(out_lock);
+	}
+	regist_done = 1;
+}
+
+// The account id: 8 bytes, given in base64 (as PSN's Remote Play id) or as
+// the decimal number PSN reports, which is stored little endian.
+static int parse_account_id(const char *s, uint8_t out[8])
+{
+	size_t n = strlen(s), i;
+	for(i = 0; i < n && s[i] >= '0' && s[i] <= '9'; i++);
+	if(n > 0 && i == n)
+	{
+		unsigned long long v = strtoull(s, NULL, 10);
+		for(int k = 0; k < 8; k++) out[k] = (uint8_t)(v >> (8 * k));
+		return 1;
+	}
+	size_t len = 8;
+	return chiaki_base64_decode(s, n, out, &len) == CHIAKI_ERR_SUCCESS && len == 8;
+}
+
+static int regist_main(int argc, char **argv)
+{
+	const char *host = arg_value(argc, argv, "--host", NULL);
+	const char *account = getenv("P5RP_ACCOUNT_ID");
+	const char *pin = getenv("P5RP_PIN");
+	ChiakiRegistInfo info;
+	memset(&info, 0, sizeof info);
+	if(!host || !account || !pin || strlen(pin) != 8 || !parse_account_id(account, info.psn_account_id))
+	{
+		fprintf(stderr, "usage: p5rp regist --host <ip> [--ps4] [--target n] [--broadcast]\n"
+			"with P5RP_ACCOUNT_ID (base64 or decimal) and P5RP_PIN (8 digits) in the environment\n");
+		return 2;
+	}
+	if(chiaki_lib_init() != CHIAKI_ERR_SUCCESS) { printf("{\"ok\":false,\"error\":\"library init failed\"}\n"); return 1; }
+	ChiakiLog log;
+	chiaki_log_init(&log, CHIAKI_LOG_ERROR | CHIAKI_LOG_WARNING | CHIAKI_LOG_INFO, log_cb, NULL);
+	int ps4 = arg_flag(argc, argv, "--ps4");
+	info.target = (ChiakiTarget)atoi(arg_value(argc, argv, "--target", ps4 ? "1000" : "1000100"));
+	info.host = host;
+	info.broadcast = arg_flag(argc, argv, "--broadcast");
+	info.psn_online_id = NULL;
+	info.pin = (uint32_t)strtoul(pin, NULL, 10);
+	info.holepunch_info = NULL;
+	info.rudp = NULL;
+	ChiakiRegist regist;
+	ChiakiErrorCode err = chiaki_regist_start(&regist, &log, &info, regist_cb, NULL);
+	if(err != CHIAKI_ERR_SUCCESS)
+	{
+		printf("{\"ok\":false,\"error\":\"%s\"}\n", chiaki_error_string(err));
+		return 1;
+	}
+	// The console answers within seconds or not at all.
+	for(int i = 0; i < 300 && !regist_done; i++) sleep_ms(100);
+	if(!regist_done)
+	{
+		chiaki_regist_stop(&regist);
+		printf("{\"ok\":false,\"error\":\"the console did not answer - is it on and showing the PIN?\"}\n");
+	}
+	chiaki_regist_fini(&regist);
+	return 0;
+}
+
 int main(int argc, char **argv)
 {
 #ifdef _WIN32
@@ -332,6 +465,7 @@ int main(int argc, char **argv)
 	InitializeCriticalSection(&out_lock);
 	InitializeCriticalSection(&err_lock);
 #endif
+	if(argc > 1 && !strcmp(argv[1], "regist")) return regist_main(argc, argv);
 	const char *host = arg_value(argc, argv, "--host", NULL);
 	const char *regist = getenv("P5RP_REGIST_KEY");
 	const char *morning = getenv("P5RP_MORNING");

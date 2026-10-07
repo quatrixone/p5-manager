@@ -9,6 +9,8 @@ on:
       - 'rpnative/**'
       - '.github/workflows/rp-native.yml'
   workflow_dispatch:
+  # The Windows package takes p5rp from here.
+  workflow_call:
 
 jobs:
   linux:

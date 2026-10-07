@@ -102,15 +102,15 @@ export async function initDatabase() {
     if (!/duplicate column/i.test(e.message)) throw e;
   }
 
-  // Remote Play (pyremoteplay) identity. psn_account_id is the OAuth-derived ID,
-  // rp_user_profile holds the pyremoteplay profile dict with registration
+  // Remote Play identity. psn_account_id is the OAuth-derived ID,
+  // rp_user_profile holds the pairing profile dict (pyremoteplay's layout, kept) with registration
   // credentials (kept as JSON text). Only "duplicate column" is benign - any
   // other ALTER error (syntax, missing table, ...) should bubble up so we
   // don't silently corrupt the schema on a typo.
   try { db.run(`ALTER TABLE profiles ADD COLUMN psn_account_id TEXT`); } catch (e) { if (!/duplicate column/i.test(e.message)) throw e; }
   try { db.run(`ALTER TABLE profiles ADD COLUMN psn_online_id TEXT`); } catch (e) { if (!/duplicate column/i.test(e.message)) throw e; }
   try { db.run(`ALTER TABLE profiles ADD COLUMN rp_user_profile TEXT`); } catch (e) { if (!/duplicate column/i.test(e.message)) throw e; }
-  // Platform: 'ps4' | 'ps5' | NULL (auto-detect via pyremoteplay /discover).
+  // Platform: 'ps4' | 'ps5' | NULL (auto-detect via the Remote Play service's /discover).
   // Drives which payloads, autoload templates, FTP defaults and Convert
   // sub-tabs the UI shows for this profile. Filled in either at profile
   // creation (user picks in Settings) or by the periodic status poll

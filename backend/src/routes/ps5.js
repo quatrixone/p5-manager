@@ -9,12 +9,12 @@ const router = express.Router();
 
 const PAYLOADS_ROOT = path.resolve(payloadsDir) + path.sep;
 
-// pyremoteplay sidecar URL (host-networked in compose). Used as a
+// Remote Play sidecar URL (host-networked in compose). Used as a
 // fallback for the /status probe: TCP payload ports (lua/elf listeners
 // at 9021/9020/8080/6970) are only open while a payload is actually
 // running on the PS5. When the console is awake but idle, all four are
 // closed — the old probe then reported `reachable: false`, which made
-// the topbar pill flip to "offline" even though pyremoteplay's UDP
+// the topbar pill flip to "offline" even though the sidecar's UDP
 // discovery could still see the PS5. We now consult the sidecar after a
 // failed TCP scan so the indicator reflects discoverability, not just
 // payload-listener presence.
@@ -50,7 +50,7 @@ async function probeDiscover(ip) {
       if (!r.ok) return null;
       const data = await r.json().catch(() => null);
       if (!data || typeof data !== 'object') return null;
-      // pyremoteplay reports status='Ok' (awake) or 'Standby' (rest);
+      // The console reports status 'Ok' (awake) or 'Server Standby' (rest);
       // either counts as "the box is on the network", which is what we
       // need to say "not offline".
       discoverCache.set(ip, { ts: Date.now(), data });
@@ -171,7 +171,7 @@ router.get('/status/:ip', async (req, res) => {
     const results = await Promise.all(ports.map(checkPort));
     const openPort = results.find(r => r.reachable);
 
-    // Fallback: even if no payload listener is up, pyremoteplay's UDP
+    // Fallback: even if no payload listener is up, the sidecar's UDP
     // discovery can still see the PS5 (awake or in standby). We only
     // pay this probe when the TCP scan turned up nothing, so the fast
     // path (payload running) is unchanged.
