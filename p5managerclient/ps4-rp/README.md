@@ -1,8 +1,8 @@
 # PS4 Remote Play payloads (experimental)
 
 These are PS4 ports of the two PS5 operations, built with the
-Scene-Collective `ps4-payload-sdk`. PIN generation has succeeded in live testing,
-but reliability and completed registration still need validation.
+Scene-Collective `ps4-payload-sdk`. Live tests on firmware 11.00 verified PIN
+generation, completed registration and a subsequent PIN request.
 Both payloads ship with the application's defaults, Docker image and update
 bundles. PS Control's Remote Play Settings provides account reading/activation
 and Auto-fetch PIN for PS4 profiles. The existing activation and PIN API routes
@@ -12,8 +12,12 @@ persist the account ID without treating the local user name as a PSN online ID.
 Live testing on PS4 firmware 11.00 with GoldHEN v2.2 and BinLoader port
 9090 confirmed foreground account ID reading and detection of an already
 activated account. The PIN payload resolved all three Remote Play symbols,
-and generated a real eight-digit PIN after an earlier `0x80FC0101` error.
-Earlier tests also restarted SceShellUI, so this remains a development payload.
+and generated real eight-digit PINs. Registration completed successfully and
+the next request reused the same SceShellUI process without a restart. The
+tracer single-steps after SIGSTOP before replacing registers: a stopped thread
+may still be returning from a blocking syscall. Earlier development versions
+did not do this and could fail RPC setup or restart SceShellUI. Other firmware
+and GoldHEN versions still need validation.
 
 * `offact-ps4.bin` reads the foreground user's account ID and reconciles
   activation using PS4's `NP_env="np"` and `login_flag=6`. If the host has

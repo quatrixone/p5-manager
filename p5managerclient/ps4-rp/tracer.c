@@ -3,6 +3,7 @@
 #define SIGSTOP_PS4 17
 #define SIGTRAP_PS4 5
 #define MAP_SIZE 0x10000u
+#define PT_STEP_PS4 9
 uint16_t get_firmware(void);
 int rp_sys_ptrace(int request, int pid, void *address, int data);
 SYSCALL(rp_sys_ptrace, 26);
@@ -104,7 +105,7 @@ static int wait_stop(rp_tracer *t, int timeout_ms, int *signal) {
     int status=0;
     int rc=rp_sys_wait4(t->pid,&status,1,0);
     if (rc==t->pid) {
-      if ((status & 0xff)!=0x7f) { t->attached=0; t->stopped=0; return -1; }
+      if ((status & 0xff)!=0x7f) { rp_log("[ptrace] target exited status=0x%x\n",status); t->attached=0; t->stopped=0; return -1; }
       t->stopped=1;
       if(signal) *signal=(status>>8)&0xff;
       return 0;
@@ -115,10 +116,24 @@ static int wait_stop(rp_tracer *t, int timeout_ms, int *signal) {
   return -1;
 }
 
+/* A SIGSTOP may catch a thread returning from a blocking syscall. Let
+ * its kernel return finish before replacing registers for an RPC. */
+static int settle_stop(rp_tracer *t) {
+  if(!t->stopped || pt(t,PT_STEP_PS4,(void*)1,0)) return -1;
+  t->stopped=0;
+  int sig=0;
+  if(wait_stop(t,3000,&sig) || sig!=SIGTRAP_PS4) {
+    rp_log("[ptrace] single step failed signal=%d\n",sig);
+    return -1;
+  }
+  return 0;
+}
+
 int rp_trace_pause(rp_tracer *t) {
   if(t->stopped) return 0;
   if(!t->attached || (int)syscall(37,t->pid,SIGSTOP_PS4)) return -1;
-  return wait_stop(t,3000,NULL);
+  if(wait_stop(t,3000,NULL)) return -1;
+  return settle_stop(t);
 }
 
 int rp_trace_resume(rp_tracer *t) {
@@ -194,6 +209,7 @@ int rp_trace_attach(rp_tracer *t, int pid) {
   t->attached=1;
   rp_log("[ptrace] attached\n");
   if(wait_stop(t,3000,NULL)) { rp_trace_detach(t); return -1; }
+  if(settle_stop(t)) { rp_trace_detach(t); return -1; }
   rp_log("[ptrace] target stopped\n");
   uint64_t memory=0;
   /* A private stack avoids modifying SceShellUI's active stack/red zone. */
