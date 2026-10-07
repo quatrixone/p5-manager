@@ -1082,7 +1082,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
     }
   };
 
-  const oneClickPair = async (offline, activationAccount = null) => {
+  const oneClickPair = async (offline) => {
     if (!profile || liveSession || pairingGuard.current || autoPinBusy || offactBusy || pairBusy || oauthBusy) return;
     pairingGuard.current = true;
     const target = { ...profileView };
@@ -1097,7 +1097,6 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
         post: api.post,
         profile: target,
         offline,
-        activationAccount,
         onProgress: text => { if (isCurrent()) setPairProgress(text); },
         onAccount: account => {
           if (!isCurrent()) return;
@@ -2543,7 +2542,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
             sonyName: profileView?.sony_online_id || profileView?.sony_account_id,
             sonyId: profileView?.sony_account_id, consoleId: profileView?.psn_account_id,
             mismatch: !!profileView?.sony_account_id && !!profileView?.psn_account_id && !sameAccountId(profileView.sony_account_id, profileView.psn_account_id),
-            onSwitch: () => oneClickPair(true, profileView?.sony_account_id), name: profileView?.psn_online_id || profileView?.psn_account_id,
+            name: profileView?.psn_online_id || profileView?.psn_account_id,
             busy: oauthBusy, loginUrl, redirectUrl, setRedirectUrl, onLogin: startOAuth, onExchange: finishOAuth,
             manualId: manualAccount, setManualId: setManualAccount, manualName: manualOnlineId,
             setManualName: setManualOnlineId, onSave: saveManualAccount, onForget: forgetAccount }}

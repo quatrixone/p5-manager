@@ -1,5 +1,5 @@
 // One shared sequence for PS4 and PS5. The backend chooses the console payload.
-export async function pairRemotePlay({ post, profile, offline = false, activationAccount = null, onProgress = () => {}, onAccount = () => {}, onPin = () => {}, wait = ms => new Promise(resolve => setTimeout(resolve, ms)) }) {
+export async function pairRemotePlay({ post, profile, offline = false, onProgress = () => {}, onAccount = () => {}, onPin = () => {}, wait = ms => new Promise(resolve => setTimeout(resolve, ms)) }) {
   const target = { ip: profile.ip_address, profile_id: profile.id };
   const checked = async (route, body) => {
     const result = await post(`/remoteplay/${route}`, body);
@@ -12,7 +12,7 @@ export async function pairRemotePlay({ post, profile, offline = false, activatio
   };
   if (offline) {
     onProgress('Activating account…');
-    const activation = await checked('activate-account', { ...target, ...(activationAccount ? { account_id: activationAccount } : {}) });
+    const activation = await checked('activate-account', target);
     onAccount(activation);
   }
   onProgress('Getting PIN…');

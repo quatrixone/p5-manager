@@ -76,13 +76,13 @@ test('identity comparison supports decimal, base64 and 64-bit precision', () => 
   assert.equal(sameAccountId('Z8JhcG9sbG8=', '123456789'), false);
   assert.equal(sameAccountId(null, null), false);
 });
-test('explicit Sony switch activates the selected ID then registers the captured console ID', async () => {
+test('offline activation does not override the active console account with linked Sony ID', async () => {
   const calls = [];
   await pairRemotePlay({ profile: { id: 1, ip_address: 'console' }, offline: true,
-    activationAccount: '123456789', wait: async () => {}, post: async (route, body) => {
+    wait: async () => {}, post: async (route, body) => {
       calls.push({ route, body });
       return route.endsWith('/get-pin') ? { success: true, pin: '00010023', account_id: 'captured' } : { success: true };
     } });
-  assert.equal(calls[0].body.account_id, '123456789');
+  assert.equal(calls[0].body.account_id, undefined);
   assert.equal(calls[2].body.account_id, 'captured');
 });

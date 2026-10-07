@@ -3,7 +3,6 @@ import { useState } from 'react';
 export default function RemotePlayPairing({ consoleLabel, menuPath, paired, liveSession, disabled,
   busy, progress, result, pairTab, setPairTab, pin, setPin, onOneClickPair, onFetchPin,
   onActivate, onPair, onForgetPair, account, pinResult, activationResult }) {
-  const [switchConfirm, setSwitchConfirm] = useState(false);
   const [method, setMethod] = useState('automatic');
   const automatic = method === 'automatic';
   const offline = pairTab === 'unactivated';
@@ -28,7 +27,7 @@ export default function RemotePlayPairing({ consoleLabel, menuPath, paired, live
         {tab('unactivated', 'Not Activated / Offline')}
       </div>
       <p className="text-sm text-muted" style={{ margin: 0 }}>
-        {offline ? 'Activate the account for offline use, then pair for Remote Play.'
+        {offline ? 'Activate an account for offline use, then pair for Remote Play.'
           : 'Your console account is already activated. Pair it for Remote Play.'}
       </p>
       <div className="flex gap-sm flex-wrap" role="group" aria-label="Pairing method">
@@ -42,7 +41,7 @@ export default function RemotePlayPairing({ consoleLabel, menuPath, paired, live
       </div>}
       {automatic ? (<>
         <p className="text-sm text-muted" style={{ margin: 0 }}>
-          {offline ? 'One click activates the account, gets a PIN and pairs the console. Enable the payload loader and FTP first.'
+          {offline ? 'One click activates an account only if the console has none, gets a PIN and pairs it. An existing console account is always kept. Enable the payload loader and FTP first.'
             : 'One click reads the console account, gets a PIN and pairs it. Enable the payload loader and FTP first.'}
           {' '}If the console has no account ID yet, link your PSN account below first.
         </p>
@@ -77,17 +76,8 @@ export default function RemotePlayPairing({ consoleLabel, menuPath, paired, live
         <pre style={{ maxHeight: 180, overflow: 'auto', whiteSpace: 'pre-wrap', fontSize: '0.75rem' }}>{details.join('\n')}</pre>
       </details>}
       {account.mismatch && <div className="text-sm" role="status" style={{ color: 'var(--yellow)' }}>
-        <p>Sony account differs from the console account. Your console account and pairing are preserved.</p>
+        <p>Sony account differs from the console account. The Sony account is saved, while pairing and activation continue to use the existing console account. Sony is only adopted if the console slot has no account.</p>
         <p>Console ID: {account.consoleId}<br />Sony ID: {account.sonyId}</p>
-        {automatic && <>
-          <button type="button" className="btn btn-secondary btn-sm" disabled={!canAct}
-            onClick={() => setSwitchConfirm(!switchConfirm)}>Switch console to Sony account…</button>
-          {switchConfirm && <div>
-            <p>This changes the console account for offline use and pairs it again. It requires jailbreak.</p>
-            <button type="button" className="btn btn-primary btn-sm" disabled={!canAct}
-              onClick={() => { setSwitchConfirm(false); account.onSwitch(); }}>Activate Sony account & re-pair</button>
-          </div>}
-        </>}
       </div>}
       <details open={!account.linked && (!automatic || !!error)}>
         <summary className="text-sm" style={{ cursor: 'pointer' }}>

@@ -932,9 +932,9 @@ router.post('/activate-account', async (req, res) => {
       ip: rawIp,
       profile_id,
       force,
-      // Optional override: caller can supply a base64 account_id + online_id
-      // directly (e.g. right after running PSN OAuth in the UI). When
-      // omitted we fall back to the profile's stored psn_account_id.
+      // Optional linked Sony account fallback. Both native offact payloads
+      // adopt it only when the active console slot has no account ID; an
+      // existing on-console account always takes precedence.
       account_id: bodyAccountId,
       online_id: bodyOnlineId,
       // Optional custom trigger path - matches the build-time TRIGGER_PATH

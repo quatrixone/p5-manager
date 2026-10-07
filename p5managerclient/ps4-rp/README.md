@@ -20,10 +20,10 @@ did not do this and could fail RPC setup or restart SceShellUI. Other firmware
 and GoldHEN versions still need validation.
 
 * `offact-ps4.bin` reads the foreground user's account ID and reconciles
-  activation using PS4's `NP_env="np"` and `login_flag=6`. If the host has
-  supplied `/data/.p5manager-offact`, it uses that base64 account ID.
-  Without the trigger it preserves the existing account ID; an empty
-  account requires a supplied ID. It does not invent a PSN account.
+  activation using PS4's `NP_env="np"` and `login_flag=6`. A supplied `/data/.p5manager-offact` base64 account ID is adopted only
+  when the foreground user has no account ID. If an account already exists,
+  it remains in place and the payload only applies activation flags. An
+  empty account requires a supplied ID. It does not invent a PSN account.
 * `rp-get-pin-ps4.bin` reads the foreground account, enables Remote Play,
   attaches to `SceShellUI`, resolves the loaded Remote Play functions,
   and calls `sceRemoteplayGeneratePinCode`. It polls

@@ -14,18 +14,11 @@
  *
  *      The host-supplied PSN account_id (from the manager's PSN OAuth
  *      flow) lives in the trigger file at TRIGGER_PATH (default
- *      /data/.p5manager-offact). When present it is the **source of
- *      truth** and we sync the registry slot to match it:
+ *      /data/.p5manager-offact). It is only used when the console
+ *      registry slot has no account id already:
  *
  *      a. registry account_id == 0    -> adopt trigger id
- *      b. registry account_id == trigger id  -> in sync, just ensure
- *                                              type "np" + flags 0x1002
- *      c. registry account_id != trigger id  -> overwrite registry id
- *                                              with the linked PSN id
- *                                              (the manager intentionally
- *                                              re-linked the profile, we
- *                                              follow it - no --force
- *                                              required)
+ *      b. registry account_id != 0           -> keep the existing console id
  *
  *      If no trigger file is present, we fall back to the on-console
  *      registry id (existing PSN sign-in) and only fix the flags.
@@ -41,10 +34,9 @@
  *        Slot: <1..16>
  *        Activated: yes|already|failed
  *
- *   `Activated: already` = registry was already in sync with the linked
- *                          PSN id and the flags were correct.
- *   `Activated: yes`     = we wrote (adopted the trigger id, replaced a
- *                          mismatched id, or re-applied missing flags).
+ *   `Activated: already` = existing account had correct activation flags.
+ *   `Activated: yes`     = adopted a linked PSN id into an empty slot or
+ *                          re-applied missing activation flags.
  *
  *   `--force` (or OFFACT_FORCE=1) re-writes type + flags even when
  *   they're already correct, useful for diagnostics.
@@ -259,11 +251,8 @@ int main(int argc, char *argv[])
            (unsigned long)reg_account_id, current_type, current_flags,
            online_id, user_name);
 
-    /* Parse the host-supplied trigger file (if any). It carries the
-     * PSN account_id that the manager linked via PSN OAuth - this is
-     * the *source of truth* whenever it's available. We sync the
-     * registry slot to it: adopt when empty, overwrite when different,
-     * just ensure flags when already matching. */
+    /* Parse the host-supplied Sony account (if any). It can initialize
+     * an empty console slot, but an existing registry account always wins. */
     uint64_t trigger_account_id = 0;
     char trigger_online_id[ACCOUNT_NAME_MAX] = {0};
     int trigger_ok = 0;
@@ -285,31 +274,32 @@ int main(int argc, char *argv[])
         }
     }
 
-    /* Decide the target account_id and how we arrived at it. The
-     * trigger always wins when present; the registry is the fallback.
+    /* Decide the target account_id and how we arrived at it. A nonzero
+     * console account always wins; the trigger only fills an empty slot.
      *
      *   reason values (for logging / status messages):
      *     "adopt"     trigger present, registry empty - first link
-     *     "overwrite" trigger != registry            - manager re-linked
-     *     "sync"      trigger == registry            - in sync
-     *     "registry"  no trigger, use existing reg id
+     *     "registry"  existing account always wins
      *     ""          no trigger AND empty registry  - hard fail below
      */
     uint64_t account_id;
     const char *reason;
-    if (trigger_ok) {
+    if (reg_account_id != 0) {
+        account_id = reg_account_id;
+        reason = "registry";
+        if (trigger_ok && trigger_account_id != reg_account_id) {
+            printf("[offact] existing console account found; ignoring linked Sony account\n");
+        }
+    } else if (trigger_ok) {
         account_id = trigger_account_id;
-        if (reg_account_id == 0)                        reason = "adopt";
-        else if (reg_account_id == trigger_account_id)  reason = "sync";
-        else                                            reason = "overwrite";
+        reason = "adopt";
     } else {
         account_id = reg_account_id;
         reason = reg_account_id ? "registry" : "";
     }
 
-    /* Use the trigger's online_id only if we don't already have one
-     * on-console. The on-console value comes from PSN sign-in and
-     * usually beats whatever we'd send from the host. */
+    /* Use the trigger's online_id only if the console has no name for
+     * its existing account. */
     const char *display = online_id[0] ? online_id
                         : (trigger_online_id[0] ? trigger_online_id
                         : (user_name[0] ? user_name : "User"));
@@ -335,7 +325,7 @@ int main(int argc, char *argv[])
     const char *status_word;
     if (already_activated && !force) {
         status_word = "already";
-        printf("[offact] registry already in sync (id matches linked PSN, type=\"np\", flags=0x1002) - leaving alone\n");
+        printf("[offact] console account already activated (type=\"np\", flags=0x1002) - leaving alone\n");
     } else {
         /* Write account_id only when it differs from what's already
          * there. Type + flags are cheap so we re-write them whenever
@@ -376,12 +366,11 @@ int main(int argc, char *argv[])
 
     /* Human-readable summary for the on-screen notification. We pick
      * the phrasing from the resolved `reason` so the user gets a clear
-     * signal whether we linked a new PSN account, re-linked to a
-     * different one, or just confirmed the existing link. */
+     * signal whether we adopted the linked PSN account or kept the
+     * existing console account. */
     const char *headline =
         (strcmp(reason, "adopt")     == 0) ? "linked PSN account" :
-        (strcmp(reason, "overwrite") == 0) ? "re-linked PSN account" :
-        (strcmp(reason, "sync")      == 0) ? "PSN link in sync" :
+        (strcmp(reason, "registry")  == 0) ? "existing console account" :
                                              "activated PSN";
     notifyf("OffAct: %s\nUser: %s\nID: 0x%016lx",
             headline, display, (unsigned long)account_id);

@@ -7,7 +7,13 @@ int _main(void) {
   uint64_t supplied = 0;
   int trigger = rp_read_trigger(&supplied);
   if (trigger < 0) { rp_log("Error: invalid account ID trigger; registry unchanged\n"); goto failed; }
-  if (trigger > 0) user.account_id = supplied;
+  /* A linked Sony account is only a fallback for an empty console slot.
+   * Never replace an account already assigned to the foreground user. */
+  if (trigger > 0 && !user.account_id) {
+    user.account_id = supplied;
+  } else if (trigger > 0 && supplied != user.account_id) {
+    rp_log("[offact-ps4] existing console account found; ignoring linked Sony account\n");
+  }
   if (!user.account_id) { rp_log("Error: no existing or supplied account ID\n"); goto failed; }
 
   rp_set_int = (void *)rp_symbol("libSceRegMgr.sprx", "sceRegMgrSetInt");
