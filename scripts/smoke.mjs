@@ -10,6 +10,7 @@
 import fs from 'fs';
 import path from 'path';
 import assert from 'node:assert/strict';
+import { createRequire } from 'module';
 
 const [base = 'http://127.0.0.1:3001', scratchArg, ...flags] = process.argv.slice(2);
 if (!scratchArg) { console.error('usage: smoke.mjs <base-url> <scratch-dir> [--sidecar]'); process.exit(2); }
@@ -172,6 +173,28 @@ await step('payloads, profiles, settings and the user-data paths answer', async 
     assert.ok(!p[k].includes('\\'), `${k} has a backslash`);
     await ok('POST', '/api/convert/local/browse', { path: p[k] });
   }
+});
+
+await step('an archive is extracted to a folder of the user\'s choice', async () => {
+  // On Windows that is any drive, not just the app's own folders; on Linux
+  // the roots are a list, so the downloads folder stands in.
+  const AdmZip = createRequire(new URL('../backend/package.json', import.meta.url))('adm-zip');
+  const zip = new AdmZip();
+  zip.addFile('inner/hello.txt', Buffer.from('hello'));
+  const archive = path.join(scratch, 'src', 'smoke-archive.zip');
+  zip.writeZip(archive);
+  const dest = win ? path.join(scratch, 'dst') : (await ok('GET', '/api/convert/paths')).downloads;
+  const started = await ok('POST', '/api/convert/extract', { source: 'local-fs', local_path: fwd(archive), dest_kind: 'local-fs', dest_local_path: fwd(dest) });
+  let job;
+  for (let i = 0; i < 60; i++) {
+    job = await ok('GET', `/api/convert/extract/${started.job_id}`);
+    if (['completed', 'failed', 'cancelled'].includes(job.status)) break;
+    await new Promise(r => setTimeout(r, 500));
+  }
+  assert.equal(job.status, 'completed', `${job.status}: ${job.error || ''} ${String(job.log || '').slice(-400)}`);
+  const out = path.join(dest, 'smoke-archive', 'inner', 'hello.txt');
+  assert.equal(fs.readFileSync(out, 'utf8'), 'hello');
+  if (!win) fs.rmSync(path.join(dest, 'smoke-archive'), { recursive: true, force: true });
 });
 
 await step('library reports an unreachable console cleanly', async () => {

@@ -37,6 +37,11 @@ code, firmware, system files, encryption keys, signing keys or account
 credentials, **no** exploit for any console, and **no** games, game dumps,
 package files or links to them.
 
+The Windows package (`P5Manager-windows-x64.zip`) additionally carries
+unmodified copies of the programs it runs on: Node.js, Python with the
+packages of the Remote Play service, and 7-Zip (`runtime/7zip/`, GNU LGPL
+with the unRAR restriction; its `License.txt` is next to it).
+
 Other third-party tools (payloads, converters, libraries) are not
 redistributed from this repository. The application downloads a small set
 of payloads from their authors' own release pages on first start, and

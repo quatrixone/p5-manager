@@ -25,6 +25,9 @@ permissions:
 env:
   NODE_VERSION: '22.20.0'
   PYTHON_VERSION: '3.11.9'
+  SEVENZIP_VERSION: '25.01'
+  SEVENZIP_SHA256: '78AFA2A1C773CAF3CF7EDF62F857D2A8A5DA55FB0FFF5DA416074C0D28B2B55F'
+  SEVENZIP_7ZR_SHA256: '27CBE3D5804AD09E90BBCAA916DA0D5C3B0BE9462D0E0FB6CB54BE5ED9030875'
 
 jobs:
   build:
@@ -70,6 +73,17 @@ jobs:
           # The app's own payloads, put into data\payloads on the first start.
           New-Item -ItemType Directory -Force "$out/app/backend/vendored" | Out-Null
           Copy-Item p5managerclient/rp-get-pin/rp-get-pin.elf, p5managerclient/offact/offact.elf, p5managerclient/pkg-install/pkg-install.elf "$out/app/backend/vendored/"
+
+          # 7-Zip, for the archives the app extracts (7z, zip, rar): the launcher
+          # puts this folder on the server's PATH. Both downloads are pinned.
+          $z = "$env:RUNNER_TEMP\7zip-dl"
+          New-Item -ItemType Directory -Force $z, "$out/runtime/7zip" | Out-Null
+          foreach ($f in @{ name = '7zr.exe'; sha = $env:SEVENZIP_7ZR_SHA256 }, @{ name = "7z$($env:SEVENZIP_VERSION.Replace('.', ''))-x64.exe"; sha = $env:SEVENZIP_SHA256 }) {
+            Invoke-WebRequest "https://github.com/ip7z/7zip/releases/download/$env:SEVENZIP_VERSION/$($f.name)" -OutFile "$z\$($f.name)"
+            if ((Get-FileHash "$z\$($f.name)" -Algorithm SHA256).Hash -ne $f.sha) { throw "$($f.name) does not match its pinned checksum" }
+          }
+          & "$z\7zr.exe" x "$z\7z$($env:SEVENZIP_VERSION.Replace('.', ''))-x64.exe" "-o$out\runtime\7zip" 7z.exe 7z.dll License.txt -y | Out-Null
+          if (-not (Test-Path "$out/runtime/7zip/7z.exe")) { throw "7z.exe was not extracted" }
 
           # Node runtime (same version the tests above ran on).
           Invoke-WebRequest "https://nodejs.org/dist/v$env:NODE_VERSION/win-x64/node.exe" -OutFile "$out/runtime/node/node.exe"

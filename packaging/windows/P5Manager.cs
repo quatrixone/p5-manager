@@ -11,6 +11,7 @@
 //   app\pyremoteplay\server.py    Remote Play service (optional)
 //   runtime\node\node.exe
 //   runtime\python\python.exe     (optional)
+//   runtime\7zip\7z.exe           (optional) extracts archives for the backend
 //   data\                         created on first start: database, payloads, downloads
 //
 // app\ and runtime\ are thousands of small files, which Windows Explorer
@@ -290,6 +291,10 @@ static class P5Manager
             new string[] { "BUILTIN_DIR", Path.Combine(home, "app", "builtin") },
             new string[] { "PYREMOTEPLAY_SIDECAR_URL", "http://127.0.0.1:" + sidecarPort },
         };
+        // The backend calls "7z" by name, as it does on Linux.
+        string sevenZip = Path.Combine(home, "runtime", "7zip");
+        if (File.Exists(Path.Combine(sevenZip, "7z.exe")))
+            Environment.SetEnvironmentVariable("PATH", sevenZip + ";" + Environment.GetEnvironmentVariable("PATH"));
         Process server = Start(node, "src\\index.js", backend, serverEnv);
 
         string url = "http://localhost:" + port + "/";

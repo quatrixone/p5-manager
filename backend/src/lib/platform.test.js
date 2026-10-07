@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'path';
-import { toClientPath, mapPosixDefault, isFsRoot, isLocalPathAllowed } from './platform.js';
+import { toClientPath, mapPosixDefault, isFsRoot, isLocalPathAllowed, isInsideRoots } from './platform.js';
 
 const W = path.win32;
 
@@ -48,4 +48,18 @@ test('blocked folders: system trees on Linux, the Windows directory on Windows',
   assert.equal(isLocalPathAllowed('c:\\windows', w), false);
   assert.equal(isLocalPathAllowed('C:\\WindowsApps', w), true);
   assert.equal(isLocalPathAllowed('D:\\Games', w), true);
+});
+
+test('job roots: a list on Linux, any usable drive on Windows', () => {
+  const roots = ['/data', '/mnt', '/data/downloads'];
+  const l = { win: false, pathMod: path.posix };
+  assert.equal(isInsideRoots('/mnt/usb/PS5', roots, l), true);
+  assert.equal(isInsideRoots('/data', roots, l), true);
+  assert.equal(isInsideRoots('/mntx/games', roots, l), false);
+  assert.equal(isInsideRoots('/home/me/games', roots, l), false);
+  assert.equal(isInsideRoots('/mnt/../etc', roots, l), false);
+  const w = { win: true, pathMod: W, systemRoot: 'C:\\Windows' };
+  assert.equal(isInsideRoots('F:\\PS5', roots, w), true);
+  assert.equal(isInsideRoots('F:/PS5/games', roots, w), true);
+  assert.equal(isInsideRoots('C:\\Windows\\Temp', roots, w), false);
 });

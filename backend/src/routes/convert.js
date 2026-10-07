@@ -29,7 +29,7 @@ import { createExfatImage, unpackExfatImage } from '../lib/exfat.js';
 // identical hand-rolled queue scaffolds further down in this file.
 import { JobQueue, mountQueueRoutes } from '../lib/JobQueue.js';
 import { cleanDir, joinPath, isSameOrInside, destDirFor } from '../lib/transferPaths.js';
-import { isWindows, toClientPath, mapPosixDefault, isFsRoot, listLocalRoots, isLocalPathAllowed } from '../lib/platform.js';
+import { isWindows, toClientPath, mapPosixDefault, isFsRoot, listLocalRoots, isLocalPathAllowed, isInsideRoots } from '../lib/platform.js';
 
 const router = express.Router();
 
@@ -43,11 +43,11 @@ const ALLOWED_PATH_ROOTS = (() => {
   for (const r of roots) {} // (kept for symmetry; resolver uses Array.from below)
   return Array.from(roots).map((r) => path.resolve(r));
 })();
-const ALLOWED_PATH_PREFIXES = ALLOWED_PATH_ROOTS.map((r) => r.endsWith(path.sep) ? r : r + path.sep);
 
+// On Windows the list does not apply: any drive the local browser may use
+// counts (see isInsideRoots).
 function isInsideAllowedRoot(absPath) {
-  const real = path.resolve(absPath);
-  return ALLOWED_PATH_PREFIXES.some((p) => real === p.slice(0, -1) || real.startsWith(p));
+  return isInsideRoots(absPath, ALLOWED_PATH_ROOTS);
 }
 
 // Mask secret arguments before logging a command. Matches `-p<password>` form
@@ -3333,7 +3333,8 @@ function validateConvertParams(params) {
   }
 
   if (!source_path) return { error: 'source_path, source_ftp or source_smb required' };
-  const isAbsolute = source_path.startsWith('/');
+  // path.isAbsolute for a Windows path with a drive letter (F:/PS5/game).
+  const isAbsolute = source_path.startsWith('/') || path.isAbsolute(source_path);
   let src;
   if (isAbsolute) {
     src = path.resolve(source_path);
