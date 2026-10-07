@@ -3755,8 +3755,11 @@ const convertQ = new JobQueue({
   itemPublic: convertQueueItemPublic,
   cancelHook: (item) => {
     const job = item._job || (item.job_id ? jobs.get(item.job_id) : null);
-    if (job && job._proc) {
-      try { job._proc.kill('SIGTERM'); } catch (_) {}
+    // Also a job without a process of its own: the exFAT image written by
+    // the app itself (Windows) watches this status and stops. Left as
+    // "running" it went on writing and kept the queue waiting.
+    if (job && !TERMINAL_STATUSES.has(job.status)) {
+      try { job._proc?.kill('SIGTERM'); } catch (_) {}
       job.status = 'cancelled';
       job.finished_at = new Date().toISOString();
     }
