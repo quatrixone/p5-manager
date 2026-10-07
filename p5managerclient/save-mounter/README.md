@@ -3,7 +3,7 @@
 Mounts PS5 save data - the console's own, and PS4 saves of backwards-
 compatible games - read/write under `/mnt/pfs/`, and creates new saves. A
 TCP command server on port 9090; P5 Manager drives it from
-**Tools → Save Mounter** (`backend/src/lib/saveMounter.js`).
+**File Ops → Saves** (`backend/src/lib/saveMounter.js`).
 
 `main.c` is the payload of
 [n0llptr/Playstation-5-Save-Mounter](https://github.com/n0llptr/Playstation-5-Save-Mounter)

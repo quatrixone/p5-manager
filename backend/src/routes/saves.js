@@ -1,4 +1,4 @@
-// Tools -> Save Mounter: save data on a PS5 - the console's own and PS4
+// File Ops -> Saves: save data on a PS5 - the console's own and PS4
 // saves of backwards-compatible games - mounted read/write, backed up to
 // this computer, and filled from a decrypted PS4 save.
 //

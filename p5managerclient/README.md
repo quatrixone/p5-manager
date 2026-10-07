@@ -16,8 +16,7 @@ host that builds payloads / talks to the PS5 directly:
     (no licence stated upstream).
   - `pkg-install/` — fake-PKG installer for the install queue. Written
     for this project, MIT.
-  - `save-mounter/` — mounts and creates save data (Tools → Save
-    Mounter). The payload of
+  - `save-mounter/` — mounts and creates save data (File Ops → Saves). The payload of
     [n0llptr/Playstation-5-Save-Mounter](https://github.com/n0llptr/Playstation-5-Save-Mounter),
     GPL-3.0.
 
