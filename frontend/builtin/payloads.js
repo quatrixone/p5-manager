@@ -37,6 +37,19 @@ export const ESSENTIAL_PAYLOADS = [
     description: 'PS5 Lua log redirector (used by Log viewer)',
   },
 
+  // --- Required by File Ops -----------------------------------------------
+  {
+    // The console's FTP server. File Ops sends it by itself when FTP is not
+    // running (backend: startZftpd looks for zftpd*.elf); the zhttp build
+    // also lets the Downloader fetch a file straight on the console.
+    filename: 'zftpd-ps5-zhttp-v1.6.0.elf',
+    url: 'https://github.com/seregonwar/zftpd/releases/download/v1.6.0/zftpd-ps5-zhttp-v1.6.0.elf',
+    tag: 'ftp',
+    console_type: 'ps5',
+    port: 9021,
+    description: 'PS5 FTP server zftpd 1.6.0 (File Ops, downloads to the console)',
+  },
+
   // --- Pre-curated convenience PS5 payloads ------------------------------
   {
     filename: 'ps5-backpork.elf',

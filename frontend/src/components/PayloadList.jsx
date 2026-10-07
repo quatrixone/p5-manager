@@ -61,12 +61,12 @@ function PayloadList({ payloads, profiles, onFetchUrl, onSend, onDelete, onUpdat
       try {
         const list = await api.get('/payloads/defaults');
         if (cancelled || !Array.isArray(list)) return;
-        // Only 'log' and 'template' entries are actual app dependencies
-        // (Log viewer, Autoload templates). 'community' entries (kstuff,
+        // Only 'log', 'template' and 'ftp' entries are actual app dependencies
+        // (Log viewer, Autoload templates, File Ops). 'community' entries (kstuff,
         // ps5-backpork) are pre-curated convenience downloads -
         // nothing in the app breaks without them, so they belong in All,
         // not Built-in.
-        const required = list.filter(p => p.tag === 'log' || p.tag === 'template');
+        const required = list.filter(p => p.tag === 'log' || p.tag === 'template' || p.tag === 'ftp');
         setRequiredFilenames(new Set([...VENDORED_REQUIRED_FILENAMES, ...required.map(p => p.filename)]));
       } catch (_) { /* keep the vendored-only fallback */ }
     })();
@@ -413,7 +413,7 @@ function PayloadList({ payloads, profiles, onFetchUrl, onSend, onDelete, onUpdat
         <EmptyState
           icon="🧷"
           title="No built-in payloads present"
-          text="None of the app-required payloads (log viewer, PIN pairing, offline activation, PKG installer) are on disk yet. Hit ✨ Defaults to put them back: the app's own ones come with it, the others are fetched from GitHub."
+          text="None of the app-required payloads (log viewer, FTP server, PIN pairing, offline activation, PKG installer) are on disk yet. Hit ✨ Defaults to put them back: the app's own ones come with it, the others are fetched from GitHub."
           action={onRestoreDefaults && <button className="btn btn-primary" onClick={() => onRestoreDefaults(false)}>✨ Defaults</button>}
         />
       ) : visiblePayloads.length === 0 ? (
