@@ -3669,6 +3669,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
                       ip={profile?.ip_address}
                       liveSession={liveSession}
                       onStartSession={() => startSession(true)}
+                      onStopSession={stopSession}
                       sendCommand={stepSendCommand}
                       scripts={scripts}
                       onScriptsChange={onScriptsChange}

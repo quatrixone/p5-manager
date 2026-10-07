@@ -430,27 +430,28 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
 
       <div className="comp-card">
         <div className="comp-card-body">
-          <div className="font-bold mb-sm">Local upload target (PS5 FTP)</div>
+          <div className="font-bold mb-sm">Where files are sent on the console</div>
           <div className="text-xs text-muted mb-md">
-            Used by the Convert tab when "Auto-upload .ffpfsc to PS5 FTP when conversion finishes" is enabled.
-            Configure once here and every conversion will push to the same console + path.
+            The console and the folder on it that <strong>Upload to console</strong> in Files and the
+            automatic upload after a conversion use. Files travel over the console's FTP server,
+            which P5 Manager starts by itself when it is needed.
           </div>
           <div className="mb-md">
-            <label className="text-sm text-muted mb-sm" style={{ display: 'block' }}>Target PS5</label>
+            <label className="text-sm text-muted mb-sm" style={{ display: 'block' }}>Console</label>
             <select
               className="select"
               value={uploadTargetIp}
               onChange={e => setUploadTargetIp(e.target.value)}
               style={{ maxWidth: 320 }}
             >
-              <option value="">— use current default profile —</option>
+              <option value="">— the console selected at the top —</option>
               {profiles.map(p => (
                 <option key={p.id} value={p.ip_address}>{p.name} ({p.ip_address})</option>
               ))}
             </select>
           </div>
           <div className="mb-md">
-            <label className="text-sm text-muted mb-sm" style={{ display: 'block' }}>Destination on PS5</label>
+            <label className="text-sm text-muted mb-sm" style={{ display: 'block' }}>Folder on the console</label>
             <input
               className="input"
               type="text"
@@ -461,35 +462,33 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
             />
           </div>
           <button className="btn btn-primary" onClick={saveUploadTarget} disabled={loading}>
-            {loading ? '⏳ Saving...' : '💾 Save Upload Target'}
+            {loading ? '⏳ Saving...' : '💾 Save'}
           </button>
         </div>
       </div>
 
       <div className="comp-card">
         <div className="comp-card-body">
-          <div className="font-bold mb-sm">PKG installer (fake .pkg)</div>
+          <div className="font-bold mb-sm">Installing .pkg files (PS5)</div>
           <div className="text-xs text-muted mb-md">
-            The install queue stages .pkg files to <code>{pkgStageDir}</code> on the PS5 via FTP,
-            drops a trigger file at <code>{pkgTriggerFile}</code> with the staged path, then sends
-            the configured installer payload over the ELF loader port (9021). The payload reads
-            the trigger file and calls <code>sceAppInstUtilInstallByPackage</code>.
-            Build instructions are in <code>p5managerclient/pkg-install/README.md</code> in the repo.
+            <strong>Install</strong> in Files copies the .pkg to the console and then sends a small
+            payload, <code>pkg-install.elf</code>, that installs it there. It comes with P5 Manager;
+            the two paths below rarely need changing.
           </div>
           <div className="mb-md">
-            <label className="text-sm text-muted mb-sm" style={{ display: 'block' }}>Installer payload (ELF)</label>
+            <label className="text-sm text-muted mb-sm" style={{ display: 'block' }}>Installer payload</label>
             {pkgInstallerPayloadId ? (
               <div className="text-sm">
-                ✅ Bound to <code>pkg-install.elf</code>
+                ✅ <code>pkg-install.elf</code> is in the payload library
               </div>
             ) : (
               <div className="text-xs text-muted">
-                No <code>pkg-install.elf</code> found. Upload it in the Payloads tab — it's picked up automatically.
+                <code>pkg-install.elf</code> is missing from the payload library. Restart P5 Manager to get it back, or upload it in the Payloads tab.
               </div>
             )}
           </div>
           <div className="mb-md">
-            <label className="text-sm text-muted mb-sm" style={{ display: 'block' }}>Staging directory on PS5</label>
+            <label className="text-sm text-muted mb-sm" style={{ display: 'block' }}>Folder on the console the .pkg is copied to</label>
             <input
               className="input"
               type="text"
@@ -500,7 +499,7 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
             />
           </div>
           <div className="mb-md">
-            <label className="text-sm text-muted mb-sm" style={{ display: 'block' }}>Trigger file on PS5</label>
+            <label className="text-sm text-muted mb-sm" style={{ display: 'block' }}>File that tells the payload what to install</label>
             <input
               className="input"
               type="text"
@@ -511,7 +510,7 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
             />
           </div>
           <button className="btn btn-primary" onClick={savePkgInstaller} disabled={loading}>
-            {loading ? '⏳ Saving...' : '💾 Save PKG Installer'}
+            {loading ? '⏳ Saving...' : '💾 Save'}
           </button>
         </div>
       </div>

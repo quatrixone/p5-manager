@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import Modal from './UI/Modal';
 import { api, apiSafe } from '../lib/api.js';
 import { AVAILABLE_COMMANDS, buildOskInputs, parseLine } from '../lib/inputScriptDsl.js';
@@ -12,7 +12,11 @@ import { AVAILABLE_COMMANDS, buildOskInputs, parseLine } from '../lib/inputScrip
 // that goes through the RP session's own input channel, so "▶ Run" here
 // and the step-by-step "👣 Step" mode both ultimately press buttons the
 // same way as the on-screen touch controller.
-function ScriptRunner({ ip, liveSession, onStartSession, sendCommand, scripts, onScriptsChange, onRequestStep, onResetToMainScreen }) {
+function ScriptRunner({ ip, liveSession, onStartSession, onStopSession, sendCommand, scripts, onScriptsChange, onRequestStep, onResetToMainScreen }) {
+  // The stop function as of the latest render: the one runScript closed
+  // over was made before the session it has to stop existed.
+  const onStopSessionRef = useRef(onStopSession);
+  onStopSessionRef.current = onStopSession;
   const [output, setOutput] = useState([]);
   const [manualBusy, setManualBusy] = useState(null); // cmd currently in flight, or null
   const [isRunning, setIsRunning] = useState(null); // holds the id/key of the script currently running, or null
@@ -164,9 +168,13 @@ function ScriptRunner({ ip, liveSession, onStartSession, sendCommand, scripts, o
       addOutput('No PS5 IP address configured', 'error');
       return;
     }
+    // A session this run opens is this run's to close; one the user had
+    // open already stays.
+    let startedHere = false;
     if (!liveSession) {
       const ok = await onStartSession?.();
       if (!ok) { addOutput('Could not start a Remote Play session', 'error'); return; }
+      startedHere = true;
     }
 
     setIsRunning(key);
@@ -200,6 +208,10 @@ function ScriptRunner({ ip, liveSession, onStartSession, sendCommand, scripts, o
     setIsRunning(null);
     setStopRequested(false);
     addOutput('✅ Script complete', 'success');
+    if (startedHere) {
+      try { await onStopSessionRef.current?.(); } catch (_) {}
+      addOutput('Session closed', 'info');
+    }
   };
 
   // ─── Edit modal ──────────────────────────────────────────────────────────

@@ -575,7 +575,7 @@ export default function FileBrowser({
       return;
     }
     if (!uploadIp) {
-      onNotification?.('No upload target PS5 set - configure it in Settings → Config → Local upload target', 'error');
+      onNotification?.('No console to upload to - pick one in Settings → Config → Where files are sent on the console', 'error');
       return;
     }
     let body;
@@ -608,7 +608,7 @@ export default function FileBrowser({
   };
 
   const uploadSelected = async () => {
-    if (!uploadIp) { onNotification?.('No upload target PS5 set - configure it in Settings → Config → Local upload target', 'error'); return; }
+    if (!uploadIp) { onNotification?.('No console to upload to - pick one in Settings → Config → Where files are sent on the console', 'error'); return; }
     const list = Array.from(selected);
     if (list.length === 0) return;
     let ok = 0, fail = 0;
