@@ -369,9 +369,7 @@ export async function createViewer({ sid, upstreamUrl, onKeyRequest, log }) {
   await loadNdc();
   const id = String(nextId++);
   const viewer = new Viewer({ id, sid, upstreamUrl, log });
-  viewer.onKeyRequest = () => {
-    onKeyRequest?.();
-  };
+  viewer.onKeyRequest = onKeyRequest;
   viewers.set(id, viewer);
   try {
     await viewer.openUpstream();
