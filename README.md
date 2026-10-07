@@ -44,7 +44,7 @@ from one browser tab on your PC or phone.
 | **File Ops** | Browse this computer, a network share and the console side by side. Drag files between two panes to copy or move them, upload from your device, download from a URL, convert and extract. Long jobs run in a queue you can pause and resume. |
 | **Library** | See every title ShadowMountPlus knows on the console, with icon, size and the drive it is on. Mount, move, copy, unpack, uninstall or delete a title, with a progress bar for the long ones. |
 | **Console** | Remote Play in the browser: wake the console, see the screen (WebRTC with sound, up to 1080p at 60 fps; MJPEG where WebRTC is not available), use an on-screen controller, record and replay button sequences, send a payload without leaving the view. The tab is named *PS5 Control* or *PS4 Control* once your default profile is one of those. |
-| **Logs** | Live log streams from the console. |
+| **Tools** | **Logs**: live log streams from the console. **Save Mounter**: mount a PS5 save read/write, back saves up to this computer, and move a PS4 save to the PS5 (decrypted on the PS4 with Apollo Save Tool, copied over FTP into a save of the same game on the PS5). |
 | **Settings** | Console profiles, backup and restore, defaults, restart. |
 
 Highlights:
@@ -289,15 +289,17 @@ On the console, P5 Manager connects to:
   and a small launcher, built and tested by
   [GitHub Actions](.github/workflows/windows-portable.yml).
 
-Three small payloads live under [`p5managerclient/`](p5managerclient/)
+Four small payloads live under [`p5managerclient/`](p5managerclient/)
 and build with the
 [ps5-payload-dev SDK](https://github.com/ps5-payload-dev/sdk):
 `rp-get-pin.elf` (Remote Play pairing PIN, a patched copy of
 [idlesauce's](https://github.com/idlesauce/ps5-remoteplay-get-pin)),
 `offact.elf` (account ID for Remote Play pairing, derived from
 [ps5-payload-dev/offact](https://github.com/ps5-payload-dev/offact),
-GPL-3.0-or-later) and `pkg-install.elf` (package install queue, written
-for this project). See [LEGAL.md](LEGAL.md) for their licences.
+GPL-3.0-or-later), `pkg-install.elf` (package install queue, written
+for this project) and `save-mounter.elf` (Tools → Save Mounter, the
+payload of [n0llptr's PS5 Save Mounter](https://github.com/n0llptr/Playstation-5-Save-Mounter),
+GPL-3.0). See [LEGAL.md](LEGAL.md) for their licences.
 
 ---
 
@@ -335,6 +337,9 @@ repos:
   SDK every in-tree PS5 ELF builds against
 - [ps5-payload-dev / offact](https://github.com/ps5-payload-dev/offact)
   (John Törnblom) — the code `offact.elf` is derived from
+- [n0llptr / Playstation-5-Save-Mounter](https://github.com/n0llptr/Playstation-5-Save-Mounter)
+  — the payload behind Tools → Save Mounter (based on cow's and
+  earthonion's work)
 - [idlesauce / ps5-remoteplay-get-pin](https://github.com/idlesauce/ps5-remoteplay-get-pin)
   — the code `rp-get-pin.elf` is a patched copy of
 - [streetpea / chiaki-ng](https://github.com/streetpea/chiaki-ng) —
@@ -343,7 +348,7 @@ repos:
   the Remote Play library the service was first built on; paired consoles
   keep its profile layout
 - [gezine](https://github.com/gezine) — Luac0re, whose `setlogserver.lua`
-  is the Lua log redirector behind the Logs tab
+  is the Lua log redirector behind Tools → Logs
 - **flatz** + **CelesteBlue** — original public-domain `unpkg.py` and
   the Python 3 port vendored as `backend/src/lib/unpkg.py`
 - **etaHEN team** — etaHEN

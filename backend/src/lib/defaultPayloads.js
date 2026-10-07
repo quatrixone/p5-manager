@@ -17,8 +17,9 @@ export const VENDORED_PAYLOADS = [
   { filename: 'rp-get-pin.elf', dir: 'rp-get-pin', console_type: 'ps5' },
   { filename: 'offact.elf', dir: 'offact', console_type: 'ps5' },
   { filename: 'pkg-install.elf', dir: 'pkg-install', console_type: 'ps5' },
+  { filename: 'save-mounter.elf', dir: 'save-mounter', console_type: 'ps5' },
 ];
-function vendoredSource(entry) {
+export function vendoredSource(entry) {
   const candidates = [
     path.resolve(__dirname, '../../vendored', entry.filename),
     path.resolve(__dirname, '../../../p5managerclient', entry.dir, entry.filename),

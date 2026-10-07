@@ -6,7 +6,7 @@ host that builds payloads / talks to the PS5 directly:
 - The vendored
   [ps5-payload-dev/sdk](https://github.com/ps5-payload-dev/sdk)
   toolchain (`sdk/`, gitignored — 35 MB binary toolchain).
-- Three PS5 payload projects that compile against it:
+- Four PS5 payload projects that compile against it:
   - `offact/` — headless offline PSN activation. Derived from
     [ps5-payload-dev/offact](https://github.com/ps5-payload-dev/offact),
     GPL-3.0-or-later.
@@ -16,6 +16,10 @@ host that builds payloads / talks to the PS5 directly:
     (no licence stated upstream).
   - `pkg-install/` — fake-PKG installer for the install queue. Written
     for this project, MIT.
+  - `save-mounter/` — mounts and creates save data (Tools → Save
+    Mounter). The payload of
+    [n0llptr/Playstation-5-Save-Mounter](https://github.com/n0llptr/Playstation-5-Save-Mounter),
+    GPL-3.0.
 
 ## Layout
 
@@ -30,6 +34,7 @@ p5managerclient/
 │   └── …
 ├── offact/         ← headless PSN-activation payload (source + Makefile)
 ├── pkg-install/    ← fake-PKG installer payload (source + Makefile)
+├── save-mounter/   ← save data mounter payload (source + Makefile)
 └── rp-get-pin/     ← Remote Play PIN harvester payload (source + Makefile)
 ```
 

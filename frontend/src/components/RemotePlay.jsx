@@ -989,7 +989,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
       } else if (r.error) {
         throw new Error(r.error);
       } else {
-        throw new Error('No PIN line in payload output (check Logs tab)');
+        throw new Error('No PIN line in payload output (check Tools → Logs)');
       }
     } catch (e) {
       onNotification?.(`Auto-fetch PIN failed: ${e.message}`, 'error');

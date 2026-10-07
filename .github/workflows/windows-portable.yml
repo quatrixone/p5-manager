@@ -83,7 +83,7 @@ jobs:
           Copy-Item frontend/builtin "$out/app/builtin" -Recurse
           # The app's own payloads, put into data\payloads on the first start.
           New-Item -ItemType Directory -Force "$out/app/backend/vendored" | Out-Null
-          Copy-Item p5managerclient/rp-get-pin/rp-get-pin.elf, p5managerclient/offact/offact.elf, p5managerclient/pkg-install/pkg-install.elf "$out/app/backend/vendored/"
+          Copy-Item p5managerclient/rp-get-pin/rp-get-pin.elf, p5managerclient/offact/offact.elf, p5managerclient/pkg-install/pkg-install.elf, p5managerclient/save-mounter/save-mounter.elf "$out/app/backend/vendored/"
 
           # 7-Zip, for the archives the app extracts (7z, zip, rar): the launcher
           # puts this folder on the server's PATH. Both downloads are pinned.
