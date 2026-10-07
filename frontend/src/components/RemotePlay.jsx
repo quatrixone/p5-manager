@@ -2791,38 +2791,6 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
               <button className="btn btn-success btn-sm" disabled={oauthBusy || !redirectUrl.trim() || !profile} onClick={finishOAuth}>
                 {oauthBusy ? '⏳' : '✓ Extract account ID'}
               </button>
-              {/* The same account without Sony's sign-in, for whoever knows the id. */}
-              <details style={{ fontSize: '0.85em' }}>
-                <summary style={{ cursor: 'pointer' }}>✍ Or type the account ID yourself</summary>
-                <div className="flex-col gap-sm" style={{ marginTop: 8 }}>
-                  <div className="text-xs text-muted">
-                    The number of the PSN account (up to 20 digits), or its base64 form as other
-                    Remote Play apps show it (12 characters ending in "="). It must be the account
-                    that is signed in on the console, otherwise pairing is refused.
-                  </div>
-                  <div className="flex gap-sm flex-wrap">
-                    <input
-                      className="input"
-                      style={{ flex: '2 1 220px' }}
-                      placeholder="Account ID"
-                      value={manualAccount}
-                      onChange={e => setManualAccount(e.target.value)}
-                      autoComplete="off"
-                    />
-                    <input
-                      className="input"
-                      style={{ flex: '1 1 140px' }}
-                      placeholder="PSN name (optional)"
-                      value={manualOnlineId}
-                      onChange={e => setManualOnlineId(e.target.value)}
-                      autoComplete="off"
-                    />
-                    <button className="btn btn-success btn-sm" disabled={oauthBusy || !manualAccount.trim() || !profile} onClick={saveManualAccount}>
-                      ✓ Use this account
-                    </button>
-                  </div>
-                </div>
-              </details>
             </div>
           )}
 
@@ -2840,6 +2808,39 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
               </button>
             </div>
           )}
+
+          {/* The same account without Sony's sign-in, for whoever knows the id. */}
+          <details style={{ fontSize: '0.85em' }}>
+            <summary style={{ cursor: 'pointer' }}>✍ Or type the account ID yourself</summary>
+            <div className="flex-col gap-sm" style={{ marginTop: 8 }}>
+              <div className="text-xs text-muted">
+                The number of the PSN account (up to 20 digits), or its base64 form as other
+                Remote Play apps show it (12 characters ending in "="). It must be the account
+                that is signed in on the console, otherwise pairing is refused.
+              </div>
+              <div className="flex gap-sm flex-wrap">
+                <input
+                  className="input"
+                  style={{ flex: '2 1 220px' }}
+                  placeholder="Account ID"
+                  value={manualAccount}
+                  onChange={e => setManualAccount(e.target.value)}
+                  autoComplete="off"
+                />
+                <input
+                  className="input"
+                  style={{ flex: '1 1 140px' }}
+                  placeholder="PSN name (optional)"
+                  value={manualOnlineId}
+                  onChange={e => setManualOnlineId(e.target.value)}
+                  autoComplete="off"
+                />
+                <button className="btn btn-success btn-sm" disabled={oauthBusy || !manualAccount.trim() || !profile} onClick={saveManualAccount}>
+                  ✓ Use this account
+                </button>
+              </div>
+            </div>
+          </details>
 
           <details style={{ fontSize: '0.85em' }}>
             <summary style={{ cursor: 'pointer', color: 'var(--muted)' }}>
