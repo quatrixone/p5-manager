@@ -30,7 +30,7 @@ the exe.
 ## Interface
 
     p5rp --host <ip> [--ps4] [--res 360|540|720|1080] [--fps 30|60]
-         [--bitrate <kbit/s>] [--codec h264|h265]
+         [--bitrate <kbit/s>] [--codec h264|h265] [--audio]
 
 The pairing keys come in the environment (`P5RP_REGIST_KEY`,
 `P5RP_MORNING` as 32 hex characters), not on the command line.
@@ -38,7 +38,9 @@ The pairing keys come in the environment (`P5RP_REGIST_KEY`,
 - **stdout** - the video in Annex B, one record per frame: `'V'`, a flags
   byte (1 key frame, 2 frames were lost before it, 4 repaired by FEC), the
   length (4 bytes, big endian), a time stamp in microseconds (8 bytes, big
-  endian), the data.
+  endian), the data. With `--audio` the sound comes in records of the same
+  shape: `'A'` holds one Opus packet as the console sent it, and before the
+  first of them `'H'` gives the format as text (`channels rate frame_size`).
 - **stderr** - one JSON object per line: `starting`, `connected`, `stats`
   (every 5 s), `log`, `fec_failure`, `quit` (with the reason).
 - **stdin** - one command per line: `btn <name> <0|1>`,

@@ -4,7 +4,7 @@
 // (chiaki-ng, AGPL-3.0). One process holds one session with a console.
 //
 //   p5rp --host <ip> [--ps4] [--res 360|540|720|1080] [--fps 30|60]
-//        [--bitrate <kbit/s>] [--codec h264|h265]
+//        [--bitrate <kbit/s>] [--codec h264|h265] [--audio]
 //
 // The pairing keys come in the environment, not on the command line, where
 // every user of the machine could read them:
@@ -14,6 +14,9 @@
 // stdout  the video, as the console encoded it (Annex B), one record a frame:
 //           'V'  flags(1)  length(4, big endian)  time(8, big endian, us)  data
 //         flags: 1 = key frame, 2 = frames were lost before it, 4 = repaired by FEC
+//         With --audio, the sound too, in records of the same shape: 'A' for
+//         one Opus packet as the console sent it, and before the first of
+//         them 'H' with the format as text ("channels rate frame_size").
 // stderr  one JSON object a line: {"event":"connected"}, {"event":"quit",...},
 //         {"event":"stats",...}, {"event":"log",...}
 // stdin   one command a line:
@@ -135,6 +138,37 @@ static bool video_cb(uint8_t *buf, size_t size, int32_t lost, bool recovered, vo
 	return true;
 }
 
+static void record(char kind, uint8_t flags, const uint8_t *buf, size_t size)
+{
+	uint8_t head[14];
+	uint64_t t = now_us();
+	head[0] = (uint8_t)kind;
+	head[1] = flags;
+	head[2] = (uint8_t)(size >> 24); head[3] = (uint8_t)(size >> 16); head[4] = (uint8_t)(size >> 8); head[5] = (uint8_t)size;
+	for(int i = 0; i < 8; i++) head[6 + i] = (uint8_t)(t >> (56 - 8 * i));
+	LOCK(out_lock);
+	fwrite(head, 1, sizeof head, stdout);
+	fwrite(buf, 1, size, stdout);
+	fflush(stdout);
+	UNLOCK(out_lock);
+}
+
+static void audio_header_cb(ChiakiAudioHeader *header, void *user)
+{
+	(void)user;
+	char text[64];
+	int n = snprintf(text, sizeof text, "%u %u %u", (unsigned)header->channels, (unsigned)header->rate, (unsigned)header->frame_size);
+	record('H', 0, (const uint8_t *)text, (size_t)n);
+	event_line(NULL, NULL, "{\"event\":\"audio\",\"channels\":%u,\"rate\":%u,\"frame_size\":%u",
+		(unsigned)header->channels, (unsigned)header->rate, (unsigned)header->frame_size);
+}
+
+static void audio_frame_cb(uint8_t *buf, size_t size, void *user)
+{
+	(void)user;
+	record('A', 0, buf, size);
+}
+
 static void event_cb(ChiakiEvent *event, void *user)
 {
 	(void)user;
@@ -249,7 +283,7 @@ int main(int argc, char **argv)
 	const char *morning = getenv("P5RP_MORNING");
 	if(!host || !regist || !morning || strlen(morning) != 32)
 	{
-		fprintf(stderr, "usage: p5rp --host <ip> [--ps4] [--res 360|540|720|1080] [--fps 30|60] [--bitrate kbit] [--codec h264|h265]\n"
+		fprintf(stderr, "usage: p5rp --host <ip> [--ps4] [--res 360|540|720|1080] [--fps 30|60] [--bitrate kbit] [--codec h264|h265] [--audio]\n"
 			"with P5RP_REGIST_KEY and P5RP_MORNING (32 hex characters) in the environment\n");
 		return 2;
 	}
@@ -287,6 +321,14 @@ int main(int argc, char **argv)
 	chiaki_controller_state_set_idle(&controller);
 	chiaki_session_set_event_cb(&session, event_cb, NULL);
 	chiaki_session_set_video_sample_cb(&session, video_cb, NULL);
+	static ChiakiAudioSink audio_sink;
+	if(arg_flag(argc, argv, "--audio"))
+	{
+		audio_sink.user = NULL;
+		audio_sink.header_cb = audio_header_cb;
+		audio_sink.frame_cb = audio_frame_cb;
+		chiaki_session_set_audio_sink(&session, &audio_sink);
+	}
 	event_line(NULL, NULL, "{\"event\":\"starting\",\"width\":%u,\"height\":%u,\"fps\":%u,\"bitrate\":%u,\"codec\":\"%s\"",
 		info.video_profile.width, info.video_profile.height, info.video_profile.max_fps, info.video_profile.bitrate, codec_h265 ? "h265" : "h264");
 	chiaki_session_start(&session);
