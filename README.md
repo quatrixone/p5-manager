@@ -60,21 +60,37 @@ The app can update its own code when the release is compatible with the installe
 
 ## Development
 
-Run each service in a separate terminal:
+The app has three services: the Node API, the Vite frontend, and the Python Remote Play sidecar. The sidecar needs the `p5rp` helper; build it once from the repository root. On Debian or Ubuntu, install its build dependencies first:
 
 ```bash
-cd backend
-npm install
-npm run dev
+sudo apt-get update
+sudo apt-get install -y build-essential cmake ninja-build pkg-config \
+  libjson-c-dev libminiupnpc-dev libevent-dev libssl-dev \
+  python3-protobuf protobuf-compiler
+cmake -S rpnative -B build-rp -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build-rp --target p5rp
+python3 -m venv pyremoteplay/.venv
+pyremoteplay/.venv/bin/pip install -r pyremoteplay/requirements.txt
+```
+
+Start each service in its own terminal from the repository root:
+
+```bash
+cd backend && npm ci && npm run dev
 ```
 
 ```bash
-cd frontend
-npm install
-npm run dev
+cd frontend && npm ci && npm run dev
 ```
 
-Run tests with `npm test` in both `backend/` and `frontend/`. See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidance.
+```bash
+P5RP_BIN="$PWD/build-rp/p5rp" \
+PYREMOTEPLAY_SIDECAR_HOST=127.0.0.1 \
+PYREMOTEPLAY_SIDECAR_PORT=9555 \
+pyremoteplay/.venv/bin/python pyremoteplay/server.py
+```
+
+Open the frontend at `http://localhost:3000`. Vite forwards API requests to the backend on port `3001`; the sidecar listens on `127.0.0.1:9555`. The sidecar is needed for Remote Play; the API and frontend can be developed without it. Run tests with `npm test` in both `backend/` and `frontend/`. For Windows helper builds and contribution guidance, see [`rpnative/README.md`](rpnative/README.md) and [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Credits and licences
 
