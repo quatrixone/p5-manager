@@ -56,7 +56,7 @@ Download **P5Manager-windows-x64.zip** from the [latest release](https://github.
 2. Pair Remote Play once under **Console → PS Remote Play Settings**.
 3. Choose the console profile, then send a payload or browse files.
 
-The app can update its own code when the release is compatible with the installed image. If it asks for a newer Docker image, use the Docker update command above.
+The app can update its own code when the release is compatible with the installed image. If it asks for a newer Docker image, run `docker compose pull && docker compose up -d` from the project directory.
 
 ## Development
 
