@@ -2510,9 +2510,16 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
           <div className="flex items-center justify-between flex-wrap gap-sm">
             <div className="text-xs text-muted">
               <span style={{ display: 'inline-flex', flexDirection: 'column', lineHeight: 1.35 }}>
-                <span>Console account: {profileView?.console_user || (profileView?.psn_account_id ? 'Account' : <em>not detected</em>)}</span>
-                {profileView?.psn_account_id && <span style={{ fontSize: '0.9em', opacity: 0.8 }}>ID: {profileView.psn_account_id}</span>}
-                {profileView?.sony_account_id && <>
+                <span>{isPs4Profile ? 'Console account' : 'Sony account'}: {isPs4Profile
+                  ? profileView?.console_user || (profileView?.psn_account_id ? 'Account' : <em>not detected</em>)
+                  : profileView?.sony_online_id || profileView?.psn_online_id || (profileView?.sony_account_id || profileView?.psn_account_id ? 'Account' : <em>not detected</em>)}</span>
+                {(isPs4Profile ? profileView?.psn_account_id : profileView?.sony_account_id || profileView?.psn_account_id) &&
+                  <span style={{ fontSize: '0.9em', opacity: 0.8 }}>ID: {isPs4Profile ? profileView.psn_account_id : profileView.sony_account_id || profileView.psn_account_id}</span>}
+                {!isPs4Profile && profileView?.sony_account_id && profileView?.psn_account_id && !sameAccountId(profileView.sony_account_id, profileView.psn_account_id) && <>
+                  <span style={{ marginTop: 4 }}>Console account: {profileView?.psn_online_id || 'Account'}</span>
+                  <span style={{ fontSize: '0.9em', opacity: 0.8 }}>ID: {profileView.psn_account_id}</span>
+                </>}
+                {isPs4Profile && profileView?.sony_account_id && <>
                   <span style={{ marginTop: 4 }}>Sony account: {profileView.sony_online_id || 'Account'}</span>
                   <span style={{ fontSize: '0.9em', opacity: 0.8 }}>ID: {profileView.sony_account_id}</span>
                 </>}
