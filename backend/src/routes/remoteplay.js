@@ -9,6 +9,7 @@ import { payloadsDir } from '../lib/paths.js';
 import { getFtpPort } from '../lib/ftpPort.js';
 import { createViewer, answerViewer, closeViewer, closeViewersOf } from '../lib/webrtc.js';
 import { discoverConsole } from '../lib/consoleStatus.js';
+import { parsePsnAccountId } from '../lib/psnAccount.js';
 
 const router = express.Router();
 
@@ -1772,6 +1773,31 @@ router.post('/forget', (req, res) => {
 // rp_user_profile here - the pairing credential is independent and
 // users may want to re-link a different PSN account onto the same
 // pairing (e.g. to fix an account_id mismatch from upstream OAuth).
+// The account typed in by hand, for someone who knows the id and does not
+// want to go through Sony's sign-in: the decimal number or its base64 form.
+router.post('/set-account', (req, res) => {
+  try {
+    const { profile_id, account_id, online_id } = req.body || {};
+    if (!profile_id) return res.status(400).json({ success: false, error: 'profile_id required' });
+    const id = parsePsnAccountId(account_id);
+    if (!id) {
+      return res.status(400).json({
+        success: false,
+        error: 'That is not a PSN account ID. It is a number of up to 20 digits, or 12 characters ending in "=" (the base64 form).',
+      });
+    }
+    const name = String(online_id || '').trim().slice(0, 32) || null;
+    getRepo().runAndSave(
+      'UPDATE profiles SET psn_account_id = ?, psn_online_id = ? WHERE id = ?',
+      [id, name, parseInt(profile_id)],
+    );
+    log('info', `PSN account set by hand on profile ${profile_id}`);
+    res.json({ success: true, account_id: id, online_id: name });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 router.post('/forget-account', (req, res) => {
   try {
     const { profile_id } = req.body || {};
