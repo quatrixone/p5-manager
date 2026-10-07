@@ -57,7 +57,9 @@ Highlights:
   from **File Ops → Convert** and use it inside the app. Nothing is copied
   to the server.
 - **Convert on the server.** Pack a file or folder into `.ffpfsc` (via
-  `mkpfs`) or `.exfat`, and unpack them again.
+  `mkpfs`) or `.exfat`, and unpack them again - from the Convert tab or
+  straight from a file's menu. A pack is verified against its source and
+  the task says so while that runs.
 - **Works on a phone.** The layout adapts to small screens and can be
   installed as an app (PWA).
 
@@ -91,8 +93,8 @@ The screenshots use made-up demo data.
   the console. It is one of the built-in payloads, and the Library can
   start it for you.
 - For browsing the console's files: an FTP payload such as
-  [zftpd](https://github.com/seregonwar/zftpd). On a PS5, P5 Manager
-  starts it for you if it is in your payload library.
+  [zftpd](https://github.com/seregonwar/zftpd). On a PS5 it is one of the
+  built-in payloads, and P5 Manager starts it for you when it is needed.
 - One of:
   - **Docker** on Linux (recommended, all features), or
   - **Windows 10 / 11** for the portable version (no Docker needed).
@@ -169,9 +171,15 @@ a newer package (other bundled runtimes or libraries), the bar says so;
 download the new zip, extract it elsewhere and move your `data` folder
 into it.
 
-One thing works only in the Docker version: "remote source" SMB shares
-(on Windows, type the `\\server\share` path into the Local file browser
-instead).
+The package brings everything it uses - Node, Python, `mkpfs`, 7-Zip and
+the Remote Play helper - so nothing else has to be installed.
+
+A folder on another computer or a NAS is added in **Settings → Config →
+Network folder**: paste its address as Explorer shows it
+(`\\server\share\folder`), with a name and password only if the share asks
+for them. It then appears as a tab in **File Ops → Local**, next to your
+drives. (The Docker version uses "remote source" SMB shares for the same
+thing.)
 
 ---
 
@@ -190,7 +198,9 @@ instead).
    page offers to start it.
 5. **Console**: pair Remote Play once under **PS Remote Play Settings**,
    then press **Start session**. It wakes the console first if it is in
-   rest mode.
+   rest mode. Pairing needs the ID of the PSN account on the console: the
+   app reads it from the console, takes it from Sony's sign-in, or you
+   type it in.
 
 ---
 
@@ -265,7 +275,8 @@ On the console, P5 Manager connects to:
 
 - **Backend**: Node.js and Express, SQLite through `sql.js`, `basic-ftp`.
   It calls `mkpfs`, `mkfs.exfat`, `7z` and `smbclient` for conversions and
-  network shares.
+  network shares; on Windows it writes and reads exFAT images itself and
+  opens shares by their `\\server\share` path.
 - **Frontend**: React 18 and Vite, installable as a PWA.
 - **Remote Play service**: Python 3.11 and FastAPI, with `p5rp`
   ([`rpnative/`](rpnative/), AGPL-3.0) - a small helper on
@@ -274,7 +285,7 @@ On the console, P5 Manager connects to:
   encoded it (H.264 and Opus, sent by the backend through
   `node-datachannel`), or as MJPEG where WebRTC is not available.
 - **Windows build**: the same code with a private Node and Python runtime
-  and a small launcher, built and tested by
+  (`mkpfs` included) and a small launcher, built and tested by
   [GitHub Actions](.github/workflows/windows-portable.yml).
 
 Three small payloads live under [`p5managerclient/`](p5managerclient/)

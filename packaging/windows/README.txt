@@ -32,6 +32,7 @@ Options (environment variables, set before starting)
   P5M_DATA_DIR      another place for the data folder
   P5M_NO_BROWSER=1  do not open the browser (also: P5Manager.exe --no-browser)
 
-Not available on Windows
-  - SMB "remote sources". Type the network path (\\server\share\folder) in
-    the Local file browser instead.
+Network folders
+  A folder on another computer or a NAS: Settings -> Config -> Network
+  folder. Paste its address as Explorer shows it (\\server\share\folder);
+  it then shows up as a tab in File Ops -> Local.
