@@ -267,8 +267,12 @@ On the console, P5 Manager connects to:
   It calls `mkpfs`, `mkfs.exfat`, `7z` and `smbclient` for conversions and
   network shares.
 - **Frontend**: React 18 and Vite, installable as a PWA.
-- **Remote Play service**: Python 3.11, FastAPI and
-  [`pyremoteplay`](https://github.com/ktnrg45/pyremoteplay).
+- **Remote Play service**: Python 3.11 and FastAPI, with `p5rp`
+  ([`rpnative/`](rpnative/), AGPL-3.0) - a small helper on
+  [libchiaki](https://github.com/streetpea/chiaki-ng) that holds the
+  session. The picture goes to the browser over WebRTC as the console
+  encoded it (H.264 and Opus, sent by the backend through
+  `node-datachannel`), or as MJPEG where WebRTC is not available.
 - **Windows build**: the same code with a private Node and Python runtime
   and a small launcher, built and tested by
   [GitHub Actions](.github/workflows/windows-portable.yml).
@@ -291,6 +295,8 @@ for this project). See [LEGAL.md](LEGAL.md) for their licences.
 cd backend  && npm install && npm run dev   # API on :3001
 cd frontend && npm install && npm run dev   # UI on :3000
 cd pyremoteplay && pip install -r requirements.txt && python server.py
+# the service needs p5rp: build rpnative/ (see rpnative/README.md) and put
+# it on the PATH or point P5RP_BIN at it
 ```
 
 Tests: `npm test` in `backend/` and in `frontend/`. An end-to-end check
@@ -317,8 +323,11 @@ repos:
   (John Törnblom) — the code `offact.elf` is derived from
 - [idlesauce / ps5-remoteplay-get-pin](https://github.com/idlesauce/ps5-remoteplay-get-pin)
   — the code `rp-get-pin.elf` is a patched copy of
+- [streetpea / chiaki-ng](https://github.com/streetpea/chiaki-ng) —
+  libchiaki, the Remote Play protocol library `p5rp` is built on
 - [ktnrg45 / pyremoteplay](https://github.com/ktnrg45/pyremoteplay) —
-  Remote Play protocol library powering the sidecar
+  the Remote Play library the service was first built on; paired consoles
+  keep its profile layout
 - [gezine](https://github.com/gezine) — Luac0re, whose `setlogserver.lua`
   is the Lua log redirector behind the Logs tab
 - **flatz** + **CelesteBlue** — original public-domain `unpkg.py` and

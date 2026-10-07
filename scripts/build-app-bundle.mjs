@@ -56,7 +56,7 @@ for (const platform of ['docker', 'windows']) {
   const manifest = { version, platform, image_level: level, deps };
   let name = `p5-manager-app-${version}-${platform}-level${level}-deps${deps}`;
   if (platform === 'windows') {
-    for (const f of ['server.py', 'pyremoteplay_patches.py']) zip.addLocalFile(path.join(sidecar, f), 'pyremoteplay');
+    for (const f of ['server.py', 'chiaki_engine.py', 'ddp.py', 'psn_oauth.py']) zip.addLocalFile(path.join(sidecar, f), 'pyremoteplay');
     manifest.pydeps = pydeps;
     name += `-py${pydeps}`;
   }

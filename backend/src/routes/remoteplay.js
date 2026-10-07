@@ -142,7 +142,7 @@ async function sidecar(method, urlPath, body, { timeout = 30000 } = {}) {
   }
 }
 
-const PROFILE_COLS = 'id, ip_address, rp_user_profile, psn_account_id, psn_online_id';
+const PROFILE_COLS = 'id, ip_address, rp_user_profile, psn_account_id, psn_online_id, console_type';
 
 function loadProfileByIp(ip) {
   return getRepo().queryOne(`SELECT ${PROFILE_COLS} FROM profiles WHERE ip_address = ? LIMIT 1`, [ip]);
@@ -312,7 +312,7 @@ async function ensureSessionForIp(ip, opts = {}) {
   }
 }
 
-// Map ScriptRunner.jsx commands → sidecar (pyremoteplay) button names.
+// Map ScriptRunner.jsx commands → sidecar button names.
 const BUTTON_ALIASES = {
   cross: 'cross', x: 'cross',
   circle: 'circle', o: 'circle',
@@ -326,7 +326,7 @@ const BUTTON_ALIASES = {
 
 // ─── PS5 on-screen keyboard emulation ────────────────────────────────────────
 //
-// PS5 native software keyboard ("OSK") layout we emulate. pyremoteplay has no
+// PS5 native software keyboard ("OSK") layout we emulate. Remote Play has no
 // public API for the keyboard protocol so we type by walking the d-pad over
 // the visible keys. Layout matches the default QWERTY view; rows are anchored
 // to the same left column so deltas work cleanly.
@@ -523,7 +523,11 @@ router.post('/wake', async (req, res) => {
     if (!ip && profile) ip = profile.ip_address;
     if (!ip) return res.status(400).json({ success: false, error: 'ip or profile_id required' });
     if (!profile) profile = loadProfileByIp(ip);
-    if (!profile?.psn_account_id) return res.status(400).json({ success: false, error: 'PS5 must be PSN-linked first (Remote Play tab)' });
+    // The pairing holds what waking needs (the regist key, and the account
+    // id LAUNCH is made from), so a paired console wakes without more.
+    if (!profile?.psn_account_id && !profile?.rp_user_profile) {
+      return res.status(400).json({ success: false, error: 'The console must be paired first (Remote Play tab)' });
+    }
 
     let userProfile = null;
     if (profile.rp_user_profile) {
@@ -562,8 +566,7 @@ router.post('/standby', async (req, res) => {
     if (!ip && profile) ip = profile.ip_address;
     if (!ip) return res.status(400).json({ success: false, error: 'ip or profile_id required' });
     if (!profile) profile = loadProfileByIp(ip);
-    if (!profile?.psn_account_id) return res.status(400).json({ success: false, error: 'PS5 must be PSN-linked first' });
-    if (!profile?.rp_user_profile) return res.status(400).json({ success: false, error: 'PS5 must be paired (Remote Play tab) first' });
+    if (!profile?.rp_user_profile) return res.status(400).json({ success: false, error: 'The console must be paired first (Remote Play tab)' });
 
     let userProfile = null;
     try { userProfile = JSON.parse(profile.rp_user_profile); } catch (_) {}
@@ -573,6 +576,7 @@ router.post('/standby', async (req, res) => {
       account_id: profile.psn_account_id,
       online_id: profile.psn_online_id || null,
       user_profile: userProfile,
+      ...(profile.console_type === 'ps4' ? { host_type: 'PS4' } : profile.console_type === 'ps5' ? { host_type: 'PS5' } : {}),
     }, { timeout: 45000 });
     res.json({ success: true, ...data });
   } catch (err) {
@@ -590,7 +594,7 @@ router.post('/register', async (req, res) => {
     let acctId = account_id;
     let onlineId = online_id;
     let pidInt = profile_id ? parseInt(profile_id) : null;
-    // Look up console_type alongside account info so we can hand pyremoteplay
+    // Look up console_type alongside account info so we can hand the sidecar
     // an explicit host_type during pair. Falls back to auto-detect when null.
     let storedConsoleType = null;
     if (pidInt) {
@@ -1337,7 +1341,7 @@ router.post('/sessions/:sid/stop', async (req, res) => {
 
 // Open (or reuse) the cached Remote Play session for an IP. Returns the
 // session id and current cached state without requiring the caller to know
-// anything about pyremoteplay.
+// anything about the sidecar.
 // Pre-warm: open a full Remote Play session, then immediately park it in
 // the sidecar's warm cache. Used by the "Wake PS5" buttons everywhere - the
 // user gets a console that is genuinely ready (RP auth handshake done, slot

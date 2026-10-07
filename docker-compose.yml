@@ -3,10 +3,13 @@ services:
     build:
       context: ./pyremoteplay
       dockerfile: Dockerfile
+      # p5rp, the session helper the service runs, is built from here.
+      additional_contexts:
+        rpnative: ./rpnative
     image: ghcr.io/quatrixone/p5-manager-remoteplay:latest
     restart: unless-stopped
-    # host networking so pyremoteplay can do UDP discovery + Remote Play
-    # streaming with the PS5 directly on the LAN (no port forwarding pain).
+    # host networking so the service can find and wake the console over UDP
+    # and stream from it directly on the LAN (no port forwarding pain).
     network_mode: host
     environment:
       - PYREMOTEPLAY_SIDECAR_HOST=127.0.0.1

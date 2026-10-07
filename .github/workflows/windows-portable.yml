@@ -12,6 +12,7 @@ on:
       - 'backend/**'
       - 'frontend/**'
       - 'pyremoteplay/**'
+      - 'rpnative/**'
       - 'packaging/**'
       - 'scripts/smoke.mjs'
       - '.github/workflows/windows-portable.yml'
@@ -30,7 +31,12 @@ env:
   SEVENZIP_7ZR_SHA256: '27CBE3D5804AD09E90BBCAA916DA0D5C3B0BE9462D0E0FB6CB54BE5ED9030875'
 
 jobs:
+  # p5rp, the Remote Play session helper (rpnative/, built with MSYS2).
+  p5rp:
+    uses: ./.github/workflows/rp-native.yml
+
   build:
+    needs: p5rp
     runs-on: windows-latest
     timeout-minutes: 40
     steps:
@@ -43,6 +49,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: p5rp-windows-x64
+          path: p5rp-windows
 
       - name: Unit tests
         shell: pwsh
@@ -89,8 +100,7 @@ jobs:
           Invoke-WebRequest "https://nodejs.org/dist/v$env:NODE_VERSION/win-x64/node.exe" -OutFile "$out/runtime/node/node.exe"
 
           # Python: the embeddable distribution plus the Remote Play service's
-          # dependencies, installed by the matching full Python on the runner
-          # (netifaces has no Windows wheel and is compiled here).
+          # dependencies, installed by the matching full Python on the runner.
           Invoke-WebRequest "https://www.python.org/ftp/python/$env:PYTHON_VERSION/python-$env:PYTHON_VERSION-embed-amd64.zip" -OutFile python-embed.zip
           Expand-Archive python-embed.zip "$out/runtime/python"
           python -m pip install --upgrade pip
@@ -98,7 +108,13 @@ jobs:
           # The embeddable Python only looks where its ._pth file says.
           $pth = Get-ChildItem "$out/runtime/python" -Filter "python*._pth" | Select-Object -First 1
           Set-Content $pth.FullName -Encoding ascii -Value @("python311.zip", ".", "Lib\site-packages", "..\..\app\pyremoteplay", "import site")
-          Copy-Item pyremoteplay/server.py, pyremoteplay/pyremoteplay_patches.py "$out/app/pyremoteplay/"
+          Copy-Item pyremoteplay/server.py, pyremoteplay/chiaki_engine.py, pyremoteplay/ddp.py, pyremoteplay/psn_oauth.py "$out/app/pyremoteplay/"
+          # p5rp and the MSYS2 DLLs it needs, where chiaki_engine.find_helper()
+          # looks: <home>\runtime\p5rp. AGPL - its licence goes along.
+          New-Item -ItemType Directory -Force "$out/runtime/p5rp" | Out-Null
+          Copy-Item p5rp-windows/* "$out/runtime/p5rp/"
+          Copy-Item rpnative/LICENSE "$out/runtime/p5rp/LICENSE.txt"
+          if (-not (Test-Path "$out/runtime/p5rp/p5rp.exe")) { throw "p5rp.exe is missing" }
           # Which Python packages this service was built with: an in-app update
           # brings a newer service only when it was built against the same ones.
           node -e "import('./backend/deps-hash.mjs').then(m => process.stdout.write(m.fileHash('pyremoteplay/requirements.txt')))" | Set-Content "$out/app/pyremoteplay/pydeps"
@@ -137,7 +153,6 @@ jobs:
             Remove-Item -Force
           $sp = "$out/runtime/python/Lib/site-packages"
           Get-ChildItem $sp -Recurse -Directory -Filter __pycache__ | Remove-Item -Recurse -Force
-          Remove-Item "$sp/Cryptodome/SelfTest" -Recurse -Force -ErrorAction SilentlyContinue
           Get-ChildItem $sp -Recurse -File | Where-Object { $_.Extension -in '.pyi', '.pxd', '.pyx', '.h', '.c', '.cpp' } | Remove-Item -Force
           $after = (Get-ChildItem $out -Recurse -File -Force).Count
           "trimmed $before files to $after"
@@ -159,7 +174,7 @@ jobs:
           & "$app\P5Manager.exe" --prepare
           if ($LASTEXITCODE -ne 0) { throw "the launcher could not unpack P5Manager.pak" }
           if (Test-Path "$app\P5Manager.pak") { throw "P5Manager.pak is still there after unpacking" }
-          foreach ($f in "runtime\node\node.exe", "runtime\python\python.exe", "app\backend\src\index.js", "app\pyremoteplay\server.py") {
+          foreach ($f in "runtime\node\node.exe", "runtime\python\python.exe", "runtime\p5rp\p5rp.exe", "app\backend\src\index.js", "app\pyremoteplay\server.py") {
             if (-not (Test-Path "$app\$f")) { throw "$f is missing after unpacking" }
           }
 
@@ -167,8 +182,13 @@ jobs:
         shell: pwsh
         run: |
           $py = "dist-portable/P5Manager/runtime/python/python.exe"
-          & $py -c "import sys, av, PIL, fastapi, uvicorn, netifaces, pyremoteplay, pyremoteplay_patches; from importlib.metadata import version; print('python', sys.version.split()[0], 'av', av.__version__, 'pyremoteplay', version('pyremoteplay'))"
+          & $py -c "import sys, av, PIL, fastapi, uvicorn, aiohttp, chiaki_engine, ddp, psn_oauth; print('python', sys.version.split()[0], 'av', av.__version__, 'p5rp', chiaki_engine.find_helper())"
           if ($LASTEXITCODE -ne 0) { throw "bundled Python cannot import the Remote Play service's modules" }
+          & $py -c "import chiaki_engine, sys; sys.exit(0 if chiaki_engine.find_helper() else 1)"
+          if ($LASTEXITCODE -ne 0) { throw "the Remote Play service does not find p5rp.exe" }
+          # p5rp starts (its usage line, exit code 2) - all its DLLs are there.
+          & "dist-portable/P5Manager/runtime/p5rp/p5rp.exe" 2>&1 | Select-Object -First 1
+          if ($LASTEXITCODE -ne 2) { throw "p5rp.exe does not start (exit $LASTEXITCODE) - a DLL is missing?" }
 
       - name: Start the packaged app and run the smoke test
         shell: pwsh

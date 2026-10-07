@@ -1,16 +1,14 @@
-"""Remote Play sessions through p5rp, the helper built on libchiaki.
+"""Remote Play through p5rp, the helper built on libchiaki (see rpnative/).
 
-The sidecar's HTTP API was written around pyremoteplay's objects: a device
-with a `session` and a `controller`, and a receiver that hands out the latest
-picture as a JPEG. This module offers the same shapes on top of one `p5rp`
-process per session (see rpnative/), so the routes in server.py work with
-either engine and only the place that opens a connection has to choose.
-
-What the helper does natively - the Takion transport, encryption, error
-correction, congestion control - is what pyremoteplay did in Python. The
+One p5rp process holds one session: a ChiakiSession here, with a
+ChiakiController for the buttons and sticks and a ChiakiReceiver for the
+latest picture as a JPEG. The helper does the protocol work natively - the
+Takion transport, encryption, error correction, congestion control. The
 video comes out of it as the console encoded it; it is decoded here only
 while somebody asks for JPEGs, and handed on untouched to whoever wants the
-stream itself (see `subscribe`).
+stream itself (see `subscribe`) - the backend's WebRTC.
+
+`regist` pairs with a console through the same helper.
 """
 from __future__ import annotations
 
@@ -71,8 +69,10 @@ def find_helper() -> Optional[str]:
 def keys_from_profile(user_profile: Dict[str, Any], mac: Optional[str] = None) -> Tuple[str, str, bool]:
     """(regist key, morning as hex, is_ps4) out of the profile /register returned.
 
-    pyremoteplay keeps the regist key as the hex of its characters and the
-    morning as `RP-Key`; hosts are filed under their MAC address.
+    The profile keeps the regist key as the hex of its characters and the
+    morning as `RP-Key`; hosts are filed under their MAC address. (The
+    layout is pyremoteplay's, which paired consoles before this engine, so
+    profiles paired back then keep working.)
     """
     data = (user_profile or {}).get("data") or {}
     hosts = data.get("hosts") or {}
@@ -101,7 +101,7 @@ def keys_from_profile(user_profile: Dict[str, Any], mac: Optional[str] = None) -
 
 
 class ChiakiSession:
-    """One p5rp process. Quacks like pyremoteplay's Session where server.py looks."""
+    """One p5rp process, one session with a console."""
 
     def __init__(self, ip: str, regist: str, morning: str, *, ps4: bool, resolution: str,
                  fps: int = 30, audio: bool = False):
@@ -125,6 +125,7 @@ class ChiakiSession:
         self.on_video = None  # callable(flags, data), set by the receiver
         self.started_at = time.monotonic()
         self.first_frame_s: Optional[float] = None
+        self._last_idr = 0.0
 
     # ── what server.py reads ──────────────────────────────────────────
     @property
@@ -265,6 +266,12 @@ class ChiakiSession:
             q.waiting_for_key = True  # type: ignore[attr-defined]
 
     def request_key_frame(self) -> None:
+        # Readers ask on every record while they wait for a key frame; the
+        # console needs to hear it once, and gets a reminder per half second.
+        now = time.monotonic()
+        if now - self._last_idr < 0.5:
+            return
+        self._last_idr = now
         self.send("idr")
 
     # ── commands ──────────────────────────────────────────────────────
@@ -324,7 +331,7 @@ class ChiakiSession:
 
 
 class ChiakiController:
-    """pyremoteplay's Controller, as far as server.py uses it."""
+    """Buttons, sticks, touchpad and motion of a session's controller."""
 
     def __init__(self, session: ChiakiSession):
         self._s = session
@@ -355,6 +362,33 @@ class ChiakiController:
         x, y = (max(-1.0, min(1.0, v)) for v in state[side])
         self._s.send(f"stick {side} {int(x * 32767)} {int(y * 32767)}")
 
+    def motion(self, gyro: Tuple[float, float, float], accel: Tuple[float, float, float]) -> None:
+        """Gyro in rad/s, accelerometer in g (at rest: 0, 1, 0)."""
+        self._s.send("motion %.4f %.4f %.4f %.4f %.4f %.4f" % (*gyro, *accel))
+
+    def shake(self, duration_ms: int = 700, intensity: float = 0.85) -> None:
+        """Shake the controller side to side for a moment, as a hand would -
+        what "shake to ..." in a game listens for. Blocks for the duration."""
+        import math
+        dur = max(0.05, duration_ms / 1000.0)
+        amp = max(0.0, min(1.0, float(intensity)))
+        accel_amp, gyro_amp = 3.0 * amp, 6.0 * amp
+        t0 = time.monotonic()
+        try:
+            while True:
+                t = time.monotonic() - t0
+                if t >= dur:
+                    break
+                envelope = math.sin(math.pi * t / dur)
+                wave = math.sin(2.0 * math.pi * 5.5 * t)
+                self.motion(
+                    (gyro_amp * envelope * wave * 0.4, gyro_amp * envelope * (1.0 - wave) * 0.4, gyro_amp * envelope * wave * 0.6),
+                    (accel_amp * envelope * wave, 1.0, accel_amp * envelope * wave * 0.35),
+                )
+                time.sleep(0.02)
+        finally:
+            self.motion((0.0, 0.0, 0.0), (0.0, 1.0, 0.0))
+
     def touchpad_surface_tap(self, duration_ms: int = 200, x: int = 960, y: int = 471) -> None:
         self._s.send(f"touch down {int(x)} {int(y)}")
         time.sleep(max(0.04, duration_ms / 1000.0))
@@ -368,22 +402,8 @@ class ChiakiController:
         self._s.send("touch up")
 
 
-class ChiakiDevice:
-    """pyremoteplay's RPDevice, as far as server.py uses it once connected."""
-
-    engine = "chiaki"
-
-    def __init__(self, session: ChiakiSession):
-        self.session = session
-        self.controller = ChiakiController(session)
-        self.host = session.ip
-
-    async def disconnect(self) -> None:
-        await self.session.close()
-
-
 class ChiakiReceiver:
-    """The latest picture as a JPEG, like MjpegReceiver - decoded only on demand.
+    """The latest picture as a JPEG, for the MJPEG stream - decoded only on demand.
 
     Nothing is decoded until a JPEG is asked for: with a WebRTC viewer the
     browser does the decoding and this stays idle. The first request starts
@@ -483,3 +503,67 @@ class ChiakiReceiver:
             self._latest_jpeg = None
         if self._session.on_video == self._on_video:
             self._session.on_video = None
+
+
+# ── pairing ──────────────────────────────────────────────────────────────
+
+def regist_target(status: Dict[str, Any]) -> Optional[int]:
+    """libchiaki's target for a console, from its DDP answer's system-version
+    (as chiaki_discovery_host_system_version_target has it)."""
+    try:
+        version = int(str(status.get("system-version") or "0"))
+    except ValueError:
+        version = 0
+    ps5 = str(status.get("host-type") or "").upper() == "PS5"
+    if ps5:
+        return 1000100 if version >= 8050001 or version == 0 else 1000000
+    if version >= 8000000:
+        return 1000
+    if version >= 7000000:
+        return 900
+    if version > 0:
+        return 800
+    return None
+
+
+async def regist(ip: str, account_id: str, pin: str, *, ps4: bool, target: Optional[int] = None,
+                 timeout: float = 40.0) -> Dict[str, Any]:
+    """Pair with a console showing its PIN. Returns what p5rp found out:
+    regist_key (hex of its characters), rp_key, rp_key_type, mac, nickname."""
+    helper = find_helper()
+    if not helper:
+        raise ChiakiError("p5rp is not installed next to the Remote Play service")
+    args = [helper, "regist", "--host", ip]
+    if ps4:
+        args.append("--ps4")
+    if target is not None:
+        args += ["--target", str(int(target))]
+    env = dict(os.environ, P5RP_ACCOUNT_ID=account_id, P5RP_PIN=pin)
+    proc = await asyncio.create_subprocess_exec(
+        *args, env=env, stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        out, err = await asyncio.wait_for(proc.communicate(), timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        raise ChiakiError("the console did not answer the pairing in time")
+    result: Dict[str, Any] = {}
+    for line in out.decode(errors="replace").splitlines():
+        try:
+            result = json.loads(line)
+        except Exception:  # noqa: BLE001
+            continue
+    if result.get("ok"):
+        return result
+    # Why: the last error p5rp logged says more than "failed".
+    why = ""
+    for line in err.decode(errors="replace").splitlines():
+        try:
+            e = json.loads(line)
+        except Exception:  # noqa: BLE001
+            continue
+        if e.get("level") == "error" and e.get("msg"):
+            why = str(e["msg"])
+    raise ChiakiError(why or str(result.get("error") or "pairing failed"))

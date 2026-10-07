@@ -36,7 +36,7 @@ router.get('/default', (req, res) => {
 });
 
 // Accepted values for the platform tag stored on each profile. NULL is also
-// legal and means "auto-detect via pyremoteplay /discover on next status
+// legal and means "auto-detect via the Remote Play service's /discover on next status
 // poll".
 const CONSOLE_TYPES = new Set(['ps4', 'ps5']);
 function normalizeConsoleType(v) {

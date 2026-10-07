@@ -1776,10 +1776,9 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
             games ignore the Options button *and* the touchpad click
             — they look for a finger landing on the LEFT or RIGHT
             half of the touchpad SURFACE (X≈400 = Select; X≈1500 =
-            Start, per Brook UFB documentation). The patched
-            touchpad_click in pyremoteplay_patches.py emits the
-            correct chiaki surface-down → click → surface-up
-            sequence at the requested pixel; the standard "Tch"
+            Start, per Brook UFB documentation). With touch_x/touch_y
+            the Remote Play service puts a finger on the surface at
+            that pixel, without the click; the standard "Tch"
             button above stays at centre (960×471) so existing
             touchpad-menu games are unaffected. */}
         <div
@@ -2411,7 +2410,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
             <span style={{ color: health?.ok ? 'var(--green)' : 'var(--red)' }}>
               ● sidecar {health?.ok ? 'OK' : 'offline'}
             </span>
-            {health?.pyremoteplay === false && <span style={{ color: 'var(--red)' }}>(pyremoteplay missing!)</span>}
+            {health?.ok && health?.helper === false && <span style={{ color: 'var(--red)' }}>(p5rp missing!)</span>}
           </span>
         }
       >
@@ -3600,7 +3599,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
 
       {health?.success === false && (
         <div className="text-xs text-muted">
-          Sidecar error: {health.error}. Check the <code>pyremoteplay</code> container logs.
+          Sidecar error: {health.error}. Check the logs of the <code>pyremoteplay</code> container (the Remote Play service).
         </div>
       )}
 
