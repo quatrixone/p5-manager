@@ -187,8 +187,11 @@ jobs:
           & $py -c "import chiaki_engine, sys; sys.exit(0 if chiaki_engine.find_helper() else 1)"
           if ($LASTEXITCODE -ne 0) { throw "the Remote Play service does not find p5rp.exe" }
           # p5rp starts (its usage line, exit code 2) - all its DLLs are there.
-          & "dist-portable/P5Manager/runtime/p5rp/p5rp.exe" 2>&1 | Select-Object -First 1
-          if ($LASTEXITCODE -ne 2) { throw "p5rp.exe does not start (exit $LASTEXITCODE) - a DLL is missing?" }
+          # Not through a pipeline: cut short by Select-Object, PowerShell
+          # reports exit code 0 whatever the program returned.
+          $p = Start-Process "dist-portable/P5Manager/runtime/p5rp/p5rp.exe" -NoNewWindow -Wait -PassThru -RedirectStandardError "$env:RUNNER_TEMP\p5rp.err" -RedirectStandardOutput "$env:RUNNER_TEMP\p5rp.out"
+          Get-Content "$env:RUNNER_TEMP\p5rp.err" | Select-Object -First 1
+          if ($p.ExitCode -ne 2) { throw "p5rp.exe does not start (exit $($p.ExitCode)) - a DLL is missing?" }
 
       - name: Start the packaged app and run the smoke test
         shell: pwsh
