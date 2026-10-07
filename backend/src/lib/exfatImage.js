@@ -18,6 +18,7 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import { spawnSync } from 'child_process';
 import { UPCASE_TABLE, UPCASE_TABLE_CHECKSUM } from './exfatUpcase.js';
 
 const SECTOR = 512;
@@ -323,7 +324,14 @@ export async function buildExfatImage({ src, out, label = 'PS5DATA', sizeBytes =
   fs.rmSync(out, { force: true });
   const fd = await fs.promises.open(out, 'w+');
   try {
-    // The size first: the file is sparse, only what is written below takes space.
+    // The size first: the file is sparse, only what is written below takes
+    // space. NTFS has to be told so - without the flag the first write far
+    // into the file (a folder's entries can sit behind all the data) makes
+    // Windows fill everything before it with zeros, gigabytes written twice
+    // while the task shows no progress.
+    if (process.platform === 'win32') {
+      try { spawnSync('fsutil', ['sparse', 'setflag', out], { windowsHide: true, timeout: 15_000 }); } catch (_) {}
+    }
     await fd.truncate(volumeBytes);
 
     const boot = bootRegion({
