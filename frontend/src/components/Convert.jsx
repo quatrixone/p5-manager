@@ -10,9 +10,6 @@ const C = {
   panel: 'var(--bg-elev)',
   panel2: 'var(--bg-elev-2)',
   accent: 'var(--accent)',
-  blue: 'var(--blue)',
-  green: 'var(--accent)',
-  red: 'var(--red)',
   text: '#fff',
   muted: '#aaa',
   border: 'var(--bg-elev-2)',
@@ -30,12 +27,6 @@ const styles = {
   row: { display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' },
   col: { display: 'flex', flexDirection: 'column', gap: '0.5rem' },
   grid2: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '0.5rem' },
-  btn: (color, disabled) => ({
-    padding: '0.4rem 0.75rem', background: disabled ? '#555' : color, color: C.text,
-    border: 'none', borderRadius: 6, cursor: disabled ? 'not-allowed' : 'pointer',
-    fontSize: '0.8rem', fontWeight: 500, minHeight: 'auto',
-    whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '100%',
-  }),
   pill: (color) => {
     // Map the raw color to a soft, readable tinted-badge palette so light
     // accents (mint, blue, magenta) don't print as light-on-light text.
@@ -558,12 +549,7 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
                         type="button"
                         disabled={mkpfsUpgrading}
                         onClick={doMkpfsUpgrade}
-                        style={{
-                          ...styles.btn(C.blue, mkpfsUpgrading),
-                          padding: '0.25rem 0.6rem',
-                          fontSize: '0.72rem',
-                          fontWeight: 600,
-                        }}
+                        className="btn btn-info btn-sm"
                       >
                         {mkpfsUpgrading
                           ? 'Updating…'
@@ -665,7 +651,8 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
             {sourceFtp && (
               <button
                 type="button"
-                style={{ ...styles.btn('var(--bg-elev-2)', false), marginTop: 6 }}
+                className="btn btn-secondary btn-sm"
+                style={{ marginTop: 6 }}
                 onClick={() => { setSourceFtp(null); setSelected(''); }}
               >
                 ↺ Clear FTP source (pick local instead)
@@ -780,15 +767,9 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
           <div style={{ ...styles.row, gap: '0.5rem' }}>
             <button
               type="button"
+              className="btn btn-primary"
               disabled={blocked}
               onClick={() => submitConvert(true)}
-              style={{
-                ...styles.btn(C.green, blocked),
-                fontWeight: 600,
-                boxShadow: pendingIntent === 'now' ? '0 0 0 2px var(--accent)' : 'none',
-                outline: pendingIntent === 'now' ? '2px solid var(--accent-dim)' : 'none',
-                outlineOffset: 2,
-              }}
               title={isExfat
                 ? 'Build this exFAT image now and resume the convert queue'
                 : 'Enqueue this conversion and resume the convert queue so it starts immediately'}
@@ -797,17 +778,9 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
             </button>
             <button
               type="button"
+              className="btn btn-secondary"
               disabled={blocked}
               onClick={() => submitConvert(false)}
-              style={{
-                ...styles.btn(C.panel2, blocked),
-                border: `1px solid ${pendingIntent === 'queue' ? 'var(--blue)' : C.border}`,
-                color: '#fff',
-                fontWeight: 500,
-                boxShadow: pendingIntent === 'queue' ? '0 0 0 2px var(--blue)' : 'none',
-                outline: pendingIntent === 'queue' ? '2px solid var(--blue-dim, rgba(125,223,245,0.3))' : 'none',
-                outlineOffset: 2,
-              }}
               title="Enqueue this conversion and pause the convert queue — start it later from the Tasks tab"
             >
               🕒 Add to queue
@@ -826,7 +799,7 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
               </span>
             )}
             {job && (job.status === 'running' || job.status === 'pushing') && (
-              <button type="button" style={styles.btn(C.red)} onClick={cancelJob}>Cancel</button>
+              <button type="button" className="btn btn-danger" onClick={cancelJob}>Cancel</button>
             )}
           </div>
             );
@@ -922,7 +895,7 @@ function PkgSection({ profiles, onNotification, onOpenQueue }) {
                     type="button"
                     disabled={pkgUpgrading}
                     onClick={doPkgUpgrade}
-                    style={{ ...styles.btn(C.blue, pkgUpgrading), padding: '0.25rem 0.6rem', fontSize: '0.72rem', fontWeight: 600 }}
+                    className="btn btn-info btn-sm"
                   >
                     {pkgUpgrading ? 'Refreshing…' : '⤴ Refresh tool'}
                   </button>
@@ -935,7 +908,7 @@ function PkgSection({ profiles, onNotification, onOpenQueue }) {
                     type="button"
                     disabled={pkgUpgrading}
                     onClick={doPkgUpgrade}
-                    style={{ ...styles.btn(C.blue, pkgUpgrading), padding: '0.25rem 0.6rem', fontSize: '0.72rem', fontWeight: 600 }}
+                    className="btn btn-info btn-sm"
                   >
                     {pkgUpgrading ? 'Installing…' : '⤴ Install'}
                   </button>
@@ -974,7 +947,7 @@ function PkgSection({ profiles, onNotification, onOpenQueue }) {
               type="button"
               onClick={enqueueUnpack}
               disabled={!unpackSrc.trim() || submitting || !pkgStatus?.installed}
-              style={styles.btn(C.green, !unpackSrc.trim() || submitting || !pkgStatus?.installed)}
+              className="btn btn-primary"
             >
               {submitting ? 'Queuing…' : '📦 Unpack PKG'}
             </button>
