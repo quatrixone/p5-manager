@@ -18,6 +18,11 @@ Your data
   database, payloads, downloads and conversion work files. To update, extract
   the new version somewhere else and move your "data" folder into it.
 
+When something does not work
+  Open Logs in the app and press "Log file": it saves the app's log, with
+  what this window showed, as one text file you can send along. The files
+  themselves are in data\app\logs.
+
 Other devices
   Phones and other PCs on your network can open http://<this-pc-ip>:3001/.
 

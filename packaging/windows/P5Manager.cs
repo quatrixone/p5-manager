@@ -27,6 +27,7 @@ using System.IO;
 using System.IO.Compression;
 using System.Net;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 
@@ -92,13 +93,63 @@ static class P5Manager
         finally { Marshal.FreeHGlobal(mem); }
     }
 
+    // Everything the children print is shown in this window and kept in
+    // <data>\app\logs\console.log, which the app offers as part of its log
+    // download: what a user sends along when something does not work.
+    static StreamWriter consoleLog = null;
+    static readonly object consoleLock = new object();
+
+    static void OpenConsoleLog(string appData)
+    {
+        try
+        {
+            string dir = Path.Combine(appData, "logs");
+            Directory.CreateDirectory(dir);
+            string file = Path.Combine(dir, "console.log");
+            // A new file once the old one has grown: the last run stays readable.
+            if (File.Exists(file) && new FileInfo(file).Length > 4 * 1024 * 1024)
+            {
+                string old = Path.Combine(dir, "console.1.log");
+                File.Delete(old);
+                File.Move(file, old);
+            }
+            consoleLog = new StreamWriter(new FileStream(file, FileMode.Append, FileAccess.Write, FileShare.ReadWrite), new UTF8Encoding(false));
+            consoleLog.WriteLine("---- " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + " P5 Manager started");
+            consoleLog.Flush();
+        }
+        catch { consoleLog = null; }
+    }
+
+    static void Emit(string line)
+    {
+        if (line == null) return;
+        lock (consoleLock)
+        {
+            Console.WriteLine(line);
+            if (consoleLog != null)
+            {
+                try { consoleLog.WriteLine(line); consoleLog.Flush(); } catch { }
+            }
+        }
+    }
+
     static Process Start(string exe, string args, string workDir, string[][] env)
     {
         ProcessStartInfo psi = new ProcessStartInfo(exe, args);
-        psi.UseShellExecute = false;   // share this console: the children's logs show up here
+        psi.UseShellExecute = false;
         psi.WorkingDirectory = workDir;
+        psi.RedirectStandardOutput = true;
+        psi.RedirectStandardError = true;
+        psi.StandardOutputEncoding = Encoding.UTF8;
+        psi.StandardErrorEncoding = Encoding.UTF8;
         foreach (string[] kv in env) psi.EnvironmentVariables[kv[0]] = kv[1];
-        Process p = Process.Start(psi);
+        Process p = new Process();
+        p.StartInfo = psi;
+        p.OutputDataReceived += delegate(object s, DataReceivedEventArgs e) { Emit(e.Data); };
+        p.ErrorDataReceived += delegate(object s, DataReceivedEventArgs e) { Emit(e.Data); };
+        p.Start();
+        p.BeginOutputReadLine();
+        p.BeginErrorReadLine();
         if (job != IntPtr.Zero) AssignProcessToJobObject(job, p.Handle);
         return p;
     }
@@ -150,7 +201,7 @@ static class P5Manager
         string args = dir == packaged
             ? "server.py"
             : "-c \"import os, runpy, sys; sys.path.insert(0, sys.argv[1]); runpy.run_path(os.path.join(sys.argv[1], 'server.py'), run_name='__main__')\" \"" + dir + "\"";
-        Console.WriteLine("[launcher] starting Remote Play service on 127.0.0.1:" + sidecarPort
+        Emit("[launcher] starting Remote Play service on 127.0.0.1:" + sidecarPort
             + (dir == packaged ? "" : " (updated copy)"));
         return Start(python, args, dir, new string[][] {
             new string[] { "PYREMOTEPLAY_SIDECAR_HOST", "127.0.0.1" },
@@ -168,7 +219,7 @@ static class P5Manager
     {
         string pak = Path.Combine(home, "P5Manager.pak");
         if (!File.Exists(pak)) return true;
-        Console.WriteLine("[launcher] first start: unpacking the app files, this takes a moment...");
+        Emit("[launcher] first start: unpacking the app files, this takes a moment...");
         Stopwatch watch = Stopwatch.StartNew();
         try
         {
@@ -199,7 +250,7 @@ static class P5Manager
                     if (percent >= shown + 20)
                     {
                         shown = percent - percent % 20;
-                        Console.WriteLine("[launcher]   " + shown + " %");
+                        Emit("[launcher]   " + shown + " %");
                     }
                 }
             }
@@ -214,8 +265,8 @@ static class P5Manager
             return false;
         }
         try { File.Delete(pak); }
-        catch (Exception e) { Console.WriteLine("[launcher] could not remove P5Manager.pak (" + e.Message + ") - it will be unpacked again next time"); }
-        Console.WriteLine("[launcher] unpacked in " + (watch.ElapsedMilliseconds / 1000) + " s");
+        catch (Exception e) { Emit("[launcher] could not remove P5Manager.pak (" + e.Message + ") - it will be unpacked again next time"); }
+        Emit("[launcher] unpacked in " + (watch.ElapsedMilliseconds / 1000) + " s");
         return true;
     }
 
@@ -268,6 +319,8 @@ static class P5Manager
             Directory.CreateDirectory(Path.Combine(data, d));
 
         CreateKillOnCloseJob();
+        try { Console.OutputEncoding = Encoding.UTF8; } catch { }
+        OpenConsoleLog(appData);
 
         bool hasSidecar = File.Exists(python) && File.Exists(Path.Combine(sidecarDir, "server.py"));
         Process sidecar = null;
@@ -277,10 +330,10 @@ static class P5Manager
         }
         else
         {
-            Console.WriteLine("[launcher] Remote Play service is not part of this package");
+            Emit("[launcher] Remote Play service is not part of this package");
         }
 
-        Console.WriteLine("[launcher] starting P5 Manager on port " + port + ", data in " + data);
+        Emit("[launcher] starting P5 Manager on port " + port + ", data in " + data);
         string[][] serverEnv = new string[][] {
             new string[] { "NODE_ENV", "production" },
             new string[] { "PORT", port },
@@ -315,7 +368,7 @@ static class P5Manager
             if (seconds >= told + 5)
             {
                 told = seconds - seconds % 5;
-                Console.WriteLine("[launcher] still starting... (" + told + " s)");
+                Emit("[launcher] still starting... (" + told + " s)");
             }
         }
         if (up)
@@ -330,12 +383,12 @@ static class P5Manager
             if (openBrowser)
             {
                 try { Process.Start(url); }
-                catch (Exception e) { Console.WriteLine("[launcher] open " + url + " in your browser (" + e.Message + ")"); }
+                catch (Exception e) { Emit("[launcher] open " + url + " in your browser (" + e.Message + ")"); }
             }
         }
         else if (!server.HasExited)
         {
-            Console.WriteLine("[launcher] the server did not answer on " + url + " yet - see the log above");
+            Emit("[launcher] the server did not answer on " + url + " yet - see the log above");
         }
 
         server.WaitForExit();
@@ -351,7 +404,7 @@ static class P5Manager
         {
             if (code == 75) { updated = true; retries = 0; }
             else retries++;
-            Console.WriteLine("[launcher] restarting P5 Manager after an update");
+            Emit("[launcher] restarting P5 Manager after an update");
             if (sidecar != null)
             {
                 try { if (!sidecar.HasExited) { sidecar.Kill(); sidecar.WaitForExit(5000); } } catch { }

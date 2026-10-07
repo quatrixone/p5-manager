@@ -2,6 +2,7 @@ import initSqlJs from 'sql.js';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
+import { fileLog } from '../lib/fileLog.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -393,6 +394,7 @@ export function getRepo() {
 
 export function log(level, message) {
   console.log(`[${level.toUpperCase()}] ${message}`);
+  fileLog(level, message);
   if (!db) return;
   db.run('INSERT INTO logs (level, message) VALUES (?, ?)', [level, message]);
   // log() is the single highest-frequency write path (every route

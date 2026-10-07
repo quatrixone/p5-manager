@@ -25,6 +25,13 @@ import gameCompressorRouter from './routes/gamecompressor.js';
 import { ensureDefaultPayloads } from './lib/defaultPayloads.js';
 import { migratePaths } from './lib/migrate-paths.js';
 import { platformInfo } from './lib/platform.js';
+import { fileLog, appVersion } from './lib/fileLog.js';
+
+// A crash leaves its stack in the log file; the process ends as it would have.
+process.on('uncaughtExceptionMonitor', (err, origin) => {
+  fileLog('fatal', `${origin}: ${err?.stack || err}`);
+});
+fileLog('info', `---- P5 Manager ${appVersion} starting: ${process.env.P5M_PLATFORM || 'unknown'} on ${process.platform}, Node ${process.version}`);
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -116,6 +123,20 @@ const ACCESS_LOG_SILENCE = [
 app.use((req, res, next) => {
   const silent = ACCESS_LOG_SILENCE.some(rx => rx.test(req.path));
   if (!silent) console.log(`${new Date().toISOString()} ${req.method} ${req.path}`);
+  // A request that ends in an error goes to the log file with what it
+  // answered, so a problem report shows which call failed and why.
+  if (req.path.startsWith('/api/')) {
+    const route = req.path; // as asked for: routers shorten req.path on the way down
+    const json = res.json.bind(res);
+    res.json = (body) => {
+      if (body && typeof body === 'object' && typeof body.error === 'string') res.locals.errorText = body.error;
+      return json(body);
+    };
+    res.on('finish', () => {
+      if (res.statusCode < 400) return;
+      fileLog(res.statusCode >= 500 ? 'error' : 'warn', `${req.method} ${route} -> ${res.statusCode}${res.locals.errorText ? `: ${res.locals.errorText}` : ''}`);
+    });
+  }
   next();
 });
 

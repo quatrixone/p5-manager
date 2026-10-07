@@ -217,6 +217,10 @@ export class JobQueue {
           next.finished_at = new Date().toISOString();
         })
         .finally(() => {
+          // In the log, so a problem report says which task failed and why.
+          if (/fail/.test(String(next.status))) {
+            this.log('error', `${this.name} task ${next.id} ${next.status}: ${next.error || 'no reason given'}`);
+          }
           this._endTick(this.pickIntervalMs);
         });
     } finally {

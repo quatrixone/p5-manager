@@ -178,6 +178,14 @@ function LogViewer({ logs: systemLogs, onRefresh, profiles }) {
             ))}
           </div>
           <button className="btn btn-sm btn-secondary" onClick={onRefresh}>🔄 Refresh</button>
+          <a
+            className="btn btn-sm btn-secondary"
+            href="/api/logs/file"
+            download
+            title="Save the app's log as a file, to send along when something does not work"
+          >
+            ⬇ Log file
+          </a>
         </div>
       </div>
 
