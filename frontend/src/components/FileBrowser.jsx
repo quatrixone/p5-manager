@@ -80,6 +80,7 @@ export default function FileBrowser({
 }) {
   const [smbSources, setSmbSources] = useState([]);
   const [localRoots, setLocalRoots] = useState([]);
+  const [rootLabels, setRootLabels] = useState({});
   const [browserPrefs, setBrowserPrefs] = useState({ local: '', smb: {} });
 
   const [kind, setKind] = useState(initialLocation?.kind || defaultKind);
@@ -253,7 +254,7 @@ export default function FileBrowser({
     apiSafe.get('/convert/sources').then(rows => {
       setSmbSources((rows || []).filter(s => s.type === 'smb' || s.type === 'ftp'));
     });
-    apiSafe.get('/convert/local/roots').then(d => { if (d) setLocalRoots(d.roots || []); });
+    apiSafe.get('/convert/local/roots').then(d => { if (d) { setLocalRoots(d.roots || []); setRootLabels(d.labels || {}); } });
     apiSafe.get('/convert/browser-prefs').then(d => {
       if (d) setBrowserPrefs({ local: d.local || '', smb: d.smb || {} });
     });
@@ -1441,13 +1442,20 @@ export default function FileBrowser({
           // actually browses to (top-level mounts + payloads). Hide
           // mkpfs / downloads / tmp / media — they're still reachable
           // via the FolderPickerModal where they make more sense.
+          // Windows has none of those: there the drives and the user's
+          // network folders (Settings → Sources) are the entry points.
           const allowed = ['/mnt', '/home', '/data', '/data/payloads'];
-          const shown = allowed.filter(p => localRoots.includes(p));
+          const shown = [
+            ...allowed.filter(p => localRoots.includes(p)),
+            ...localRoots.filter(p => /^[A-Za-z]:/.test(p) || p.startsWith('//')),
+          ];
           if (shown.length === 0) return null;
           return (
             <div className="flex gap-xs flex-wrap fb-wide">
               {shown.map(r => (
-                <button key={r} className="btn btn-ghost btn-sm" onClick={() => browse(r)}>{r}</button>
+                <button key={r} className="btn btn-ghost btn-sm" title={r} onClick={() => browse(r)}>
+                  {rootLabels[r] ? `🌐 ${rootLabels[r]}` : r}
+                </button>
               ))}
             </div>
           );
@@ -1516,8 +1524,8 @@ export default function FileBrowser({
               ))}
               <div className="file-menu-title">Go to</div>
               <button className="file-menu-item" onClick={() => setEditingPath(true)}>✎ Type a path…</button>
-              {kind === 'local' && ['/mnt', '/home', '/data', '/data/payloads'].filter(r => localRoots.includes(r)).map(r => (
-                <button key={r} className="file-menu-item" onClick={() => browse(r)}>📁 {r}</button>
+              {kind === 'local' && localRoots.filter(r => ['/mnt', '/home', '/data', '/data/payloads'].includes(r) || /^[A-Za-z]:/.test(r) || r.startsWith('//')).map(r => (
+                <button key={r} className="file-menu-item" onClick={() => browse(r)}>{rootLabels[r] ? `🌐 ${rootLabels[r]}` : `📁 ${r}`}</button>
               ))}
               {enableSaveDefault && kind !== 'ftp' && (
                 <button className="file-menu-item" onClick={saveDefault}>★ Save this folder as default</button>

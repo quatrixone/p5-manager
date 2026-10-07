@@ -27,6 +27,7 @@ import { createExfatImage, unpackExfatImage } from '../lib/exfat.js';
 // identical hand-rolled queue scaffolds further down in this file.
 import { JobQueue, mountQueueRoutes } from '../lib/JobQueue.js';
 import { cleanDir, joinPath, isSameOrInside, destDirFor } from '../lib/transferPaths.js';
+import { parseNetworkPath, toUncPath } from '../lib/networkPath.js';
 import { isWindows, toClientPath, mapPosixDefault, isFsRoot, listLocalRoots, isLocalPathAllowed } from '../lib/platform.js';
 
 const router = express.Router();
@@ -1974,6 +1975,94 @@ router.put('/browser-prefs', (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── Network folders (Windows) ─────────────────────────────────────────────
+// Windows opens a share by its \\server\share path like any folder, so there
+// a network folder is simply one more place in the Local browser: the user
+// gives the address as Explorer shows it, Windows keeps the sign-in (net
+// use), and everything that works on a local folder works on it. Only the
+// address and its label are stored here, never the password.
+const NETWORK_FOLDERS_KEY = 'network_folders';
+
+function loadNetworkFolders() {
+  const raw = getRepo().queryScalar('SELECT value FROM settings WHERE key = ?', [NETWORK_FOLDERS_KEY]);
+  try { const list = JSON.parse(raw || '[]'); return Array.isArray(list) ? list : []; } catch (_) { return []; }
+}
+
+function netUse(args) {
+  return new Promise((resolve) => {
+    let out = '';
+    let proc;
+    try { proc = spawn('net', ['use', ...args], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true }); }
+    catch (e) { return resolve({ code: -1, out: e.message }); }
+    const timer = setTimeout(() => { try { proc.kill(); } catch (_) {} }, 30_000);
+    proc.stdout.on('data', d => { out += d.toString(); });
+    proc.stderr.on('data', d => { out += d.toString(); });
+    proc.on('error', e => { clearTimeout(timer); resolve({ code: -1, out: e.message }); });
+    proc.on('close', code => { clearTimeout(timer); resolve({ code, out }); });
+  });
+}
+
+router.get('/network-folders', (req, res) => {
+  res.json({ supported: isWindows, folders: isWindows ? loadNetworkFolders() : [] });
+});
+
+router.post('/network-folders', async (req, res) => {
+  try {
+    if (!isWindows) return res.status(400).json({ error: 'Network folders are for Windows; here add the share under Remote sources' });
+    const { address, name, username, password } = req.body || {};
+    const parsed = parseNetworkPath(address);
+    if (!parsed) return res.status(400).json({ error: 'That is not a network address. It looks like \\\\server\\share or \\\\server\\share\\folder - copy it from the address bar of Explorer.' });
+    const shareUnc = toUncPath({ host: parsed.host, share: parsed.share });
+    const unc = toUncPath(parsed);
+
+    if (username) {
+      const args = [shareUnc, String(password || ''), `/user:${username}`, '/persistent:yes'];
+      let r = await netUse(args);
+      // 1219: Windows already holds a connection to that server under another
+      // name. Drop the one to this share and sign in again.
+      if (r.code !== 0 && /1219/.test(r.out)) {
+        await netUse([shareUnc, '/delete', '/y']);
+        r = await netUse(args);
+      }
+      if (r.code !== 0) {
+        const why = /1326|86\b/.test(r.out) ? 'the name or password is not right'
+          : /53\b|67\b/.test(r.out) ? 'the server or the share was not found'
+          : /1219/.test(r.out) ? 'Windows is already signed in to that server under another name; disconnect it in Explorer first'
+          : (r.out.trim().split(/\r?\n/).filter(Boolean)[0] || `net use exit ${r.code}`);
+        return res.status(400).json({ error: `Windows could not sign in to ${shareUnc}: ${why}` });
+      }
+    }
+    try { await fs.promises.readdir(unc); }
+    catch (e) {
+      const hint = username ? '' : ' If the share asks for a sign-in, fill in the name and password.';
+      return res.status(400).json({ error: `Windows cannot open ${unc} (${e.code || e.message}).${hint}` });
+    }
+
+    const clientPath = toClientPath(unc);
+    const list = loadNetworkFolders().filter(f => f.path.toLowerCase() !== clientPath.toLowerCase());
+    const folder = {
+      id: newJobId(),
+      name: String(name || '').trim() || `${parsed.subPath ? parsed.subPath.split('/').pop() : parsed.share} (${parsed.host})`,
+      path: clientPath,
+    };
+    list.push(folder);
+    saveJsonSetting(NETWORK_FOLDERS_KEY, list);
+    log('info', `network folder added: ${unc}`);
+    res.json({ success: true, folder });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.delete('/network-folders/:id', (req, res) => {
+  try {
+    saveJsonSetting(NETWORK_FOLDERS_KEY, loadNetworkFolders().filter(f => f.id !== req.params.id));
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.get('/local/roots', (req, res) => {
   // User-data dirs come FIRST so the file-browser quick-tab buttons
   // surface them as the primary entry points (payloads, mkpfs, downloads),
@@ -1982,7 +2071,12 @@ router.get('/local/roots', (req, res) => {
   const roots = isWindows
     ? [...USER_QUICK_TABS.filter(r => fs.existsSync(r)), ...listLocalRoots([])]
     : listLocalRoots([...USER_QUICK_TABS, '/mnt', '/home', '/data', '/tmp', '/media']);
-  res.json({ roots: [...new Set(roots.map(r => toClientPath(r)))] });
+  // Windows: the user's network folders, with their names for the tabs.
+  const net = isWindows ? loadNetworkFolders() : [];
+  res.json({
+    roots: [...new Set([...roots.map(r => toClientPath(r)), ...net.map(f => f.path)])],
+    labels: Object.fromEntries(net.map(f => [f.path, f.name])),
+  });
 });
 
 // Tells the frontend where the canonical user-data folders live, so

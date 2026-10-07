@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api, apiSafe } from '../lib/api.js';
+import { parseNetworkPath } from '../lib/networkPath.js';
 
 // Standalone source manager used in Settings → Sources. Handles SMB, FTP and
 // (note-only) local PS5 paths. The backend `/api/convert/sources*`
@@ -13,6 +14,13 @@ function RemoteSourcesSection({ profiles = [] }) {
   const [browseSubPath, setBrowseSubPath] = useState('');
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState(null);
+  // Windows: a share is opened by its \\server\share address like a folder,
+  // so there it is added by that address alone (see the backend's
+  // /convert/network-folders) and the SMB source form is not offered.
+  const [net, setNet] = useState({ supported: false, folders: [] });
+  const [netForm, setNetForm] = useState({ address: '', username: '', password: '' });
+  const [netBusy, setNetBusy] = useState(false);
+  const [smbAddress, setSmbAddress] = useState('');
 
   function emptyForm() {
     return {
@@ -29,6 +37,8 @@ function RemoteSourcesSection({ profiles = [] }) {
     // hidden from the UI but kept in the DB so existing autoloads keep
     // working until the user explicitly deletes them.
     if (Array.isArray(rows)) setSources(rows.filter(s => s.type === 'smb' || s.type === 'ftp'));
+    const n = await apiSafe.get('/convert/network-folders');
+    if (n && Array.isArray(n.folders)) setNet(n);
   }, []);
 
   useEffect(() => { load(); }, [load]);
@@ -38,9 +48,36 @@ function RemoteSourcesSection({ profiles = [] }) {
     setTimeout(() => setMessage(null), 4000);
   };
 
-  const startNew = () => { setEditing('new'); setForm(emptyForm()); };
+  const startNew = () => { setEditing('new'); setSmbAddress(''); setForm({ ...emptyForm(), type: net.supported ? 'ftp' : 'smb' }); };
+
+  const addNetworkFolder = async () => {
+    if (!parseNetworkPath(netForm.address)) {
+      return showMsg('Paste the address from Explorer, for example \\\\nas\\games', 'error');
+    }
+    setNetBusy(true);
+    try {
+      await api.post('/convert/network-folders', netForm);
+      setNetForm({ address: '', username: '', password: '' });
+      showMsg('Added - it is now a tab in Files → Local', 'success');
+      load();
+    } catch (e) { showMsg(e.message, 'error'); }
+    setNetBusy(false);
+  };
+
+  const removeNetworkFolder = async (id) => {
+    await apiSafe.del(`/convert/network-folders/${id}`);
+    load();
+  };
+
+  // One pasted address fills server, share and folder.
+  const onSmbAddress = (text) => {
+    setSmbAddress(text);
+    const p = parseNetworkPath(text);
+    if (p) setForm(f => ({ ...f, smb_host: p.host, smb_share: p.share, path: p.subPath, name: f.name || p.share }));
+  };
   const startEdit = (s) => {
     setEditing(s.id);
+    setSmbAddress('');
     setForm({
       name: s.name, type: s.type, path: s.path || '',
       smb_host: s.smb_host || '', smb_share: s.smb_share || '',
@@ -135,10 +172,53 @@ function RemoteSourcesSection({ profiles = [] }) {
       </div>
 
       <div className="comp-card-body flex-col gap-md">
+        {net.supported && (
+          <div style={subCardStyle} className="flex-col gap-sm">
+            <div className="text-sm" style={{ fontWeight: 500 }}>📂 Network folder</div>
+            <p className="text-xs text-muted" style={{ margin: 0 }}>
+              A folder on another computer or a NAS. Open it in Explorer, copy the
+              address from the address bar and paste it here. It then shows up as a
+              tab in <strong>Files → Local</strong> and works like any folder.
+            </p>
+            <input
+              className="input"
+              value={netForm.address}
+              onChange={e => setNetForm({ ...netForm, address: e.target.value })}
+              onKeyDown={e => { if (e.key === 'Enter') addNetworkFolder(); }}
+              placeholder={'\\\\nas\\games\\ps5'}
+            />
+            <div className="grid-2">
+              <div>
+                <label className="text-xs text-muted mb-sm" style={{ display: 'block' }}>Name (only if it asks for one)</label>
+                <input className="input" value={netForm.username} onChange={e => setNetForm({ ...netForm, username: e.target.value })} autoComplete="off" />
+              </div>
+              <div>
+                <label className="text-xs text-muted mb-sm" style={{ display: 'block' }}>Password</label>
+                <input className="input" type="password" value={netForm.password} onChange={e => setNetForm({ ...netForm, password: e.target.value })} autoComplete="new-password" />
+              </div>
+            </div>
+            <div className="flex gap-sm items-center flex-wrap">
+              <button className="btn btn-success btn-sm" disabled={netBusy || !netForm.address.trim()} onClick={addNetworkFolder}>
+                {netBusy ? 'Connecting…' : '＋ Add folder'}
+              </button>
+              <span className="text-xs text-muted">Windows keeps the sign-in; the password is not stored by P5 Manager.</span>
+            </div>
+            {net.folders.map(f => (
+              <div key={f.id} className="flex justify-between items-center gap-sm flex-wrap">
+                <div className="text-sm" style={{ minWidth: 0, wordBreak: 'break-all' }}>
+                  🌐 <strong>{f.name}</strong> <code className="text-xs text-muted">{f.path.replace(/\//g, '\\')}</code>
+                </div>
+                <button className="btn btn-danger btn-sm" onClick={() => removeNetworkFolder(f.id)}>Remove</button>
+              </div>
+            ))}
+          </div>
+        )}
+
         <p className="text-xs text-muted" style={{ margin: 0 }}>
-          Define SMB shares, FTP servers or local PS5 paths. Sources show up in
-          the <strong>Files</strong> tab where you can browse them and push files
-          to the PS5 over FTP.
+          {net.supported
+            ? <>FTP servers to browse in the <strong>Files</strong> tab under Remote.</>
+            : <>SMB shares and FTP servers. They show up in the <strong>Files</strong> tab
+              under Remote, where you can browse them and push files to the PS5 over FTP.</>}
         </p>
 
         {editing && (
@@ -154,13 +234,17 @@ function RemoteSourcesSection({ profiles = [] }) {
               <div>
                 <label className="text-xs text-muted mb-sm" style={{ display: 'block' }}>Type</label>
                 <select className="select" value={form.type} onChange={e => setForm({ ...form, type: e.target.value })}>
-                  <option value="smb">SMB / Samba</option>
+                  {!net.supported && <option value="smb">SMB / Samba</option>}
                   <option value="ftp">FTP</option>
                 </select>
               </div>
             </div>
             {form.type === 'smb' && (
               <div className="grid-2">
+                <div className="col-span-2">
+                  <label className="text-xs text-muted mb-sm" style={{ display: 'block' }}>Address - paste it and the fields below fill in</label>
+                  <input className="input" value={smbAddress} onChange={e => onSmbAddress(e.target.value)} placeholder={'\\\\nas\\games\\ps5  or  smb://nas/games/ps5'} />
+                </div>
                 <div>
                   <label className="text-xs text-muted mb-sm" style={{ display: 'block' }}>Host / IP</label>
                   <input className="input" value={form.smb_host} onChange={e => setForm({ ...form, smb_host: e.target.value })} placeholder="192.168.1.10" />
@@ -230,12 +314,12 @@ function RemoteSourcesSection({ profiles = [] }) {
           </div>
         )}
 
-        {sources.length === 0 && !editing && (
+        {sources.filter(s => !(net.supported && s.type === 'smb')).length === 0 && !editing && !net.supported && (
           <div className="text-sm text-muted">No sources yet. Click ＋ Add source to create one.</div>
         )}
 
         <div className="flex-col gap-sm">
-          {sources.map(s => (
+          {sources.filter(s => !(net.supported && s.type === 'smb')).map(s => (
             <div key={s.id} style={subCardStyle} className="flex-col gap-sm">
               <div className="flex justify-between items-start flex-wrap gap-sm">
                 <div style={{ flex: 1, minWidth: 220 }}>
