@@ -923,9 +923,6 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
   // Settings → Add Device") and the PIN is also 8 digits but lives in a
   // different sub-menu — we surface both so the user can't get lost.
   const isPs4Profile = profileView?.console_type === 'ps4';
-  // rp-get-pin.elf is a PS5-only payload (ptrace path uses PS5 SDK + 12.70
-  // kernel offsets), so the Auto-fetch PIN button only appears on PS5
-  // profiles. PS4 profiles still get the manual 8-digit PIN entry below.
   const isPs5Profile = !isPs4Profile;
   const pairConsoleLabel = isPs4Profile ? 'PS4' : 'PS5';
   const pairMenuPath = isPs4Profile
@@ -1056,7 +1053,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
           setLocalProfile((prev) => ({
             ...(prev || profile),
             ...(r.account_id ? { psn_account_id: r.account_id } : {}),
-            ...(r.user ? { psn_online_id: r.user } : {}),
+            ...(!isPs4Profile && r.user ? { psn_online_id: r.user } : {}),
           }));
         }
         onProfilesChanged?.();
@@ -2552,20 +2549,32 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
             calls sceRemoteplayGeneratePinCode, then prints both on its
             stdout. We parse it, drop the captured account_id into the
             profile (backend persistence), and pre-fill the PIN below. */}
-        {isPs5Profile && (
+        {(
           <Section
             title={autoPinResult?.pin ? '0 · Auto-fetch PIN ✓' : '0 · Auto-fetch PIN'}
             hint={liveSession
               ? '⛔ A Remote Play session is live - stop it first (Control tab above) before fetching a PIN, otherwise rp-get-pin.elf attaching to SceShellUI can knock the session out.'
-              : '⚡ Sends rp-get-pin.elf to elfldr (port 9021) and captures the PIN + PSN account from its stdout. If the PS5 is PSN-signed-in this also auto-fills step 1 — no manual Sony OAuth needed.'}
+              : isPs4Profile ? 'Read the current account, then fetch a pairing PIN. GoldHEN BinLoader and FTP must be enabled. PS4 firmware 11.00 has been tested.' : '⚡ Sends rp-get-pin.elf to elfldr (port 9021) and captures the PIN + PSN account from its stdout. If the PS5 is PSN-signed-in this also auto-fills step 1 — no manual Sony OAuth needed.'}
           >
             <div className="flex gap-sm flex-wrap items-center">
+              {isPs4Profile && (
+                <button type="button" className="btn btn-secondary"
+                  disabled={offactBusy || autoPinBusy || !profile?.ip_address || liveSession}
+                  onClick={activateOffline}>
+                  {offactBusy ? 'Reading account…' : 'Read / activate PS4 account'}
+                </button>
+              )}
+              {isPs4Profile && offactResult && (
+                <span className="text-sm" style={{ color: offactResult.success ? 'var(--green)' : 'var(--red)' }}>
+                  {offactResult.success ? `${offactResult.user || 'Account'}: ${offactResult.account_id} (${offactResult.activated})` : offactResult.error || offactResult.message}
+                </span>
+              )}
               <button
                 type="button"
                 className="btn btn-primary"
-                disabled={autoPinBusy || !profile?.ip_address || liveSession}
+                disabled={autoPinBusy || offactBusy || !profile?.ip_address || liveSession}
                 onClick={autoFetchPin}
-                title="Send rp-get-pin.elf to the PS5 and read PIN + Account ID from its stdout"
+                title={`Fetch PIN and Account ID from the ${pairConsoleLabel}`}
               >
                 {autoPinBusy ? '⏳ Sending payload…' : '🪄 Auto-fetch PIN'}
               </button>
@@ -2702,10 +2711,10 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
             paired
               ? 'Already paired. Re-pair below with a fresh PIN if you swap PSN accounts, or click Forget pairing to start over.'
               : !accountLinked
-                ? 'Link a PSN account first (step 0 if your PS5 is PSN-signed-in, otherwise step 1).'
+                ? 'Read the account from the console in step 0, or link a PSN account in step 1.'
                 : isPs5Profile
                   ? `Use the PIN from step 0 above, or open ${pairMenuPath.split(': ')[1]} on the ${pairConsoleLabel} and type that PIN.`
-                  : `On the ${pairConsoleLabel}: ${pairMenuPath.split(': ')[1]}. Type the 8-digit PIN shown there below.`
+                  : `Use the PIN from step 0, or open ${pairMenuPath.split(': ')[1]} on the ${pairConsoleLabel} and enter its PIN.`
           }
         >
           <input
@@ -2959,7 +2968,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
               className="btn btn-primary"
               disabled={autoPinBusy || !profile?.ip_address || liveSession}
               onClick={autoFetchPin}
-              title="Send rp-get-pin.elf to the PS5 and read PIN + Account ID from its stdout"
+              title={`Fetch PIN and Account ID from the ${pairConsoleLabel}`}
             >
               {autoPinBusy ? '⏳ Sending payload…' : '🪄 Auto-fetch PIN'}
             </button>

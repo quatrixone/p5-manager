@@ -14,7 +14,7 @@ import { api } from '../lib/api.js';
 //   rp-get-pin.elf  - Remote Play PIN auto-fetch (routes/remoteplay.js)
 //   offact.elf      - offline PSN account activation (routes/remoteplay.js)
 //   pkg-install.elf - PKG installer, auto-bound in Settings
-const VENDORED_REQUIRED_FILENAMES = ['rp-get-pin.elf', 'offact.elf', 'pkg-install.elf'];
+const VENDORED_REQUIRED_FILENAMES = ['rp-get-pin.elf', 'offact.elf', 'pkg-install.elf', 'rp-get-pin-ps4.bin', 'offact-ps4.bin'];
 
 function PayloadList({ payloads, profiles, onFetchUrl, onSend, onDelete, onUpdate, onUpload, onRestoreDefaults, assetPicker, onConfirmAssetPicker, onCancelAssetPicker }) {
   const { mode } = usePlatform();

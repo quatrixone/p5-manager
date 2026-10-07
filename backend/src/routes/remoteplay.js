@@ -10,6 +10,7 @@ import { getFtpPort } from '../lib/ftpPort.js';
 import { createViewer, answerViewer, closeViewer, closeViewersOf } from '../lib/webrtc.js';
 import { discoverConsole } from '../lib/consoleStatus.js';
 import { parsePsnAccountId, psnAccountBase64 } from '../lib/psnAccount.js';
+import { runPs4RemotePlay } from '../lib/ps4RemotePlay.js';
 
 const router = express.Router();
 
@@ -17,6 +18,47 @@ const router = express.Router();
 // account_id supplied by the manager when no on-console PSN account is
 // linked yet. Matches TRIGGER_PATH in p5managerclient/offact/main.c.
 const OFFACT_TRIGGER_DEFAULT = '/data/.p5manager-offact';
+
+function isPs4Request(ip, profileId) {
+  const row = profileId
+    ? getRepo().queryOne('SELECT console_type FROM profiles WHERE id = ?', [parseInt(profileId)])
+    : getRepo().queryOne('SELECT console_type FROM profiles WHERE TRIM(ip_address) = ? LIMIT 1', [String(ip).trim()]);
+  return row?.console_type === 'ps4';
+}
+
+async function ps4Operation(ip, profileId, operation, accountId, onlineId) {
+  const filename = operation === 'get-pin' ? 'rp-get-pin-ps4.bin' : 'offact-ps4.bin';
+  const payloadPath = path.join(payloadsDir, filename);
+  if (!fs.existsSync(payloadPath)) throw new Error(`${filename} not found. Restore Defaults on the Payloads tab.`);
+  let triggerWritten = false;
+  try {
+    const prepare = async () => {
+      if (operation === 'offact') {
+        if (accountId) {
+          const normalized = psnAccountBase64(accountId);
+          if (!normalized) throw new Error('Invalid PSN account ID');
+          await writeOffactTrigger(ip, OFFACT_TRIGGER_DEFAULT, normalized, onlineId);
+          triggerWritten = true;
+        } else {
+          // Never allow an old trigger to replace the current console account.
+          const ftp = new FtpClient(8000);
+          try {
+            await ftp.access({ host: ip, port: getFtpPort(ip), user: 'anonymous', password: '', secure: false });
+            try { await ftp.remove(OFFACT_TRIGGER_DEFAULT); } catch (e) { if (e.code !== 550) throw e; }
+          } finally { ftp.close(); }
+        }
+      }
+    };
+    const result = await runPs4RemotePlay({ ip, ftpPort: getFtpPort(ip), operation, prepare, data: fs.readFileSync(payloadPath) });
+    if (result.success && result.account_id && profileId) {
+      getRepo().runAndSave('UPDATE profiles SET psn_account_id = ? WHERE id = ?', [result.account_id, parseInt(profileId)]);
+      result.persisted = true;
+    }
+    return { ...result, trigger_written: triggerWritten, console_type: 'ps4' };
+  } finally {
+    if (triggerWritten) await deleteOffactTrigger(ip, OFFACT_TRIGGER_DEFAULT);
+  }
+}
 
 
 // We keep the trigger upload self-contained instead of going through
@@ -667,6 +709,8 @@ router.post('/get-pin', async (req, res) => {
     }
     if (!ip) return res.status(400).json({ success: false, error: 'ip or profile_id required' });
 
+    if (isPs4Request(ip, profile_id)) return res.json(await ps4Operation(ip, profile_id, 'get-pin'));
+
     // Locate the payload on disk. We accept any filename that matches
     // `rp-get-pin*.elf` so a user can drop a hand-built variant into
     // data/payloads/ without renaming. Prefer the canonical name first.
@@ -906,6 +950,8 @@ router.post('/activate-account', async (req, res) => {
     if (!ip) return res.status(400).json({ success: false, error: 'ip or profile_id required' });
 
     const triggerPath = bodyTriggerPath || OFFACT_TRIGGER_DEFAULT;
+
+    if (isPs4Request(ip, profile_id)) return res.json(await ps4Operation(ip, profile_id, 'offact', psnAccountId, psnOnlineId));
 
     // If we have a host-side PSN account_id (either passed inline or
     // pulled off the profile), drop it into the trigger file on the

@@ -144,6 +144,7 @@ COPY frontend/builtin/ ./builtin/
 # The app's own payloads, copied into the payloads folder on start when they
 # are not there (backend/src/lib/defaultPayloads.js).
 COPY p5managerclient/rp-get-pin/rp-get-pin.elf p5managerclient/offact/offact.elf p5managerclient/pkg-install/pkg-install.elf ./vendored/
+COPY p5managerclient/rp-get-pin-ps4/rp-get-pin-ps4.bin p5managerclient/offact-ps4/offact-ps4.bin ./vendored/
 
 RUN mkdir -p /app/data/payloads
 
