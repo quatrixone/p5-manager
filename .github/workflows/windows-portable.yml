@@ -88,9 +88,62 @@ jobs:
           if (-not (Get-Content "$out/app/pyremoteplay/pydeps")) { throw "could not fingerprint requirements.txt" }
 
           # Launcher, built with the C# compiler that ships with Windows.
-          & "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /nologo /optimize+ /target:exe "/out:$out\P5Manager.exe" packaging\windows\P5Manager.cs
+          & "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /nologo /optimize+ /target:exe /r:System.IO.Compression.dll /r:System.IO.Compression.FileSystem.dll "/out:$out\P5Manager.exe" packaging\windows\P5Manager.cs
           if ($LASTEXITCODE -ne 0) { throw "launcher did not compile" }
           Copy-Item packaging/windows/README.txt "$out/README.txt"
+
+      - name: Pack app and runtime into one file
+        shell: pwsh
+        run: |
+          # Windows Explorer extracts a zip file by file, and with thousands of
+          # small ones that takes minutes. So the download holds three files -
+          # the launcher, the README and P5Manager.pak, a zip of app\ and
+          # runtime\ - and the launcher unpacks the pak on the first start,
+          # which is many times faster.
+          $ErrorActionPreference = 'Stop'
+          $out = "dist-portable/P5Manager"
+
+          # First drop what is never read at run time.
+          $nm = "$out/app/backend/node_modules"
+          $before = (Get-ChildItem $out -Recurse -File -Force).Count
+          Remove-Item "$nm/.bin" -Recurse -Force -ErrorAction SilentlyContinue
+          Get-ChildItem $nm -Recurse -Directory -Force -Filter .github | Remove-Item -Recurse -Force
+          # Native add-ons built for other systems.
+          Get-ChildItem $nm -Recurse -Directory -Filter prebuilds | Get-ChildItem -Directory |
+            Where-Object { $_.Name -notlike 'win32-x64*' } | Remove-Item -Recurse -Force
+          # Docs, source maps, TypeScript and editor settings - licence files stay.
+          $ext = '.md', '.markdown', '.map', '.ts', '.mts', '.cts', '.tsbuildinfo', '.bare'
+          $dot = '.npmignore', '.editorconfig', '.eslintrc', '.eslintrc.js', '.eslintrc.json', '.prettierrc', '.nycrc', '.travis.yml', '.gitattributes'
+          Get-ChildItem $nm -Recurse -File -Force |
+            Where-Object { $_.Name -notmatch '^(licen[sc]e|notice|copying|authors|patents)' -and ($_.Extension -in $ext -or $_.Name -in $dot) } |
+            Remove-Item -Force
+          $sp = "$out/runtime/python/Lib/site-packages"
+          Get-ChildItem $sp -Recurse -Directory -Filter __pycache__ | Remove-Item -Recurse -Force
+          Remove-Item "$sp/Cryptodome/SelfTest" -Recurse -Force -ErrorAction SilentlyContinue
+          Get-ChildItem $sp -Recurse -File | Where-Object { $_.Extension -in '.pyi', '.pxd', '.pyx', '.h', '.c', '.cpp' } | Remove-Item -Force
+          $after = (Get-ChildItem $out -Recurse -File -Force).Count
+          "trimmed $before files to $after"
+
+          New-Item -ItemType Directory -Force dist-portable/pak, dist-zip/P5Manager | Out-Null
+          Move-Item "$out/app", "$out/runtime" dist-portable/pak
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          [System.IO.Compression.ZipFile]::CreateFromDirectory((Resolve-Path dist-portable/pak).Path, (Join-Path (Resolve-Path $out).Path 'P5Manager.pak'), [System.IO.Compression.CompressionLevel]::Optimal, $false)
+          Remove-Item dist-portable/pak -Recurse -Force
+          "P5Manager.pak: {0:N0} MB" -f ((Get-Item "$out/P5Manager.pak").Length / 1MB)
+          # What gets published, set aside before the tests below unpack it.
+          Copy-Item "$out/P5Manager.exe", "$out/README.txt", "$out/P5Manager.pak" dist-zip/P5Manager
+
+      - name: Unpack like a first start
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $app = Resolve-Path "dist-portable/P5Manager"
+          & "$app\P5Manager.exe" --prepare
+          if ($LASTEXITCODE -ne 0) { throw "the launcher could not unpack P5Manager.pak" }
+          if (Test-Path "$app\P5Manager.pak") { throw "P5Manager.pak is still there after unpacking" }
+          foreach ($f in "runtime\node\node.exe", "runtime\python\python.exe", "app\backend\src\index.js", "app\pyremoteplay\server.py") {
+            if (-not (Test-Path "$app\$f")) { throw "$f is missing after unpacking" }
+          }
 
       - name: Remote Play service imports
         shell: pwsh
@@ -163,8 +216,13 @@ jobs:
       - name: Zip
         shell: pwsh
         run: |
-          Remove-Item "dist-portable/P5Manager/data" -Recurse -Force -ErrorAction SilentlyContinue
-          Compress-Archive -Path "dist-portable/P5Manager" -DestinationPath "P5Manager-windows-x64.zip"
+          # The pak is compressed already; stored, the zip extracts like a copy.
+          Compress-Archive -Path "dist-zip/P5Manager" -DestinationPath "P5Manager-windows-x64.zip" -CompressionLevel NoCompression
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path P5Manager-windows-x64.zip).Path)
+          $files = @($zip.Entries | Where-Object { $_.Name })
+          $zip.Dispose()
+          if ($files.Count -ne 3) { throw "the zip should hold 3 files, it holds $($files.Count)" }
           "{0:N0} MB" -f ((Get-Item P5Manager-windows-x64.zip).Length / 1MB)
 
       - uses: actions/upload-artifact@v4

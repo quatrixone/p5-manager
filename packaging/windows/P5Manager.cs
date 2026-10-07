@@ -13,11 +13,17 @@
 //   runtime\python\python.exe     (optional)
 //   data\                         created on first start: database, payloads, downloads
 //
+// app\ and runtime\ are thousands of small files, which Windows Explorer
+// takes minutes to extract from a zip. The download therefore holds them as
+// one file, P5Manager.pak (a zip itself), and the launcher unpacks it on the
+// first start - see Unpack.
+//
 // Built with the .NET Framework C# 5 compiler that ships with Windows, so
 // no newer language features here.
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.IO.Compression;
 using System.Net;
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
@@ -153,10 +159,75 @@ static class P5Manager
         });
     }
 
+    // First start: turns P5Manager.pak into app\ and runtime\. The pak is
+    // deleted only once everything is out, so a start that was interrupted
+    // half way begins again; a pak extracted over an older installation
+    // replaces its app\ and runtime\ and leaves data\ alone.
+    static bool Unpack(string home)
+    {
+        string pak = Path.Combine(home, "P5Manager.pak");
+        if (!File.Exists(pak)) return true;
+        Console.WriteLine("[launcher] first start: unpacking the app files, this takes a moment...");
+        Stopwatch watch = Stopwatch.StartNew();
+        try
+        {
+            foreach (string d in new string[] { "app", "runtime" })
+            {
+                string old = Path.Combine(home, d);
+                if (Directory.Exists(old)) Directory.Delete(old, true);
+            }
+            string root = home + "\\";
+            using (ZipArchive zip = ZipFile.OpenRead(pak))
+            {
+                int done = 0, shown = 0, total = zip.Entries.Count;
+                foreach (ZipArchiveEntry entry in zip.Entries)
+                {
+                    string dest = Path.GetFullPath(Path.Combine(home, entry.FullName));
+                    if (!dest.StartsWith(root, StringComparison.OrdinalIgnoreCase))
+                        throw new IOException("unexpected path in P5Manager.pak: " + entry.FullName);
+                    if (entry.FullName.EndsWith("/") || entry.FullName.EndsWith("\\"))
+                    {
+                        Directory.CreateDirectory(dest);
+                    }
+                    else
+                    {
+                        Directory.CreateDirectory(Path.GetDirectoryName(dest));
+                        entry.ExtractToFile(dest, true);
+                    }
+                    int percent = ++done * 100 / total;
+                    if (percent >= shown + 20)
+                    {
+                        shown = percent - percent % 20;
+                        Console.WriteLine("[launcher]   " + shown + " %");
+                    }
+                }
+            }
+        }
+        catch (Exception e)
+        {
+            Console.Error.WriteLine("P5 Manager: could not unpack P5Manager.pak: " + e.Message);
+            if (e is PathTooLongException)
+                Console.Error.WriteLine("The folder is too deep for Windows. Move the P5Manager folder somewhere short, for example C:\\P5Manager.");
+            else
+                Console.Error.WriteLine("Check that the disk has about 400 MB free and that the folder can be written to, then start again.");
+            return false;
+        }
+        try { File.Delete(pak); }
+        catch (Exception e) { Console.WriteLine("[launcher] could not remove P5Manager.pak (" + e.Message + ") - it will be unpacked again next time"); }
+        Console.WriteLine("[launcher] unpacked in " + (watch.ElapsedMilliseconds / 1000) + " s");
+        return true;
+    }
+
     static int Main(string[] args)
     {
         bool openBrowser = Env("P5M_NO_BROWSER", "") == "";
-        foreach (string a in args) if (a == "--no-browser") openBrowser = false;
+        bool prepareOnly = false;
+        foreach (string a in args)
+        {
+            if (a == "--no-browser") openBrowser = false;
+            // Unpack and stop: the build checks the unpacked files this way.
+            if (a == "--prepare") prepareOnly = true;
+        }
 
         string home = AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\');
         string node = Path.Combine(home, "runtime", "node", "node.exe");
@@ -175,6 +246,13 @@ static class P5Manager
         Console.WriteLine("  Keep this window open - closing it stops P5 Manager.");
         Console.WriteLine("==============================================================");
         Console.WriteLine();
+        if (!Unpack(home))
+        {
+            Console.Error.WriteLine("Press Enter to close.");
+            if (openBrowser && !prepareOnly) Console.ReadLine();
+            return 2;
+        }
+        if (prepareOnly) return 0;
         if (!File.Exists(node) || !File.Exists(Path.Combine(backend, "src", "index.js")))
         {
             Console.Error.WriteLine("P5 Manager: the app files are missing next to P5Manager.exe.");
