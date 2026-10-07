@@ -104,8 +104,9 @@ jobs:
           node -e "import('./backend/deps-hash.mjs').then(m => process.stdout.write(m.fileHash('pyremoteplay/requirements.txt')))" | Set-Content "$out/app/pyremoteplay/pydeps"
           if (-not (Get-Content "$out/app/pyremoteplay/pydeps")) { throw "could not fingerprint requirements.txt" }
 
-          # Launcher, built with the C# compiler that ships with Windows.
-          & "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /nologo /optimize+ /target:exe /r:System.IO.Compression.dll /r:System.IO.Compression.FileSystem.dll "/out:$out\P5Manager.exe" packaging\windows\P5Manager.cs
+          # Launcher, built with the C# compiler that ships with Windows. Its
+          # icon is the app's (frontend/public/icon-512.svg drawn at 16 to 256 px).
+          & "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /nologo /optimize+ /target:exe /r:System.IO.Compression.dll /r:System.IO.Compression.FileSystem.dll /win32icon:packaging\windows\P5Manager.ico "/out:$out\P5Manager.exe" packaging\windows\P5Manager.cs
           if ($LASTEXITCODE -ne 0) { throw "launcher did not compile" }
           Copy-Item packaging/windows/README.txt "$out/README.txt"
 
