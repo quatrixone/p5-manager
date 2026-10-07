@@ -117,11 +117,17 @@ function App() {
     }
   };
 
-  const fetchFromGitHubUrl = async (url) => {
+  const activeConsoleType = () => {
+    const profile = profiles.find(p => p.is_default) || profiles[0];
+    const type = String(profile?.console_type || '').toLowerCase();
+    return type === 'ps4' || type === 'ps5' ? type : undefined;
+  };
+
+  const fetchFromGitHubUrl = async (url, consoleType = activeConsoleType()) => {
     try {
-      const data = await api.post('/payloads/fetch-url', { url });
+      const data = await api.post('/payloads/fetch-url', { url, console_type: consoleType });
       if (data.needsSelection) {
-        setAssetPicker({ assets: data.assets, version: data.version });
+        setAssetPicker({ assets: data.assets, version: data.version, console_type: consoleType });
         return;
       }
       if (data.success) {
@@ -139,9 +145,9 @@ function App() {
   // Confirms the user's choice from the asset picker opened above.
   // `assets` is the subset of { name, size, download_url } the user
   // checked; the backend downloads exactly those and nothing else.
-  const fetchSelectedAssets = async (assets, version) => {
+  const fetchSelectedAssets = async (assets, version, consoleType = activeConsoleType()) => {
     try {
-      const data = await api.post('/payloads/fetch-assets', { assets, version });
+      const data = await api.post('/payloads/fetch-assets', { assets, version, console_type: consoleType });
       if (data.success) {
         showNotification(`Downloaded ${data.downloaded.length} payload(s)`, 'success');
         fetchPayloads();
@@ -227,7 +233,7 @@ function App() {
     }
   };
 
-  const uploadPayload = async (file) => {
+  const uploadPayload = async (file, consoleType = activeConsoleType()) => {
     try {
       // FileReader's native base64 encoding, not a byte-by-byte
       // String.fromCharCode reduce() — that approach blocks the main
@@ -241,7 +247,7 @@ function App() {
         reader.readAsDataURL(file);
       });
 
-      const data = await api.post('/payloads/upload', { name: file.name, data: base64 });
+      const data = await api.post('/payloads/upload', { name: file.name, data: base64, console_type: consoleType });
       if (data.success) {
         // ZIP uploads return { zip: true, extracted: [...], skipped: [...] }
         // so the user immediately sees how many payloads landed and how

@@ -80,7 +80,7 @@ function ensurePayloadsDir() {
 // auto-download-everything /releases path and the /fetch-assets endpoint
 // (the picker the user confirms after seeing multiple candidates for a
 // bare repo URL) so the ZIP-extraction / size-cap logic lives once.
-async function downloadReleaseAsset(asset, version, repo) {
+async function downloadReleaseAsset(asset, version, repo, consoleTypeOverride = null) {
   const results = [];
   const lc = asset.name.toLowerCase();
   const isZip = lc.endsWith('.zip');
@@ -126,7 +126,7 @@ async function downloadReleaseAsset(asset, version, repo) {
       }
       const filepath = path.join(payloadsDir, filename);
       fs.writeFileSync(filepath, entryBuffer);
-      const consoleType = detectConsoleTypeFromHints({ filename, url: downloadUrl });
+      const consoleType = consoleTypeOverride || detectConsoleTypeFromHints({ filename, url: downloadUrl });
       const lastId = repo.run(
         'INSERT INTO payloads (name, filename, filepath, source_url, size, version, console_type) VALUES (?, ?, ?, ?, ?, ?, ?)',
         [filename, filename, filepath, downloadUrl, entryBuffer.length, version, consoleType],
@@ -138,7 +138,7 @@ async function downloadReleaseAsset(asset, version, repo) {
     const filename = asset.name;
     const filepath = path.join(payloadsDir, filename);
     fs.writeFileSync(filepath, buffer);
-    const consoleType = detectConsoleTypeFromHints({ filename, url: downloadUrl });
+    const consoleType = consoleTypeOverride || detectConsoleTypeFromHints({ filename, url: downloadUrl });
     const lastId = repo.run(
       'INSERT INTO payloads (name, filename, filepath, source_url, size, version, console_type) VALUES (?, ?, ?, ?, ?, ?, ?)',
       [filename, filename, filepath, downloadUrl, buffer.length, version, consoleType],
@@ -222,6 +222,8 @@ router.post('/defaults/restore', async (req, res) => {
 router.post('/fetch-url', async (req, res) => {
   try {
     const { url } = req.body;
+    const requestedType = String(req.body?.console_type || '').toLowerCase();
+    const consoleTypeOverride = requestedType === 'ps4' || requestedType === 'ps5' ? requestedType : null;
 
     if (!url) {
       return res.status(400).json({ error: 'URL required' });
@@ -267,7 +269,7 @@ router.post('/fetch-url', async (req, res) => {
         const isZip = name.endsWith('.zip');
 
         if (isLuaOrElf || isZip) {
-          const entries = await downloadReleaseAsset(asset, version, repo);
+          const entries = await downloadReleaseAsset(asset, version, repo, consoleTypeOverride);
           results.push(...entries);
         }
       }
@@ -308,7 +310,7 @@ router.post('/fetch-url', async (req, res) => {
         }
         const filepath = path.join(payloadsDir, filename);
         fs.writeFileSync(filepath, buffer);
-        const consoleType = detectConsoleTypeFromHints({ filename, url });
+        const consoleType = consoleTypeOverride || detectConsoleTypeFromHints({ filename, url });
         const lastId = repo.runAndSave(
           'INSERT INTO payloads (name, filename, filepath, source_url, size, console_type) VALUES (?, ?, ?, ?, ?, ?)',
           [filename, filename, filepath, url, buffer.length, consoleType],
@@ -343,7 +345,7 @@ router.post('/fetch-url', async (req, res) => {
       }
       const filepath = path.join(payloadsDir, filename);
       fs.writeFileSync(filepath, buffer);
-      const consoleType = detectConsoleTypeFromHints({ filename, url });
+      const consoleType = consoleTypeOverride || detectConsoleTypeFromHints({ filename, url });
       const lastId = repo.runAndSave(
         'INSERT INTO payloads (name, filename, filepath, source_url, size, console_type) VALUES (?, ?, ?, ?, ?, ?)',
         [filename, filename, filepath, url, buffer.length, consoleType],
@@ -383,7 +385,7 @@ router.post('/fetch-url', async (req, res) => {
       }
 
       if (candidates.length === 1) {
-        const results = await downloadReleaseAsset(candidates[0], version, repo);
+        const results = await downloadReleaseAsset(candidates[0], version, repo, consoleTypeOverride);
         repo.save();
         return res.json({ success: true, downloaded: results });
       }
@@ -392,6 +394,7 @@ router.post('/fetch-url', async (req, res) => {
         success: true,
         needsSelection: true,
         version,
+        console_type: consoleTypeOverride,
         assets: candidates.map(asset => ({ name: asset.name, size: asset.size, download_url: asset.browser_download_url })),
       });
     }
@@ -408,6 +411,8 @@ router.post('/fetch-url', async (req, res) => {
 router.post('/fetch-assets', async (req, res) => {
   try {
     const { assets, version } = req.body;
+    const requestedType = String(req.body?.console_type || '').toLowerCase();
+    const consoleTypeOverride = requestedType === 'ps4' || requestedType === 'ps5' ? requestedType : null;
     if (!Array.isArray(assets) || assets.length === 0) {
       return res.status(400).json({ error: 'assets array required' });
     }
@@ -432,6 +437,7 @@ router.post('/fetch-assets', async (req, res) => {
         { name: asset.name, browser_download_url: asset.download_url },
         version || 'latest',
         repo,
+        consoleTypeOverride,
       );
       results.push(...entries);
     }
@@ -453,6 +459,8 @@ router.post('/upload', (req, res) => {
     // filename so the UI can immediately filter the upload into the right
     // platform bucket; the user can correct via the manual update endpoint.
     const { name, data, console_type } = req.body;
+    const requestedType = String(console_type || '').toLowerCase();
+    const consoleTypeOverride = requestedType === 'ps4' || requestedType === 'ps5' ? requestedType : null;
 
     if (!name || !data) {
       return res.status(400).json({ error: 'Name and data required' });
@@ -519,8 +527,8 @@ router.post('/upload', (req, res) => {
         fs.writeFileSync(filepath, entryBuffer);
 
         const detected = detectConsoleTypeFromHints({ filename });
-        const finalConsoleType = (console_type === 'ps4' || console_type === 'ps5')
-          ? console_type
+        const finalConsoleType = consoleTypeOverride
+          ? consoleTypeOverride
           : detected;
 
         const lastId = repo.run(
@@ -564,8 +572,8 @@ router.post('/upload', (req, res) => {
     fs.writeFileSync(filepath, buffer);
 
     const detected = detectConsoleTypeFromHints({ filename: name });
-    const finalConsoleType = (console_type === 'ps4' || console_type === 'ps5')
-      ? console_type
+    const finalConsoleType = consoleTypeOverride
+      ? consoleTypeOverride
       : detected;
 
     const lastId = repo.runAndSave(

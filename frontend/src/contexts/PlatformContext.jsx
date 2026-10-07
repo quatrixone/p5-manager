@@ -18,7 +18,7 @@ const PlatformContext = createContext({
 
 export function PlatformProvider({ activeProfile, children }) {
   const activeProfileType = useMemo(() => {
-    const ct = activeProfile?.console_type;
+    const ct = String(activeProfile?.console_type || '').toLowerCase();
     if (ct === 'ps4' || ct === 'ps5') return ct;
     return null;
   }, [activeProfile]);
