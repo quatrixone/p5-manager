@@ -27,8 +27,6 @@ P5 Manager is an independent hobby project and is not affiliated with Sony Inter
 |---|---|
 | ![Payload manager](docs/screenshots/payloads.png) | <img src="docs/screenshots/settings-mobile.png" alt="Settings on a phone" width="260" /> |
 
-Screenshots use fictional demo data. They contain no games or personal account information.
-
 ## Requirements
 
 - A PS4 or PS5 with a compatible homebrew setup, on the same network as P5 Manager.
