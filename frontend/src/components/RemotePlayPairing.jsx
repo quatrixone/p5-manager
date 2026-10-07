@@ -81,7 +81,7 @@ export default function RemotePlayPairing({ consoleLabel, menuPath, paired, live
       </div>}
       <details open={!account.linked && (!automatic || !!error)}>
         <summary className="text-sm" style={{ cursor: 'pointer' }}>
-          {account.sonyLinked ? `✓ Sony account: ${account.sonyName}` : account.linked ? `Console account: ${account.name} · Add Sony account` : 'Link PSN account · Sony login or account ID'}
+          {account.sonyLinked ? `✓ Sony account: ${account.sonyName}` : account.linked ? `Console account: ${account.name}${account.id && account.id !== account.name ? ` · ID ${account.id}` : ''} · Add Sony account` : 'Link PSN account · Sony login or account ID'}
         </summary>
         <div className="flex-col gap-sm" style={{ marginTop: 8 }}>
           <p className="text-sm text-muted" style={{ margin: 0 }}>
