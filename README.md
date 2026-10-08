@@ -34,7 +34,7 @@ P5 Manager is an independent hobby project and is not affiliated with Sony Inter
 - A PS4 or PS5 with a compatible homebrew setup, on the same network as P5 Manager.
 - **PS5:** system software 13.60 or lower. **PS4:** a system software version supported by your homebrew setup.
 - **Docker on Linux** (recommended) or **Windows 10/11** (portable package).
-- Remote Play pairing requires a console account. For the Library, run [ShadowMountPlus](https://github.com/drakmor/ShadowMountPlus) on the console.
+- Remote Play pairing requires a console account.
 
 ## Install
 
