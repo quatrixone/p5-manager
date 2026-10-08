@@ -58,6 +58,17 @@ Download **P5Manager-windows-x64.zip** from the [latest release](https://github.
 
 The app can update its own code when the release is compatible with the installed image. If it asks for a newer Docker image, run `docker compose pull && docker compose up -d` from the project directory.
 
+## PS5 Autoload: User's Guide DNS
+
+The **PS5: Jailbreak when the loader is down** template opens the User's Guide through Remote Play, waits for the payload loader on port `9021`, then sends `kstuff.elf` and `shadowmountplus.elf`. For this to work, the User's Guide must open a compatible jailbreak page instead of Sony's manual.
+
+1. On the PS5, open **Settings → Network → Settings → Set Up Internet Connection**. Select your connection, press **Options**, then choose **Advanced Settings → DNS Settings → Manual**.
+2. Set **Primary DNS** to a trusted DNS service that redirects `manuals.playstation.net` to your jailbreak host. `45.56.67.85` is one example used by the project author; it may not work for every setup.
+3. Open **Settings → Guide & Tips, Health and Safety, and Other Information → User's Guide** manually once and confirm the jailbreak page starts the loader.
+4. Pair Remote Play, then open **Autoload**, load the template, choose your PS5 profile, and save it.
+
+The DNS provider handles the console's DNS requests and may block PlayStation Network. Use a provider you trust, and restore automatic DNS when you need PSN. The template presses buttons through Remote Play, so pairing and a working jailbreak page are required.
+
 ## Development
 
 The app has three services: the Node API, the Vite frontend, and the Python Remote Play sidecar. The sidecar needs the `p5rp` helper; build it once from the repository root. On Debian or Ubuntu, install its build dependencies first:
