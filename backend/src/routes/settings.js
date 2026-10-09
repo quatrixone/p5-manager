@@ -1,21 +1,18 @@
 import express from 'express';
+import { readBuiltinList } from '../lib/builtinLoader.js';
 import path from 'path';
 import { getRepo, log, saveDatabase } from '../db/sqlite.js';
 import { payloadsDir } from '../lib/paths.js';
 
 const router = express.Router();
 
-const DEFAULT_PAYLOADS = [
-  { name: 'Payload Kernel Logger (klogsrv)', url: 'https://github.com/john-tornblom/ps5-payload-klogsrv/releases/latest/download/klogsrv.elf' },
-  { name: 'BD-JB', url: 'https://github.com/ps5-payload-sdk/BD-JB/releases/latest/download/BD-JB.elf' },
-  { name: 'Enable UART', url: 'https://github.com/ps5-payload-sdk/uart-enable/releases/latest/download/uart-enable.elf' },
-];
+
 
 router.get('/', (req, res) => {
   try {
     const rows = getRepo().queryAll('SELECT key, value FROM settings');
     const settings = Object.fromEntries(rows.map(r => [r.key, r.value]));
-    if (!settings.default_payloads) settings.default_payloads = JSON.stringify(DEFAULT_PAYLOADS);
+    if (!settings.default_payloads) settings.default_payloads = JSON.stringify(readBuiltinList('payloads.json').map(p => ({ name: p.filename, url: p.url, console_type: p.console_type })));
     res.json(settings);
   } catch (error) {
     log('error', `Failed to get settings: ${error.message}`);

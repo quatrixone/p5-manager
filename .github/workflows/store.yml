@@ -1,0 +1,69 @@
+name: Marketplace
+
+# store/ holds the in-app marketplace (see store/README.md).
+#  - Every change to it is checked: each item valid, store/index.json current.
+#  - A submission issue labelled `store-accepted` by a maintainer becomes a
+#    pull request that adds the item (homebrew checksums filled in).
+
+on:
+  push:
+    paths: ['store/**', 'scripts/build-store-index.mjs', 'backend/src/lib/storeItem.js', 'backend/src/lib/catalogLinks.js', 'scripts/store-accept.mjs']
+  pull_request:
+    paths: ['store/**', 'scripts/build-store-index.mjs', 'backend/src/lib/storeItem.js', 'backend/src/lib/catalogLinks.js', 'scripts/store-accept.mjs']
+  issues:
+    types: [labeled]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  check:
+    if: github.event_name != 'issues'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node scripts/build-store-index.mjs --check
+
+  accept:
+    if: github.event_name == 'issues' && github.event.label.name == 'store-accepted'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Add the item
+        id: add
+        env:
+          BODY: ${{ github.event.issue.body }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$BODY" > "$RUNNER_TEMP/issue.md"
+          node scripts/store-accept.mjs "$RUNNER_TEMP/issue.md" | tail -1 > "$RUNNER_TEMP/path"
+          echo "path=$(cat "$RUNNER_TEMP/path")" >> "$GITHUB_OUTPUT"
+      - name: Open a pull request
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE: ${{ github.event.issue.number }}
+          TITLE: ${{ github.event.issue.title }}
+        run: |
+          branch="store/issue-$ISSUE"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
+          git add store
+          git commit -m "store: ${TITLE#\[store\] }" -m "From #$ISSUE."
+          git push -f origin "$branch"
+          url=$(gh pr create --head "$branch" --title "store: ${TITLE#\[store\] }" --body "Adds \`${{ steps.add.outputs.path }}\` from #$ISSUE. Closes #$ISSUE.")
+          gh issue comment "$ISSUE" --body "Thanks! The pull request is $url - it is listed in the app once that is merged."
+      - name: Say what is wrong
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE: ${{ github.event.issue.number }}
+        run: gh issue comment "$ISSUE" --body "The submission could not be added - see the workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

@@ -8,7 +8,7 @@
 // Layout it expects next to itself:
 //   app\backend\src\index.js      backend (serves the UI from app\backend\dist)
 //   app\builtin\                  built-in scripts
-//   app\pyremoteplay\server.py    Remote Play service (optional)
+//   app\remoteplay\server.py      Remote Play service (optional)
 //   runtime\p5rp\p5rp.exe         its session helper (AGPL, rpnative\)
 //   runtime\node\node.exe
 //   runtime\python\python.exe     (optional)
@@ -208,7 +208,7 @@ static class P5Manager
     static string PickSidecarDir(string packaged, string appData)
     {
         string current = Path.Combine(appData, "app-update", "current");
-        string updated = Path.Combine(current, "pyremoteplay");
+        string updated = Path.Combine(current, "remoteplay");
         string want = ReadTrimmed(Path.Combine(packaged, "pydeps"));
         if (want == "" || !File.Exists(Path.Combine(updated, "server.py"))) return packaged;
         Match m = Regex.Match(ReadTrimmed(Path.Combine(current, "manifest.json")), "\"pydeps\"\\s*:\\s*\"([0-9a-f]+)\"");
@@ -230,8 +230,8 @@ static class P5Manager
         string p5rp = Path.GetFullPath(Path.Combine(packaged, "..", "..", "runtime", "p5rp", "p5rp.exe"));
         return Start(python, args, dir, new string[][] {
             new string[] { "P5RP_BIN", p5rp },
-            new string[] { "PYREMOTEPLAY_SIDECAR_HOST", "127.0.0.1" },
-            new string[] { "PYREMOTEPLAY_SIDECAR_PORT", sidecarPort },
+            new string[] { "REMOTEPLAY_SIDECAR_HOST", "127.0.0.1" },
+            new string[] { "REMOTEPLAY_SIDECAR_PORT", sidecarPort },
             new string[] { "PYTHONUNBUFFERED", "1" },
             new string[] { "PYTHONIOENCODING", "utf-8" },
         });
@@ -311,10 +311,10 @@ static class P5Manager
         string node = Path.Combine(home, "runtime", "node", "node.exe");
         string backend = Path.Combine(home, "app", "backend");
         string python = Path.Combine(home, "runtime", "python", "python.exe");
-        string sidecarDir = Path.Combine(home, "app", "pyremoteplay");
+        string sidecarDir = Path.Combine(home, "app", "remoteplay");
         string data = Env("P5M_DATA_DIR", Path.Combine(home, "data"));
         string port = Env("PORT", "3001");
-        string sidecarPort = Env("PYREMOTEPLAY_SIDECAR_PORT", "9555");
+        string sidecarPort = Env("REMOTEPLAY_SIDECAR_PORT", "9555");
 
         Console.Title = "P5 Manager - starting...";
         Console.WriteLine("==============================================================");
@@ -368,7 +368,7 @@ static class P5Manager
             new string[] { "P5M_DB_DIR", appData },
             new string[] { "USER_DATA_DIR", data },
             new string[] { "BUILTIN_DIR", Path.Combine(home, "app", "builtin") },
-            new string[] { "PYREMOTEPLAY_SIDECAR_URL", "http://127.0.0.1:" + sidecarPort },
+            new string[] { "REMOTEPLAY_SIDECAR_URL", "http://127.0.0.1:" + sidecarPort },
         };
         // The backend calls "7z" by name, as it does on Linux.
         string sevenZip = Path.Combine(home, "runtime", "7zip");

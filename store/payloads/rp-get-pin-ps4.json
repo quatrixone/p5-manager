@@ -1,0 +1,18 @@
+{
+  "kind": "payload",
+  "id": "rp-get-pin-ps4",
+  "name": "rp-get-pin-ps4.bin",
+  "description": "Read the PS4 Remote Play PIN and console account ID.",
+  "author": "quatrixone",
+  "version": 1,
+  "console_type": "ps4",
+  "files": [
+    {
+      "type": "bin",
+      "name": "rp-get-pin-ps4.bin",
+      "url": "p5enc:v1:H5sj1hS3OBvnFyF2uvG9jQeciiHZRK46U-FIh_wFKF5ONmngGTE3UpQy2n_TTrl979q5DEnQkLzWS544iG3sFtTxD2GkFX01ZV3wj6T4NKcBcX3KOnhUJnFVuIgyU3aQvcYPG3CSIQiT2MT0i2G_vfAggnr-7ITPnMmei6pELZitoyk4rk6JtFLc",
+      "sha256": "2eaf9662c8eaf407eabbb6988c169e0ea575d27c8c9bda361d27d6bf7db67913",
+      "size": 51972
+    }
+  ]
+}

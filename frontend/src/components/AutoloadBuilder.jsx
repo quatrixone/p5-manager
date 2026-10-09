@@ -48,6 +48,7 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
   const [luaLogPattern, setLuaLogPattern] = useState('');
   const [inputScripts, setInputScripts] = useState([]);
   const [builtinInputScripts, setBuiltinInputScripts] = useState([]);
+  const platformScripts = builtinInputScripts.filter(s => platformMatches(mode, s.console_type));
 
   // New step form state (download / extract / ftp_upload / convert)
   const [dlUrl, setDlUrl] = useState('');
@@ -907,13 +908,13 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
                     Plays back the script through the Remote Play sidecar. The profile must be paired in the Remote Play tab.
                   </p>
 
-                  {builtinInputScripts.length > 0 && (
+                  {platformScripts.length > 0 && (
                     <>
                       <div className="text-xs text-muted mb-sm" style={{ textTransform: 'uppercase', letterSpacing: '0.05em' }}>
                         🧩 Built-in
                       </div>
                       <div className="flex-col gap-sm mb-md">
-                        {builtinInputScripts.map(script => (
+                        {platformScripts.map(script => (
                           <button
                             key={script.id}
                             className="btn btn-ghost text-left"
@@ -1249,9 +1250,9 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
                                   }}
                                 >
                                   <option value="">— Select a script —</option>
-                                  {builtinInputScripts.length > 0 && (
+                                  {platformScripts.length > 0 && (
                                     <optgroup label="🧩 Built-in">
-                                      {builtinInputScripts.map(s => (
+                                      {platformScripts.map(s => (
                                         <option key={s.id} value={s.id}>{s.name}</option>
                                       ))}
                                     </optgroup>

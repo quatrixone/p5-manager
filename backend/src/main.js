@@ -22,6 +22,8 @@ import remoteplayRouter from './routes/remoteplay.js';
 import builtinRouter from './routes/builtin.js';
 import libraryRouter from './routes/library.js';
 import gameCompressorRouter from './routes/gamecompressor.js';
+import savesRouter from './routes/saves.js';
+import storeRouter from './routes/store.js';
 import { ensureDefaultPayloads } from './lib/defaultPayloads.js';
 import { migratePaths } from './lib/migrate-paths.js';
 import { platformInfo } from './lib/platform.js';
@@ -161,6 +163,8 @@ app.use('/api/remoteplay', remoteplayRouter);
 app.use('/api/builtin', builtinRouter);
 app.use('/api/library', libraryRouter);
 app.use('/api/gamecompressor', gameCompressorRouter);
+app.use('/api/saves', savesRouter);
+app.use('/api/store', storeRouter);
 
 // started_at lets the Settings "Restart app" flow tell a fresh process from
 // the one it just asked to exit.

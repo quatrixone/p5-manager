@@ -1,7 +1,7 @@
 services:
-  pyremoteplay:
+  remoteplay:
     build:
-      context: ./pyremoteplay
+      context: ./remoteplay
       dockerfile: Dockerfile
       # p5rp, the session helper the service runs, is built from here.
       additional_contexts:
@@ -12,9 +12,9 @@ services:
     # and stream from it directly on the LAN (no port forwarding pain).
     network_mode: host
     environment:
-      - PYREMOTEPLAY_SIDECAR_HOST=127.0.0.1
-      - PYREMOTEPLAY_SIDECAR_PORT=9555
-      - PYREMOTEPLAY_SIDECAR_LOG=info
+      - REMOTEPLAY_SIDECAR_HOST=127.0.0.1
+      - REMOTEPLAY_SIDECAR_PORT=9555
+      - REMOTEPLAY_SIDECAR_LOG=info
 
   app:
     build:
@@ -57,7 +57,7 @@ services:
       - NODE_ENV=production
       - PORT=3001
       - DATA_DIR=/app/data
-      - PYREMOTEPLAY_SIDECAR_URL=http://127.0.0.1:9555
+      - REMOTEPLAY_SIDECAR_URL=http://127.0.0.1:9555
       # Memory + CPU footprint tuning. Defaults (V8 picks heap target from
       # host RAM = 11 GB here) leave Node sitting on ~115 MB RSS at idle
       # because GC is lazy. Capping the old-space at 512 MB + semi-space
@@ -128,6 +128,6 @@ services:
       - /dev/loop7:/dev/loop7
       - /dev/fuse:/dev/fuse
     depends_on:
-      - pyremoteplay
+      - remoteplay
     restart: unless-stopped
     network_mode: host

@@ -1,19 +1,20 @@
 import express from 'express';
+import { portRetry, validateSequenceSteps } from '../lib/sequenceChecks.js';
 import net from 'net';
 import { getRepo, log } from '../db/sqlite.js';
-import { loadBuiltin } from '../lib/builtinLoader.js';
+import { readBuiltinList } from '../lib/builtinLoader.js';
 import { readBuiltinInputScripts } from './inputScripts.js';
+import { installedTemplates } from './store.js';
 
 const router = express.Router();
 
-// Built-in templates live in /frontend/builtin/templates.js so the user
+// Built-in templates live in /frontend/builtin/templates.json so the user
 // only edits one place to change what shows up in the Autoload "Templates"
-// menu. loadBuiltin() caches by mtime so file edits via the built-in
-// editor are picked up on the very next request without a restart.
+// menu. readBuiltinList() rereads the file when it changes, so edits via
+// the built-in editor show on the very next request without a restart.
 async function getBuiltinTemplates() {
   try {
-    const mod = await loadBuiltin('templates.js');
-    return Array.isArray(mod.DEFAULT_TEMPLATES) ? mod.DEFAULT_TEMPLATES : [];
+    return readBuiltinList('templates.json');
   } catch (err) {
     log('error', `Failed to load built-in templates: ${err.message}`);
     return [];
@@ -134,6 +135,7 @@ router.post('/', (req, res) => {
   try {
     const { profileId, name, steps, scheduleCron, scheduleEnabled, autoTrigger, autoTriggerConfig } = req.body;
     if (!name || !steps) return res.status(400).json({ error: 'name and steps required' });
+    try { validateSequenceSteps(steps); } catch (e) { return res.status(400).json({ error: e.message }); }
     const lastId = getRepo().runAndSave(
       'INSERT INTO autoload_sequences (profile_id, name, steps, schedule_cron, schedule_enabled, auto_trigger, auto_trigger_config) VALUES (?, ?, ?, ?, ?, ?, ?)',
       [profileId ? parseInt(profileId) : null, name, JSON.stringify(steps), scheduleCron || null, scheduleEnabled ? 1 : 0, normalizeAutoTrigger(autoTrigger), serializeAutoTriggerConfig(autoTrigger, autoTriggerConfig)],
@@ -149,6 +151,7 @@ router.post('/', (req, res) => {
 router.put('/:id', (req, res) => {
   try {
     const { name, steps, scheduleCron, scheduleEnabled, profileId, autoTrigger, autoTriggerConfig } = req.body;
+    try { validateSequenceSteps(steps); } catch (e) { return res.status(400).json({ error: e.message }); }
     const repo = getRepo();
     if (!repo.queryOne('SELECT id FROM autoload_sequences WHERE id = ?', [parseInt(req.params.id)])) {
       return res.status(404).json({ error: 'Sequence not found' });
@@ -214,12 +217,9 @@ async function execCheckPort(step, ctx) {
     ok = await checkPortOpen(ctx.profile.ip_address, port);
   }
   if (!ok) {
-    const from = Math.max(1, parseInt(step.retryFromStep) || 1);
-    const to = Math.max(from, parseInt(step.retryToStep) || from);
-    // Signal the outer runner to retry a step range. We throw with a marker so
-    // the orchestrator can pick it up.
     const err = new Error(`Port ${port} not open on ${ctx.profile.ip_address}`);
-    err.retry = { from: from - 1, to: to - 1 };
+    const retry = portRetry(step, ctx.run.current_step);
+    if (retry) err.retry = retry;
     throw err;
   }
 }
@@ -249,7 +249,7 @@ async function execWol(step, ctx) {
       profile_id: ctx.profile.id,
     }, ctx.signal);
     if (r?.already_live) {
-      runLog(ctx.run, `  · PS5 ${ctx.profile.ip_address} already had a live session - reusing`);
+      runLog(ctx.run, `  · Console ${ctx.profile.ip_address} already had a live session - reusing`);
     } else if (r?.warm_cached) {
       runLog(ctx.run, `  · pre-warmed RP session for ${ctx.profile.ip_address} (warm cache TTL ${r.warm_cache_ttl_s || 180}s)`);
     } else if (r?.resumed) {
@@ -431,13 +431,13 @@ async function ensureSessionForStep(ctx, label) {
   try {
     const ddp = await apiFetch('GET', `/remoteplay/discover?ip=${encodeURIComponent(ip)}`, undefined, ctx.signal);
     if (!ddp?.success) {
-      throw new Error(`PS5 ${ip} is offline / unreachable (DDP failed)`);
+      throw new Error(`Console ${ip} is offline / unreachable (DDP failed)`);
     }
-    runLog(ctx.run, `  · ${label}: cold start (PS5 state=${ddp.status || 'unknown'})`);
+    runLog(ctx.run, `  · ${label}: cold start (console state=${ddp.status || 'unknown'})`);
   } catch (e) {
     // DDP failure is fatal here - bubble up so the sequence stops instead
     // of looping through stale step retries.
-    throw new Error(`PS5 ${ip} not reachable: ${e.message}`);
+    throw new Error(`Console ${ip} not reachable: ${e.message}`);
   }
   return 'cold';
 }
@@ -457,6 +457,7 @@ async function execInputScript(step, ctx) {
     // text so an edit of the built-in applies to the next run.
     const builtin = readBuiltinInputScripts().find(s => s.id === step.scriptId);
     if (!builtin?.script) throw new Error(`Built-in script "${step.scriptId}" not found`);
+    if (builtin.console_type && builtin.console_type !== ctx.profile.console_type) throw new Error(`${builtin.name} requires ${builtin.console_type.toUpperCase()}`);
     body.script = builtin.script;
   } else if (step.scriptId) body.script_id = step.scriptId;
   else throw new Error('input_script step needs a script or scriptId');
@@ -467,9 +468,10 @@ async function execInputScript(step, ctx) {
   if (r?.session_id) {
     runLog(ctx.run, `  · session ${r.session_id.slice(0, 8)} executed ${(r.events || []).length} input event(s)`);
   }
-  const failed = (r.events || []).filter((e) => e.type === 'error');
+  if (r.success === false) throw new Error(r.error || 'Input script failed');
+  const failed = (r.events || []).filter((e) => e.type === 'error' || e.error);
   if (failed.length) {
-    throw new Error(`${failed.length} input(s) failed: ${failed.slice(0, 3).map((f) => f.msg || f.button).join(', ')}`);
+    throw new Error(`${failed.length} input(s) failed: ${failed.slice(0, 3).map((f) => f.error || f.msg || f.button).join(', ')}`);
   }
 }
 
@@ -551,9 +553,9 @@ async function executeSequence(run, sequence, profile, steps) {
   });
   cancelled.catch(() => {});
 
-  const maxRetriesPerCheck = 3;
   const retryCount = new Map();
   let i = 0;
+  let retryResume = null;
   try {
     while (i < steps.length) {
       if (run.cancelled) {
@@ -577,7 +579,8 @@ async function executeSequence(run, sequence, profile, steps) {
         running.catch(() => {}); // it may still fail after the run has moved on
         await Promise.race([running, cancelled]);
         runLog(run, `  ✓ ok`);
-        i++;
+        if (retryResume && i === retryResume.end) { i = retryResume.check; retryResume = null; }
+        else i++;
       } catch (e) {
         if (run.cancelled) {
           run.status = 'cancelled';
@@ -587,13 +590,14 @@ async function executeSequence(run, sequence, profile, steps) {
         if (e.retry && typeof e.retry.from === 'number') {
           const rc = (retryCount.get(i) || 0) + 1;
           retryCount.set(i, rc);
-          if (rc > maxRetriesPerCheck) {
+          if (rc > e.retry.maxRetries) {
             runLog(run, `  ✗ failed after ${rc - 1} retries: ${e.message}`);
             run.status = 'failed';
             run.error = e.message;
             break;
           }
           runLog(run, `  ↻ check failed (${e.message}); rerunning steps ${e.retry.from + 1}-${e.retry.to + 1} (attempt ${rc})`);
+          retryResume = e.retry.to < i ? { end: e.retry.to, check: i } : null;
           i = Math.max(0, e.retry.from);
           continue;
         }
@@ -626,7 +630,7 @@ async function executeSequence(run, sequence, profile, steps) {
 // throws an Error with .status for the route to report.
 function startSequenceRun(sequenceId, startedBy) {
   const sequence = getRepo().queryOne(`
-    SELECT s.*, p.name as profile_name, p.ip_address, p.port, p.mac_address
+    SELECT s.*, p.name as profile_name, p.ip_address, p.port, p.mac_address, p.console_type
     FROM autoload_sequences s
     LEFT JOIN profiles p ON s.profile_id = p.id
     WHERE s.id = ?
@@ -634,7 +638,7 @@ function startSequenceRun(sequenceId, startedBy) {
 
   if (!sequence) throw Object.assign(new Error('Sequence not found'), { status: 404 });
   const steps = JSON.parse(sequence.steps || '[]');
-  if (steps.length === 0) throw Object.assign(new Error('Sequence has no steps'), { status: 400 });
+  try { validateSequenceSteps(steps); } catch (e) { throw Object.assign(e, { status: 400 }); }
 
   const profile = sequence.profile_id ? {
     id: sequence.profile_id,
@@ -642,6 +646,7 @@ function startSequenceRun(sequenceId, startedBy) {
     ip_address: sequence.ip_address,
     port: sequence.port,
     mac_address: sequence.mac_address,
+    console_type: sequence.console_type,
   } : null;
 
   const runId = `r${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
@@ -784,12 +789,12 @@ router.post('/runs/:runId/cancel', (req, res) => {
 
 // ---- Built-in templates: always available, no DB rows needed -----------------
 //
-// Source of truth: /frontend/builtin/templates.js (see top of this file).
+// Source of truth: /frontend/builtin/templates.json (see top of this file).
 
 router.get('/templates/list', async (req, res) => {
   try {
-    const templates = await getBuiltinTemplates();
-    res.json(templates);
+    // The built-in ones, then those installed from the marketplace.
+    res.json([...(await getBuiltinTemplates()), ...installedTemplates()]);
   } catch (err) {
     log('error', `templates/list failed: ${err.message}`);
     res.status(500).json({ error: err.message });

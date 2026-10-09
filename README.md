@@ -17,6 +17,8 @@ P5 Manager is an independent hobby project and is not affiliated with Sony Inter
 - **Payloads:** organize, update, and send payloads to the selected console.
 - **File Ops:** browse local, network, and console storage; transfer files and run supported install, download, extract, and conversion tasks.
 - **Library:** view and manage titles detected by ShadowMountPlus. Available actions depend on the console.
+- **Tools:** console logs and a Marketplace for payloads, homebrew apps, Autoload templates and input scripts. See [store/README.md](store/README.md).
+- **Saves:** mount, back up and restore PS5 saves in File Ops. The save mounter payload has its own GPL-3.0 licence.
 - **Mobile-ready:** responsive layout and installable PWA.
 
 ## Screenshots
@@ -46,7 +48,7 @@ cd p5-manager
 docker compose up -d
 ```
 
-Open `http://<server-address>:3001`. Docker Compose starts the app and its Remote Play service. To update, run `git pull && docker compose pull && docker compose up -d`.
+Open `http://<server-address>:3001`. Docker Compose starts the app and its Remote Play service. To update, run `git pull && docker compose pull && docker compose up -d --remove-orphans`.
 
 ### Windows
 
@@ -82,8 +84,8 @@ sudo apt-get install -y build-essential cmake ninja-build pkg-config \
   python3-protobuf protobuf-compiler
 cmake -S rpnative -B build-rp -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build-rp --target p5rp
-python3 -m venv pyremoteplay/.venv
-pyremoteplay/.venv/bin/pip install -r pyremoteplay/requirements.txt
+python3 -m venv remoteplay/.venv
+remoteplay/.venv/bin/pip install -r remoteplay/requirements.txt
 ```
 
 Start each service in its own terminal from the repository root:
@@ -98,9 +100,9 @@ cd frontend && npm ci && npm run dev
 
 ```bash
 P5RP_BIN="$PWD/build-rp/p5rp" \
-PYREMOTEPLAY_SIDECAR_HOST=127.0.0.1 \
-PYREMOTEPLAY_SIDECAR_PORT=9555 \
-pyremoteplay/.venv/bin/python pyremoteplay/server.py
+REMOTEPLAY_SIDECAR_HOST=127.0.0.1 \
+REMOTEPLAY_SIDECAR_PORT=9555 \
+remoteplay/.venv/bin/python remoteplay/server.py
 ```
 
 Open the frontend at `http://localhost:3000`. Vite forwards API requests to the backend on port `3001`; the sidecar listens on `127.0.0.1:9555`. The sidecar is needed for Remote Play; the API and frontend can be developed without it. Run tests with `npm test` in both `backend/` and `frontend/`. For Windows helper builds and contribution guidance, see [`rpnative/README.md`](rpnative/README.md) and [CONTRIBUTING.md](CONTRIBUTING.md).

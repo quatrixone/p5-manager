@@ -57,7 +57,7 @@ def find_helper() -> Optional[str]:
         os.environ.get("P5RP_BIN") or "",
         os.path.join(here, exe),
         os.path.join(here, "p5rp", exe),
-        # Windows package: <home>\runtime\p5rp, with this file in <home>\app\pyremoteplay
+        # Windows package: <home>\runtime\p5rp, with this file in <home>\app\remoteplay
         os.path.join(here, "..", "..", "runtime", "p5rp", exe),
     ]
     for c in candidates:

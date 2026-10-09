@@ -1,0 +1,240 @@
+[
+  {
+    "id": "tpl-download-extract-upload",
+    "name": "Download → extract → upload (cross-platform)",
+    "description": "Open a Remote Play session (keeps the console awake), download a file, extract it locally, upload the result via FTP, then rest mode. Works for PS4 (GoldHEN FTP) or PS5 — adjust the destination path to your console.",
+    "requiresProfile": true,
+    "steps": [
+      {
+        "type": "rp_session",
+        "action": "start",
+        "name": "Start Remote Play session"
+      },
+      {
+        "type": "download",
+        "url": "p5enc:v1:E0gsJAO9V94Dm-ofjs3Uq0iF0I6yjEY8mG3ZIdVvEfWUNkDuryp3g0wC91S5A6C-abxXxQ4sQaar7dY",
+        "dest_kind": "local",
+        "dest_path": "/data/mkpfs",
+        "name": "Download archive.zip"
+      },
+      {
+        "type": "extract",
+        "source": "local-fs",
+        "local_path": "/data/mkpfs/archive.zip",
+        "dest_kind": "local-fs",
+        "dest_local_path": "/data/mkpfs",
+        "name": "Extract archive.zip"
+      },
+      {
+        "type": "ftp_upload",
+        "local_path": "/data/mkpfs/file.ffpfsc",
+        "dest_path": "/data/homebrew",
+        "name": "Upload to console FTP"
+      },
+      {
+        "type": "rp_session",
+        "action": "standby",
+        "name": "Console rest mode"
+      }
+    ]
+  },
+  {
+    "id": "tpl-full-pipeline",
+    "name": "PS5: Full game pipeline (download → extract → mkpfs → FTP)",
+    "description": "Open a Remote Play session (holds PS5 awake), download, extract, convert to .ffpfsc, upload via FTP, then rest mode. PS5-specific because of the mkpfs pack step.",
+    "console_type": "ps5",
+    "requiresProfile": true,
+    "steps": [
+      {
+        "type": "rp_session",
+        "action": "start",
+        "name": "Start Remote Play session"
+      },
+      {
+        "type": "download",
+        "url": "p5enc:v1:ik3xlEXYeUSor9AtUc4mD9P0T-HX1XRE02DERqpbcFilu-ETslOpD4Mw-IunscYMMIkZXjguxv4",
+        "dest_kind": "local",
+        "dest_path": "/data/mkpfs",
+        "name": "Download game.rar"
+      },
+      {
+        "type": "extract",
+        "source": "local-fs",
+        "local_path": "/data/mkpfs/game.rar",
+        "dest_kind": "local-fs",
+        "dest_local_path": "/data/mkpfs",
+        "name": "Extract game.rar"
+      },
+      {
+        "type": "convert",
+        "mode": "pack-file",
+        "source_path": "/data/mkpfs/game.exfat",
+        "name": "Convert to .ffpfsc"
+      },
+      {
+        "type": "ftp_upload",
+        "local_path": "/data/mkpfs/game.ffpfsc",
+        "dest_path": "/data/homebrew",
+        "name": "Upload .ffpfsc to PS5"
+      },
+      {
+        "type": "rp_session",
+        "action": "standby",
+        "name": "Console rest mode"
+      }
+    ]
+  },
+  {
+    "id": "tpl-userguide-jailbreak-autoload",
+    "name": "PS5: Jailbreak when the loader is down (User's Guide → kstuff → ShadowMount → zftpd)",
+    "description": "When the PS5 is online and its ELF loader is closed: open the configured guide loader, wait for port 9021, send kstuff, ShadowMountPlus and zftpd, then verify FTP.",
+    "console_type": "ps5",
+    "requiresProfile": true,
+    "autoTrigger": "loader_down",
+    "notes": "PS5 only. Configure the User Guide host and calibrate both guide scripts for its prompts and selected action first. The watcher runs only while the console is online and the loader remains closed. A failed port check reruns the guide steps at most twice, then reports failure; it never reports success merely because the button script completed.",
+    "steps": [
+      {
+        "type": "input_script",
+        "scriptId": "builtin:open-user-guide",
+        "builtin": true,
+        "name": "Open configured User Guide page"
+      },
+      {
+        "type": "input_script",
+        "scriptId": "builtin:user-guide-loader",
+        "builtin": true,
+        "name": "Start selected guide loader"
+      },
+      {
+        "type": "check_port",
+        "port": 9021,
+        "waitSeconds": 90,
+        "retryFromStep": 1,
+        "retryToStep": 2,
+        "maxRetries": 2,
+        "name": "Wait for ELF loader; retry guide at most twice"
+      },
+      {
+        "type": "payload",
+        "payloadName": "kstuff.elf",
+        "name": "Send kstuff.elf"
+      },
+      {
+        "type": "wait",
+        "duration": 5000,
+        "name": "Wait 5 seconds"
+      },
+      {
+        "type": "payload",
+        "payloadName": "shadowmountplus.elf",
+        "name": "Send shadowmountplus.elf"
+      },
+      {
+        "type": "wait",
+        "duration": 3000,
+        "name": "Wait for ShadowMountPlus to initialise"
+      },
+      {
+        "type": "payload",
+        "payloadName": "zftpd-ps5-zhttp-v1.6.0.elf",
+        "name": "Start zftpd FTP + HTTP server"
+      },
+      {
+        "type": "check_port",
+        "port": 2120,
+        "waitSeconds": 30,
+        "name": "Verify zftpd FTP port 2120"
+      }
+    ]
+  },
+  {
+    "id": "tpl-goldhen-load",
+    "name": "PS4: Load GoldHEN (wake → wait → send goldhen.bin)",
+    "description": "Wake the PS4, wait 8 seconds for a manually enabled BIN loader, send goldhen.bin to TCP 9020, then verify the payload-sender port stayed open.",
+    "console_type": "ps4",
+    "requiresProfile": true,
+    "notes": "PS4 takes longer than PS5 to open the GoldHEN exploit listener, so the port check retries the wake + wait pair. Requires your own compatible goldhen.bin (and ftp_server.bin for the FTP template). These templates cannot bootstrap a jailbreak from a closed BIN-loader port.",
+    "steps": [
+      {
+        "type": "wol",
+        "name": "Wake on LAN"
+      },
+      {
+        "type": "wait",
+        "duration": 8000,
+        "name": "Wait 8 seconds"
+      },
+      {
+        "type": "check_port",
+        "port": 9020,
+        "retryFromStep": 1,
+        "retryToStep": 2,
+        "name": "Check GoldHEN port 9020 (retry wake on fail)",
+        "waitSeconds": 60,
+        "maxRetries": 2
+      },
+      {
+        "type": "payload",
+        "payloadName": "goldhen.bin",
+        "name": "Send goldhen.bin"
+      }
+    ]
+  },
+  {
+    "id": "tpl-goldhen-full-flow",
+    "name": "PS4: GoldHEN + FTP ready (wake → load → start FTP → verify :2121)",
+    "description": "With an already-enabled BIN loader: wake the PS4, load goldhen.bin, then load ftp_server.bin and succeed when port 2121 (FTP) is open so you can immediately browse the PS4 from the File Ops tab.",
+    "console_type": "ps4",
+    "requiresProfile": true,
+    "notes": "The last port check has no retry: the run fails if FTP never comes up. Requires your own compatible goldhen.bin (and ftp_server.bin for the FTP template). These templates cannot bootstrap a jailbreak from a closed BIN-loader port.",
+    "steps": [
+      {
+        "type": "wol",
+        "name": "Wake on LAN"
+      },
+      {
+        "type": "wait",
+        "duration": 8000,
+        "name": "Wait 8 seconds"
+      },
+      {
+        "type": "check_port",
+        "port": 9020,
+        "retryFromStep": 1,
+        "retryToStep": 2,
+        "name": "Check GoldHEN port 9020 (retry wake on fail)",
+        "waitSeconds": 60,
+        "maxRetries": 2
+      },
+      {
+        "type": "payload",
+        "payloadName": "goldhen.bin",
+        "name": "Send goldhen.bin"
+      },
+      {
+        "type": "wait",
+        "duration": 4000,
+        "name": "Wait 4 seconds for jailbreak to settle"
+      },
+      {
+        "type": "payload",
+        "payloadName": "ftp_server.bin",
+        "name": "Send ftp_server.bin"
+      },
+      {
+        "type": "wait",
+        "duration": 3000,
+        "name": "Wait 3 seconds for FTP to bind"
+      },
+      {
+        "type": "check_port",
+        "port": 2121,
+        "retryFromStep": 8,
+        "retryToStep": 8,
+        "name": "Verify FTP port 2121 (success)",
+        "waitSeconds": 30,
+        "maxRetries": 2
+      }
+    ]
+  }
+]

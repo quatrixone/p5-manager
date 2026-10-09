@@ -5,22 +5,20 @@
 //                                                copies frontend/builtin
 //                                                to /app/builtin)
 //
-// Each loaded module is cached by absolute path so consumers don't pay the
-// dynamic-import cost on hot endpoints.
 
 import fs from 'fs';
+import { decodeCatalog } from './catalogLinks.js';
 import path from 'path';
-import { fileURLToPath, pathToFileURL } from 'url';
+import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const CANDIDATE_DIRS = [
+  process.env.BUILTIN_DIR && path.resolve(process.env.BUILTIN_DIR),
   // Repo / `npm run dev` layout
   path.resolve(__dirname, '../../../frontend/builtin'),
   // Docker runtime layout (see Dockerfile)
   path.resolve(__dirname, '../../builtin'),
-  // Allow override for unusual deployments
-  process.env.BUILTIN_DIR && path.resolve(process.env.BUILTIN_DIR),
 ].filter(Boolean);
 
 let cachedDir = null;
@@ -41,34 +39,20 @@ export function getBuiltinDir() {
   return cachedDir;
 }
 
-// mtime-keyed cache. When the user edits a builtin file via the editor API,
-// the mtime advances and we transparently re-import on the next request.
-// We append ?v=<mtimeMs> to the file URL so Node's internal ESM loader treats
-// each version as a fresh module specifier (otherwise it would hand back the
-// cached one regardless of disk state).
-const moduleCache = new Map(); // filePath -> { mtimeMs, mod }
+// The built-in files are JSON arrays. Each is read again only when its
+// mtime moves, so an edit through the editor API shows on the next request.
+const cache = new Map(); // filePath -> { mtimeMs, list }
 
-export async function loadBuiltin(filename) {
-  const dir = getBuiltinDir();
-  const filePath = path.join(dir, filename);
+export function readBuiltinList(filename) {
+  const filePath = path.join(getBuiltinDir(), filename);
   if (!fs.existsSync(filePath)) {
-    throw new Error(`Built-in module not found: ${filePath}`);
+    throw new Error(`Built-in file not found: ${filePath}`);
   }
   const mtimeMs = fs.statSync(filePath).mtimeMs;
-  const cached = moduleCache.get(filePath);
-  if (cached && cached.mtimeMs === mtimeMs) return cached.mod;
-
-  const url = pathToFileURL(filePath).href + `?v=${mtimeMs}`;
-  const mod = await import(url);
-  moduleCache.set(filePath, { mtimeMs, mod });
-  return mod;
-}
-
-export function clearBuiltinCache(filename) {
-  if (!filename) {
-    moduleCache.clear();
-    return;
-  }
-  const dir = getBuiltinDir();
-  moduleCache.delete(path.join(dir, filename));
+  const cached = cache.get(filePath);
+  if (cached && cached.mtimeMs === mtimeMs) return cached.list;
+  const list = decodeCatalog(JSON.parse(fs.readFileSync(filePath, 'utf8')));
+  if (!Array.isArray(list)) throw new Error(`${filename} is not a JSON array`);
+  cache.set(filePath, { mtimeMs, list });
+  return list;
 }

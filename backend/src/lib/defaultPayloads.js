@@ -3,7 +3,7 @@ import path from 'path';
 import fetch from 'node-fetch';
 import AdmZip from 'adm-zip';
 import { getRepo, log } from '../db/sqlite.js';
-import { loadBuiltin } from './builtinLoader.js';
+import { readBuiltinList } from './builtinLoader.js';
 import { payloadsDir } from './paths.js';
 import { fileURLToPath } from 'url';
 
@@ -19,8 +19,9 @@ export const VENDORED_PAYLOADS = [
   { filename: 'rp-get-pin.elf', dir: 'rp-get-pin', console_type: 'ps5' },
   { filename: 'offact.elf', dir: 'offact', console_type: 'ps5', version: '2' },
   { filename: 'pkg-install.elf', dir: 'pkg-install', console_type: 'ps5' },
+  { filename: 'save-mounter.elf', dir: 'save-mounter', console_type: 'ps5' },
 ];
-function vendoredSource(entry) {
+export function vendoredSource(entry) {
   const candidates = [
     path.resolve(__dirname, '../../vendored', entry.filename),
     path.resolve(__dirname, '../../../p5managerclient', entry.dir, entry.filename),
@@ -28,13 +29,11 @@ function vendoredSource(entry) {
   return candidates.find(p => fs.existsSync(p)) || null;
 }
 
-// Authoritative list lives in /frontend/builtin/payloads.js — single source
-// of truth so the user only edits one file to change what gets auto-fetched.
-// loadBuiltin() caches by mtime, so getEssentialPayloads() transparently
-// returns the freshly-edited list the next time it's called.
+// Authoritative list lives in /frontend/builtin/payloads.json — single
+// source of truth so the user only edits one file to change what gets
+// auto-fetched. readBuiltinList() rereads it when it changes.
 export async function getEssentialPayloads() {
-  const mod = await loadBuiltin('payloads.js');
-  return Array.isArray(mod.ESSENTIAL_PAYLOADS) ? mod.ESSENTIAL_PAYLOADS : [];
+  return readBuiltinList('payloads.json');
 }
 
 function ensurePayloadsDir() {
@@ -62,7 +61,7 @@ function normalizeConsoleType(v) {
   return null;
 }
 
-function insertPayload({ name, filename, filepath, source_url, size, version, console_type }) {
+export function insertPayload({ name, filename, filepath, source_url, size, version, console_type }) {
   const repo = getRepo();
   // If a stale row exists (file missing), refresh it instead of duplicating.
   const existingId = repo.queryScalar(

@@ -110,8 +110,7 @@ async function deleteOffactTrigger(ip, triggerPath) {
   } catch (_) { /* ignored — see comment above */ }
 }
 
-const SIDECAR_URL = process.env.PYREMOTEPLAY_SIDECAR_URL
-  || process.env.CHIAKI_SIDECAR_URL  // legacy env name, kept for older compose files
+const SIDECAR_URL = process.env.REMOTEPLAY_SIDECAR_URL
   || 'http://127.0.0.1:9555';
 
 // Per-IP session cache so script runs can transparently reuse a single
@@ -1676,6 +1675,8 @@ router.post('/run-script', async (req, res) => {
     if (!ip) return res.status(400).json({ success: false, error: 'ip or profile_id required' });
 
     const lines = String(actualScript).split('\n');
+    const invalid = lines.map((line, i) => ({ parsed: parseScriptLine(line), line: i + 1 })).find(v => v.parsed?.type === 'unknown');
+    if (invalid) return res.status(400).json({ success: false, error: `Line ${invalid.line}: unknown command ${invalid.parsed.raw}` });
     let sid;
     try {
       const r = await ensureSessionForIp(ip);
@@ -1732,13 +1733,11 @@ router.post('/run-script', async (req, res) => {
         continue;
       }
       if (parsed.type === 'home') {
-        let lastErr = null;
-        for (const [button, pauseMs] of [['ps', 800], ['down', 400], ['cross', 0]]) {
-          const err = await sendButton(button, 80);
-          if (err && err !== 'recovered') lastErr = err;
-          if (pauseMs) await pause(pauseMs);
-        }
-        events.push({ line: i + 1, type: 'home', ...(lastErr ? { error: lastErr } : {}) });
+        const consoleType = loadProfileByIp(ip)?.console_type;
+        const err = await sendButton('ps', consoleType === 'ps4' ? 80 : 1500);
+        await pause(1200);
+        events.push({ line: i + 1, type: 'home', ...(err && err !== 'recovered' ? { error: err } : {}) });
+        if (err && err !== 'recovered') break;
         continue;
       }
       if (parsed.type === 'text') {
@@ -1760,6 +1759,7 @@ router.post('/run-script', async (req, res) => {
           line: i + 1, type: 'text', text: parsed.text, typed,
           ...(errLast ? { error: errLast } : {}),
         });
+        if (errLast) break;
         continue;
       }
       if (parsed.type === 'button') {
@@ -1769,7 +1769,7 @@ router.post('/run-script', async (req, res) => {
         for (let r = 0; r < reps && !gone; r++) {
           const err = await sendButton(parsed.button, parsed.duration);
           if (err === 'recovered') recoveredAny = true;
-          else if (err) lastErr = err;
+          else if (err) { lastErr = err; break; }
           // Spacing between repeats so PS5 menus register each press as a
           // discrete event instead of a long hold.
           await pause(60);
@@ -1779,6 +1779,7 @@ router.post('/run-script', async (req, res) => {
           ...(lastErr ? { error: lastErr } : {}),
           ...(recoveredAny ? { recovered: true } : {}),
         });
+        if (lastErr) break;
         continue;
       }
       if (parsed.type === 'stick') {
@@ -1804,7 +1805,8 @@ router.post('/run-script', async (req, res) => {
     }
 
     if (gone) return;
-    res.json({ success: true, session_id: sid, events });
+    const failed = events.filter(e => e.type === 'error' || e.error);
+    res.json({ success: failed.length === 0, session_id: sid, events, ...(failed.length ? { error: `Input failed at line ${failed[0].line}: ${failed[0].error || failed[0].msg}` } : {}) });
   } catch (err) {
     res.status(err.status || 500).json({ success: false, error: err.message });
   }

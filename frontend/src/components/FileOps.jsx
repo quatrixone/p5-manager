@@ -5,6 +5,7 @@ import Queue from './Queue';
 import FileBrowser from './FileBrowser';
 import DualPane from './DualPane';
 import GameCompressor from './GameCompressor';
+import SaveMounter from './SaveMounter';
 import useVisiblePolling from '../hooks/useVisiblePolling';
 import { apiSafe } from '../lib/api.js';
 import { usePlatform } from '../contexts/PlatformContext';
@@ -53,6 +54,7 @@ const TABS = [
   { key: 'files',    label: 'Browse',   icon: '📁', countKeys: ['upload', 'extract'] },
   { key: 'convert',  label: 'Convert',  icon: '🔄', countKeys: ['convert'] },
   { key: 'download', label: 'Download', icon: '⬇️', countKeys: ['download'] },
+  { key: 'saves',    label: 'Saves',    icon: '💾' },
   // 'queue' key kept stable for localStorage migration; the label is now
   // "Tasks" everywhere users see it.
   { key: 'queue',    label: 'Tasks',    icon: '📋', countKeys: ['download', 'extract', 'convert', 'upload'] },
@@ -199,6 +201,7 @@ export default function FileOps({ profiles, onNotification }) {
             onOpenQueue={openQueue}
           />
         )}
+        {subTab === 'saves' && <SaveMounter profiles={profiles} onNotification={onNotification} />}
         {subTab === 'queue' && <Queue />}
       </div>
     </div>

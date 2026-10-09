@@ -9,9 +9,10 @@ Start
   Your browser opens http://localhost:3001/ by itself once it is ready.
   Close the console window to stop P5 Manager.
 
-  The first start may show a Windows Firewall prompt for node.exe and
-  python.exe: allow them on private networks, otherwise the console's log
-  streams and Remote Play cannot reach this PC.
+  The first start may show a Windows Firewall prompt for node.exe,
+  python.exe and p5rp.exe: allow them on private networks, otherwise the
+  console's log streams and Remote Play cannot reach this PC, and the
+  picture cannot reach your browser.
 
 Your data
   Everything is kept in the "data" folder next to P5Manager.exe: the
@@ -31,6 +32,9 @@ Options (environment variables, set before starting)
   PORT              web UI port (default 3001)
   P5M_DATA_DIR      another place for the data folder
   P5M_NO_BROWSER=1  do not open the browser (also: P5Manager.exe --no-browser)
+  P5M_WEBRTC_PORTS  UDP port range for the Remote Play picture, e.g. 50000-50100
+  P5M_WEBRTC_ICE    STUN/TURN servers for it, comma-separated (not needed on
+                    the local network)
 
 Network folders
   A folder on another computer or a NAS: Settings -> Config -> Network

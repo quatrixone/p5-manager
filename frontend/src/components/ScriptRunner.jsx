@@ -12,7 +12,7 @@ import { AVAILABLE_COMMANDS, buildOskInputs, parseLine } from '../lib/inputScrip
 // that goes through the RP session's own input channel, so "▶ Run" here
 // and the step-by-step "👣 Step" mode both ultimately press buttons the
 // same way as the on-screen touch controller.
-function ScriptRunner({ ip, liveSession, onStartSession, onStopSession, sendCommand, scripts, onScriptsChange, onRequestStep, onResetToMainScreen }) {
+function ScriptRunner({ consoleType, ip, liveSession, onStartSession, onStopSession, sendCommand, scripts, onScriptsChange, onRequestStep, onResetToMainScreen }) {
   // The stop function as of the latest render: the one runScript closed
   // over was made before the session it has to stop existed.
   const onStopSessionRef = useRef(onStopSession);
@@ -43,14 +43,14 @@ function ScriptRunner({ ip, liveSession, onStartSession, onStopSession, sendComm
   const [modalError, setModalError] = useState('');
 
   const fetchBuiltinScripts = () => {
-    apiSafe.get('/input-scripts/builtin').then(list => {
+    apiSafe.get(`/input-scripts/builtin${consoleType ? '?console_type=' + consoleType : ''}`).then(list => {
       if (Array.isArray(list)) setBuiltinScripts(list);
     });
   };
 
   useEffect(() => {
     fetchBuiltinScripts();
-  }, []);
+  }, [consoleType]);
 
   const addOutput = (msg, type = 'info') => {
     setOutput(prev => [...prev, { msg, type, time: new Date().toLocaleTimeString() }]);
@@ -165,7 +165,7 @@ function ScriptRunner({ ip, liveSession, onStartSession, onStopSession, sendComm
 
   const runScript = async (scriptToRun, key = 'script') => {
     if (!ip) {
-      addOutput('No PS5 IP address configured', 'error');
+      addOutput('No console IP address configured', 'error');
       return;
     }
     // A session this run opens is this run's to close; one the user had
@@ -483,7 +483,7 @@ function ScriptRunner({ ip, liveSession, onStartSession, onStopSession, sendComm
             </div>
           </div>
           <p className="text-xs text-muted mt-sm">
-            Append <code>10x</code>, <code>x10</code>, or <code>*10</code> to repeat. Use <code>text &lt;string&gt;</code> to type on the PS5 on-screen keyboard.
+            Append <code>10x</code>, <code>x10</code>, or <code>*10</code> to repeat. Use <code>text &lt;string&gt;</code> to type on the console on-screen keyboard.
           </p>
         </div>
       </div>

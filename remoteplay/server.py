@@ -30,7 +30,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 import uvicorn
 
-LOG_LEVEL = os.environ.get("PYREMOTEPLAY_SIDECAR_LOG", "info").upper()
+LOG_LEVEL = os.environ.get("REMOTEPLAY_SIDECAR_LOG", "info").upper()
 logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("rp-sidecar")
 
@@ -819,8 +819,8 @@ async def _shutdown():
 
 
 def main():
-    port = int(os.environ.get("PYREMOTEPLAY_SIDECAR_PORT", os.environ.get("CHIAKI_SIDECAR_PORT", "9555")))
-    host = os.environ.get("PYREMOTEPLAY_SIDECAR_HOST", os.environ.get("CHIAKI_SIDECAR_HOST", "127.0.0.1"))
+    port = int(os.environ.get("REMOTEPLAY_SIDECAR_PORT", "9555"))
+    host = os.environ.get("REMOTEPLAY_SIDECAR_HOST", "127.0.0.1")
     log.info("starting the Remote Play service on %s:%s (p5rp: %s)", host, port, chiaki_engine.find_helper() or "missing")
     uvicorn.run(app, host=host, port=port, log_level=LOG_LEVEL.lower())
 

@@ -1,0 +1,18 @@
+{
+  "kind": "payload",
+  "id": "klogsrv-ps5",
+  "name": "klogsrv-ps5.elf",
+  "description": "PS5 Kernel log server (used by Log viewer)",
+  "author": "ps5-payload-dev",
+  "version": 1,
+  "console_type": "ps5",
+  "files": [
+    {
+      "type": "elf",
+      "name": "klogsrv-ps5.elf",
+      "url": "p5enc:v1:xmaDT_fwoTv4jqZBn4-y7ZP2qLwLiX-MR1cq21KVyZd8ZXLtA-jf01t-nqwu0PXF-cbHFzvtPjYUixefgXH2hgiLXKXQS5g3DiOzdhxqSFaJiU-idd0nHkGNXeB40xqXNitK4-oc4PwLi5Qphw",
+      "sha256": "f6eb1b415ecf3340b89a56a0cb04ba5c714430085851ada13a98012b63a5a4cf",
+      "size": 135248
+    }
+  ]
+}

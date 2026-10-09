@@ -7,7 +7,6 @@ import SessionTabBar from './SessionTabBar';
 import RemotePlayVideo, { webrtcPlayable } from './RemotePlayVideo';
 import RemotePlayPairing from './RemotePlayPairing';
 import { pairRemotePlay, sameAccountId } from '../lib/remotePlayPairing.js';
-import { detectFocusedControlCenterIcon, shortestPathOnRing, CONTROL_CENTER_SLOT_COUNT, CONTROL_CENTER_HOME_INDEX } from '../lib/controlCenterNav.js';
 import { payloadMatchesPlatform } from '../lib/payloadPlatform.js';
 
 const API = '/api/remoteplay';
@@ -349,6 +348,10 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
   const pairingGuard = useRef(false);
   const selectedProfileRef = useRef(profileId);
   selectedProfileRef.current = profileId;
+  const targetGeneration = useRef({ id: profileId, value: 0 });
+  if (targetGeneration.current.id !== profileId) {
+    targetGeneration.current = { id: profileId, value: targetGeneration.current.value + 1 };
+  }
   // Auto-PIN fetcher state. Calls /api/remoteplay/get-pin which under the
   // hood pushes the idlesauce rp-get-pin.elf payload to the PS5 and parses
   // the PIN + base64 Account ID out of the ELF's stdout. Lets users skip
@@ -533,13 +536,13 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
       ...(Array.isArray(userArr) ? userArr.map(s => ({
         id: String(s.id), name: s.name, script: s.script || '', kind: 'user',
       })) : []),
-      ...(Array.isArray(builtinArr) ? builtinArr.map(s => ({
+      ...(Array.isArray(builtinArr) ? builtinArr.filter(s => !s.console_type || s.console_type === profile?.console_type).map(s => ({
         id: s.id, name: s.name, script: s.script || '', kind: 'builtin',
       })) : []),
     ];
     setRecExistingScripts(merged);
     return merged;
-  }, []);
+  }, [profile?.console_type]);
 
   // Map internal button id → script DSL identifier.
   const dslName = (id) => ({ l1:'L1', r1:'R1', l2:'L2', r2:'R2', l3:'L3', r3:'R3' }[id] || id);
@@ -808,6 +811,24 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
   // clears it. Reproduced via repeated automated Rest/Wake/Start/Stop
   // cycling: ~50% of cycles hit this race with the bare 6 s poll interval.
   const stoppedUntilRef = useRef(0);
+  useEffect(() => {
+    // The backend owns sessions per console. Switching the view detaches
+    // local controls; the selected console's watchdog can adopt its session.
+    sessionStateRef.current = 'idle';
+    userStoppedRef.current = false;
+    stoppedUntilRef.current = 0;
+    setSessionId('');
+    setSessionState('idle');
+    setSessionHasVideo(false);
+    setLiveStream(null);
+    setWarmCache(null);
+    setRetryStatus(null);
+    setLocalPs5State(null);
+    setPs5Busy(false);
+    setWakeBusy(false);
+    setStandbyBusy(false);
+    setVideoMode(null);
+  }, [profileId]);
   useEffect(() => { sessionStateRef.current = sessionState; }, [sessionState]);
 
   useEffect(() => {
@@ -837,9 +858,11 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
   const refreshPs5State = async (silent = true) => {
     if (usingSharedStatus) return ps5StatusCtx.refresh(silent);
     if (!profile?.ip_address) { setLocalPs5State(null); return null; }
+    const generation = targetGeneration.current.value;
     if (!silent) setPs5Busy(true);
     try {
       const r = await api.get(`${RP}/discover?ip=${encodeURIComponent(profile.ip_address)}`);
+      if (generation !== targetGeneration.current.value) return null;
       if (r.success) {
         const next = {
           status: r.status || 'Unknown',
@@ -854,11 +877,12 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
       setLocalPs5State(err);
       return err;
     } catch (e) {
+      if (generation !== targetGeneration.current.value) return null;
       const err = { error: e.message };
       setLocalPs5State(err);
       return err;
     } finally {
-      if (!silent) setPs5Busy(false);
+      if (generation === targetGeneration.current.value && !silent) setPs5Busy(false);
     }
   };
 
@@ -1048,7 +1072,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
       } else if (r.error) {
         throw new Error(r.error);
       } else {
-        throw new Error('No PIN line in payload output (check Logs tab)');
+        throw new Error('No PIN line in payload output (check Tools → Logs)');
       }
     } catch (e) {
       onNotification?.(`Auto-fetch PIN failed: ${e.message}`, 'error');
@@ -1213,6 +1237,8 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
   // this is a real parameter, not a stale-read workaround-by-convention.
   const startSession = async (forceVideo = false) => {
     if (!profile) return false;
+    const generation = targetGeneration.current.value;
+    const wasLive = sessionState === 'connected';
     userStoppedRef.current = false;
     setSessionState('connecting');
     try {
@@ -1226,6 +1252,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
         resolution: rpResolution,
         fps: rpFps,
       });
+      if (generation !== targetGeneration.current.value) return false;
       if (!r.success) throw new Error(r.error);
       setSessionId(r.session_id);
       setSessionState('connected');
@@ -1248,9 +1275,9 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
       refreshPs5State(true);
       return true;
     } catch (e) {
-      setSessionState('idle');
-      setSessionHasVideo(false);
-      setLiveStream(null);
+      if (generation !== targetGeneration.current.value) return false;
+      setSessionState(wasLive ? 'connected' : 'idle');
+      if (!wasLive) { setSessionHasVideo(false); setLiveStream(null); }
       const hint = explainStartError(e.message);
       onNotification?.(`Start failed: ${e.message}.${hint}`, 'error');
       // A failed start often means the PS5 went into a weird state - poll
@@ -1261,6 +1288,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
   };
 
   const stopSession = async () => {
+    const generation = targetGeneration.current.value;
     // Soft-stop preference: we want the sidecar to park the session in its
     // warm cache so the next Start resumes in O(ms) instead of fighting the
     // 60s PS5 post-disconnect lock.
@@ -1284,8 +1312,10 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
       } else if (profile?.ip_address) {
         await apiSafe.post(`${RP}/quick-stop`, { ip: profile.ip_address });
       }
+      if (generation !== targetGeneration.current.value) return;
       onNotification?.('Session stopped', 'info');
     } catch (_) {}
+    if (generation !== targetGeneration.current.value) return;
     setSessionId('');
     setSessionState('idle');
     setSessionHasVideo(false);
@@ -1303,6 +1333,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
   // console out of standby and left RP unreachable - users then hit Start
   // and burned 60-90 s on the post-disconnect lock anyway.
   const wakePs5 = async () => {
+    const generation = targetGeneration.current.value;
     if (!profile?.ip_address) return;
     // Optimistic "waking" state on the shared status (topbar dot included)
     // the instant the click happens - only when this profile is the one
@@ -1322,6 +1353,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
         resolution: rpResolution,
         fps: rpFps,
       });
+      if (generation !== targetGeneration.current.value) return;
       if (!r.success) throw new Error(r.error);
       if (r.already_live) {
         onNotification?.('Session is already live — open it from Start session', 'info');
@@ -1338,9 +1370,11 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
         onNotification?.('Wake completed', 'success');
       }
     } catch (e) {
+      if (generation !== targetGeneration.current.value) return;
       const hint = explainStartError(e.message);
       onNotification?.(`Wake failed: ${e.message}.${hint}`, 'error');
     } finally {
+      if (generation !== targetGeneration.current.value) return;
       setWakeBusy(false);
       refreshPs5State(true);
     }
@@ -1352,6 +1386,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
   // command in the RP protocol.
   const [standbyBusy, setStandbyBusy] = useState(false);
   const standbyPs5 = async () => {
+    const generation = targetGeneration.current.value;
     if (!profile?.ip_address) return;
     if (!confirm(`Put ${profile.name} (${profile.ip_address}) into rest mode?`)) return;
     setStandbyBusy(true);
@@ -1360,17 +1395,20 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
         ip: profile.ip_address,
         profile_id: profile.id,
       });
+      if (generation !== targetGeneration.current.value) return;
       if (!r.success) throw new Error(r.error);
       // Standby disconnects our session as a side-effect; reflect it locally.
       setSessionId('');
       setSessionState('idle');
       onNotification?.(
-        r.already_standby ? 'PS5 was already in rest mode' : 'Rest mode sent - PS5 is going to rest',
+        r.already_standby ? `${pairConsoleLabel} was already in rest mode` : `Rest mode sent - ${pairConsoleLabel} is going to rest`,
         'success',
       );
     } catch (e) {
+      if (generation !== targetGeneration.current.value) return;
       onNotification?.(`Rest mode failed: ${e.message}`, 'error');
     } finally {
+      if (generation !== targetGeneration.current.value) return;
       setStandbyBusy(false);
       // Give the console a moment to actually transition before we poll
       // its DDP status, otherwise we still see "Ok" for a few seconds.
@@ -1379,8 +1417,9 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
   };
 
   const forceReset = async () => {
+    const generation = targetGeneration.current.value;
     if (!profile?.ip_address) return;
-    if (!confirm('Force-reset will clear ALL Remote Play sessions for this PS5 on the sidecar. If the PS5 still refuses to connect afterwards, put it into Rest Mode and back on. Continue?')) return;
+    if (!confirm(`Force-reset will clear all Remote Play sessions for this ${pairConsoleLabel}. If it still refuses to connect, put it into Rest Mode and back on. Continue?`)) return;
     userStoppedRef.current = true;
     try {
       const r = await api.post(`${RP}/quick-stop`, { ip: profile.ip_address, all: true });
@@ -1389,8 +1428,10 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
         'success',
       );
     } catch (e) {
+      if (generation !== targetGeneration.current.value) return;
       onNotification?.(`Reset failed: ${e.message}`, 'error');
     }
+    if (generation !== targetGeneration.current.value) return;
     setSessionId('');
     setSessionState('idle');
   };
@@ -1648,43 +1689,10 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
   // must be read AFTER Down: right after PS no icon is focused and the
   // detector returns a meaningless slot.
   const resetToMainScreen = async () => {
-    await stepSendCommand('ps');
-    await new Promise(r => setTimeout(r, 800));
-    await stepSendCommand('down');
-    await new Promise(r => setTimeout(r, 400));
-
-    let steps = 0;
-    let direction = 'left';
-    try {
-      // An <img> (MJPEG) or a <video> (WebRTC), whichever is shown.
-      const img = videoImgRef.current;
-      const frameW = img?.naturalWidth || img?.videoWidth;
-      const frameH = img?.naturalHeight || img?.videoHeight;
-      if (img && frameW) {
-        const canvas = document.createElement('canvas');
-        canvas.width = frameW;
-        canvas.height = frameH;
-        const ctx = canvas.getContext('2d');
-        ctx.drawImage(img, 0, 0);
-        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-        const focusedIdx = detectFocusedControlCenterIcon(imageData, canvas.width, canvas.height);
-        if (focusedIdx != null) {
-          const path = shortestPathOnRing(focusedIdx, CONTROL_CENTER_HOME_INDEX, CONTROL_CENTER_SLOT_COUNT);
-          steps = path.steps;
-          direction = path.direction;
-        }
-      }
-    } catch (e) {
-      // No readable frame (video off, canvas error, ...) - plain
-      // PS, Down, Cross.
-    }
-
-    for (let i = 0; i < steps; i++) {
-      await stepSendCommand(direction);
-      await new Promise(r => setTimeout(r, 150));
-    }
-    if (steps > 0) await new Promise(r => setTimeout(r, 200));
-    await stepSendCommand('cross');
+    // PS5's long PS press returns Home regardless of the remembered Control
+    // Center icon. On PS4 a short PS press leaves the running application.
+    await stepSendCommand('ps', isPs4Profile ? 80 : 1500);
+    await new Promise(resolve => setTimeout(resolve, 1200));
   };
 
   const executeStepLine = async (parsed) => {
@@ -1769,7 +1777,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
   // .rp-live-layout ancestor) so the user can press real buttons while
   // building/running a script live.
   const renderManualPad = () => {
-    const byId = Object.fromEntries(PS5_BUTTONS.map(b => [b.id, b]));
+    const byId = Object.fromEntries(PS5_BUTTONS.map(b => [b.id, b.id === 'share' ? { ...b, label: isPs4Profile ? 'Share' : 'Create' } : b]));
     // A plain function, not a component: a component defined in here is a
     // new type on every render, so React replaced every pad button each
     // time RemotePlay re-rendered - and a button replaced while held never
@@ -1919,7 +1927,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
         mjpegFps={15}
         muted={rpMuted}
         mediaRef={videoImgRef}
-        alt="PS5 preview"
+        alt={`${pairConsoleLabel} preview`}
         style={{ width: '100%', borderRadius: 8, display: 'block', background: '#000' }}
         onError={(msg, level) => onNotification?.(msg, level)}
         onModeChange={setVideoMode}
@@ -2301,7 +2309,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
           <HoldButton id="ps" label="PS" onPress={overlayPress} onRelease={overlayRelease}
             size={numHint('sys')} fontSize={14} style={{ width: SZ.sys, height: SZ.sys }} />
           {/* Touchpad uses a sidecar-side `tap` instead of press/release —
-              PS5 needs ~200 ms of held-down state for the touchpad click
+              The console needs ~200 ms of held-down state for the touchpad click
               to register. See sendTouchpadTap() for the rationale. The
               HoldButton's visual press feedback still works because its
               internal state machine toggles on the pointer events; we just
@@ -2671,11 +2679,16 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
           >
             {sessionState === 'connecting'
               ? (retryStatus
-                  ? `🔒 PS5 locked, retrying in ${Math.ceil(retryStatus.remainingS)}s…`
+                  ? `🔒 ${pairConsoleLabel} locked, retrying in ${Math.ceil(retryStatus.remainingS)}s…`
                   : '⏳ Starting…')
               : enableVideo ? '▶ Start session + video'
               : '▶ Start session'}
           </button>
+          {liveSession && !sessionHasVideo && (
+            <button className="btn btn-primary" onClick={() => startSession(true)}>
+              📺 Open video
+            </button>
+          )}
           <button
             className="btn btn-danger"
             disabled={!paired || (sessionState === 'idle' && !sessionId)}
@@ -2687,15 +2700,15 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
             className="btn btn-ghost"
             disabled={!paired || wakeBusy || liveSession}
             onClick={wakePs5}
-            title="Pre-warm: opens a full Remote Play session (waking the PS5 from rest mode if needed) and immediately parks it in the warm cache so the next Start session resumes in milliseconds."
+            title={`Pre-warm: opens a full Remote Play session (waking the ${pairConsoleLabel} from rest mode if needed) and parks it in the warm cache so the next Start session resumes immediately.`}
           >
-            {wakeBusy ? '⏳ Waking…' : '📡 Wake PS5'}
+            {wakeBusy ? '⏳ Waking…' : `📡 Wake ${pairConsoleLabel}`}
           </button>
           <button
             className="btn btn-ghost"
             disabled={!paired || standbyBusy}
             onClick={standbyPs5}
-            title="Puts the PS5 into rest mode via Remote Play. Restart isn't supported by the RP protocol."
+            title={`Puts the ${pairConsoleLabel} into rest mode via Remote Play. Restart is not supported by the RP protocol.`}
           >
             {standbyBusy ? '⏳ Rest mode…' : '🌙 Rest mode'}
           </button>
@@ -2703,7 +2716,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
             className="btn btn-ghost"
             disabled={!paired}
             onClick={forceReset}
-            title="Clears every cached Remote Play session on the sidecar. Use when the PS5 keeps reporting 'Another Remote Play session is connected'."
+            title={`Clears cached Remote Play sessions for ${pairConsoleLabel}. Use when it reports another Remote Play session is connected.`}
           >
             🧹 Force reset
           </button>
@@ -2811,7 +2824,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
                   nonce={videoNonce}
                   mjpegFps={videoFps}
                   muted={rpMuted}
-                  alt="PS5 Remote Play preview"
+                  alt={`${pairConsoleLabel} Remote Play preview`}
                   style={{
                     width: '100%', height: '100%', display: 'block',
                     objectFit: 'contain',
@@ -3227,7 +3240,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
                     >
                       🆕 New script (live)
                     </button>
-                    <ScriptRunner
+                    <ScriptRunner consoleType={profile?.console_type}
                       ip={profile?.ip_address}
                       liveSession={liveSession}
                       onStartSession={() => startSession(true)}
@@ -3250,7 +3263,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
 
       {health?.success === false && (
         <div className="text-xs text-muted">
-          Sidecar error: {health.error}. Check the logs of the <code>pyremoteplay</code> container (the Remote Play service).
+          Sidecar error: {health.error}. Check the logs of the <code>remoteplay</code> container (the Remote Play service).
         </div>
       )}
 
