@@ -1,4 +1,117 @@
 {
-  "generated": "2026-10-07T12:40:31.008Z",
-  "items": []
+  "generated": "2026-10-09T07:11:03.006Z",
+  "items": [
+    {
+      "kind": "payload",
+      "id": "klogsrv-ps5",
+      "name": "klogsrv-ps5.elf",
+      "description": "PS5 Kernel log server (used by Log viewer)",
+      "author": "ps5-payload-dev",
+      "version": 1,
+      "console_type": "ps5",
+      "files": [
+        "elf"
+      ],
+      "size": 135248,
+      "path": "payloads/klogsrv-ps5.json"
+    },
+    {
+      "kind": "payload",
+      "id": "kstuff",
+      "name": "kstuff.elf",
+      "description": "PS5 kstuff-lite v1.11",
+      "author": "EchoStretch",
+      "version": 1,
+      "console_type": "ps5",
+      "files": [
+        "elf"
+      ],
+      "size": 1737080,
+      "path": "payloads/kstuff.json"
+    },
+    {
+      "kind": "payload",
+      "id": "offact-ps4",
+      "name": "offact-ps4.bin",
+      "description": "Check or activate a PS4 console account for offline Remote Play.",
+      "author": "quatrixone",
+      "version": 1,
+      "console_type": "ps4",
+      "files": [
+        "bin"
+      ],
+      "size": 46660,
+      "path": "payloads/offact-ps4.json"
+    },
+    {
+      "kind": "payload",
+      "id": "ps5-backpork",
+      "name": "ps5-backpork.elf",
+      "description": "PS5 BackPork ELF",
+      "author": "BestPig",
+      "version": 1,
+      "console_type": "ps5",
+      "files": [
+        "elf"
+      ],
+      "size": 99800,
+      "path": "payloads/ps5-backpork.json"
+    },
+    {
+      "kind": "payload",
+      "id": "rp-get-pin-ps4",
+      "name": "rp-get-pin-ps4.bin",
+      "description": "Read the PS4 Remote Play PIN and console account ID.",
+      "author": "quatrixone",
+      "version": 1,
+      "console_type": "ps4",
+      "files": [
+        "bin"
+      ],
+      "size": 51972,
+      "path": "payloads/rp-get-pin-ps4.json"
+    },
+    {
+      "kind": "payload",
+      "id": "setlogserver",
+      "name": "setlogserver.lua",
+      "description": "PS5 Lua log redirector (used by Log viewer)",
+      "author": "Gezine",
+      "version": 1,
+      "console_type": "ps5",
+      "files": [
+        "lua"
+      ],
+      "size": 997,
+      "path": "payloads/setlogserver.json"
+    },
+    {
+      "kind": "payload",
+      "id": "shadowmountplus",
+      "name": "shadowmountplus.elf",
+      "description": "PS5 ShadowMountPlus 1.7beta3 (game mounting + Library API)",
+      "author": "drakmor",
+      "version": 1,
+      "console_type": "ps5",
+      "files": [
+        "elf"
+      ],
+      "size": 2437848,
+      "path": "payloads/shadowmountplus.json"
+    },
+    {
+      "kind": "payload",
+      "id": "zftpd-ps5-zhttp-v1-6-0",
+      "name": "zftpd-ps5-zhttp-v1.6.0.elf",
+      "description": "PS5 FTP server zftpd 1.6.0 (File Ops, downloads to the console)",
+      "author": "seregonwar",
+      "version": 1,
+      "console_type": "ps5",
+      "files": [
+        "elf"
+      ],
+      "size": 19221056,
+      "path": "payloads/zftpd-ps5-zhttp-v1-6-0.json"
+    }
+  ]
 }

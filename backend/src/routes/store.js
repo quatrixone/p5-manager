@@ -11,6 +11,7 @@
 // .pkg to the console's Remote Package Installer, which fetches it from
 // this server.
 import express from 'express';
+import { encodeCatalog, decodeCatalog } from '../lib/catalogLinks.js';
 import crypto from 'crypto';
 import fs from 'fs';
 import net from 'net';
@@ -36,7 +37,7 @@ let indexCache = { at: 0, data: null };
 async function fetchJson(url) {
   const r = await fetch(url, { signal: AbortSignal.timeout(15_000), headers: { 'Cache-Control': 'no-cache' } });
   if (!r.ok) throw Object.assign(new Error(`the marketplace answered ${r.status}`), { status: 502 });
-  return r.json();
+  return decodeCatalog(await r.json());
 }
 
 async function storeIndex(force = false) {
@@ -89,7 +90,7 @@ router.get('/item/:kind/:id', handle(async (req) => ({ item: await storeItem(req
 
 router.post('/install', handle(async (req) => {
   const { kind, id } = req.body || {};
-  if (kind === 'homebrew') return installHomebrew(id, req.body?.profileId);
+  if (kind === 'homebrew' || kind === 'payload') return installHomebrew(kind, id, req.body?.profileId);
   const item = await storeItem(kind, id);
   const repo = getRepo();
   const have = repo.queryOne('SELECT local_id FROM store_installs WHERE kind = ? AND store_id = ?', [kind, id]);
@@ -97,16 +98,27 @@ router.post('/install', handle(async (req) => {
   if (kind === 'script') {
     const exists = localId && repo.queryOne('SELECT id FROM input_scripts WHERE id = ?', [localId]);
     if (exists) {
-      repo.run('UPDATE input_scripts SET name = ?, script = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [item.name, item.script, localId]);
+      repo.run('UPDATE input_scripts SET name = ?, script = ?, console_type = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [item.name, item.script, item.console_type || null, localId]);
     } else {
-      localId = repo.runAndSave('INSERT INTO input_scripts (name, script) VALUES (?, ?)', [item.name, item.script]);
+      localId = repo.runAndSave('INSERT INTO input_scripts (name, script, console_type) VALUES (?, ?, ?)', [item.name, item.script, item.console_type || null]);
     }
+  }
+  if (kind === 'template') {
+    const profileId = item.requiresProfile === false ? null : Number(req.body?.profileId);
+    if (item.requiresProfile !== false) {
+      const profile = repo.queryOne('SELECT id, console_type FROM profiles WHERE id = ?', [profileId]);
+      if (!profile) throw Object.assign(new Error('pick the console for this Autoload sequence'), { status: 400 });
+      if (item.console_type && profile.console_type !== item.console_type) throw Object.assign(new Error(`this sequence requires ${item.console_type.toUpperCase()}`), { status: 400 });
+    }
+    const exists = localId && repo.queryOne('SELECT id FROM autoload_sequences WHERE id = ?', [localId]);
+    if (exists) repo.run('UPDATE autoload_sequences SET name = ?, steps = ?, profile_id = ?, auto_trigger = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [item.name, JSON.stringify(item.steps), profileId, item.autoTrigger || null, localId]);
+    else localId = repo.runAndSave('INSERT INTO autoload_sequences (name, steps, profile_id, auto_trigger) VALUES (?, ?, ?, ?)', [item.name, JSON.stringify(item.steps), profileId, item.autoTrigger || null]);
   }
   repo.run(
     `INSERT INTO store_installs (kind, store_id, version, name, data, local_id) VALUES (?, ?, ?, ?, ?, ?)
      ON CONFLICT(kind, store_id) DO UPDATE SET version = excluded.version, name = excluded.name, data = excluded.data,
        local_id = excluded.local_id, installed_at = CURRENT_TIMESTAMP`,
-    [kind, id, item.version, item.name, JSON.stringify(item), localId],
+    [kind, id, item.version, item.name, JSON.stringify(encodeCatalog(item)), localId],
   );
   repo.save();
   log('info', `marketplace: installed ${kind} "${item.name}" v${item.version} by ${item.author}`);
@@ -118,6 +130,7 @@ router.post('/uninstall', handle(async (req) => {
   const repo = getRepo();
   const have = repo.queryOne('SELECT local_id FROM store_installs WHERE kind = ? AND store_id = ?', [kind, id]);
   if (!have) throw Object.assign(new Error('not installed'), { status: 404 });
+  if (kind === 'template' && have.local_id) repo.run('DELETE FROM autoload_sequences WHERE id = ?', [have.local_id]);
   if (kind === 'script' && have.local_id) repo.run('DELETE FROM input_scripts WHERE id = ?', [have.local_id]);
   repo.run('DELETE FROM store_installs WHERE kind = ? AND store_id = ?', [kind, id]);
   repo.save();
@@ -129,7 +142,7 @@ router.post('/uninstall', handle(async (req) => {
 export function installedTemplates() {
   try {
     return getRepo().queryAll("SELECT data FROM store_installs WHERE kind = 'template' ORDER BY name").map((r) => {
-      const item = JSON.parse(r.data);
+      const item = decodeCatalog(JSON.parse(r.data));
       return {
         id: `store:${item.id}`,
         name: item.name,
@@ -190,7 +203,7 @@ router.post('/publish', handle(async (req) => {
   const errors = validateStoreItem(item);
   if (errors.length) throw Object.assign(new Error(errors.join('; ')), { status: 400 });
 
-  const json = JSON.stringify(item, null, 2);
+  const json = JSON.stringify(encodeCatalog(item), null, 2);
   const base = `https://github.com/${STORE_REPO}/issues/new?template=store-submission.yml`
     + `&title=${encodeURIComponent(`[store] ${item.name}`)}&labels=store-submission`;
   const full = `${base}&item=${encodeURIComponent(json)}`;
@@ -321,8 +334,8 @@ async function installPs4Pkg(ip, file, say) {
   return { queued: true };
 }
 
-async function installHomebrew(id, profileId) {
-  const item = await storeItem('homebrew', id);
+async function installHomebrew(kind, id, profileId) {
+  const item = await storeItem(kind, id);
   const needsConsole = item.files.some((f) => f.type === 'pkg');
   let profile = null;
   if (needsConsole) {
@@ -357,16 +370,17 @@ async function installHomebrew(id, profileId) {
         }
       } else {
         const dest = path.join(payloadsDir, name);
+        fs.mkdirSync(payloadsDir, { recursive: true });
         fs.copyFileSync(file, dest);
         insertPayload({ name, filename: name, filepath: dest, source_url: f.url, size: fs.statSync(dest).size, version: item.app_version, console_type: item.console_type });
         done.push(`${name}: in the payload library`);
       }
     }
     getRepo().run(
-      `INSERT INTO store_installs (kind, store_id, version, name, data, local_id) VALUES ('homebrew', ?, ?, ?, ?, NULL)
+      `INSERT INTO store_installs (kind, store_id, version, name, data, local_id) VALUES (?, ?, ?, ?, ?, NULL)
        ON CONFLICT(kind, store_id) DO UPDATE SET version = excluded.version, name = excluded.name, data = excluded.data,
          installed_at = CURRENT_TIMESTAMP`,
-      [item.id, item.version, item.name, JSON.stringify(item)],
+      [kind, item.id, item.version, item.name, JSON.stringify(encodeCatalog(item))],
     );
     getRepo().save();
     log('info', `marketplace: installed homebrew "${item.name}" ${item.app_version || ''} (${done.join('; ')})`);

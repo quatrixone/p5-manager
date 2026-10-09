@@ -162,9 +162,9 @@ function LogViewer({ logs: systemLogs, onRefresh, profiles }) {
 
   const renderSystemLogs = () => (
     <div>
-      <div className="flex justify-between items-center mb-md">
-        <h2 className="font-bold" style={{ fontSize: '1.25rem' }}>System Logs</h2>
-        <div className="flex gap-sm items-center">
+      <div className="flex justify-between items-center mb-md log-toolbar">
+        <h2 className="font-bold log-title" style={{ fontSize: '1.25rem' }}>System Logs</h2>
+        <div className="flex gap-sm items-center log-toolbar-actions">
           <div className="flex gap-xs">
             {['all', 'info', 'warning', 'error'].map(f => (
               <button
@@ -201,7 +201,7 @@ function LogViewer({ logs: systemLogs, onRefresh, profiles }) {
         </div>
       ) : (
         <div className="comp-card">
-          <div style={{ maxHeight: 500, overflow: 'auto', fontFamily: 'monospace', fontSize: '0.8rem' }}>
+          <div className="system-log-entries" style={{ maxHeight: 500, overflow: 'auto', fontFamily: 'monospace', fontSize: '0.8rem' }}>
             {filteredSystemLogs.map(log => (
               <div key={log.id} style={{
                 padding: 'var(--space-sm) var(--space-md)',
@@ -227,7 +227,7 @@ function LogViewer({ logs: systemLogs, onRefresh, profiles }) {
 
   const renderPs5Logs = () => (
     <div>
-      <h2 className="font-bold mb-md" style={{ fontSize: '1.25rem' }}>PS5 Logs</h2>
+      <h2 className="font-bold mb-md log-title" style={{ fontSize: '1.25rem' }}>PS5 Logs</h2>
 
       <div className="flex gap-sm mb-md flex-wrap">
         <div className="comp-card flex-1">
@@ -323,7 +323,7 @@ function LogViewer({ logs: systemLogs, onRefresh, profiles }) {
             <div className="empty-state" style={{ padding: 'var(--space-lg)' }}>
               <div className="empty-state-icon">📡</div>
               <div className="empty-state-title">No PS5 logs yet</div>
-              <div className="empty-state-text">Start LUA or Kernel log to see output</div>
+              <div className="empty-state-text">Start a Lua server or kernel log to see console output here.</div>
             </div>
           ) : (
             ps5Logs.map((log, index) => (
@@ -345,8 +345,8 @@ function LogViewer({ logs: systemLogs, onRefresh, profiles }) {
   );
 
   return (
-    <div>
-      <div className="tabs mb-md">
+    <div className="screen screen-logs">
+      <div className="tabs mb-md log-tabs">
         <button className={`tab-item ${activeTab === 'system' ? 'active' : ''}`} onClick={() => setActiveTab('system')}>
           📋 System
         </button>

@@ -1,44 +1,50 @@
 [
   {
     "filename": "klogsrv-ps5.elf",
-    "url": "https://github.com/ps5-payload-dev/klogsrv/releases/download/v0.8/klogsrv-ps5.elf",
+    "url": "p5enc:v1:Y4hXvw9s62il0Fr9N5Zfc3yQCMixEcYH4G8_GvKUNa3rIPScBcpYgUm8KAYEL4yaitGttiNjYM00nalqx31uJQrboyrHwO1xT6djJhnU3YV36URHM5w-VwcYjuqAH7osyykds-WxLu5uISZYXQ",
+    "tag": "log",
     "console_type": "ps5",
     "port": 9021,
-    "tag": "log",
     "description": "PS5 Kernel log server (used by Log viewer)"
   },
   {
     "filename": "setlogserver.lua",
-    "url": "https://raw.githubusercontent.com/Gezine/Luac0re/main/payloads/setlogserver.lua",
+    "url": "p5enc:v1:zXsRI8XbOTRgM73ywhlW3imUjAZulglSZbh_FImunHhsEJjnsXYmlS9VELHPTf4zo09BKbwIMR8YXz7DSrjZH3WXQC-EZ9wrQUbv0a7tCPwh3WjbuS3MSEXsTPOAscTWgXO8OW5zv8wLmbY",
+    "tag": "log",
     "console_type": "ps5",
     "port": 9026,
-    "tag": "log",
     "description": "PS5 Lua log redirector (used by Log viewer)"
   },
   {
-    "filename": "ps5-backpork.elf",
-    "url": "https://github.com/BestPig/BackPork/releases/download/0.1/ps5-backpork.elf",
+    "filename": "zftpd-ps5-zhttp-v1.6.0.elf",
+    "url": "p5enc:v1:dtd_oPvqTE7OxBuESlDq8TWVg6qzJpJ9qcaznDtLDMSI5TcFvpU8QirW7-DH25aljSY-aHRNS7JzYxTJUEeCpVejx3PI1J7hciiU2IvWWOk06WolxAnq-JlmomG_AyEthEySrxAY7NLyaz1gWngRliLl2g",
+    "tag": "ftp",
     "console_type": "ps5",
     "port": 9021,
+    "description": "PS5 FTP server zftpd 1.6.0 (File Ops, downloads to the console)"
+  },
+  {
+    "filename": "ps5-backpork.elf",
+    "url": "p5enc:v1:l8daN4s6ALQ50I1n2RPxSwhTMPuU0CnkfMnTiDcxBrtGF4DyGNe4_rB3sSMoBa_rcOvOc5zhKf5gzMgZ3j2OBMjjtpwy0mPRvmPv3ZYHsGMxQQeO7AKUJmXzc2uwH4P-epkVQxz0",
     "tag": "community",
+    "console_type": "ps5",
+    "port": 9021,
     "description": "PS5 BackPork ELF"
   },
   {
     "filename": "kstuff.elf",
-    "url": "https://github.com/EchoStretch/kstuff-lite/releases/download/v1.11/kstuff.elf",
+    "url": "p5enc:v1:8ebVGRZXpVn85RZec9U5qEsM9mB7J8ZzHYfsB9kVFHEfXCFfOJkkKGR3XpLiVHWcbHy62EvZfLdo_mkOZ_KOMQJI7VXvPM4F12Dg0zBwLOazKHiBVgwCbsoihf7COjPAjae3d2t01_C3",
+    "tag": "community",
     "console_type": "ps5",
     "port": 9021,
-    "tag": "community",
-    "description": "PS5 kstuff-lite v1.11",
-    "notes": "Pinned: PS5 Game Compressor (Convert on console) needs kstuff-lite 1.07 or newer."
+    "description": "PS5 kstuff-lite v1.11"
   },
   {
     "filename": "shadowmountplus.elf",
-    "url": "https://github.com/drakmor/ShadowMountPlus/releases/download/1.7beta3/shadowmountplus.elf",
+    "url": "p5enc:v1:RU6t42u8sOGVKAzA1HVzohQFZFjgo2W7DumDqVFl8Hjk1Tr44uXKxkTT-gIXcHZQmetNpwVXnKjB4QH6WR8yAudkV7nsQ_ky8KE1uH-1PS55ZSmT_CLQiITdsn0ZgTAa7QMIIh1c_f63cOW_CYo5KvkLUcA2",
+    "tag": "community",
     "console_type": "ps5",
     "port": 9021,
-    "tag": "community",
-    "description": "PS5 ShadowMountPlus 1.7beta3 (game mounting + Library API)",
-    "notes": "Pinned to the release the Library tab's API calls were written against. The Library's \"Start ShadowMount\" button sends this file."
+    "description": "PS5 ShadowMountPlus 1.7beta3 (game mounting + Library API)"
   }
 ]

@@ -7,9 +7,9 @@ name: Marketplace
 
 on:
   push:
-    paths: ['store/**', 'scripts/build-store-index.mjs', 'backend/src/lib/storeItem.js']
+    paths: ['store/**', 'scripts/build-store-index.mjs', 'backend/src/lib/storeItem.js', 'backend/src/lib/catalogLinks.js', 'scripts/store-accept.mjs']
   pull_request:
-    paths: ['store/**', 'scripts/build-store-index.mjs', 'backend/src/lib/storeItem.js']
+    paths: ['store/**', 'scripts/build-store-index.mjs', 'backend/src/lib/storeItem.js', 'backend/src/lib/catalogLinks.js', 'scripts/store-accept.mjs']
   issues:
     types: [labeled]
 
@@ -42,6 +42,7 @@ jobs:
         env:
           BODY: ${{ github.event.issue.body }}
         run: |
+          set -euo pipefail
           printf '%s' "$BODY" > "$RUNNER_TEMP/issue.md"
           node scripts/store-accept.mjs "$RUNNER_TEMP/issue.md" | tail -1 > "$RUNNER_TEMP/path"
           echo "path=$(cat "$RUNNER_TEMP/path")" >> "$GITHUB_OUTPUT"

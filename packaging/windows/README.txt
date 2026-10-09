@@ -36,6 +36,7 @@ Options (environment variables, set before starting)
   P5M_WEBRTC_ICE    STUN/TURN servers for it, comma-separated (not needed on
                     the local network)
 
-Not available on Windows
-  - SMB "remote sources". Type the network path (\\server\share\folder) in
-    the Local file browser instead.
+Network folders
+  A folder on another computer or a NAS: Settings -> Config -> Network
+  folder. Paste its address as Explorer shows it (\\server\share\folder);
+  it then shows up as a tab in File Ops -> Local.

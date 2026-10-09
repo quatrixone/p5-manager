@@ -10,6 +10,7 @@
 // readBuiltinList() sees the new mtime and rereads the file.
 
 import express from 'express';
+import { encodeCatalog, decodeCatalog } from '../lib/catalogLinks.js';
 import fs from 'fs';
 import path from 'path';
 import { log } from '../db/sqlite.js';
@@ -86,7 +87,7 @@ router.get('/files/:name', (req, res) => {
     if (!fs.existsSync(filePath)) {
       return res.status(404).json({ error: 'File missing on disk' });
     }
-    const content = fs.readFileSync(filePath, 'utf8');
+    const content = JSON.stringify(decodeCatalog(JSON.parse(fs.readFileSync(filePath, 'utf8'))), null, 2);
     const stat = fs.statSync(filePath);
     res.json({
       name: req.params.name,
@@ -116,13 +117,13 @@ router.put('/files/:name', async (req, res) => {
     // Only a JSON array replaces the real file.
     let parsed;
     try {
-      parsed = JSON.parse(content);
+      parsed = decodeCatalog(JSON.parse(content));
     } catch (err) {
       return res.status(400).json({ error: `Invalid JSON: ${err.message}` });
     }
     if (!Array.isArray(parsed)) return res.status(400).json({ error: 'The file has to be a JSON array' });
     tmpPath = `${filePath}.tmp-${Date.now()}-${process.pid}`;
-    fs.writeFileSync(tmpPath, content, 'utf8');
+    fs.writeFileSync(tmpPath, JSON.stringify(encodeCatalog(parsed), null, 2) + '\n', 'utf8');
 
     // Backup current version (best effort) then atomically replace.
     if (fs.existsSync(filePath)) {
@@ -150,7 +151,7 @@ router.post('/files/:name/restore-backup', (req, res) => {
     if (!fs.existsSync(bak)) {
       return res.status(404).json({ error: 'No backup available' });
     }
-    fs.copyFileSync(bak, filePath);
+    fs.writeFileSync(filePath, JSON.stringify(encodeCatalog(decodeCatalog(JSON.parse(fs.readFileSync(bak, 'utf8')))), null, 2) + '\n');
     const stat = fs.statSync(filePath);
     log('info', `Built-in restored from backup: ${req.params.name}`);
     res.json({ success: true, size: stat.size, mtime: stat.mtimeMs });

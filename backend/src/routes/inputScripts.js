@@ -1,4 +1,5 @@
 import express from 'express';
+import { encodeCatalog, decodeCatalog } from '../lib/catalogLinks.js';
 import fs from 'fs';
 import path from 'path';
 import { getRepo, log } from '../db/sqlite.js';
@@ -28,7 +29,7 @@ export function readBuiltinInputScripts() {
 // built-in") or directly in /frontend/builtin/inputScripts.json.
 router.get('/builtin', (req, res) => {
   try {
-    res.json(readBuiltinInputScripts());
+    res.json(readBuiltinInputScripts().filter(s => !req.query.console_type || !s.console_type || s.console_type === req.query.console_type));
   } catch (err) {
     log('error', `Failed to get built-in input scripts: ${err.message}`);
     res.status(500).json({ error: err.message });
@@ -130,7 +131,7 @@ router.put('/builtin/:id', (req, res) => {
       return res.status(404).json({ error: `${BUILTIN_FILE} not found on disk` });
     }
 
-    const entries = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    const entries = decodeCatalog(JSON.parse(fs.readFileSync(filePath, 'utf8')));
     if (!Array.isArray(entries)) {
       return res.status(500).json({ error: `${BUILTIN_FILE} does not contain a JSON array` });
     }
@@ -140,7 +141,7 @@ router.put('/builtin/:id', (req, res) => {
     }
     entry.script = script;
 
-    const updated = JSON.stringify(entries, null, 2) + '\n';
+    const updated = JSON.stringify(encodeCatalog(entries), null, 2) + '\n';
     if (Buffer.byteLength(updated, 'utf8') > BUILTIN_MAX_BYTES) {
       return res.status(413).json({ error: `File would exceed ${BUILTIN_MAX_BYTES} bytes` });
     }

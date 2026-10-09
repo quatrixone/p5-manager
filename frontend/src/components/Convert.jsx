@@ -190,12 +190,12 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
       if (cancelled) return;
       if (d) {
         if (d.upload_target_path) setPushDest(d.upload_target_path);
-        if (d.upload_target_ip) {
+        if (d.upload_target_ip && profiles.some(x => x.ip_address === d.upload_target_ip && String(x.console_type || 'ps5').toLowerCase() !== 'ps4')) {
           setPushIp(d.upload_target_ip);
           return;
         }
       }
-      const p = profiles.find(x => x.is_default) || profiles[0];
+      const p = profiles.find(x => x.is_default && String(x.console_type || 'ps5').toLowerCase() !== 'ps4') || profiles.find(x => String(x.console_type || 'ps5').toLowerCase() !== 'ps4');
       if (p) setPushIp(p.ip_address);
     })();
     return () => { cancelled = true; };

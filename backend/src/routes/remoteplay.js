@@ -9,6 +9,9 @@ import { payloadsDir } from '../lib/paths.js';
 import { getFtpPort } from '../lib/ftpPort.js';
 import { createViewer, answerViewer, closeViewer, closeViewersOf } from '../lib/webrtc.js';
 import { discoverConsole } from '../lib/consoleStatus.js';
+import { parsePsnAccountId, psnAccountBase64 } from '../lib/psnAccount.js';
+import { linkSonyIdentity } from '../lib/remotePlayIdentity.js';
+import { runPs4RemotePlay } from '../lib/ps4RemotePlay.js';
 
 const router = express.Router();
 
@@ -16,6 +19,47 @@ const router = express.Router();
 // account_id supplied by the manager when no on-console PSN account is
 // linked yet. Matches TRIGGER_PATH in p5managerclient/offact/main.c.
 const OFFACT_TRIGGER_DEFAULT = '/data/.p5manager-offact';
+
+function isPs4Request(ip, profileId) {
+  const row = profileId
+    ? getRepo().queryOne('SELECT console_type FROM profiles WHERE id = ?', [parseInt(profileId)])
+    : getRepo().queryOne('SELECT console_type FROM profiles WHERE TRIM(ip_address) = ? LIMIT 1', [String(ip).trim()]);
+  return row?.console_type === 'ps4';
+}
+
+async function ps4Operation(ip, profileId, operation, accountId, onlineId) {
+  const filename = operation === 'get-pin' ? 'rp-get-pin-ps4.bin' : 'offact-ps4.bin';
+  const payloadPath = path.join(payloadsDir, filename);
+  if (!fs.existsSync(payloadPath)) throw new Error(`${filename} not found. Restore Defaults on the Payloads tab.`);
+  let triggerWritten = false;
+  try {
+    const prepare = async () => {
+      if (operation === 'offact') {
+        if (accountId) {
+          const normalized = psnAccountBase64(accountId);
+          if (!normalized) throw new Error('Invalid PSN account ID');
+          await writeOffactTrigger(ip, OFFACT_TRIGGER_DEFAULT, normalized, onlineId);
+          triggerWritten = true;
+        } else {
+          // Never allow an old trigger to replace the current console account.
+          const ftp = new FtpClient(8000);
+          try {
+            await ftp.access({ host: ip, port: getFtpPort(ip), user: 'anonymous', password: '', secure: false });
+            try { await ftp.remove(OFFACT_TRIGGER_DEFAULT); } catch (e) { if (e.code !== 550) throw e; }
+          } finally { ftp.close(); }
+        }
+      }
+    };
+    const result = await runPs4RemotePlay({ ip, ftpPort: getFtpPort(ip), operation, prepare, data: fs.readFileSync(payloadPath) });
+    if (result.success && result.account_id && profileId) {
+      getRepo().runAndSave('UPDATE profiles SET psn_account_id = ?, console_user = COALESCE(?, console_user) WHERE id = ?', [result.account_id, result.user || null, parseInt(profileId)]);
+      result.persisted = true;
+    }
+    return { ...result, trigger_written: triggerWritten, console_type: 'ps4' };
+  } finally {
+    if (triggerWritten) await deleteOffactTrigger(ip, OFFACT_TRIGGER_DEFAULT);
+  }
+}
 
 
 // We keep the trigger upload self-contained instead of going through
@@ -141,7 +185,7 @@ async function sidecar(method, urlPath, body, { timeout = 30000 } = {}) {
   }
 }
 
-const PROFILE_COLS = 'id, ip_address, rp_user_profile, psn_account_id, psn_online_id, console_type';
+const PROFILE_COLS = 'id, ip_address, rp_user_profile, psn_account_id, psn_online_id, sony_account_id, sony_online_id, console_type';
 
 function loadProfileByIp(ip) {
   return getRepo().queryOne(`SELECT ${PROFILE_COLS} FROM profiles WHERE ip_address = ? LIMIT 1`, [ip]);
@@ -460,19 +504,24 @@ router.get('/oauth/login-url', async (req, res) => {
   }
 });
 
+function saveSonyIdentity(profileId, accountId, onlineId) {
+  const profile = loadProfileById(profileId);
+  if (!profile) throw new Error('Profile not found');
+  const identity = linkSonyIdentity(profile, accountId, onlineId);
+  getRepo().runAndSave(
+    'UPDATE profiles SET sony_account_id = ?, sony_online_id = ?, psn_account_id = ?, psn_online_id = ? WHERE id = ?',
+    [identity.sony_account_id, identity.sony_online_id, identity.psn_account_id, identity.psn_online_id, parseInt(profileId)],
+  );
+  return identity;
+}
+
 router.post('/oauth/exchange', async (req, res) => {
   try {
     const { redirect_url, profile_id } = req.body || {};
     if (!redirect_url) return res.status(400).json({ success: false, error: 'redirect_url required' });
     const data = await sidecar('POST', '/oauth/exchange', { redirect_url }, { timeout: 20000 });
-    if (profile_id && data.account_id) {
-      getRepo().runAndSave(
-        'UPDATE profiles SET psn_account_id = ?, psn_online_id = ? WHERE id = ?',
-        [data.account_id, data.online_id || null, parseInt(profile_id)],
-      );
-      log('info', `Linked PSN account ${data.online_id || data.account_id} to profile ${profile_id}`);
-    }
-    res.json({ success: true, account_id: data.account_id, online_id: data.online_id });
+    const identity = profile_id && data.account_id ? saveSonyIdentity(profile_id, data.account_id, data.online_id) : {};
+    res.json({ success: true, account_id: data.account_id, online_id: data.online_id, ...identity });
   } catch (err) {
     res.status(err.status || 500).json({ success: false, error: err.message });
   }
@@ -665,6 +714,8 @@ router.post('/get-pin', async (req, res) => {
     }
     if (!ip) return res.status(400).json({ success: false, error: 'ip or profile_id required' });
 
+    if (isPs4Request(ip, profile_id)) return res.json(await ps4Operation(ip, profile_id, 'get-pin'));
+
     // Locate the payload on disk. We accept any filename that matches
     // `rp-get-pin*.elf` so a user can drop a hand-built variant into
     // data/payloads/ without renaming. Prefer the canonical name first.
@@ -725,7 +776,7 @@ router.post('/get-pin', async (req, res) => {
       // never wipe an existing OAuth-derived id on a soft failure.
       if (profile_id && accountId) {
         try {
-          getRepo().run(
+          getRepo().runAndSave(
             'UPDATE profiles SET psn_account_id = ?, psn_online_id = COALESCE(?, psn_online_id) WHERE id = ?',
             [accountId, onlineId, parseInt(profile_id)],
           );
@@ -880,9 +931,9 @@ router.post('/activate-account', async (req, res) => {
       ip: rawIp,
       profile_id,
       force,
-      // Optional override: caller can supply a base64 account_id + online_id
-      // directly (e.g. right after running PSN OAuth in the UI). When
-      // omitted we fall back to the profile's stored psn_account_id.
+      // Optional linked Sony account fallback. Both native offact payloads
+      // adopt it only when the active console slot has no account ID; an
+      // existing on-console account always takes precedence.
       account_id: bodyAccountId,
       online_id: bodyOnlineId,
       // Optional custom trigger path - matches the build-time TRIGGER_PATH
@@ -905,6 +956,8 @@ router.post('/activate-account', async (req, res) => {
 
     const triggerPath = bodyTriggerPath || OFFACT_TRIGGER_DEFAULT;
 
+    if (isPs4Request(ip, profile_id)) return res.json(await ps4Operation(ip, profile_id, 'offact', psnAccountId, psnOnlineId));
+
     // If we have a host-side PSN account_id (either passed inline or
     // pulled off the profile), drop it into the trigger file on the
     // PS5 BEFORE we send the ELF. offact.elf reads the file when the
@@ -914,7 +967,9 @@ router.post('/activate-account', async (req, res) => {
     let triggerWritten = false;
     if (psnAccountId) {
       try {
-        await writeOffactTrigger(ip, triggerPath, psnAccountId, psnOnlineId || null);
+        // offact reads base64 only. Sony's sign-in stores the id as a
+        // decimal number, which offact took for no id at all.
+        await writeOffactTrigger(ip, triggerPath, psnAccountBase64(psnAccountId) || psnAccountId, psnOnlineId || null);
         triggerWritten = true;
         log('info', `[offact] trigger file written to ${ip}:${triggerPath} (account=${psnOnlineId || psnAccountId})`);
       } catch (e) {
@@ -1620,6 +1675,8 @@ router.post('/run-script', async (req, res) => {
     if (!ip) return res.status(400).json({ success: false, error: 'ip or profile_id required' });
 
     const lines = String(actualScript).split('\n');
+    const invalid = lines.map((line, i) => ({ parsed: parseScriptLine(line), line: i + 1 })).find(v => v.parsed?.type === 'unknown');
+    if (invalid) return res.status(400).json({ success: false, error: `Line ${invalid.line}: unknown command ${invalid.parsed.raw}` });
     let sid;
     try {
       const r = await ensureSessionForIp(ip);
@@ -1676,13 +1733,11 @@ router.post('/run-script', async (req, res) => {
         continue;
       }
       if (parsed.type === 'home') {
-        let lastErr = null;
-        for (const [button, pauseMs] of [['ps', 800], ['down', 400], ['cross', 0]]) {
-          const err = await sendButton(button, 80);
-          if (err && err !== 'recovered') lastErr = err;
-          if (pauseMs) await pause(pauseMs);
-        }
-        events.push({ line: i + 1, type: 'home', ...(lastErr ? { error: lastErr } : {}) });
+        const consoleType = loadProfileByIp(ip)?.console_type;
+        const err = await sendButton('ps', consoleType === 'ps4' ? 80 : 1500);
+        await pause(1200);
+        events.push({ line: i + 1, type: 'home', ...(err && err !== 'recovered' ? { error: err } : {}) });
+        if (err && err !== 'recovered') break;
         continue;
       }
       if (parsed.type === 'text') {
@@ -1704,6 +1759,7 @@ router.post('/run-script', async (req, res) => {
           line: i + 1, type: 'text', text: parsed.text, typed,
           ...(errLast ? { error: errLast } : {}),
         });
+        if (errLast) break;
         continue;
       }
       if (parsed.type === 'button') {
@@ -1713,7 +1769,7 @@ router.post('/run-script', async (req, res) => {
         for (let r = 0; r < reps && !gone; r++) {
           const err = await sendButton(parsed.button, parsed.duration);
           if (err === 'recovered') recoveredAny = true;
-          else if (err) lastErr = err;
+          else if (err) { lastErr = err; break; }
           // Spacing between repeats so PS5 menus register each press as a
           // discrete event instead of a long hold.
           await pause(60);
@@ -1723,6 +1779,7 @@ router.post('/run-script', async (req, res) => {
           ...(lastErr ? { error: lastErr } : {}),
           ...(recoveredAny ? { recovered: true } : {}),
         });
+        if (lastErr) break;
         continue;
       }
       if (parsed.type === 'stick') {
@@ -1748,7 +1805,8 @@ router.post('/run-script', async (req, res) => {
     }
 
     if (gone) return;
-    res.json({ success: true, session_id: sid, events });
+    const failed = events.filter(e => e.type === 'error' || e.error);
+    res.json({ success: failed.length === 0, session_id: sid, events, ...(failed.length ? { error: `Input failed at line ${failed[0].line}: ${failed[0].error || failed[0].msg}` } : {}) });
   } catch (err) {
     res.status(err.status || 500).json({ success: false, error: err.message });
   }
@@ -1766,17 +1824,32 @@ router.post('/forget', (req, res) => {
   }
 });
 
-// Counterpart of /oauth/exchange + /activate-account: drops the PSN
-// account binding from the profile. We deliberately do NOT touch
-// rp_user_profile here - the pairing credential is independent and
-// users may want to re-link a different PSN account onto the same
-// pairing (e.g. to fix an account_id mismatch from upstream OAuth).
+// Import a Sony identity without replacing the console account or registration.
+router.post('/set-account', (req, res) => {
+  try {
+    const { profile_id, account_id, online_id } = req.body || {};
+    if (!profile_id) return res.status(400).json({ success: false, error: 'profile_id required' });
+    const id = parsePsnAccountId(account_id);
+    if (!id) {
+      return res.status(400).json({
+        success: false,
+        error: 'That is not a PSN account ID. It is a number of up to 20 digits, or 12 characters ending in "=" (the base64 form).',
+      });
+    }
+    const name = String(online_id || '').trim().slice(0, 32) || null;
+    const identity = saveSonyIdentity(profile_id, id, name);
+    res.json({ success: true, account_id: id, online_id: name, ...identity });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 router.post('/forget-account', (req, res) => {
   try {
     const { profile_id } = req.body || {};
     if (!profile_id) return res.status(400).json({ success: false, error: 'profile_id required' });
     getRepo().runAndSave(
-      'UPDATE profiles SET psn_account_id = NULL, psn_online_id = NULL WHERE id = ?',
+      'UPDATE profiles SET sony_account_id = NULL, sony_online_id = NULL WHERE id = ?',
       [parseInt(profile_id)],
     );
     log('info', `Forgotten PSN account on profile ${profile_id}`);

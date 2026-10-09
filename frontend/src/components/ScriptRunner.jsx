@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import Modal from './UI/Modal';
 import { api, apiSafe } from '../lib/api.js';
 import { AVAILABLE_COMMANDS, buildOskInputs, parseLine } from '../lib/inputScriptDsl.js';
@@ -12,7 +12,11 @@ import { AVAILABLE_COMMANDS, buildOskInputs, parseLine } from '../lib/inputScrip
 // that goes through the RP session's own input channel, so "▶ Run" here
 // and the step-by-step "👣 Step" mode both ultimately press buttons the
 // same way as the on-screen touch controller.
-function ScriptRunner({ ip, liveSession, onStartSession, sendCommand, scripts, onScriptsChange, onRequestStep, onResetToMainScreen }) {
+function ScriptRunner({ consoleType, ip, liveSession, onStartSession, onStopSession, sendCommand, scripts, onScriptsChange, onRequestStep, onResetToMainScreen }) {
+  // The stop function as of the latest render: the one runScript closed
+  // over was made before the session it has to stop existed.
+  const onStopSessionRef = useRef(onStopSession);
+  onStopSessionRef.current = onStopSession;
   const [output, setOutput] = useState([]);
   const [manualBusy, setManualBusy] = useState(null); // cmd currently in flight, or null
   const [isRunning, setIsRunning] = useState(null); // holds the id/key of the script currently running, or null
@@ -39,14 +43,14 @@ function ScriptRunner({ ip, liveSession, onStartSession, sendCommand, scripts, o
   const [modalError, setModalError] = useState('');
 
   const fetchBuiltinScripts = () => {
-    apiSafe.get('/input-scripts/builtin').then(list => {
+    apiSafe.get(`/input-scripts/builtin${consoleType ? '?console_type=' + consoleType : ''}`).then(list => {
       if (Array.isArray(list)) setBuiltinScripts(list);
     });
   };
 
   useEffect(() => {
     fetchBuiltinScripts();
-  }, []);
+  }, [consoleType]);
 
   const addOutput = (msg, type = 'info') => {
     setOutput(prev => [...prev, { msg, type, time: new Date().toLocaleTimeString() }]);
@@ -54,7 +58,7 @@ function ScriptRunner({ ip, liveSession, onStartSession, sendCommand, scripts, o
 
   const runCommand = async (cmd, params = '') => {
     if (!liveSession) {
-      addOutput('No live Remote Play session - hit Start session above first', 'error');
+      addOutput('Start a Remote Play session before running this script.', 'error');
       return false;
     }
     try {
@@ -161,12 +165,16 @@ function ScriptRunner({ ip, liveSession, onStartSession, sendCommand, scripts, o
 
   const runScript = async (scriptToRun, key = 'script') => {
     if (!ip) {
-      addOutput('No PS5 IP address configured', 'error');
+      addOutput('No console IP address configured', 'error');
       return;
     }
+    // A session this run opens is this run's to close; one the user had
+    // open already stays.
+    let startedHere = false;
     if (!liveSession) {
       const ok = await onStartSession?.();
       if (!ok) { addOutput('Could not start a Remote Play session', 'error'); return; }
+      startedHere = true;
     }
 
     setIsRunning(key);
@@ -200,6 +208,10 @@ function ScriptRunner({ ip, liveSession, onStartSession, sendCommand, scripts, o
     setIsRunning(null);
     setStopRequested(false);
     addOutput('✅ Script complete', 'success');
+    if (startedHere) {
+      try { await onStopSessionRef.current?.(); } catch (_) {}
+      addOutput('Session closed', 'info');
+    }
   };
 
   // ─── Edit modal ──────────────────────────────────────────────────────────
@@ -390,7 +402,7 @@ function ScriptRunner({ ip, liveSession, onStartSession, sendCommand, scripts, o
           {scriptsTab === 'saved' && (
             !scripts || scripts.length === 0 ? (
               <div className="text-sm text-muted">
-                No saved scripts yet. Press <b>＋ New</b> above to create one.
+                No saved scripts yet. Choose <b>＋ New</b> above to create one.
               </div>
             ) : (
               <div className="flex-col" style={{ gap: 6, maxHeight: 260, overflowY: 'auto' }}>
@@ -431,7 +443,7 @@ function ScriptRunner({ ip, liveSession, onStartSession, sendCommand, scripts, o
       <div className="comp-card">
         <div className="comp-card-header" style={{ alignItems: 'center' }}>
           <span className="comp-card-title" style={{ fontSize: '0.85rem' }}>🎮 Manual controls</span>
-          {!liveSession && <span className="text-xs text-muted">Tap a button to start a session</span>}
+          {!liveSession && <span className="text-xs text-muted">Choose a control to start a Remote Play session.</span>}
         </div>
         <div className="comp-card-body">
           <div className="gamepad">
@@ -471,7 +483,7 @@ function ScriptRunner({ ip, liveSession, onStartSession, sendCommand, scripts, o
             </div>
           </div>
           <p className="text-xs text-muted mt-sm">
-            Append <code>10x</code>, <code>x10</code>, or <code>*10</code> to repeat. Use <code>text &lt;string&gt;</code> to type on the PS5 on-screen keyboard.
+            Append <code>10x</code>, <code>x10</code>, or <code>*10</code> to repeat. Use <code>text &lt;string&gt;</code> to type on the console on-screen keyboard.
           </p>
         </div>
       </div>

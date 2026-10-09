@@ -14,8 +14,10 @@ import { fileURLToPath } from 'url';
 // when they are not there, like the downloaded ones.
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const VENDORED_PAYLOADS = [
+  { filename: 'rp-get-pin-ps4.bin', dir: 'rp-get-pin-ps4', console_type: 'ps4', version: '3' },
+  { filename: 'offact-ps4.bin', dir: 'offact-ps4', console_type: 'ps4', version: '2' },
   { filename: 'rp-get-pin.elf', dir: 'rp-get-pin', console_type: 'ps5' },
-  { filename: 'offact.elf', dir: 'offact', console_type: 'ps5' },
+  { filename: 'offact.elf', dir: 'offact', console_type: 'ps5', version: '2' },
   { filename: 'pkg-install.elf', dir: 'pkg-install', console_type: 'ps5' },
   { filename: 'save-mounter.elf', dir: 'save-mounter', console_type: 'ps5' },
 ];
@@ -255,7 +257,10 @@ export async function ensureDefaultPayloads({ force = false } = {}) {
 
   for (const entry of VENDORED_PAYLOADS) {
     try {
-      if (!force && payloadExists(entry.filename)) {
+      const installedVersion = entry.version
+        ? getRepo().queryScalar('SELECT version FROM payloads WHERE filename = ? LIMIT 1', [entry.filename])
+        : null;
+      if (!force && payloadExists(entry.filename) && (!entry.version || installedVersion === entry.version)) {
         summary.skipped.push(entry.filename);
         continue;
       }
@@ -264,7 +269,7 @@ export async function ensureDefaultPayloads({ force = false } = {}) {
       const filepath = path.join(payloadsDir, entry.filename);
       fs.copyFileSync(source, filepath);
       const size = fs.statSync(filepath).size;
-      insertPayload({ name: entry.filename, filename: entry.filename, filepath, size, console_type: entry.console_type });
+      insertPayload({ name: entry.filename, filename: entry.filename, filepath, size, version: entry.version, console_type: entry.console_type });
       log('info', `Added the app's own payload: ${entry.filename}`);
       summary.added.push({ filename: entry.filename, size });
     } catch (e) {

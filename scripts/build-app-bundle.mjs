@@ -52,6 +52,7 @@ for (const platform of ['docker', 'windows']) {
   zip.addLocalFolder(path.join(backend, 'dist'), 'dist');
   // The app's own payloads (see backend/src/lib/defaultPayloads.js).
   for (const name of ['rp-get-pin', 'offact', 'pkg-install', 'save-mounter']) zip.addLocalFile(path.join(root, 'p5managerclient', name, `${name}.elf`), 'vendored');
+  for (const name of ['rp-get-pin-ps4', 'offact-ps4']) zip.addLocalFile(path.join(root, 'p5managerclient', name, `${name}.bin`), 'vendored');
   zip.addFile('package.json', Buffer.from(JSON.stringify({ ...pkg, version }, null, 2)));
   const manifest = { version, platform, image_level: level, deps };
   let name = `p5-manager-app-${version}-${platform}-level${level}-deps${deps}`;

@@ -3,8 +3,9 @@ import Modal from './UI/Modal';
 import EmptyState from './UI/EmptyState';
 import Badge from './UI/Badge';
 import ProgressBar from './UI/ProgressBar';
-import { usePlatform, platformMatches } from '../contexts/PlatformContext';
+import { usePlatform } from '../contexts/PlatformContext';
 import { api } from '../lib/api.js';
+import { inferPayloadPlatform, payloadMatchesPlatform } from '../lib/payloadPlatform.js';
 
 // Filenames the app itself depends on by name, outside the auto-fetched
 // ESSENTIAL_PAYLOADS list (those come from GET /payloads/defaults below).
@@ -14,7 +15,7 @@ import { api } from '../lib/api.js';
 //   rp-get-pin.elf  - Remote Play PIN auto-fetch (routes/remoteplay.js)
 //   offact.elf      - offline PSN account activation (routes/remoteplay.js)
 //   pkg-install.elf - PKG installer, auto-bound in Settings
-const VENDORED_REQUIRED_FILENAMES = ['rp-get-pin.elf', 'offact.elf', 'pkg-install.elf'];
+const VENDORED_REQUIRED_FILENAMES = ['rp-get-pin.elf', 'offact.elf', 'pkg-install.elf', 'rp-get-pin-ps4.bin', 'offact-ps4.bin'];
 
 function PayloadList({ payloads, profiles, onFetchUrl, onSend, onDelete, onUpdate, onUpload, onRestoreDefaults, assetPicker, onConfirmAssetPicker, onCancelAssetPicker }) {
   const { mode } = usePlatform();
@@ -44,7 +45,7 @@ function PayloadList({ payloads, profiles, onFetchUrl, onSend, onDelete, onUpdat
     if (!assetPicker) return;
     const chosen = assetPicker.assets.filter(a => selectedAssets.has(a.name));
     if (chosen.length === 0) return;
-    onConfirmAssetPicker(chosen, assetPicker.version);
+    onConfirmAssetPicker(chosen, assetPicker.version, assetPicker.console_type || (mode === 'all' ? undefined : mode));
   };
   const [updateInfo, setUpdateInfo] = useState({});
   const [checkingId, setCheckingId] = useState(null);
@@ -61,12 +62,12 @@ function PayloadList({ payloads, profiles, onFetchUrl, onSend, onDelete, onUpdat
       try {
         const list = await api.get('/payloads/defaults');
         if (cancelled || !Array.isArray(list)) return;
-        // Only 'log' and 'template' entries are actual app dependencies
-        // (Log viewer, Autoload templates). 'community' entries (kstuff,
+        // Only 'log', 'template' and 'ftp' entries are actual app dependencies
+        // (Log viewer, Autoload templates, File Ops). 'community' entries (kstuff,
         // ps5-backpork) are pre-curated convenience downloads -
         // nothing in the app breaks without them, so they belong in All,
         // not Built-in.
-        const required = list.filter(p => p.tag === 'log' || p.tag === 'template');
+        const required = list.filter(p => p.tag === 'log' || p.tag === 'template' || p.tag === 'ftp');
         setRequiredFilenames(new Set([...VENDORED_REQUIRED_FILENAMES, ...required.map(p => p.filename)]));
       } catch (_) { /* keep the vendored-only fallback */ }
     })();
@@ -137,14 +138,14 @@ function PayloadList({ payloads, profiles, onFetchUrl, onSend, onDelete, onUpdat
 
   const handleUrlFetch = () => {
     if (!githubUrl) return;
-    onFetchUrl(githubUrl);
+    onFetchUrl(githubUrl, mode === 'all' ? undefined : mode);
     setShowAddModal(false);
   };
 
   const handleUpload = (e) => {
     const file = e.target.files && e.target.files[0];
     if (file) {
-      onUpload(file);
+      onUpload(file, mode === 'all' ? undefined : mode);
       setShowAddModal(false);
     }
     // Reset so picking the same file twice in a row still fires onChange.
@@ -185,10 +186,10 @@ function PayloadList({ payloads, profiles, onFetchUrl, onSend, onDelete, onUpdat
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   };
 
-  // Filter by active platform mode. Untagged payloads pass through every
-  // filter so legacy uploads remain visible regardless of mode.
+  // Resolve legacy rows that predate console_type from filename/source URL;
+  // the existing catalogue is PS5 by default, with PS4 GoldHEN exceptions.
   const platformFiltered = useMemo(
-    () => payloads.filter(p => platformMatches(mode, p.console_type)),
+    () => payloads.filter(p => payloadMatchesPlatform(p, mode)),
     [payloads, mode]
   );
   const builtinPayloads = useMemo(
@@ -206,6 +207,7 @@ function PayloadList({ payloads, profiles, onFetchUrl, onSend, onDelete, onUpdat
   const hiddenCount = payloads.length - platformFiltered.length;
 
   const renderPayloadCard = (payload) => {
+    const targetPlatform = inferPayloadPlatform(payload);
     const info = updateInfo[payload.id];
     const isExpanded = expandedId === payload.id;
     const isSelected = selected.has(payload.id);
@@ -216,7 +218,7 @@ function PayloadList({ payloads, profiles, onFetchUrl, onSend, onDelete, onUpdat
         key={payload.id}
         className="comp-card"
         style={{
-          marginBottom: 6,
+          marginBottom: 8,
           transition: 'all 0.2s',
           transform: isSelected ? 'scale(0.98)' : 'scale(1)',
           borderLeft: hasUpdate ? '3px solid var(--accent)' : '3px solid transparent',
@@ -229,11 +231,20 @@ function PayloadList({ payloads, profiles, onFetchUrl, onSend, onDelete, onUpdat
             more entries on screen without scrolling. */}
         <div
           className="flex items-center gap-sm"
+          role="button"
+          tabIndex={0}
           onClick={() => {
             if (multiSelect) toggleSelect(payload.id);
             else toggleExpand(payload.id);
           }}
-          style={{ cursor: 'pointer', padding: '6px 10px' }}
+          onKeyDown={e => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              if (multiSelect) toggleSelect(payload.id);
+              else toggleExpand(payload.id);
+            }
+          }}
+          style={{ cursor: 'pointer', padding: '10px 14px' }}
         >
           {multiSelect && (
             <input
@@ -247,15 +258,15 @@ function PayloadList({ payloads, profiles, onFetchUrl, onSend, onDelete, onUpdat
           <span style={{ fontSize: '1.25rem', lineHeight: 1 }}>📦</span>
           <div className="flex-1" style={{ minWidth: 0 }}>
             <div className="flex items-center gap-xs">
-              <span className="truncate" style={{ fontWeight: 600, fontSize: '0.88rem' }}>{payload.name}</span>
-              {payload.console_type && (
-                <span className="console-type-badge" title={`Targets ${payload.console_type.toUpperCase()}`}>
-                  {payload.console_type.toUpperCase()}
+              <span className="truncate" style={{ fontWeight: 600, fontSize: '0.94rem' }}>{payload.name}</span>
+              {targetPlatform && (
+                <span className="console-type-badge" title={`Targets ${targetPlatform.toUpperCase()}`}>
+                  {targetPlatform.toUpperCase()}
                 </span>
               )}
               {hasUpdate && <Badge variant="info">Update</Badge>}
             </div>
-            <div className="text-muted" style={{ fontSize: '0.72rem', lineHeight: 1.3 }}>
+            <div className="text-muted" style={{ fontSize: '0.76rem', lineHeight: 1.4 }}>
               {formatSize(payload.size)}
               {payload.version && <span> • v{payload.version}</span>}
             </div>
@@ -266,7 +277,7 @@ function PayloadList({ payloads, profiles, onFetchUrl, onSend, onDelete, onUpdat
         {isExpanded && (
           <div
             className="comp-card-footer"
-            style={{ flexWrap: 'wrap', gap: 6, padding: '6px 10px' }}
+            style={{ flexWrap: 'wrap', gap: 8, padding: '10px 14px' }}
           >
             {/* Inline check result. First in the row with an auto right
                 margin: the footer right-aligns its children, so putting it
@@ -351,28 +362,25 @@ function PayloadList({ payloads, profiles, onFetchUrl, onSend, onDelete, onUpdat
   };
 
   return (
-    <div>
-      {/* Compact list header. h2 shrunk from 1.25rem to 1rem and the
-          count subtitle to 0.72rem so the chrome above the list takes
-          maybe ~30 % less vertical space, leaving more room for items. */}
-      <div className="flex justify-between items-center mb-sm">
-        <div>
-          <h2 className="font-bold" style={{ fontSize: '1rem', margin: 0, lineHeight: 1.2 }}>Payloads</h2>
-          <span className="text-muted" style={{ fontSize: '0.72rem' }}>
+    <div className="screen screen-payloads">
+      <div className="screen-heading payloads-heading">
+        <div className="screen-heading-copy">
+          <h1 className="screen-title">Payloads</h1>
+          <span className="screen-subtitle">
             {visiblePayloads.length} loaded
             {hiddenCount > 0 && (
               <> · <span title={`${hiddenCount} payload(s) hidden by the ${mode.toUpperCase()} platform filter`}>{hiddenCount} hidden</span></>
             )}
           </span>
         </div>
-        <div className="flex gap-sm">
+        <div className="screen-heading-actions">
           {onRestoreDefaults && (
             <button
               className="btn btn-sm btn-ghost"
-              title="Re-download the built-in payloads (log + templates)"
+              title="Restore the payloads included with P5 Manager"
               onClick={() => onRestoreDefaults(false)}
             >
-              ✨ Defaults
+              ✨ Restore built-ins
             </button>
           )}
           <button className="btn btn-sm btn-secondary" onClick={() => setMultiSelect(!multiSelect)}>
@@ -413,14 +421,14 @@ function PayloadList({ payloads, profiles, onFetchUrl, onSend, onDelete, onUpdat
         <EmptyState
           icon="🧷"
           title="No built-in payloads present"
-          text="None of the app-required payloads (log viewer, PIN pairing, offline activation, PKG installer) are on disk yet. Hit ✨ Defaults to put them back: the app's own ones come with it, the others are fetched from GitHub."
-          action={onRestoreDefaults && <button className="btn btn-primary" onClick={() => onRestoreDefaults(false)}>✨ Defaults</button>}
+          text="These payloads are needed by built-in features such as logs, Remote Play pairing and account activation. Restore them to make those features available again."
+          action={onRestoreDefaults && <button className="btn btn-primary" onClick={() => onRestoreDefaults(false)}>✨ Restore built-ins</button>}
         />
       ) : visiblePayloads.length === 0 ? (
         <EmptyState
           icon="🙈"
           title={`No ${mode.toUpperCase()} payloads`}
-          text={`All ${payloads.length} loaded payload(s) target the other platform. Set the default profile's console type to "Auto-detect" in Settings to see them.`}
+          text={`No ${mode.toUpperCase()} payloads are available. ${hiddenCount} payload(s) for the other platform are hidden.`}
         />
       ) : (
         <div>
@@ -491,8 +499,8 @@ function PayloadList({ payloads, profiles, onFetchUrl, onSend, onDelete, onUpdat
           <div className="text-xs text-muted">
             Supported: <code>.lua</code> / <code>.elf</code> (PS5) ·{' '}
             <code>.bin</code> (PS4 GoldHEN) · <code>.zip</code> (auto-extracted, only
-            supported payloads inside are kept). Platform is auto-detected from the
-            filename and can be changed later from the payload card.
+            supported payloads inside are kept). New items are tagged for the active
+            profile{mode === 'all' ? ' when its platform is known' : ` (${mode.toUpperCase()})`}; the tag can be changed later from the payload card.
           </div>
         </div>
       </Modal>

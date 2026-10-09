@@ -26,7 +26,7 @@ the result, the same way `rp-get-pin.elf` works.
 | **Slot** | User picks 1..16 manually | Auto-detected via `sceUserServiceGetForegroundUser` + per-slot user_id key |
 | **Account ID source** | User types it (IME) or generates a synthetic hash of the local name | **Syncs to the PSN account the manager linked via OAuth** (delivered via FTP trigger file), falling back to the existing on-console registry id. Never invents one. |
 | **No PSN signed in?** | Generates a deterministic offline id from the name | Refuses to activate, prints `Activated: failed` with a "sign in to PSN first" notification |
-| **Idempotent** | Always writes | Skips writes if the slot is already in sync with the linked PSN id |
+| **Idempotent** | Always writes | Skips writes if the existing console account already has its activation flags |
 | **Deps** | libSDL2 + libSDL2_ttf + libIME + readme.h | libSceRegMgr + libSceUserService - tiny |
 
 The registry helpers in `offact.c` / `offact.h` are kept **unchanged**
@@ -45,22 +45,21 @@ Before any registry write, offact reads two account_ids:
    trigger file at `/data/.p5manager-offact` via FTP, which comes from
    the PSN OAuth flow that ran in the web UI.
 
-The trigger is the **source of truth**: whenever it's present, the
-registry is synced to it.
+The console registry is authoritative whenever it already has an account
+ID. The linked Sony trigger can initialize an empty slot, but it never
+replaces an existing console account.
 
 | `reg_account_id` | `trigger_account_id` | reason | action |
 | --- | --- | --- | --- |
 | 0 | present | `adopt` | write trigger id + flags |
-| `!= 0` | matches reg | `sync` | no-op (or just fix flags) |
-| `!= 0` | differs from reg | `overwrite` | replace reg id with trigger id |
+| `!= 0` | matches reg | `registry` | keep console id, just fix flags if needed |
+| `!= 0` | differs from reg | `registry` | keep the existing console account |
 | `!= 0` | absent | `registry` | keep reg id, just fix flags |
 | 0 | absent | — | refuse: nothing to activate against |
 
-This is the path the user request describes:
-
-> "if zero → add the linked PSN we have in Remote Play; if non-zero →
-> check it matches the linked PSN; if it doesn't, change it to the
-> linked one."
+The PSN account is adopted only when the foreground console slot has no
+account ID. Existing IDs and Remote Play pairing remain tied to the
+console account.
 
 ## Build
 
@@ -105,8 +104,8 @@ parser is the same regex for both payloads.
 
 | value | meaning |
 | --- | --- |
-| `yes` | Wrote something: adopted the linked PSN id (`reason=adopt`), replaced a mismatched one (`reason=overwrite`), or re-applied missing flags. Look at the `[offact] writing (reason=…)` line for which branch ran. |
-| `already` | Registry was already in sync (id matches linked PSN, type=`np`, flags=`0x1002`). Pass `--force` to re-write the flags anyway. |
+| `yes` | Adopted the linked PSN ID into an empty slot or re-applied missing activation flags. |
+| `already` | The existing console account already has type=`np` and flags=`0x1002`. Pass `--force` to re-write the flags anyway. |
 | `failed` | Either neither the trigger file nor the registry had an account_id (sign into PSN on the console or run PSN OAuth in P5 Manager first), or one of the regmgr writes returned non-zero. See preceding `[offact]` lines for diagnostics. |
 
 ## On-screen notification
@@ -136,8 +135,8 @@ Sign in to PSN on this profile first
   synthesise an offline id.
 - `--force` re-writes type + flags even when they're already correct
   (useful for diagnostics). It still never replaces the trigger's id
-  with something synthetic; the trigger is always the source of truth
-  when present.
+  with something synthetic; the existing console ID wins over a different
+  linked Sony ID.
 - **SceShellUI may need to re-read the registry.** If the PS5 was
   previously fully signed out it might not pick up the new state until
   the user re-enters their profile, or until SceShellUI restarts. In

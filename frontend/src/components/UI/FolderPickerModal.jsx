@@ -28,7 +28,7 @@ import { crumbsOf } from '../../lib/localPath.js';
 //                   when selectFiles=false.
 export default function FolderPickerModal({
   open, onClose, onPick, initialPath,
-  title = 'Pick folder',
+  title = 'Choose a folder',
   selectFiles = false,
   fileFilter,
 }) {
@@ -208,7 +208,7 @@ export default function FolderPickerModal({
         >
           {loading && <div className="p-sm text-muted text-sm">Loading…</div>}
           {!loading && sorted.length === 0 && (
-            <div className="p-sm text-muted text-sm">Folder is empty</div>
+            <div className="p-sm text-muted text-sm">This folder is empty.</div>
           )}
           {!loading && sorted.map(e => {
             // A file is "pickable" when the parent opted into selectFiles

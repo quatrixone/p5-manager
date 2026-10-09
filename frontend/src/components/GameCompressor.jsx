@@ -8,6 +8,7 @@ import { api, apiSafe } from '../lib/api.js';
 // installs, starts and stops it; every operation happens in its UI, on the
 // console, and keeps running when this page is closed.
 export default function GameCompressor({ profiles = [], onNotification }) {
+  const ps5Profiles = profiles.filter(p => String(p.console_type || 'ps5').toLowerCase() !== 'ps4');
   const [ip, setIp] = useState('');
   const [st, setSt] = useState(null);
   const [busy, setBusy] = useState(null); // 'start' | 'stop'
@@ -17,10 +18,10 @@ export default function GameCompressor({ profiles = [], onNotification }) {
   const canEmbed = typeof window !== 'undefined' && window.location.protocol !== 'https:';
 
   useEffect(() => {
-    if (ip || profiles.length === 0) return;
-    const def = profiles.find(p => p.is_default) || profiles[0];
+    if (ip || ps5Profiles.length === 0) return;
+    const def = ps5Profiles.find(p => p.is_default) || ps5Profiles[0];
     if (def) setIp(def.ip_address);
-  }, [profiles, ip]);
+  }, [ps5Profiles, ip]);
 
   const refresh = useCallback(async () => {
     if (!ip || !open) return;
@@ -68,8 +69,8 @@ export default function GameCompressor({ profiles = [], onNotification }) {
         <div className="comp-card-body flex-col gap-md">
           <div className="flex gap-sm items-center flex-wrap">
             <select className="select" style={{ width: 'auto' }} value={ip} onChange={e => setIp(e.target.value)} aria-label="Console">
-              <option value="">— pick console —</option>
-              {profiles.map(p => <option key={p.id} value={p.ip_address}>{p.name} ({p.ip_address})</option>)}
+              <option value="">— Select a console —</option>
+              {ps5Profiles.map(p => <option key={p.id} value={p.ip_address}>{p.name} ({p.ip_address})</option>)}
             </select>
             {st && (
               <span className={`badge ${st.running ? 'badge-success' : 'badge-muted'}`}>

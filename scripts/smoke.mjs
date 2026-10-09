@@ -163,7 +163,7 @@ await step('payloads, profiles, settings and the user-data paths answer', async 
   // The app's own payloads come with it and are there without a download.
   const payloads = await ok('GET', '/api/payloads');
   assert.ok(Array.isArray(payloads));
-  for (const name of ['rp-get-pin.elf', 'offact.elf', 'pkg-install.elf']) {
+  for (const name of ['rp-get-pin.elf', 'offact.elf', 'pkg-install.elf', 'rp-get-pin-ps4.bin', 'offact-ps4.bin']) {
     assert.ok(payloads.some(p => p.filename === name), `${name} is not among the payloads`);
   }
   assert.ok(Array.isArray(await ok('GET', '/api/profiles')));

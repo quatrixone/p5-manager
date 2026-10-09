@@ -181,6 +181,7 @@ function QueueItem({ item, queuePaused, onRemove, onRetry, onMove, onStart, onPa
   //   - smb-staging: smbclient downloading source → show bytes_written / bytes_total
   //   - scanning:    mkpfs reading the .ffpfsc    → show bytes_read    / bytes_total
   //   - extracting:  mkpfs writing files          → show bytes_written / bytes_total
+  //   - verifying:   mkpfs reading the image it wrote, silently → no percentage
   // The frontend treats them uniformly: pick the most-relevant byte counter
   // for the current phase and surface phase as a coloured tag.
   const isUnpack = item.type === 'convert' && item.mode === 'unpack';
@@ -203,6 +204,7 @@ function QueueItem({ item, queuePaused, onRemove, onRetry, onMove, onStart, onPa
       phase === 'smb-staging' ? 'smb staging'
     : phase === 'scanning'    ? 'scanning'
     : phase === 'extracting'  ? 'extracting'
+    : phase === 'verifying'   ? 'verifying the image'
     : null;
   const bytesLabel = (liveBytes != null && liveBytes > 0)
     ? (liveBytesTotal
@@ -213,7 +215,7 @@ function QueueItem({ item, queuePaused, onRemove, onRetry, onMove, onStart, onPa
   // Show an indeterminate animation when the task is clearly active but
   // we don't yet have a useful percentage (first few seconds before the
   // poller has a sample).
-  const indeterminate = isActive && progress < 1 && liveBytes != null && liveBytes > 0;
+  const indeterminate = isActive && (phase === 'verifying' || (progress < 1 && liveBytes != null && liveBytes > 0));
 
   return (
     <div className="queue-item" style={{
@@ -231,7 +233,7 @@ function QueueItem({ item, queuePaused, onRemove, onRetry, onMove, onStart, onPa
         <div
           style={{ flex: 1, minWidth: 0, cursor: needsPassword ? 'pointer' : undefined }}
           onClick={needsPassword ? () => onPassword(item) : undefined}
-          title={needsPassword ? 'Click to enter the archive password' : undefined}
+          title={needsPassword ? 'Select to enter the archive password' : undefined}
         >
           <div className="text-sm truncate" style={{ fontWeight: 500 }} title={itemTitle(item)}>
             {itemTitle(item)}
@@ -568,9 +570,9 @@ export default function Queue() {
         {filtered.length === 0 ? (
           <div className="empty-state">
             <div className="empty-state-icon">📋</div>
-            <div className="empty-state-title">No active tasks</div>
+            <div className="empty-state-title">You’re all caught up</div>
             <div className="empty-state-text">
-              Add tasks from the Files, Convert or Download tabs and start them here.
+              Tasks you add from Files, Convert or Downloads will appear here.
             </div>
           </div>
         ) : (

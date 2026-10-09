@@ -7,18 +7,18 @@
 //
 
 import fs from 'fs';
+import { decodeCatalog } from './catalogLinks.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const CANDIDATE_DIRS = [
+  process.env.BUILTIN_DIR && path.resolve(process.env.BUILTIN_DIR),
   // Repo / `npm run dev` layout
   path.resolve(__dirname, '../../../frontend/builtin'),
   // Docker runtime layout (see Dockerfile)
   path.resolve(__dirname, '../../builtin'),
-  // Allow override for unusual deployments
-  process.env.BUILTIN_DIR && path.resolve(process.env.BUILTIN_DIR),
 ].filter(Boolean);
 
 let cachedDir = null;
@@ -51,7 +51,7 @@ export function readBuiltinList(filename) {
   const mtimeMs = fs.statSync(filePath).mtimeMs;
   const cached = cache.get(filePath);
   if (cached && cached.mtimeMs === mtimeMs) return cached.list;
-  const list = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  const list = decodeCatalog(JSON.parse(fs.readFileSync(filePath, 'utf8')));
   if (!Array.isArray(list)) throw new Error(`${filename} is not a JSON array`);
   cache.set(filePath, { mtimeMs, list });
   return list;

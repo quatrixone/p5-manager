@@ -55,3 +55,31 @@ Nothing pirated, and nothing that links to it.
 
 The rules are in [`backend/src/lib/storeItem.js`](../backend/src/lib/storeItem.js),
 shared by the app and the workflow.
+
+## Platform catalogs and direct import
+
+The Marketplace has separate PS4 and PS5 views, initially matching the active
+console. Cross-platform scripts/templates may appear in either view. Payload
+items use `kind: "payload"`, live in `payloads/`, and use the homebrew file
+schema with ELF/BIN/LUA files only. Import downloads and checks them before
+adding them to the payload library. Script import adds a saved script with its
+platform tag. Template import asks for a compatible console and creates a
+saved Autoload sequence immediately; it does not start it. Updating an imported
+script or sequence replaces its imported definition.
+
+## Encrypted catalog links
+
+All URL-bearing strings in committed `frontend/builtin/*.json` and `store/`
+items/index are encoded as `p5enc:v1:` using AES-256-GCM. The backend decodes
+catalogs before validation/use; built-in editing, publishing and submission
+acceptance encode them before writing. Nested steps, descriptions and URLs in
+script text are covered too. Legacy plain catalogs remain readable.
+
+The decoder key is distributed with this open-source application. This hides
+plain links in the JSON; it does not make public download URLs secret and must
+never be used for account credentials. Runtime API data and the editor remain
+readable so links and scripts can be used normally.
+
+The Marketplace check rejects plain links in item files and verifies decoded
+index content. `node scripts/prepare-catalog.mjs` refreshes the existing public
+PS5 payload checksums and encrypts built-ins without compiling the application.

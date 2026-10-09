@@ -236,9 +236,11 @@ export async function createExfatImage(job, helpers, src, out, opts = {}) {
       return { code: 0 };
     } catch (e) {
       appendLog(job, `[manager] exFAT image failed: ${e.message}\n`);
+      // Half an image is of no use to anyone.
+      try { fs.rmSync(out, { force: true }); } catch (_) {}
       return { code: -1, error: e.message };
     } finally {
-      job.progress = 100;
+      if (job.status !== 'cancelled') job.progress = 100;
       job.phase = null;
     }
   }

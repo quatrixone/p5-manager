@@ -84,6 +84,7 @@ jobs:
           # The app's own payloads, put into data\payloads on the first start.
           New-Item -ItemType Directory -Force "$out/app/backend/vendored" | Out-Null
           Copy-Item p5managerclient/rp-get-pin/rp-get-pin.elf, p5managerclient/offact/offact.elf, p5managerclient/pkg-install/pkg-install.elf, p5managerclient/save-mounter/save-mounter.elf "$out/app/backend/vendored/"
+          Copy-Item p5managerclient/rp-get-pin-ps4/rp-get-pin-ps4.bin, p5managerclient/offact-ps4/offact-ps4.bin "$out/app/backend/vendored/"
 
           # 7-Zip, for the archives the app extracts (7z, zip, rar): the launcher
           # puts this folder on the server's PATH. Both downloads are pinned.
@@ -105,6 +106,10 @@ jobs:
           Expand-Archive python-embed.zip "$out/runtime/python"
           python -m pip install --upgrade pip
           python -m pip install -r remoteplay/requirements.txt --target "$out/runtime/python/Lib/site-packages" --no-compile
+          # mkpfs, the converter behind the Convert tab, in the same Python:
+          # the backend starts it as `python -m mkpfs`. Pillow stays the
+          # version the Remote Play service was tested with.
+          python -m pip install mkpfs Pillow==10.4.0 --target "$out/runtime/python/Lib/site-packages" --no-compile --upgrade
           # The embeddable Python only looks where its ._pth file says.
           $pth = Get-ChildItem "$out/runtime/python" -Filter "python*._pth" | Select-Object -First 1
           Set-Content $pth.FullName -Encoding ascii -Value @("python311.zip", ".", "Lib\site-packages", "..\..\app\remoteplay", "import site")
@@ -184,6 +189,8 @@ jobs:
           $py = "dist-portable/P5Manager/runtime/python/python.exe"
           & $py -c "import sys, av, PIL, fastapi, uvicorn, aiohttp, chiaki_engine, ddp, psn_oauth; print('python', sys.version.split()[0], 'av', av.__version__, 'p5rp', chiaki_engine.find_helper())"
           if ($LASTEXITCODE -ne 0) { throw "bundled Python cannot import the Remote Play service's modules" }
+          & $py -m mkpfs -V
+          if ($LASTEXITCODE -ne 0) { throw "bundled Python cannot run mkpfs" }
           & $py -c "import chiaki_engine, sys; sys.exit(0 if chiaki_engine.find_helper() else 1)"
           if ($LASTEXITCODE -ne 0) { throw "the Remote Play service does not find p5rp.exe" }
           # p5rp starts (its usage line, exit code 2) - all its DLLs are there.

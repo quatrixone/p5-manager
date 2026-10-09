@@ -5,11 +5,12 @@ import { usePlatform } from '../contexts/PlatformContext';
 const API = '/store';
 const KINDS = [
   { id: 'all', label: 'All' },
+  { id: 'payload', label: '📦 Payloads' },
   { id: 'homebrew', label: '🎮 Homebrew' },
   { id: 'template', label: '⚡ Autoload' },
   { id: 'script', label: '🕹️ Scripts' },
 ];
-const KIND_LABEL = { homebrew: 'Homebrew', template: 'Autoload template', script: 'Input script' };
+const KIND_LABEL = { payload: 'Payload', homebrew: 'Homebrew', template: 'Autoload template', script: 'Input script' };
 
 const mb = (n) => (n ? `${(n / 1e6).toFixed(n > 1e7 ? 0 : 1)} MB` : '');
 
@@ -19,8 +20,8 @@ function Detail({ entry, profiles, onClose, onInstalled, onNotification }) {
   const [pid, setPid] = useState('');
   const [job, setJob] = useState(null);
   const [busy, setBusy] = useState(false);
-  const targets = profiles.filter((p) => (p.console_type || 'ps5') === entry.console_type);
-  const needsConsole = entry.kind === 'homebrew' && (entry.files || []).includes('pkg');
+  const targets = profiles.filter((p) => !entry.console_type || (p.console_type || 'ps5') === entry.console_type);
+  const needsConsole = (entry.kind === 'template' && entry.requiresProfile !== false) || (entry.kind === 'homebrew' && (entry.files || []).includes('pkg'));
 
   useEffect(() => {
     api.get(`${API}/item/${entry.kind}/${entry.id}`).then((r) => setItem(r.item)).catch((e) => setError(e.message));
@@ -78,7 +79,7 @@ function Detail({ entry, profiles, onClose, onInstalled, onNotification }) {
         {item?.kind === 'script' && (
           <pre className="text-xs" style={{ maxHeight: 200, overflow: 'auto', background: 'var(--bg-secondary, rgba(0,0,0,.2))', padding: 8, borderRadius: 6 }}>{item.script}</pre>
         )}
-        {item?.kind === 'homebrew' && (
+        {['homebrew', 'payload'].includes(item?.kind) && (
           <div className="text-xs mb-sm">
             {item.files.map((f) => (
               <div key={f.url} style={{ wordBreak: 'break-all' }}>📦 {f.type.toUpperCase()} · {mb(f.size)} · <a href={f.url} target="_blank" rel="noreferrer">{f.url}</a></div>
@@ -100,7 +101,7 @@ function Detail({ entry, profiles, onClose, onInstalled, onNotification }) {
                 {targets.map((p) => <option key={p.id} value={p.id}>Install on {p.name} ({p.ip_address})</option>)}
               </select>
             )
-            : <div className="text-sm text-muted mb-sm">No {entry.console_type.toUpperCase()} profile to install it on.</div>
+            : <div className="text-sm text-muted mb-sm">No {(entry.console_type || 'console').toUpperCase()} profile to install it on.</div>
         )}
         {job && (
           <div className="text-sm mb-sm" style={{ color: job.state === 'failed' ? 'var(--red)' : undefined }}>
@@ -109,9 +110,9 @@ function Detail({ entry, profiles, onClose, onInstalled, onNotification }) {
         )}
         <div className="flex gap-sm flex-wrap">
           <button className="btn btn-primary" onClick={install} disabled={busy || running || !item || (needsConsole && !pid)} style={{ flex: '1 1 160px', minHeight: 44 }}>
-            {entry.update ? 'Update' : entry.installed ? 'Install again' : 'Install'}
+            {entry.update ? 'Update' : entry.kind === 'homebrew' ? 'Install' : entry.installed ? 'Import again' : 'Import'}
           </button>
-          {entry.installed && entry.kind !== 'homebrew' && (
+          {entry.installed && !['homebrew', 'payload'].includes(entry.kind) && (
             <button className="btn btn-danger" onClick={uninstall} style={{ minHeight: 44 }}>Remove</button>
           )}
         </div>
@@ -198,8 +199,9 @@ export default function Marketplace({ profiles = [], onNotification }) {
   const [query, setQuery] = useState('');
   const [open, setOpen] = useState(null);
   // Only what fits the console of the active profile - unless asked for all.
-  const [onlyMine, setOnlyMine] = useState(true);
-  const fits = (i) => !onlyMine || !mode || mode === 'all' || !i.console_type || i.console_type === mode;
+  const [platform, setPlatform] = useState(mode === 'ps4' ? 'ps4' : 'ps5');
+  useEffect(() => { if (mode === 'ps4' || mode === 'ps5') { setPlatform(mode); setOpen(null); } }, [mode]);
+  const fits = (i) => !i.console_type || i.console_type === platform;
 
   const load = useCallback(async (refresh = false) => {
     setError('');
@@ -213,8 +215,7 @@ export default function Marketplace({ profiles = [], onNotification }) {
       .filter((i) => kind === 'all' || i.kind === kind)
       .filter(fits)
       .filter((i) => !q || `${i.name} ${i.description} ${i.author}`.toLowerCase().includes(q));
-  }, [data, kind, query, mode, onlyMine]); // eslint-disable-line react-hooks/exhaustive-deps
-  const hidden = (data?.items || []).filter((i) => !fits(i)).length;
+  }, [data, kind, query, platform]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const reopen = useCallback(async () => {
     await load(true);
@@ -232,11 +233,12 @@ export default function Marketplace({ profiles = [], onNotification }) {
         {KINDS.map((k) => (
           <button key={k.id} className={`btn btn-sm ${kind === k.id ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setKind(k.id)} style={{ minHeight: 36 }}>{k.label}</button>
         ))}
-        {mode && mode !== 'all' && (
-          <button className={`btn btn-sm ${onlyMine ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setOnlyMine((v) => !v)} style={{ minHeight: 36 }}>
-            {onlyMine ? `Only ${mode.toUpperCase()}` : 'PS4 + PS5'}
+        {['ps4', 'ps5'].map(p => (
+          <button key={p} className={`btn btn-sm ${platform === p ? 'btn-primary' : 'btn-secondary'}`}
+            onClick={() => { setPlatform(p); setOpen(null); }} aria-pressed={platform === p} style={{ minHeight: 36 }}>
+            {p.toUpperCase()}
           </button>
-        )}
+        ))}
       </div>
       {error && <div className="text-sm" style={{ color: 'var(--red)' }}>Marketplace unreachable: {error}</div>}
       {data && items.length === 0 && (
@@ -244,9 +246,7 @@ export default function Marketplace({ profiles = [], onNotification }) {
           <div className="empty-state-icon">🛒</div>
           <div className="empty-state-title">{data.items.length ? 'Nothing matches' : 'The marketplace is empty so far'}</div>
           <div className="empty-state-text">
-            {!data.items.length ? 'Publish the first one below.'
-              : hidden ? <>{hidden} for the other console are hidden - <button className="btn btn-sm btn-secondary" onClick={() => setOnlyMine(false)}>show them</button></>
-                : 'Try another filter.'}
+            {!data.items.length ? 'Publish the first one below.' : `No ${platform.toUpperCase()} items match these filters.`}
           </div>
         </div>
       )}
@@ -269,7 +269,7 @@ export default function Marketplace({ profiles = [], onNotification }) {
               </div>
               <div className="text-xs text-muted">
                 {KIND_LABEL[i.kind]}{i.console_type ? ` · ${i.console_type.toUpperCase()}` : ''} · {i.author}
-                {i.kind === 'homebrew' && i.size ? ` · ${mb(i.size)}` : ''}
+                {['homebrew', 'payload'].includes(i.kind) && i.size ? ` · ${mb(i.size)}` : ''}
               </div>
               <div className="text-xs mt-xs" style={{ display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{i.description}</div>
             </div>

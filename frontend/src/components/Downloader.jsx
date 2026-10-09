@@ -54,7 +54,7 @@ export default function Downloader({ profiles = [], onNotification, onOpenQueue 
     }
     if (destKind === 'local' && !destPath.trim()) return onNotification?.('Destination directory required', 'error');
     if (destKind === 'smb' && !smbSourceId) return onNotification?.('SMB source required', 'error');
-    if (destKind === 'ps5' && !ps5Ip) return onNotification?.('Pick a console', 'error');
+    if (destKind === 'ps5' && !ps5Ip) return onNotification?.('Select a console first.', 'error');
     if (destKind === 'ps5' && !ps5Path.trim().startsWith('/')) return onNotification?.('Console folder must be an absolute path', 'error');
 
     setSubmitting(true);
@@ -141,7 +141,7 @@ export default function Downloader({ profiles = [], onNotification, onOpenQueue 
                   <div>
                     <label className="text-xs text-muted mb-sm" style={{ display: 'block' }}>Console</label>
                     <select className="select" value={ps5Ip} onChange={e => setPs5Ip(e.target.value)}>
-                      <option value="">— pick console —</option>
+                      <option value="">— Select a console —</option>
                       {profiles.map(p => (
                         <option key={p.id} value={p.ip_address}>{p.name} ({p.ip_address})</option>
                       ))}
@@ -169,7 +169,7 @@ export default function Downloader({ profiles = [], onNotification, onOpenQueue 
                   pickerTitle="Pick download folder"
                 />
                 <div className="text-xs text-muted mt-sm">
-                  Default <code>/data/downloads</code>. Click <b>Browse…</b> to pick a folder, or type a path directly.
+                  Files are saved to <code>/data/downloads</code> by default. Choose <b>Browse…</b> to select another folder, or enter its path.
                 </div>
               </div>
             ) : (
@@ -177,7 +177,7 @@ export default function Downloader({ profiles = [], onNotification, onOpenQueue 
                 <div>
                   <label className="text-xs text-muted mb-sm" style={{ display: 'block' }}>SMB source</label>
                   <select className="select" value={smbSourceId} onChange={e => setSmbSourceId(e.target.value)}>
-                    <option value="">— pick source —</option>
+                    <option value="">— Select a source —</option>
                     {smbSources.map(s => (
                       <option key={s.id} value={s.id}>{s.name}</option>
                     ))}

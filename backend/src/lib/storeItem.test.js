@@ -33,3 +33,12 @@ test('a sequence becomes a template item', () => {
   assert.equal(item.autoTrigger, 'loader_down');
   assert.deepEqual(validateStoreItem(item), []);
 });
+
+test('payload items install ELF/BIN/LUA but refuse packages and missing checksums', () => {
+  const payload = { ...base, kind: 'payload', console_type: 'ps5', files: [{ type: 'elf', url: 'https://example.org/tool.elf', sha256: 'a'.repeat(64), size: 12 }] };
+  assert.deepEqual(validateStoreItem(payload), []);
+  assert.deepEqual(indexEntry(payload, 'payloads/my-item.json').files, ['elf']);
+  assert.ok(validateStoreItem({ ...payload, files: [{ ...payload.files[0], type: 'pkg', url: 'https://example.org/tool.pkg' }] }).some(e => e.includes('cannot contain pkg')));
+  assert.ok(validateStoreItem({ ...payload, files: [{ ...payload.files[0], sha256: undefined }] }).some(e => e.includes('sha256')));
+  assert.ok(validateStoreItem({ ...base, kind: 'constructor' }).length);
+});

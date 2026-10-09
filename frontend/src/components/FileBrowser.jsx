@@ -35,6 +35,8 @@ const API = '/api';
 
 const isArchive = (n) => /\.(rar|7z|zip|tar\.gz|tgz|tar|r\d{2}|part\d+\.rar)$/i.test(n);
 const isPfsImage = (n) => /\.(ffpfs|ffpfsc|pfs|dat|bin)$/i.test(n);
+// An exFAT image unpacks too, through the backend's own mode for it.
+const isExfatImage = (n) => /\.exfat$/i.test(n);
 const isPkgFile  = (n) => /\.pkg$/i.test(n);
 
 export default function FileBrowser({
@@ -53,6 +55,8 @@ export default function FileBrowser({
   onImported,
   onPickDir,
   onPickConvert,
+  enableConvertActions = true,
+  onConsolePlatformChange,
   // Invoked when the user picks "Upload/Download/Convert queue" from the
   // kebab menu. Parent decides how to navigate to the Queue view
   // (e.g. by switching its sub-tab). Signature: (type: 'upload' | 'download' | 'convert')
@@ -80,11 +84,27 @@ export default function FileBrowser({
 }) {
   const [smbSources, setSmbSources] = useState([]);
   const [localRoots, setLocalRoots] = useState([]);
+  const [rootLabels, setRootLabels] = useState({});
   const [browserPrefs, setBrowserPrefs] = useState({ local: '', smb: {} });
 
   const [kind, setKind] = useState(initialLocation?.kind || defaultKind);
   const [smbId, setSmbId] = useState(initialLocation?.smbId ? String(initialLocation.smbId) : '');
   const [ftpIp, setFtpIp] = useState(initialLocation?.ftpIp || '');
+  const ftpProfile = profiles.find(p => p.ip_address === ftpIp);
+  const ftpPlatform = String(ftpProfile?.console_type || '').toLowerCase() === 'ps4' ? 'PS4' : 'PS5';
+  const ps4Profiles = profiles.filter(p => String(p.console_type || '').toLowerCase() === 'ps4');
+  const [ps4InstallIp, setPs4InstallIp] = useState(() =>
+    (profiles.find(p => String(p.console_type || '').toLowerCase() === 'ps4' && p.is_default)
+      || profiles.find(p => String(p.console_type || '').toLowerCase() === 'ps4'))?.ip_address || '',
+  );
+  useEffect(() => {
+    if (!ps4Profiles.some(p => p.ip_address === ps4InstallIp)) {
+      setPs4InstallIp((ps4Profiles.find(p => p.is_default) || ps4Profiles[0])?.ip_address || '');
+    }
+  }, [profiles, ps4InstallIp]);
+  useEffect(() => {
+    onConsolePlatformChange?.(kind === 'ftp' && ftpIp ? ftpProfile?.console_type || 'ps5' : null);
+  }, [kind, ftpIp, ftpProfile?.console_type, onConsolePlatformChange]);
   // Folder to reopen for the store `initialLocation` points at; dropped as
   // soon as the user switches to another store.
   const initialRef = useRef(initialLocation?.path ? initialLocation : null);
@@ -95,8 +115,8 @@ export default function FileBrowser({
   const [parent, setParent] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  // PS5 FTP only: the backend may be sending zftpd and waiting for its port,
-  // which takes a few seconds - say so instead of a silent "loading…".
+  // The backend may start PS5 zftpd while connecting; PS4 GoldHEN FTP must
+  // already be running. Give either console a useful connection hint.
   const [ftpSlow, setFtpSlow] = useState(false);
   useEffect(() => {
     if (!(loading && kind === 'ftp')) { setFtpSlow(false); return; }
@@ -119,7 +139,7 @@ export default function FileBrowser({
     (async () => {
       const data = await apiSafe.get('/settings');
       if (cancelled || !data) return;
-      if (data.upload_target_ip) setUploadIp(data.upload_target_ip);
+      if (data.upload_target_ip && profiles.some(p => p.ip_address === data.upload_target_ip && p.console_type !== 'ps4')) setUploadIp(data.upload_target_ip);
       if (data.upload_target_path) setUploadDest(data.upload_target_path);
     })();
     return () => { cancelled = true; };
@@ -129,7 +149,7 @@ export default function FileBrowser({
   // visit Settings → Config first.
   useEffect(() => {
     if (!uploadIp && profiles.length) {
-      const def = profiles.find(p => p.is_default) || profiles[0];
+      const def = profiles.find(p => p.is_default && p.console_type !== 'ps4') || profiles.find(p => p.console_type !== 'ps4');
       if (def) setUploadIp(def.ip_address);
     }
   }, [profiles, uploadIp]);
@@ -253,7 +273,7 @@ export default function FileBrowser({
     apiSafe.get('/convert/sources').then(rows => {
       setSmbSources((rows || []).filter(s => s.type === 'smb' || s.type === 'ftp'));
     });
-    apiSafe.get('/convert/local/roots').then(d => { if (d) setLocalRoots(d.roots || []); });
+    apiSafe.get('/convert/local/roots').then(d => { if (d) { setLocalRoots(d.roots || []); setRootLabels(d.labels || {}); } });
     apiSafe.get('/convert/browser-prefs').then(d => {
       if (d) setBrowserPrefs({ local: d.local || '', smb: d.smb || {} });
     });
@@ -279,7 +299,7 @@ export default function FileBrowser({
         if (!smbId) { setLoading(false); setError('Select SMB source'); return; }
         d = await api.post(`/convert/sources/${smbId}/browse`, { subPath: p });
       } else {
-        if (!ftpIp) { setLoading(false); setError('Select PS5 IP'); return; }
+        if (!ftpIp) { setLoading(false); setError('Select a console'); return; }
         d = await api.post('/convert/ftp/browse', { ip: ftpIp, path: p });
         if (d.ftp_started) onNotification?.('FTP was not running on the console - started zftpd', 'info');
       }
@@ -302,10 +322,10 @@ export default function FileBrowser({
       const def = (initHere && init.path) || browserPrefs.smb?.[smbId] || '';
       setPathInput(def); setPath(def); browse(def);
     } else if (kind === 'ftp' && ftpIp) {
-      const p = (initHere && init.path) || '/data';
+      const p = (initHere && init.path) || (ftpProfile?.console_type === 'ps4' ? '/' : '/data');
       setPathInput(p); setPath(p); browse(p);
     } else { setFiles([]); setPath(''); setParent(null); }
-  }, [kind, smbId, ftpIp, browserPrefs.local]);
+  }, [kind, smbId, ftpIp, browserPrefs.local, ftpProfile?.console_type]);
 
   // ─── Dual-pane plumbing ──────────────────────────────────────────────
   const onLocationChangeRef = useRef(onLocationChange);
@@ -337,7 +357,7 @@ export default function FileBrowser({
     const clash = topLevelNames(entries).filter(n => files.some(f => f.name === n));
     if (clash.length > 0) {
       const shown = clash.slice(0, 5).join(', ') + (clash.length > 5 ? ` and ${clash.length - 5} more` : '');
-      if (!window.confirm(`Already in this folder: ${shown}.\n\nOverwrite?`)) return;
+      if (!window.confirm(`A file named “${shown}” already exists here. Replace it?`)) return;
     }
     const bytes = entries.reduce((n, e) => n + e.file.size, 0);
     const controller = new AbortController();
@@ -503,7 +523,7 @@ export default function FileBrowser({
   };
 
   const deleteEntry = async (entry) => {
-    if (!window.confirm(`Delete ${entry.isDir ? 'folder' : 'file'}\n${entry.name}?`)) return;
+    if (!window.confirm(`Delete this ${entry.isDir ? 'folder' : 'file'}?\n\n${entry.name}\n\nThis can’t be undone.`)) return;
     try {
       await deleteOne(entry);
       onNotification?.(`Deleted ${entry.name}`, 'success');
@@ -544,7 +564,7 @@ export default function FileBrowser({
       if (kind === 'local') {
         await api.post('/convert/local/move', { src, dst, isDir: !!target.isDir });
       } else if (kind === 'ftp') {
-        if (!ftpIp) throw new Error('Select PS5 first');
+        if (!ftpIp) throw new Error('Select a console first');
         await api.post('/convert/ftp/move', { ip: ftpIp, src, dst });
       } else {
         if (!smbId) throw new Error('Select remote source first');
@@ -574,7 +594,7 @@ export default function FileBrowser({
       return;
     }
     if (!uploadIp) {
-      onNotification?.('No upload target PS5 set - configure it in Settings → Config → Local upload target', 'error');
+      onNotification?.('Choose an upload destination in Settings → Config first.', 'error');
       return;
     }
     let body;
@@ -582,7 +602,7 @@ export default function FileBrowser({
       const fullPath = path === '/' ? `/${entry.name}` : `${path.replace(/\/$/, '')}/${entry.name}`;
       body = { ip: uploadIp, local_path: fullPath, dest_path: uploadDest };
     } else if (kind === 'smb') {
-      if (!smbId) { onNotification?.('Pick a remote source first', 'error'); return; }
+      if (!smbId) { onNotification?.('Select a remote source first.', 'error'); return; }
       const sub = path ? `${path.replace(/\/+$/, '')}/${entry.name}` : entry.name;
       body = {
         ip: uploadIp,
@@ -607,7 +627,7 @@ export default function FileBrowser({
   };
 
   const uploadSelected = async () => {
-    if (!uploadIp) { onNotification?.('No upload target PS5 set - configure it in Settings → Config → Local upload target', 'error'); return; }
+    if (!uploadIp) { onNotification?.('Choose an upload destination in Settings → Config first.', 'error'); return; }
     const list = Array.from(selected);
     if (list.length === 0) return;
     let ok = 0, fail = 0;
@@ -743,7 +763,7 @@ export default function FileBrowser({
   };
 
   const deleteSelected = async () => {
-    if (!window.confirm(`Delete ${selected.size} item(s)?`)) return;
+    if (!window.confirm(`Delete ${selected.size} selected ${selected.size === 1 ? 'item' : 'items'}? This can’t be undone.`)) return;
     let ok = 0, fail = 0;
     for (const name of selected) {
       const f = files.find(f => f.name === name);
@@ -768,11 +788,11 @@ export default function FileBrowser({
       const fullPath = path === '/' ? `/${entry.name}` : `${path.replace(/\/$/, '')}/${entry.name}`;
       url = `${API}/convert/local/download?path=${encodeURIComponent(fullPath)}`;
     } else if (kind === 'smb') {
-      if (!smbId) { onNotification?.('Pick a remote source first', 'error'); return; }
+      if (!smbId) { onNotification?.('Select a remote source first.', 'error'); return; }
       const sub = path ? `${path.replace(/\/+$/, '')}/${entry.name}` : entry.name;
       url = `${API}/convert/sources/${smbId}/download?path=${encodeURIComponent(sub)}&isDir=${entry.isDir ? 1 : 0}`;
     } else if (kind === 'ftp') {
-      if (!ftpIp) { onNotification?.('Pick a PS5 first', 'error'); return; }
+      if (!ftpIp) { onNotification?.('Select a console first.', 'error'); return; }
       const fullPath = path === '/' ? `/${entry.name}` : `${path.replace(/\/$/, '')}/${entry.name}`;
       url = `${API}/convert/ftp/download?ip=${encodeURIComponent(ftpIp)}&path=${encodeURIComponent(fullPath)}&isDir=${entry.isDir ? 1 : 0}`;
     } else {
@@ -804,7 +824,6 @@ export default function FileBrowser({
     convert: '/convert/convert/queue',
     extract: '/convert/extract/queue',
     download:'/downloader/queue',
-    install: '/convert/install/queue',
   };
 
   const setQueueRunning = async (type, running) => {
@@ -819,59 +838,27 @@ export default function FileBrowser({
   // an intent ('now' / 'queue' / null) and the Convert tab arms the matching
   // action button.)
 
-  // One-click install — sends a .pkg through the install queue. Backend will
-  // stage to PS5 (or skip staging when source is already on PS5), then
-  // trigger the configured installer payload. Preflight check ensures the
-  // user sees a clear "configure installer payload in Settings" error
-  // before we drop ten queued .pkg files that all fail the same way.
-  const installEntry = async (entry) => {
-    if (entry.isDir || !isPkgFile(entry.name)) {
-      onNotification?.('Install expects a .pkg file', 'error');
+  // PS4 Remote Package Installer pulls the PKG over HTTP from this manager.
+  // Unlike the PS5 path, it does not stage the file onto the console first.
+  const installEntryPs4 = async (entry) => {
+    if (kind !== 'local' || entry.isDir || !isPkgFile(entry.name)) {
+      onNotification?.('PS4 install supports local .pkg files', 'error');
       return false;
     }
-    // Preflight: confirm an installer payload + stage dir are configured.
+    if (!ps4InstallIp) {
+      onNotification?.('Select a PS4 install target first', 'error');
+      return false;
+    }
+    const localPath = path === '/' ? `/${entry.name}` : `${path.replace(/\/$/, '')}/${entry.name}`;
     try {
-      await api.get('/convert/install/preflight');
-    } catch (e) {
-      onNotification?.(`Install setup: ${e.message}`, 'error');
-      return false;
-    }
-    // We need a target PS5 IP. For ftp/local kinds we already track this
-    // (uploadIp for local/SMB → PS5 upload; ftpIp for PS5 FTP browsing).
-    const targetIp = kind === 'ftp' ? ftpIp : uploadIp;
-    if (!targetIp) {
-      onNotification?.('Pick a target PS5 first', 'error');
-      return false;
-    }
-
-    let body;
-    if (kind === 'local') {
-      const fullPath = path === '/' ? `/${entry.name}` : `${path.replace(/\/$/, '')}/${entry.name}`;
-      body = { ip: targetIp, source_kind: 'local', local_path: fullPath, pkg_name: entry.name };
-    } else if (kind === 'ftp') {
-      const fullPath = path === '/' ? `/${entry.name}` : `${path.replace(/\/$/, '')}/${entry.name}`;
-      body = { ip: targetIp, source_kind: 'ftp', source_remote_path: fullPath, pkg_name: entry.name };
-    } else if (kind === 'smb') {
-      if (!smbId) { onNotification?.('Pick a remote source first', 'error'); return false; }
-      const sub = path ? `${path.replace(/\/+$/, '')}/${entry.name}` : entry.name;
-      body = {
-        ip: targetIp,
-        source_kind: 'remote-smb',
-        source_id: Number(smbId),
-        source_remote_path: sub,
-        pkg_name: entry.name,
-      };
-    } else {
-      onNotification?.('Install: unsupported source type', 'error');
-      return false;
-    }
-
-    try {
-      await api.post('/convert/install/queue', body);
-      onNotification?.(`Install queued: ${entry.name} → ${targetIp}`, 'success');
+      await api.post(`/library/${encodeURIComponent(ps4InstallIp)}/ps4/install`, {
+        local_path: localPath,
+        manager_url: window.location.origin,
+      });
+      onNotification?.(`Sent ${entry.name} to Remote Package Installer on ${ps4InstallIp}`, 'success');
       return true;
     } catch (e) {
-      onNotification?.(`Install failed: ${e.message}`, 'error');
+      onNotification?.(`PS4 install failed: ${e.message}`, 'error');
       return false;
     }
   };
@@ -881,25 +868,32 @@ export default function FileBrowser({
   // <basename>-extracted. SMB sources need to be imported first (mkpfs needs
   // a local seekable input); PS5 FTP is supported via the staging dance.
   const enqueueUnpackDefault = async (entry) => {
-    if (entry.isDir || !isPfsImage(entry.name)) {
-      onNotification?.('Unpack expects a .ffpfsc/.ffpfs/.pfs file', 'error');
+    const exfat = !entry.isDir && isExfatImage(entry.name);
+    if (entry.isDir || !(isPfsImage(entry.name) || exfat)) {
+      onNotification?.('Unpack expects a .ffpfsc/.ffpfs/.pfs or .exfat file', 'error');
       return false;
     }
     const fullPath = path === '/' ? `/${entry.name}` : `${path.replace(/\/$/, '')}/${entry.name}`;
     // Output folder mirrors the pack convention (Game.exfat → Game.ffpfsc),
     // so .ffpfsc → folder named exactly Game/. No `-extracted` / `-final`
     // suffix — keep round-trips clean.
-    const base = entry.name.replace(/\.(ffpfs|ffpfsc|pfs|dat|bin)$/i, '').replace(/[^A-Za-z0-9_.\-]/g, '_');
+    const base = entry.name.replace(/\.(ffpfs|ffpfsc|pfs|dat|bin|exfat)$/i, '').replace(/[^A-Za-z0-9_.\-]/g, '_');
+    // The backend replaces whatever carries the output's name. A folder of
+    // that name next to the image - often the very one it was packed from -
+    // must not be the price of unpacking, so the output steps aside.
+    const taken = new Set(files.map(x => x.name.toLowerCase()));
+    let outName = base;
+    for (let n = 1; taken.has(outName.toLowerCase()); n++) outName = `${base}-unpacked${n > 1 ? n : ''}`;
     const body = {
-      mode: 'unpack',
-      output_name: base,
+      mode: exfat ? 'exfat-unpack' : 'unpack',
+      output_name: outName,
       push_after: false,
     };
     if (kind === 'ftp') {
-      if (!ftpIp) { onNotification?.('Select a PS5 first', 'error'); return false; }
+      if (!ftpIp) { onNotification?.('Select a console first', 'error'); return false; }
       body.source_ftp = { ip: ftpIp, path: fullPath };
     } else if (kind === 'smb') {
-      if (!smbId) { onNotification?.('Pick an SMB source first', 'error'); return false; }
+      if (!smbId) { onNotification?.('Select an SMB source first.', 'error'); return false; }
       // Backend stages the .ffpfsc from the SMB share into a per-job temp dir
       // (smbclient one-shot get) and then runs mkpfs against the local copy.
       // Result lands in the mkpfs work dir, not back on the share.
@@ -994,7 +988,7 @@ export default function FileBrowser({
     }
     if (clipboard.operation === 'copy' && kind !== 'local') {
       onNotification?.(
-        `Copy on ${kind === 'ftp' ? 'PS5 FTP' : 'SMB'} is not supported. Use the upload / import queue instead.`,
+        `Copy on ${kind === 'ftp' ? `${ftpPlatform} FTP` : 'SMB'} is not supported. Use the upload / import queue instead.`,
         'error',
       );
       return;
@@ -1088,17 +1082,16 @@ export default function FileBrowser({
     // are filtered out entirely so the menu only shows actionable options.
     const canUpload   = kind !== 'ftp' && enableFtpUpload;       // not already on PS5
     const canDownload = kind !== 'local';                        // local files don't need a "download to your device" round-trip
-    const canConvert  = kind !== 'smb';                          // SMB pack still needs Import (mkpfs needs seekable local source + folder traversal)
+    const isPs4Console = kind === 'ftp' && ftpPlatform === 'PS4';
+    const canConvert  = enableConvertActions && kind !== 'smb' && !isPs4Console;   // Convert tools are PS5-only.
     const canExtract  = enableExtract && kind !== 'ftp' && !f.isDir && archiveFile;
     const pfsImage    = !f.isDir && isPfsImage(f.name);
     // Unpack works on local, PS5 FTP, and SMB (backend stages SMB → local
     // temp dir via smbclient before mkpfs runs). SMB only requires that an
     // SMB source is selected.
-    const canUnpack   = !f.isDir && pfsImage && (kind !== 'smb' || !!smbId);
-    // Install only applies to .pkg files. ftp = already on PS5 (no stage);
-    // local + smb get staged into pkg_stage_dir then triggered.
+    const canUnpack   = !isPs4Console && !f.isDir && (pfsImage || isExfatImage(f.name)) && (kind !== 'smb' || !!smbId);
     const pkgFile     = !f.isDir && isPkgFile(f.name);
-    const canInstall  = pkgFile && (kind !== 'smb' || !!smbId);
+    const canInstallPs4 = pkgFile && kind === 'local' && !!ps4InstallIp;
 
     const runUpload = async (auto) => {
       const ok = await uploadEntry(f);
@@ -1118,16 +1111,6 @@ export default function FileBrowser({
         auto ? 'success' : 'info',
       );
     };
-    const runInstall = async (auto) => {
-      const ok = await installEntry(f);
-      if (!ok) return;
-      await setQueueRunning('install', auto);
-      onNotification?.(
-        auto ? `Install started for ${f.name}` : `Install queued for ${f.name} — press ▶ in Queue to start`,
-        auto ? 'success' : 'info',
-      );
-    };
-
     const secondaryActions = [
       // Each action is wrapped in a boolean guard so non-applicable items
       // are filtered out entirely (no greyed-out rows). Order is preserved
@@ -1161,27 +1144,22 @@ export default function FileBrowser({
       canConvert && {
         label: '🔄 Convert',
         action: () => pickConvert(f),
-        title: 'Pick this file/folder and switch to the Convert tab',
+        title: 'Select this file or folder and open Convert',
       },
       canUnpack && {
         label: '📂 Unpack now',
         action: () => runUnpack(true),
-        title: 'Unpack .ffpfsc back into a folder (mkpfs unpack) and start now',
+        title: 'Unpack the image (.ffpfsc, .exfat) back into a folder and start now',
       },
       canUnpack && {
         label: '🕒 Unpack queue',
         action: () => runUnpack(false),
-        title: 'Unpack .ffpfsc back into a folder and pause — press ▶ in Queue when ready',
+        title: 'Unpack the image back into a folder and pause — press ▶ in Queue when ready',
       },
-      canInstall && {
-        label: '📥 Install now',
-        action: () => runInstall(true),
-        title: 'Stage to PS5 (if needed) and trigger the configured PKG installer payload',
-      },
-      canInstall && {
-        label: '🕒 Install queue',
-        action: () => runInstall(false),
-        title: 'Add .pkg to install queue and pause — press ▶ in Queue when ready',
+      canInstallPs4 && {
+        label: '🎮 Install on PS4 via RPI',
+        action: () => installEntryPs4(f),
+        title: `Ask Remote Package Installer on ${ps4InstallIp} to fetch and install this PKG`,
       },
       canExtract && {
         label: '📦 Extract now',
@@ -1194,7 +1172,7 @@ export default function FileBrowser({
         title: 'Extract this archive and pause — press ▶ in Queue when ready',
       },
       // Context-specific extras below the standardised actions.
-      f.isDir && enablePickDir && kind !== 'ftp' && { label: '✓ Pick folder', action: () => pickDir(f) },
+      f.isDir && enablePickDir && kind !== 'ftp' && { label: '✓ Select folder', action: () => pickDir(f) },
       f.isDir && enableImportFolder && kind !== 'ftp' && { label: '📥 Import folder', action: () => importFolder(f.name) },
       !f.isDir && enableImportFile && kind !== 'ftp' && { label: '📥 Import file', action: () => importFile(f.name) },
       // Clipboard actions. Cut = rename on paste; Copy = duplicate
@@ -1416,7 +1394,7 @@ export default function FileBrowser({
 
         {kind === 'smb' && (
           <select className="select" value={smbId} onChange={e => setSmbId(e.target.value)}>
-            <option value="">— pick remote source —</option>
+            <option value="">— Select a remote source —</option>
             {smbSources.map(s => (
               <option key={s.id} value={s.id}>{s.type === 'ftp' ? '🌐 FTP' : '📂 SMB'} · {s.name}</option>
             ))}
@@ -1431,8 +1409,15 @@ export default function FileBrowser({
 
         {kind === 'ftp' && (
           <select className="select" value={ftpIp} onChange={e => setFtpIp(e.target.value)}>
-            <option value="">— pick PS5 —</option>
-            {profiles.map(p => <option key={p.id} value={p.ip_address}>{p.name} ({p.ip_address})</option>)}
+            <option value="">— Select a console —</option>
+            {profiles.map(p => <option key={p.id} value={p.ip_address}>{String(p.console_type || '').toLowerCase() === 'ps4' ? 'PS4' : 'PS5'} · {p.name} ({p.ip_address})</option>)}
+          </select>
+        )}
+
+        {kind === 'local' && ps4Profiles.length > 0 && (
+          <select className="select" value={ps4InstallIp} onChange={e => setPs4InstallIp(e.target.value)} aria-label="PS4 install target">
+            <option value="">— Select a PS4 —</option>
+            {ps4Profiles.map(p => <option key={p.id} value={p.ip_address}>PS4 · {p.name} ({p.ip_address})</option>)}
           </select>
         )}
 
@@ -1441,13 +1426,20 @@ export default function FileBrowser({
           // actually browses to (top-level mounts + payloads). Hide
           // mkpfs / downloads / tmp / media — they're still reachable
           // via the FolderPickerModal where they make more sense.
+          // Windows has none of those: there the drives and the user's
+          // network folders (Settings → Sources) are the entry points.
           const allowed = ['/mnt', '/home', '/data', '/data/payloads'];
-          const shown = allowed.filter(p => localRoots.includes(p));
+          const shown = [
+            ...allowed.filter(p => localRoots.includes(p)),
+            ...localRoots.filter(p => /^[A-Za-z]:/.test(p) || p.startsWith('//')),
+          ];
           if (shown.length === 0) return null;
           return (
             <div className="flex gap-xs flex-wrap fb-wide">
               {shown.map(r => (
-                <button key={r} className="btn btn-ghost btn-sm" onClick={() => browse(r)}>{r}</button>
+                <button key={r} className="btn btn-ghost btn-sm" title={r} onClick={() => browse(r)}>
+                  {rootLabels[r] ? `🌐 ${rootLabels[r]}` : r}
+                </button>
               ))}
             </div>
           );
@@ -1516,8 +1508,8 @@ export default function FileBrowser({
               ))}
               <div className="file-menu-title">Go to</div>
               <button className="file-menu-item" onClick={() => setEditingPath(true)}>✎ Type a path…</button>
-              {kind === 'local' && ['/mnt', '/home', '/data', '/data/payloads'].filter(r => localRoots.includes(r)).map(r => (
-                <button key={r} className="file-menu-item" onClick={() => browse(r)}>📁 {r}</button>
+              {kind === 'local' && localRoots.filter(r => ['/mnt', '/home', '/data', '/data/payloads'].includes(r) || /^[A-Za-z]:/.test(r) || r.startsWith('//')).map(r => (
+                <button key={r} className="file-menu-item" onClick={() => browse(r)}>{rootLabels[r] ? `🌐 ${rootLabels[r]}` : `📁 ${r}`}</button>
               ))}
               {enableSaveDefault && kind !== 'ftp' && (
                 <button className="file-menu-item" onClick={saveDefault}>★ Save this folder as default</button>
@@ -1576,7 +1568,7 @@ export default function FileBrowser({
 
         {ftpSlow && (
           <div className="p-sm text-sm text-muted">
-            ⏳ Connecting to the console… starting zftpd if FTP is not running.
+            ⏳ Connecting to {ftpPlatform}… {ftpPlatform === 'PS5' ? 'starting zftpd if FTP is not running.' : 'make sure GoldHEN FTP is enabled.'}
           </div>
         )}
 
@@ -1594,8 +1586,8 @@ export default function FileBrowser({
         {sortedFiles.length === 0 && !loading ? (
           <div className="empty-state">
             <div className="empty-state-icon">📂</div>
-            <div className="empty-state-title">No files</div>
-            <div className="empty-state-text">This folder is empty</div>
+            <div className="empty-state-title">This folder is empty</div>
+            <div className="empty-state-text">Files and folders you add here will appear in this list.</div>
           </div>
         ) : (
           <div
@@ -1738,7 +1730,7 @@ export default function FileBrowser({
           const transportLabel = kind === 'local'
             ? 'Local filesystem'
             : kind === 'ftp'
-              ? `PS5 FTP (${ftpIp || '—'})`
+              ? `${ftpPlatform} FTP (${ftpIp || '—'})`
               : `Remote source #${smbId || '—'}`;
           const rows = [
             ['Name', infoTarget.name],

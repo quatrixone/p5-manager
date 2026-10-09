@@ -27,6 +27,7 @@ import { createExfatImage, unpackExfatImage } from '../lib/exfat.js';
 // identical hand-rolled queue scaffolds further down in this file.
 import { JobQueue, mountQueueRoutes } from '../lib/JobQueue.js';
 import { cleanDir, joinPath, isSameOrInside, destDirFor } from '../lib/transferPaths.js';
+import { parseNetworkPath, toUncPath } from '../lib/networkPath.js';
 import { isWindows, toClientPath, mapPosixDefault, isFsRoot, listLocalRoots, isLocalPathAllowed } from '../lib/platform.js';
 
 const router = express.Router();
@@ -1380,6 +1381,26 @@ router.post('/sources/:id/test', async (req, res) => {
 });
 
 const MKPFS_BIN = process.env.MKPFS_BIN || 'mkpfs';
+// The Windows package brings mkpfs along in its own Python
+// (runtime\python, next to runtime\node that runs this file) and starts it
+// as a module. Without that the app took whatever `mkpfs` the PC happened
+// to have - an old one, or none.
+const MKPFS_BUNDLED_PYTHON = (() => {
+  if (process.env.MKPFS_BIN || process.platform !== 'win32') return null;
+  const py = path.resolve(path.dirname(process.execPath), '..', 'python', 'python.exe');
+  const mod = path.resolve(path.dirname(py), 'Lib', 'site-packages', 'mkpfs');
+  return fs.existsSync(py) && fs.existsSync(mod) ? py : null;
+})();
+const MKPFS_LABEL = 'mkpfs';
+function spawnMkpfs(args, opts) {
+  return MKPFS_BUNDLED_PYTHON
+    ? spawn(MKPFS_BUNDLED_PYTHON, ['-m', 'mkpfs', ...args], opts)
+    : spawn(MKPFS_BIN, args, opts);
+}
+// The same for spawnIntoJob(job, cmd, args).
+function mkpfsCmd(args) {
+  return MKPFS_BUNDLED_PYTHON ? [MKPFS_BUNDLED_PYTHON, ['-m', 'mkpfs', ...args]] : [MKPFS_BIN, args];
+}
 // pip executable used by the "Update mkpfs" UI button. In the container
 // image we install mkpfs into a venv at /app/.venv that is owned by the
 // runtime user (1000:1000), so `pip install -U` from inside the running
@@ -1475,7 +1496,7 @@ function compareSemver(a, b) {
 
 function getInstalledMkpfsVersion() {
   return new Promise((resolve) => {
-    const proc = spawn(MKPFS_BIN, ['-V']);
+    const proc = spawnMkpfs(['-V']);
     let out = '';
     proc.stdout.on('data', (d) => { out += d.toString(); });
     proc.stderr.on('data', (d) => { out += d.toString(); });
@@ -1571,7 +1592,7 @@ function listMkpfsFiles(dir, base = '') {
 router.get('/mkpfs/status', async (req, res) => {
   const force = String(req.query.refresh || '') === '1';
   const helpCheck = await new Promise((resolve) => {
-    const proc = spawn(MKPFS_BIN, ['--help']);
+    const proc = spawnMkpfs(['--help']);
     let output = '';
     proc.stdout.on('data', d => { output += d.toString(); });
     proc.stderr.on('data', d => { output += d.toString(); });
@@ -1594,12 +1615,14 @@ router.get('/mkpfs/status', async (req, res) => {
     fetchLatestMkpfsVersion(force).catch((e) => ({ version: null, error: e.message })),
   ]);
 
-  const updateAvailable =
-    !!(version && pypi.version) && compareSemver(version, pypi.version) < 0;
+  // The bundled mkpfs (Windows package) is replaced with the app, not by pip.
+  const updateAvailable = !MKPFS_BUNDLED_PYTHON
+    && !!(version && pypi.version) && compareSemver(version, pypi.version) < 0;
 
   res.json({
     installed: true,
-    bin: MKPFS_BIN,
+    bin: MKPFS_BUNDLED_PYTHON ? `${MKPFS_BUNDLED_PYTHON} -m mkpfs` : MKPFS_BIN,
+    bundled: !!MKPFS_BUNDLED_PYTHON,
     pip: MKPFS_PIP,
     workdir: mkpfsWorkDir,
     version,
@@ -1617,6 +1640,9 @@ router.get('/mkpfs/status', async (req, res) => {
 // command finishes. The image still picks up the same upgrade on the
 // next `docker compose build` thanks to the >=MIN floor in Dockerfile.
 router.post('/mkpfs/upgrade', async (req, res) => {
+  if (MKPFS_BUNDLED_PYTHON) {
+    return res.status(400).json({ ok: false, error: 'mkpfs comes with P5 Manager on Windows; a new version of the app brings the new mkpfs' });
+  }
   const target = (req.body && typeof req.body.version === 'string')
     ? req.body.version.trim()
     : '';
@@ -1974,6 +2000,94 @@ router.put('/browser-prefs', (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── Network folders (Windows) ─────────────────────────────────────────────
+// Windows opens a share by its \\server\share path like any folder, so there
+// a network folder is simply one more place in the Local browser: the user
+// gives the address as Explorer shows it, Windows keeps the sign-in (net
+// use), and everything that works on a local folder works on it. Only the
+// address and its label are stored here, never the password.
+const NETWORK_FOLDERS_KEY = 'network_folders';
+
+function loadNetworkFolders() {
+  const raw = getRepo().queryScalar('SELECT value FROM settings WHERE key = ?', [NETWORK_FOLDERS_KEY]);
+  try { const list = JSON.parse(raw || '[]'); return Array.isArray(list) ? list : []; } catch (_) { return []; }
+}
+
+function netUse(args) {
+  return new Promise((resolve) => {
+    let out = '';
+    let proc;
+    try { proc = spawn('net', ['use', ...args], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true }); }
+    catch (e) { return resolve({ code: -1, out: e.message }); }
+    const timer = setTimeout(() => { try { proc.kill(); } catch (_) {} }, 30_000);
+    proc.stdout.on('data', d => { out += d.toString(); });
+    proc.stderr.on('data', d => { out += d.toString(); });
+    proc.on('error', e => { clearTimeout(timer); resolve({ code: -1, out: e.message }); });
+    proc.on('close', code => { clearTimeout(timer); resolve({ code, out }); });
+  });
+}
+
+router.get('/network-folders', (req, res) => {
+  res.json({ supported: isWindows, folders: isWindows ? loadNetworkFolders() : [] });
+});
+
+router.post('/network-folders', async (req, res) => {
+  try {
+    if (!isWindows) return res.status(400).json({ error: 'Network folders are for Windows; here add the share under Remote sources' });
+    const { address, name, username, password } = req.body || {};
+    const parsed = parseNetworkPath(address);
+    if (!parsed) return res.status(400).json({ error: 'That is not a network address. It looks like \\\\server\\share or \\\\server\\share\\folder - copy it from the address bar of Explorer.' });
+    const shareUnc = toUncPath({ host: parsed.host, share: parsed.share });
+    const unc = toUncPath(parsed);
+
+    if (username) {
+      const args = [shareUnc, String(password || ''), `/user:${username}`, '/persistent:yes'];
+      let r = await netUse(args);
+      // 1219: Windows already holds a connection to that server under another
+      // name. Drop the one to this share and sign in again.
+      if (r.code !== 0 && /1219/.test(r.out)) {
+        await netUse([shareUnc, '/delete', '/y']);
+        r = await netUse(args);
+      }
+      if (r.code !== 0) {
+        const why = /1326|86\b/.test(r.out) ? 'the name or password is not right'
+          : /53\b|67\b/.test(r.out) ? 'the server or the share was not found'
+          : /1219/.test(r.out) ? 'Windows is already signed in to that server under another name; disconnect it in Explorer first'
+          : (r.out.trim().split(/\r?\n/).filter(Boolean)[0] || `net use exit ${r.code}`);
+        return res.status(400).json({ error: `Windows could not sign in to ${shareUnc}: ${why}` });
+      }
+    }
+    try { await fs.promises.readdir(unc); }
+    catch (e) {
+      const hint = username ? '' : ' If the share asks for a sign-in, fill in the name and password.';
+      return res.status(400).json({ error: `Windows cannot open ${unc} (${e.code || e.message}).${hint}` });
+    }
+
+    const clientPath = toClientPath(unc);
+    const list = loadNetworkFolders().filter(f => f.path.toLowerCase() !== clientPath.toLowerCase());
+    const folder = {
+      id: newJobId(),
+      name: String(name || '').trim() || `${parsed.subPath ? parsed.subPath.split('/').pop() : parsed.share} (${parsed.host})`,
+      path: clientPath,
+    };
+    list.push(folder);
+    saveJsonSetting(NETWORK_FOLDERS_KEY, list);
+    log('info', `network folder added: ${unc}`);
+    res.json({ success: true, folder });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.delete('/network-folders/:id', (req, res) => {
+  try {
+    saveJsonSetting(NETWORK_FOLDERS_KEY, loadNetworkFolders().filter(f => f.id !== req.params.id));
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.get('/local/roots', (req, res) => {
   // User-data dirs come FIRST so the file-browser quick-tab buttons
   // surface them as the primary entry points (payloads, mkpfs, downloads),
@@ -1982,7 +2096,12 @@ router.get('/local/roots', (req, res) => {
   const roots = isWindows
     ? [...USER_QUICK_TABS.filter(r => fs.existsSync(r)), ...listLocalRoots([])]
     : listLocalRoots([...USER_QUICK_TABS, '/mnt', '/home', '/data', '/tmp', '/media']);
-  res.json({ roots: [...new Set(roots.map(r => toClientPath(r)))] });
+  // Windows: the user's network folders, with their names for the tabs.
+  const net = isWindows ? loadNetworkFolders() : [];
+  res.json({
+    roots: [...new Set([...roots.map(r => toClientPath(r)), ...net.map(f => f.path)])],
+    labels: Object.fromEntries(net.map(f => [f.path, f.name])),
+  });
 });
 
 // Tells the frontend where the canonical user-data folders live, so
@@ -2958,6 +3077,20 @@ function resolveGameRootForPack(srcPath) {
   };
 }
 
+// With --verify mkpfs reads the finished image once more and compares it,
+// without printing anything: minutes during which the task stood at 100 %
+// and looked hung. The line that ends the writing starts the phase the
+// Tasks list shows instead.
+function spawnPack(job, args, opts) {
+  const done = spawnIntoJob(job, ...mkpfsCmd(args), mkpfsEnv(job));
+  if (opts.verify && job._proc) {
+    const watch = (d) => { if (/Successfully wrote/i.test(d.toString())) job.phase = 'verifying'; };
+    job._proc.stdout?.on('data', watch);
+    job._proc.stderr?.on('data', watch);
+  }
+  return done;
+}
+
 async function runPackFile(job, opts) {
   const args = ['pack', 'file'];
   args.push(opts.compress ? '--compress' : '--no-compress');
@@ -2970,8 +3103,8 @@ async function runPackFile(job, opts) {
   }
   args.push('--verbose');
   args.push(job.source, job.output);
-  job.command = `${MKPFS_BIN} ${args.join(' ')}`;
-  return spawnIntoJob(job, MKPFS_BIN, args, mkpfsEnv(job));
+  job.command = `${MKPFS_LABEL} ${args.join(' ')}`;
+  return spawnPack(job, args, opts);
 }
 
 async function runPackFolder(job, opts) {
@@ -2990,8 +3123,8 @@ async function runPackFolder(job, opts) {
   if (opts.require_game_files) args.push('--require-game-files');
   args.push('--verbose');
   args.push(job.source, job.output);
-  job.command = `${MKPFS_BIN} ${args.join(' ')}`;
-  return spawnIntoJob(job, MKPFS_BIN, args, mkpfsEnv(job));
+  job.command = `${MKPFS_LABEL} ${args.join(' ')}`;
+  return spawnPack(job, args, opts);
 }
 
 // Reverse operation — extracts a .ffpfsc / .ffpfs / .pfs / .dat / .bin image
@@ -3005,7 +3138,7 @@ async function runUnpack(job, opts) {
   if (opts.ekpfs_key) args.push('--ekpfs-key', String(opts.ekpfs_key));
   if (opts.new_crypt) args.push('--new-crypt');
   args.push(job.source, job.output);
-  job.command = `${MKPFS_BIN} ${args.join(' ')}`;
+  job.command = `${MKPFS_LABEL} ${args.join(' ')}`;
 
   // mkpfs unpack is completely silent (no progress, no -v flag exists), so the
   // queue UI would otherwise stay at "running 0%" for the entire decode.
@@ -3016,7 +3149,7 @@ async function runUnpack(job, opts) {
   appendLog(job, `[manager] mkpfs unpack is silent; polling output dir for progress (source=${sourceSize} bytes)\n`);
   startOutputDirPoller(job, sourceSize);
   try {
-    return await spawnIntoJob(job, MKPFS_BIN, args, mkpfsEnv(job));
+    return await spawnIntoJob(job, ...mkpfsCmd(args), mkpfsEnv(job));
   } finally {
     stopOutputDirPoller(job);
   }
@@ -3557,8 +3690,13 @@ async function executeConvertJob(job) {
     cleanupSmbStage(job);
   } else {
     job.status = 'failed';
-    job.error = result.error || `exit ${result.code}`;
-    log('error', `mm job ${job.id} failed (${job.mode}): exit ${result.code}`);
+    // mkpfs --verify: the image was written, but reading it back gave
+    // other contents than the source for some files.
+    const mismatches = (job.log.match(/content mismatch for file/g) || []).length;
+    job.error = mismatches
+      ? `Verification failed: ${mismatches} file(s) in the image differ from the source (see the log)`
+      : (result.error || `exit ${result.code}`);
+    log('error', `mm job ${job.id} failed (${job.mode}): ${job.error}`);
     cleanupFtpStage(job);
     cleanupSmbStage(job);
   }
@@ -3642,8 +3780,11 @@ const convertQ = new JobQueue({
   itemPublic: convertQueueItemPublic,
   cancelHook: (item) => {
     const job = item._job || (item.job_id ? jobs.get(item.job_id) : null);
-    if (job && job._proc) {
-      try { job._proc.kill('SIGTERM'); } catch (_) {}
+    // Also a job without a process of its own: the exFAT image written by
+    // the app itself (Windows) watches this status and stops. Left as
+    // "running" it went on writing and kept the queue waiting.
+    if (job && !TERMINAL_STATUSES.has(job.status)) {
+      try { job._proc?.kill('SIGTERM'); } catch (_) {}
       job.status = 'cancelled';
       job.finished_at = new Date().toISOString();
     }

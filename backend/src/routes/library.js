@@ -1,8 +1,15 @@
 import express from 'express';
 import net from 'net';
+import crypto from 'crypto';
 import fs from 'fs';
+import path from 'path';
+import { Writable } from 'node:stream';
+import { Client as FtpClient } from 'basic-ftp';
 import { getRepo, log } from '../db/sqlite.js';
+import { isLocalPathAllowed } from '../lib/platform.js';
 import { tcpPortOpen, sendElfPayload, ELF_LOADER_PORT } from './convert.js';
+import { getFtpPort } from '../lib/ftpPort.js';
+import { parsePs4Library } from '../lib/ps4Library.js';
 import {
   isValidTitleId, isSafeConsoleDir, storageOf, buildVolumes, buildDestinations,
 } from '../lib/libraryModel.js';
@@ -12,6 +19,52 @@ import {
 // `status: 0` means OK). The browser never talks to the console directly:
 // no CORS / mixed-content trouble, and destructive calls are validated here.
 const router = express.Router();
+
+// Short-lived capability URLs let the PS4's Remote Package Installer fetch a
+// local PKG from this manager. RPI pulls the file itself, so the browser cannot
+// stream the PKG directly to the console. Keep only a random token and a
+// validated path; Range requests are supported because RPI may resume reads.
+const ps4PkgLinks = new Map();
+const PS4_PKG_LINK_TTL_MS = 6 * 60 * 60 * 1000;
+
+function issuePs4PkgLink(filePath) {
+  const now = Date.now();
+  for (const [token, grant] of ps4PkgLinks) if (grant.expiresAt < now) ps4PkgLinks.delete(token);
+  const token = crypto.randomBytes(24).toString('hex');
+  ps4PkgLinks.set(token, { filePath, expiresAt: now + PS4_PKG_LINK_TTL_MS });
+  return token;
+}
+
+function writePkgRange(req, res, filePath) {
+  const stat = fs.statSync(filePath);
+  const range = req.headers.range;
+  let start = 0;
+  let end = stat.size - 1;
+  if (range) {
+    const match = /^bytes=(\d*)-(\d*)$/.exec(range);
+    if (!match || (!match[1] && !match[2])) return res.status(416).end();
+    if (!match[1]) {
+      const suffix = Number(match[2]);
+      if (!Number.isSafeInteger(suffix) || suffix <= 0) return res.status(416).end();
+      start = Math.max(0, stat.size - suffix);
+    } else {
+      start = Number(match[1]);
+      end = match[2] ? Number(match[2]) : end;
+    }
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start > end || start >= stat.size) {
+      res.setHeader('Content-Range', `bytes */${stat.size}`);
+      return res.status(416).end();
+    }
+    end = Math.min(end, stat.size - 1);
+    res.status(206);
+    res.setHeader('Content-Range', `bytes ${start}-${end}/${stat.size}`);
+  }
+  res.setHeader('Accept-Ranges', 'bytes');
+  res.setHeader('Content-Type', 'application/octet-stream');
+  res.setHeader('Content-Length', end - start + 1);
+  if (req.method === 'HEAD') return res.end();
+  fs.createReadStream(filePath, { start, end }).on('error', () => res.destroy()).pipe(res);
+}
 
 function apiPort() {
   const raw = getRepo().queryScalar("SELECT value FROM settings WHERE key = 'shadowmount_port'");
@@ -74,6 +127,125 @@ router.param('ip', (req, res, next, ip) => {
 router.param('titleId', (req, res, next, id) => {
   if (!isValidTitleId(id)) return res.status(400).json({ error: 'Invalid title id' });
   next();
+});
+
+// Stream a one-time-authorized local PKG to Remote Package Installer. The
+// token expires automatically; no filesystem path is exposed in the URL.
+const servePs4Pkg = (req, res) => {
+  const grant = ps4PkgLinks.get(req.params.token);
+  if (!grant || grant.expiresAt < Date.now()) {
+    ps4PkgLinks.delete(req.params.token);
+    return res.status(404).end();
+  }
+  if (!fs.existsSync(grant.filePath) || !fs.statSync(grant.filePath).isFile()) {
+    ps4PkgLinks.delete(req.params.token);
+    return res.status(404).end();
+  }
+  const safeName = path.basename(grant.filePath).replace(/[^\x20-\x7E]/g, '_').replace(/[\r\n"]+/g, '_');
+  res.setHeader('Content-Disposition', `attachment; filename="${safeName}"`);
+  writePkgRange(req, res, grant.filePath);
+};
+router.get('/ps4/pkg/:token/:filename', servePs4Pkg);
+router.head('/ps4/pkg/:token/:filename', servePs4Pkg);
+
+// Ask the PS4 Remote Package Installer app to fetch and install a local PKG.
+// The console downloads from this manager over HTTP; RPI must be open on the
+// PS4 and the URL used to open the manager must be reachable from that console.
+router.post('/:ip/ps4/install', async (req, res) => {
+  let token = null;
+  try {
+    const { ip } = req.params;
+    const abs = path.resolve(String(req.body?.local_path || ''));
+    if (!req.body?.local_path || !isLocalPathAllowed(abs) || !fs.existsSync(abs)) {
+      return res.status(400).json({ error: 'Select an existing local .pkg file' });
+    }
+    const stat = fs.statSync(abs);
+    if (!stat.isFile() || stat.size < 1 || !/\.pkg$/i.test(abs)) return res.status(400).json({ error: 'Install expects a non-empty .pkg file' });
+
+    const profile = getRepo().queryOne('SELECT console_type FROM profiles WHERE ip_address = ?', [ip]);
+    if (String(profile?.console_type || '').toLowerCase() !== 'ps4') {
+      return res.status(400).json({ error: 'The selected console profile is not a PS4' });
+    }
+
+    let baseUrl;
+    try {
+      baseUrl = new URL(String(req.body?.manager_url || ''));
+    } catch (_) {
+      return res.status(400).json({ error: 'Open P5 Manager using a URL reachable from the PS4' });
+    }
+    if (!['http:', 'https:'].includes(baseUrl.protocol) || baseUrl.username || baseUrl.password || ['localhost', '127.0.0.1', '::1'].includes(baseUrl.hostname)) {
+      return res.status(400).json({ error: 'Manager URL must be an HTTP(S) address reachable from the PS4, not localhost' });
+    }
+
+    token = issuePs4PkgLink(abs);
+    const pkgUrl = new URL(`/api/library/ps4/pkg/${token}/${encodeURIComponent(path.basename(abs))}`, baseUrl).toString();
+    const response = await fetch(`http://${ip}:12800/api/install`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'direct', packages: [pkgUrl] }),
+      signal: AbortSignal.timeout(15_000),
+    });
+    const result = await response.json().catch(() => null);
+    if (!response.ok || result?.error || result?.success === false) {
+      ps4PkgLinks.delete(token);
+      return res.status(502).json({ error: result?.error || `Remote Package Installer returned HTTP ${response.status}. Make sure RPI is open on the PS4.` });
+    }
+    log('info', `PS4 RPI install requested: ${path.basename(abs)} -> ${ip}`);
+    res.json({ success: true, filename: path.basename(abs), result });
+  } catch (e) {
+    if (token) ps4PkgLinks.delete(token);
+    res.status(502).json({ error: `PS4 install failed: ${e.message}. Make sure Remote Package Installer is open on the console.` });
+  }
+});
+
+// PS4's installed titles are listed in app.db. This endpoint only downloads
+// and reads that database over GoldHEN FTP; it never modifies console data.
+router.get('/:ip/ps4', async (req, res) => {
+  const ftp = new FtpClient(12_000);
+  const chunks = [];
+  let total = 0;
+  const sink = new Writable({
+    write(chunk, _encoding, callback) {
+      total += chunk.length;
+      if (total > 64 * 1024 * 1024) return callback(new Error('PS4 app.db is unexpectedly large'));
+      chunks.push(Buffer.from(chunk));
+      callback();
+    },
+  });
+  try {
+    await ftp.access({ host: req.params.ip, port: getFtpPort(req.params.ip), user: 'anonymous', password: '', secure: false });
+    await ftp.downloadTo(sink, '/system_data/priv/mms/app.db');
+    const games = parsePs4Library(Buffer.concat(chunks)).map(g => ({
+      ...g,
+      icon: `/api/library/${req.params.ip}/icon/${g.title_id}`,
+    }));
+    res.json({ platform: 'ps4', source: 'app.db', games, count: games.length });
+  } catch (e) {
+    log('warn', `PS4 library ${req.params.ip}: ${e.message}`);
+    res.status(502).json({ error: `Could not read the PS4 library over FTP: ${e.message}. Make sure GoldHEN FTP is enabled.` });
+  } finally { ftp.close(); }
+});
+
+// Use Remote Package Installer's supported app removal endpoint. Never delete
+// /user/app files through FTP because that would leave the PS4 app database
+// inconsistent.
+router.post('/:ip/ps4/:titleId/uninstall', async (req, res) => {
+  try {
+    if (req.body?.confirm !== true) return res.status(400).json({ error: 'confirm required' });
+    const response = await fetch(`http://${req.params.ip}:12800/api/uninstall_game`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title_id: req.params.titleId }),
+      signal: AbortSignal.timeout(20_000),
+    });
+    const body = await response.json().catch(() => null);
+    if (!response.ok || body?.error || body?.success === false) {
+      throw new Error(body?.error || `Remote Package Installer returned HTTP ${response.status}`);
+    }
+    res.json({ success: true, title_id: req.params.titleId, result: body });
+  } catch (e) {
+    res.status(502).json({ error: `PS4 uninstall failed: ${e.message}. Make sure Remote Package Installer is running on the console.` });
+  }
 });
 
 const iconPath = (ip, g) => {
@@ -148,11 +320,31 @@ router.get('/:ip/icon/:titleId', async (req, res) => {
     const key = `${ip}|${titleId}|${req.query.v || ''}`;
     let buf = iconCache.get(key);
     if (!buf) {
-      const r = await fetch(`http://${ip}:${apiPort()}/api/v1/games/icon?title_id=${titleId}&size=thumb`, {
-        signal: AbortSignal.timeout(15_000),
-      });
-      if (!r.ok || !(r.headers.get('content-type') || '').startsWith('image/')) return res.status(404).end();
-      buf = Buffer.from(await r.arrayBuffer());
+      const profile = getRepo().queryOne('SELECT console_type FROM profiles WHERE TRIM(ip_address) = ? LIMIT 1', [ip]);
+      if (String(profile?.console_type || '').toLowerCase() === 'ps4') {
+        const ftp = new FtpClient(10_000);
+        const chunks = [];
+        let total = 0;
+        const sink = new Writable({
+          write(chunk, _encoding, callback) {
+            total += chunk.length;
+            if (total > 8 * 1024 * 1024) return callback(new Error('PS4 title icon is unexpectedly large'));
+            chunks.push(Buffer.from(chunk));
+            callback();
+          },
+        });
+        try {
+          await ftp.access({ host: ip, port: getFtpPort(ip), user: 'anonymous', password: '', secure: false });
+          await ftp.downloadTo(sink, `/user/appmeta/${titleId}/icon0.png`);
+          buf = Buffer.concat(chunks);
+        } finally { ftp.close(); }
+      } else {
+        const r = await fetch(`http://${ip}:${apiPort()}/api/v1/games/icon?title_id=${titleId}&size=thumb`, {
+          signal: AbortSignal.timeout(15_000),
+        });
+        if (!r.ok || !(r.headers.get('content-type') || '').startsWith('image/')) return res.status(404).end();
+        buf = Buffer.from(await r.arrayBuffer());
+      }
       if (iconCache.size >= ICON_CACHE_MAX) iconCache.delete(iconCache.keys().next().value);
       iconCache.set(key, buf);
     }

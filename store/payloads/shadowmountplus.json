@@ -1,0 +1,18 @@
+{
+  "kind": "payload",
+  "id": "shadowmountplus",
+  "name": "shadowmountplus.elf",
+  "description": "PS5 ShadowMountPlus 1.7beta3 (game mounting + Library API)",
+  "author": "drakmor",
+  "version": 1,
+  "console_type": "ps5",
+  "files": [
+    {
+      "type": "elf",
+      "name": "shadowmountplus.elf",
+      "url": "p5enc:v1:YGy9miYS2taG4Kpf4ShWWlSntRTdcNRwBAsX410gB3-H8-RomEmggxSVszcgNLVI2Z_yX4m_9-MRrnpizZihdoYAAXIihV3NTDwDR5VDBT_IoyTbPlICqWkoszyGuplNzOp7v5kFZwHWKOy_hpfCStFN28s3",
+      "sha256": "2a7427e20ba7a70bd8cd01e47eb00ee7ca82db82dff3da7884f48f9c3fcbe95a",
+      "size": 2437848
+    }
+  ]
+}

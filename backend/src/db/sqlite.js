@@ -24,6 +24,7 @@ const dbDir = path.dirname(dbPath);
 const LEGACY_DB_NAMES = ['ps5webmanager.db', 'payloads.db'];
 
 let db = null;
+let SqlJs = null;
 
 export async function initDatabase() {
   if (db) return db;
@@ -53,13 +54,13 @@ export async function initDatabase() {
     }
   }
 
-  const SQL = await initSqlJs();
+  SqlJs = await initSqlJs();
 
   if (fs.existsSync(dbPath)) {
     const buffer = fs.readFileSync(dbPath);
-    db = new SQL.Database(buffer);
+    db = new SqlJs.Database(buffer);
   } else {
-    db = new SQL.Database();
+    db = new SqlJs.Database();
   }
 
   db.run(`
@@ -102,13 +103,19 @@ export async function initDatabase() {
     if (!/duplicate column/i.test(e.message)) throw e;
   }
 
-  // Remote Play identity. psn_account_id is the OAuth-derived ID,
+  // Remote Play identity. psn_account_id is the effective console account ID,
   // rp_user_profile holds the pairing profile dict (pyremoteplay's layout, kept) with registration
   // credentials (kept as JSON text). Only "duplicate column" is benign - any
   // other ALTER error (syntax, missing table, ...) should bubble up so we
   // don't silently corrupt the schema on a typo.
   try { db.run(`ALTER TABLE profiles ADD COLUMN psn_account_id TEXT`); } catch (e) { if (!/duplicate column/i.test(e.message)) throw e; }
   try { db.run(`ALTER TABLE profiles ADD COLUMN psn_online_id TEXT`); } catch (e) { if (!/duplicate column/i.test(e.message)) throw e; }
+  // Username of the active local console user reported by the PS4 offact payload.
+  try { db.run(`ALTER TABLE profiles ADD COLUMN console_user TEXT`); } catch (e) { if (!/duplicate column/i.test(e.message)) throw e; }
+  // Imported Sony identity is separate from the account used on the console.
+  for (const column of ['sony_account_id', 'sony_online_id']) {
+    try { db.run(`ALTER TABLE profiles ADD COLUMN ${column} TEXT`); } catch (e) { if (!/duplicate column/i.test(e.message)) throw e; }
+  }
   try { db.run(`ALTER TABLE profiles ADD COLUMN rp_user_profile TEXT`); } catch (e) { if (!/duplicate column/i.test(e.message)) throw e; }
   // Platform: 'ps4' | 'ps5' | NULL (auto-detect via the Remote Play service's /discover).
   // Drives which payloads, autoload templates, FTP defaults and Convert
@@ -216,6 +223,7 @@ export async function initDatabase() {
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
+  try { db.run('ALTER TABLE input_scripts ADD COLUMN console_type TEXT'); } catch (e) { if (!/duplicate column/i.test(e.message)) throw e; }
 
   // What came from the marketplace (store/ in the repository): which item,
   // which version. A script lives on in input_scripts (local_id); a
@@ -406,6 +414,11 @@ let _repo = null;
 export function getRepo() {
   if (!_repo) _repo = new DatabaseRepo(getDatabase());
   return _repo;
+}
+
+export function openSqliteBuffer(buffer) {
+  if (!SqlJs) throw new Error('Database is not initialized');
+  return new SqlJs.Database(buffer);
 }
 
 export function log(level, message) {

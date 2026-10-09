@@ -5,7 +5,9 @@ import { parseLine, buildOskInputs, AVAILABLE_COMMANDS } from '../lib/inputScrip
 import ScriptRunner from './ScriptRunner';
 import SessionTabBar from './SessionTabBar';
 import RemotePlayVideo, { webrtcPlayable } from './RemotePlayVideo';
-import { detectFocusedControlCenterIcon, shortestPathOnRing, CONTROL_CENTER_SLOT_COUNT, CONTROL_CENTER_HOME_INDEX } from '../lib/controlCenterNav.js';
+import RemotePlayPairing from './RemotePlayPairing';
+import { pairRemotePlay, sameAccountId } from '../lib/remotePlayPairing.js';
+import { payloadMatchesPlatform } from '../lib/payloadPlatform.js';
 
 const API = '/api/remoteplay';
 // Paths used with `api.*` are relative to /api, so the Remote Play sidecar's
@@ -14,6 +16,14 @@ const RP = '/remoteplay';
 
 const RP_RESOLUTIONS = ['360p', '540p', '720p', '1080p'];
 const RP_FPS = [30, 60];
+const FULLSCREEN_TRANSPARENCY_KEY = 'p5manager.fullscreenControllerTransparency';
+
+function readFullscreenTransparency() {
+  try {
+    const value = Number(localStorage.getItem(FULLSCREEN_TRANSPARENCY_KEY));
+    return Number.isFinite(value) && value >= 0 && value <= 90 ? value : 72;
+  } catch (_) { return 72; }
+}
 
 function readPref(key, allowed, fallback) {
   try {
@@ -106,7 +116,7 @@ function HoldButton({
   // For colour-coded face buttons we get a tinted background prop. Default
   // is a neutral glass panel. The pressed state simply boosts opacity +
   // adds a soft glow so the same visual works on any tint.
-  const baseBg = background || 'rgba(18, 22, 32, 0.28)';
+  const baseBg = background || 'rgba(18, 22, 32, var(--fs-control-alpha, 0.28))';
   const pressedBg = background
     ? background.replace(/rgba?\(([^)]+)\)/, (_, parts) => {
         // bump the alpha of the supplied colour to ~0.95 on press
@@ -219,7 +229,7 @@ function AnalogStick({ side, onChange, size = 130, showLabel = true, compact = f
       style={{
         width: size, height: size,
         borderRadius: '50%',
-        background: transparent ? 'rgba(18, 22, 32, 0.25)' : 'var(--panel2)',
+        background: transparent ? 'rgba(18, 22, 32, var(--fs-control-alpha, 0.25))' : 'var(--panel2)',
         position: 'relative',
         border: transparent
           ? `1px solid rgba(255,255,255,${active ? 0.45 : 0.20})`
@@ -313,16 +323,35 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
   // `profileView` (renamed from `view` to avoid clashing with the
   // component's `view` prop) is what the rest of the component reads.
   const [localProfile, setLocalProfile] = useState(null);
-  useEffect(() => { setLocalProfile(null); }, [profile?.id]);
+  useEffect(() => {
+    setLocalProfile(null);
+    setPin('');
+    setAutoPinResult(null);
+    setOffactResult(null);
+    setOneClickResult(null);
+    setPairProgress('');
+  }, [profile?.id]);
   const profileView = localProfile ? { ...profile, ...localProfile } : profile;
 
   const [health, setHealth] = useState(null);
   const [loginUrl, setLoginUrl] = useState('');
   const [redirectUrl, setRedirectUrl] = useState('');
   const [oauthBusy, setOauthBusy] = useState(false);
+  const [manualAccount, setManualAccount] = useState('');
+  const [manualOnlineId, setManualOnlineId] = useState('');
 
   const [pin, setPin] = useState('');
   const [pairBusy, setPairBusy] = useState(false);
+  const [oneClickBusy, setOneClickBusy] = useState(false);
+  const [pairProgress, setPairProgress] = useState('');
+  const [oneClickResult, setOneClickResult] = useState(null);
+  const pairingGuard = useRef(false);
+  const selectedProfileRef = useRef(profileId);
+  selectedProfileRef.current = profileId;
+  const targetGeneration = useRef({ id: profileId, value: 0 });
+  if (targetGeneration.current.id !== profileId) {
+    targetGeneration.current = { id: profileId, value: targetGeneration.current.value + 1 };
+  }
   // Auto-PIN fetcher state. Calls /api/remoteplay/get-pin which under the
   // hood pushes the idlesauce rp-get-pin.elf payload to the PS5 and parses
   // the PIN + base64 Account ID out of the ELF's stdout. Lets users skip
@@ -331,11 +360,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
   const [autoPinBusy, setAutoPinBusy] = useState(false);
   const [autoPinResult, setAutoPinResult] = useState(null);
 
-  // Pair-section sub-tabs: 'activated' (default - PIN pairing flow,
-  // exactly as before) vs 'unactivated' (push offact.elf to the PS5 to
-  // mark the foreground user as PSN-activated, then proceed with PIN).
-  // Persisted only in component state - resets to 'activated' on remount
-  // since the unactivated tab is a once-per-account operation.
+  // Identical activation paths for PS4 and PS5.
   const [pairTab, setPairTab] = useState('activated');
   // Offact (offline-activation) state: separate busy/result so we can
   // show progress + result without colliding with the PIN auto-fetch UI.
@@ -417,12 +442,28 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
   const [payloadsList, setPayloadsList] = useState([]);
   const [payloadsLoaded, setPayloadsLoaded] = useState(false);
   const [sendingPayloadId, setSendingPayloadId] = useState(null);
+  const payloadPlatform = String(profile?.console_type || '').toLowerCase();
+  const sessionPayloads = useMemo(
+    () => ['ps4', 'ps5'].includes(payloadPlatform)
+      ? payloadsList.filter(payload => payloadMatchesPlatform(payload, payloadPlatform))
+      : payloadsList,
+    [payloadsList, payloadPlatform]
+  );
 
   // Fullscreen video + touch-controls overlay. `fsActive` is the *user
   // intent* (toggled by the button). We also listen to fullscreenchange so
   // Esc / browser back / OS gestures collapse the overlay cleanly.
   const videoContainerRef = useRef(null);
   const [fsActive, setFsActive] = useState(false);
+  const [fullscreenTransparency, setFullscreenTransparency] = useState(readFullscreenTransparency);
+  useEffect(() => {
+    const sync = (event) => {
+      const value = Number(event.detail);
+      if (Number.isFinite(value)) setFullscreenTransparency(Math.max(0, Math.min(90, value)));
+    };
+    window.addEventListener('fullscreen-controller-transparency-change', sync);
+    return () => window.removeEventListener('fullscreen-controller-transparency-change', sync);
+  }, []);
   // The Scripts-tab <img> (renderTabVideo) - resetToMainScreen() below
   // draws its current frame to a canvas to see which Control Center icon
   // is focused.
@@ -495,13 +536,13 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
       ...(Array.isArray(userArr) ? userArr.map(s => ({
         id: String(s.id), name: s.name, script: s.script || '', kind: 'user',
       })) : []),
-      ...(Array.isArray(builtinArr) ? builtinArr.map(s => ({
+      ...(Array.isArray(builtinArr) ? builtinArr.filter(s => !s.console_type || s.console_type === profile?.console_type).map(s => ({
         id: s.id, name: s.name, script: s.script || '', kind: 'builtin',
       })) : []),
     ];
     setRecExistingScripts(merged);
     return merged;
-  }, []);
+  }, [profile?.console_type]);
 
   // Map internal button id → script DSL identifier.
   const dslName = (id) => ({ l1:'L1', r1:'R1', l2:'L2', r2:'R2', l3:'L3', r3:'R3' }[id] || id);
@@ -770,6 +811,24 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
   // clears it. Reproduced via repeated automated Rest/Wake/Start/Stop
   // cycling: ~50% of cycles hit this race with the bare 6 s poll interval.
   const stoppedUntilRef = useRef(0);
+  useEffect(() => {
+    // The backend owns sessions per console. Switching the view detaches
+    // local controls; the selected console's watchdog can adopt its session.
+    sessionStateRef.current = 'idle';
+    userStoppedRef.current = false;
+    stoppedUntilRef.current = 0;
+    setSessionId('');
+    setSessionState('idle');
+    setSessionHasVideo(false);
+    setLiveStream(null);
+    setWarmCache(null);
+    setRetryStatus(null);
+    setLocalPs5State(null);
+    setPs5Busy(false);
+    setWakeBusy(false);
+    setStandbyBusy(false);
+    setVideoMode(null);
+  }, [profileId]);
   useEffect(() => { sessionStateRef.current = sessionState; }, [sessionState]);
 
   useEffect(() => {
@@ -799,9 +858,11 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
   const refreshPs5State = async (silent = true) => {
     if (usingSharedStatus) return ps5StatusCtx.refresh(silent);
     if (!profile?.ip_address) { setLocalPs5State(null); return null; }
+    const generation = targetGeneration.current.value;
     if (!silent) setPs5Busy(true);
     try {
       const r = await api.get(`${RP}/discover?ip=${encodeURIComponent(profile.ip_address)}`);
+      if (generation !== targetGeneration.current.value) return null;
       if (r.success) {
         const next = {
           status: r.status || 'Unknown',
@@ -816,11 +877,12 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
       setLocalPs5State(err);
       return err;
     } catch (e) {
+      if (generation !== targetGeneration.current.value) return null;
       const err = { error: e.message };
       setLocalPs5State(err);
       return err;
     } finally {
-      if (!silent) setPs5Busy(false);
+      if (generation === targetGeneration.current.value && !silent) setPs5Busy(false);
     }
   };
 
@@ -868,9 +930,31 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
     }
   };
 
+  // The account ID typed in instead of Sony's sign-in.
+  const saveManualAccount = async () => {
+    if (!profile) return;
+    setOauthBusy(true);
+    try {
+      const r = await api.post(`${RP}/set-account`, {
+        profile_id: profile.id,
+        account_id: manualAccount,
+        online_id: manualOnlineId,
+      });
+      setLocalProfile((prev) => ({ ...(prev || profile), psn_account_id: r.psn_account_id, psn_online_id: r.psn_online_id, sony_account_id: r.sony_account_id, sony_online_id: r.sony_online_id }));
+      setManualAccount('');
+      setManualOnlineId('');
+      onProfilesChanged?.();
+      onNotification?.(`PSN account set: ${r.online_id || r.account_id}`, 'success');
+    } catch (e) {
+      onNotification?.(e.message, 'error');
+    } finally {
+      setOauthBusy(false);
+    }
+  };
+
   const finishOAuth = async () => {
     if (!redirectUrl.trim()) return;
-    if (!profile) { onNotification?.('Pick a profile first', 'warning'); return; }
+    if (!profile) { onNotification?.('Select a console first.', 'warning'); return; }
     setOauthBusy(true);
     try {
       const r = await api.post(`${RP}/oauth/exchange`, {
@@ -883,7 +967,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
       // Optimistic overlay — let `view` reflect the linked state immediately,
       // then ask the parent to refetch profiles so the new field reaches the
       // rest of the tree and our overlay resets cleanly on the next render.
-      setLocalProfile((prev) => ({ ...(prev || profile), psn_account_id: r.account_id, psn_online_id: r.online_id }));
+      setLocalProfile((prev) => ({ ...(prev || profile), psn_account_id: r.psn_account_id, psn_online_id: r.psn_online_id, sony_account_id: r.sony_account_id, sony_online_id: r.sony_online_id }));
       onProfilesChanged?.();
     } catch (e) {
       onNotification?.(`OAuth exchange failed: ${e.message}`, 'error');
@@ -899,26 +983,24 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
   // Settings → Add Device") and the PIN is also 8 digits but lives in a
   // different sub-menu — we surface both so the user can't get lost.
   const isPs4Profile = profileView?.console_type === 'ps4';
-  // rp-get-pin.elf is a PS5-only payload (ptrace path uses PS5 SDK + 12.70
-  // kernel offsets), so the Auto-fetch PIN button only appears on PS5
-  // profiles. PS4 profiles still get the manual 8-digit PIN entry below.
-  const isPs5Profile = !isPs4Profile;
   const pairConsoleLabel = isPs4Profile ? 'PS4' : 'PS5';
   const pairMenuPath = isPs4Profile
     ? 'PS4: Settings → Remote Play Connection Settings → Add Device'
     : 'PS5: Settings → System → Remote Play → Link Device';
 
   const pair = async () => {
-    if (!profile) return;
+    if (!profile || pairingGuard.current) return;
     if (liveSession) {
       onNotification?.('Stop the live Remote Play session before pairing - registering a new PIN while the console is already connected can knock out the active session.', 'warning');
       return;
     }
-    if (pin.replace(/\D/g, '').length < 8) {
+    if (!/^\d{8}$/.test(pin.replace(/\s/g, ''))) {
       onNotification?.(`PIN must be 8 digits (shown on ${pairMenuPath})`, 'warning');
       return;
     }
     setPairBusy(true);
+    setOneClickResult(null);
+    setPairProgress('Pairing…');
     try {
       const r = await api.post(`${RP}/register`, {
         ip: profile.ip_address,
@@ -926,31 +1008,32 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
         profile_id: profile.id,
       });
       if (!r.success) throw new Error(r.error);
+      setPairProgress('Paired');
+      setAutoPinResult(null);
+      setOneClickResult({ success: true });
       onNotification?.(`${pairConsoleLabel} paired for Remote Play`, 'success');
       setPin('');
       setLocalProfile((prev) => ({ ...(prev || profile), rp_user_profile: JSON.stringify(r.profile) }));
       onProfilesChanged?.();
     } catch (e) {
+      setPairProgress('Pairing stopped');
+      setOneClickResult({ error: e.message });
       onNotification?.(`Pair failed: ${e.message}`, 'error');
     } finally {
       setPairBusy(false);
     }
   };
 
-  // Auto-fetch the PIN by sending the rp-get-pin.elf payload to elfldr.
-  // The backend parses the ELF's stdout for "Pin code: NNNN NNNN" and
-  // "Account ID: <base64>" and returns both. On success we drop the PIN
-  // straight into the input field so the user can hit Pair without typing
-  // 8 digits from a tiny PS5-screen notification. The Account ID is shown
-  // for verification but NOT auto-pushed into the profile - if it differs
-  // from what OAuth captured the user probably wants to know.
+  // Individual PIN retrieval remains available alongside one-click pairing.
   const autoFetchPin = async () => {
-    if (!profile) return;
+    if (!profile || pairingGuard.current) return;
     if (liveSession) {
       onNotification?.('Stop the live Remote Play session before fetching a PIN - rp-get-pin.elf attaches to SceShellUI and can interrupt an active session.', 'warning');
       return;
     }
     setAutoPinBusy(true);
+    setOneClickResult(null);
+    setPairProgress('');
     setAutoPinResult(null);
     try {
       const r = await api.post(`${RP}/get-pin`, {
@@ -999,23 +1082,13 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
     }
   };
 
-  // Push the PSN account we linked via OAuth (step 1) onto the PS5
-  // by sending offact.elf. Used for the "Not Activated" sub-tab when
-  // the console itself has nobody signed into PSN.
-  //
-  // Backend writes profile.psn_account_id into a trigger file on the
-  // PS5 via FTP, then ships the ELF. offact reads the trigger and
-  // syncs the on-console registry to it (adopt when empty, overwrite
-  // when different, no-op when already in sync). The result is that
-  // the foreground PS5 user becomes linked to the same PSN account
-  // the manager is using, without anyone having to sign into PSN
-  // on the console itself.
-  //
-  // On success we auto-switch back to the "PSN Activated" sub-tab so
-  // the user can continue with PIN pairing.
+  // Activate/read the foreground account through the console-specific payload.
   const activateOffline = async () => {
-    if (!profile) { onNotification?.('Pick a profile first', 'warning'); return; }
+    if (!profile) { onNotification?.('Select a console first.', 'warning'); return; }
+    if (liveSession || pairingGuard.current) return;
     setOffactBusy(true);
+    setOneClickResult(null);
+    setPairProgress('');
     setOffactResult(null);
     try {
       const r = await api.post(`${RP}/activate-account`, {
@@ -1032,14 +1105,15 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
           setLocalProfile((prev) => ({
             ...(prev || profile),
             ...(r.account_id ? { psn_account_id: r.account_id } : {}),
-            ...(r.user ? { psn_online_id: r.user } : {}),
+            ...(r.user ? { console_user: r.user } : {}),
+            ...(!isPs4Profile && r.user ? { psn_online_id: r.user } : {}),
           }));
         }
         onProfilesChanged?.();
 
         const verb = r.activated === 'already' ? 'already activated' : 'activated';
         onNotification?.(
-          `${r.user || 'Account'} ${verb} (slot ${r.slot}) — you can now grab a PIN and pair.`,
+          `${r.user || 'Account'} ${verb}. Ready to pair.`,
           'success',
         );
 
@@ -1048,13 +1122,57 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
         setPairTab('activated');
       } else {
         const msg = r.message || r.error || 'offact.elf failed';
-        onNotification?.(`Push to console failed: ${msg}`, 'error');
+        onNotification?.(`Account activation failed: ${msg}`, 'error');
       }
     } catch (e) {
-      onNotification?.(`Push to console failed: ${e.message}`, 'error');
+      onNotification?.(`Account activation failed: ${e.message}`, 'error');
       setOffactResult({ error: e.message });
     } finally {
       setOffactBusy(false);
+    }
+  };
+
+  const oneClickPair = async (offline) => {
+    if (!profile || liveSession || pairingGuard.current || autoPinBusy || offactBusy || pairBusy || oauthBusy) return;
+    pairingGuard.current = true;
+    const target = { ...profileView };
+    const isCurrent = () => String(selectedProfileRef.current) === String(target.id);
+    setOneClickBusy(true);
+    setOneClickResult(null);
+    setAutoPinResult(null);
+    setOffactResult(null);
+    setPin('');
+    try {
+      const result = await pairRemotePlay({
+        post: api.post,
+        profile: target,
+        offline,
+        onProgress: text => { if (isCurrent()) setPairProgress(text); },
+        onAccount: account => {
+          if (!isCurrent()) return;
+          setLocalProfile(prev => ({ ...(prev || target),
+            ...(account.account_id ? { psn_account_id: account.account_id } : {}),
+            ...(account.online_id ? { psn_online_id: account.online_id } : {}),
+          }));
+          if (account.activated) setOffactResult(account);
+        },
+        onPin: result => { if (isCurrent()) { setAutoPinResult(result); setPin(result.pin.replace(/\s/g, '')); } },
+      });
+      if (isCurrent()) {
+        setLocalProfile(prev => ({ ...(prev || target), rp_user_profile: JSON.stringify(result.profile) }));
+        setPin('');
+        setAutoPinResult(null);
+        setOneClickResult({ success: true });
+      }
+      onProfilesChanged?.();
+      onNotification?.(`${target.name || 'Console'} paired for Remote Play`, 'success');
+    } catch (error) {
+      if (isCurrent()) { setOneClickResult({ error: error.message, log: error.log }); setPairProgress('Pairing stopped'); }
+      onNotification?.(`Pairing failed: ${error.message}`, 'error');
+      onProfilesChanged?.();
+    } finally {
+      pairingGuard.current = false;
+      setOneClickBusy(false);
     }
   };
 
@@ -1071,22 +1189,17 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
     }
   };
 
-  // Wipes the OAuth-derived (or offact-derived) PSN account from this
-  // profile. Pairing credentials are kept intact so the user can re-link
-  // a different PSN account onto the same paired console without
-  // re-doing the PIN dance. Mirrors forgetPair but talks to the new
-  // /forget-account endpoint.
+  // Remove only the imported Sony identity; retain console identity and pairing.
   const forgetAccount = async () => {
     if (!profile) return;
     if (!confirm(
-      'Forget the linked PSN account on this profile?\n\n' +
-      'Pairing credentials will be kept - you can link a different ' +
-      'PSN account without re-pairing.'
+      'Forget the imported Sony account on this profile?\n\n' +
+      'The console account and pairing will be kept.'
     )) return;
     try {
       const r = await api.post(`${RP}/forget-account`, { profile_id: profile.id });
       if (!r.success) throw new Error(r.error || 'forget-account failed');
-      setLocalProfile((prev) => ({ ...(prev || profile), psn_account_id: null, psn_online_id: null }));
+      setLocalProfile((prev) => ({ ...(prev || profile), sony_account_id: null, sony_online_id: null }));
       onProfilesChanged?.();
       onNotification?.('PSN account forgotten', 'success');
     } catch (e) {
@@ -1103,17 +1216,17 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
   const explainStartError = (msg) => {
     const m = (msg || '').toLowerCase();
     if (/another remote play session/.test(m))
-      return ' Tip: click 📡 Wake PS5 to claim the slot, or close any other Remote Play / Chiaki-ng client connected to this PS5.';
+      return ` Try Wake ${pairConsoleLabel}, or close any other Remote Play / Chiaki-ng client connected to it.`;
     if (/connection refused|errno 111/.test(m))
-      return ' Tip: PS5 Remote Play service is restarting. Wait ~30 s and try 📡 Wake PS5. If it persists, hard-reset the console (hold power 7 s).';
+      return ` ${pairConsoleLabel}’s Remote Play service may be restarting. Wait about 30 seconds, then try Wake ${pairConsoleLabel} again.`;
     if (/didn.?t wake up|standby/.test(m))
-      return ' Tip: PS5 stayed in rest mode - check it has network access (Settings → System → Power Saving → Features in Rest Mode → Stay Connected to the Internet).';
+      return ` Make sure ${pairConsoleLabel} can connect to the network while in rest mode.`;
     if (/credentials|profile|re-pair|no remote play/.test(m))
-      return ' Tip: re-pair the PS5 in step 2 above.';
+      return ' Tip: re-pair the console in Remote Play Settings.';
     if (/timeout/.test(m))
-      return ' Tip: sidecar took too long. Try 🧹 Force reset, then 📡 Wake PS5.';
+      return ` The Remote Play service took too long to respond. Try Force reset, then Wake ${pairConsoleLabel}.`;
     if (/not reachable|no status/.test(m))
-      return ' Tip: PS5 is offline. Check it is powered on and on the same network as this server.';
+      return ` Check that ${pairConsoleLabel} is on and connected to the same network as this app.`;
     return '';
   };
 
@@ -1124,6 +1237,8 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
   // this is a real parameter, not a stale-read workaround-by-convention.
   const startSession = async (forceVideo = false) => {
     if (!profile) return false;
+    const generation = targetGeneration.current.value;
+    const wasLive = sessionState === 'connected';
     userStoppedRef.current = false;
     setSessionState('connecting');
     try {
@@ -1137,6 +1252,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
         resolution: rpResolution,
         fps: rpFps,
       });
+      if (generation !== targetGeneration.current.value) return false;
       if (!r.success) throw new Error(r.error);
       setSessionId(r.session_id);
       setSessionState('connected');
@@ -1159,9 +1275,9 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
       refreshPs5State(true);
       return true;
     } catch (e) {
-      setSessionState('idle');
-      setSessionHasVideo(false);
-      setLiveStream(null);
+      if (generation !== targetGeneration.current.value) return false;
+      setSessionState(wasLive ? 'connected' : 'idle');
+      if (!wasLive) { setSessionHasVideo(false); setLiveStream(null); }
       const hint = explainStartError(e.message);
       onNotification?.(`Start failed: ${e.message}.${hint}`, 'error');
       // A failed start often means the PS5 went into a weird state - poll
@@ -1172,6 +1288,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
   };
 
   const stopSession = async () => {
+    const generation = targetGeneration.current.value;
     // Soft-stop preference: we want the sidecar to park the session in its
     // warm cache so the next Start resumes in O(ms) instead of fighting the
     // 60s PS5 post-disconnect lock.
@@ -1195,8 +1312,10 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
       } else if (profile?.ip_address) {
         await apiSafe.post(`${RP}/quick-stop`, { ip: profile.ip_address });
       }
+      if (generation !== targetGeneration.current.value) return;
       onNotification?.('Session stopped', 'info');
     } catch (_) {}
+    if (generation !== targetGeneration.current.value) return;
     setSessionId('');
     setSessionState('idle');
     setSessionHasVideo(false);
@@ -1214,6 +1333,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
   // console out of standby and left RP unreachable - users then hit Start
   // and burned 60-90 s on the post-disconnect lock anyway.
   const wakePs5 = async () => {
+    const generation = targetGeneration.current.value;
     if (!profile?.ip_address) return;
     // Optimistic "waking" state on the shared status (topbar dot included)
     // the instant the click happens - only when this profile is the one
@@ -1233,6 +1353,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
         resolution: rpResolution,
         fps: rpFps,
       });
+      if (generation !== targetGeneration.current.value) return;
       if (!r.success) throw new Error(r.error);
       if (r.already_live) {
         onNotification?.('Session is already live — open it from Start session', 'info');
@@ -1249,9 +1370,11 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
         onNotification?.('Wake completed', 'success');
       }
     } catch (e) {
+      if (generation !== targetGeneration.current.value) return;
       const hint = explainStartError(e.message);
       onNotification?.(`Wake failed: ${e.message}.${hint}`, 'error');
     } finally {
+      if (generation !== targetGeneration.current.value) return;
       setWakeBusy(false);
       refreshPs5State(true);
     }
@@ -1263,6 +1386,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
   // command in the RP protocol.
   const [standbyBusy, setStandbyBusy] = useState(false);
   const standbyPs5 = async () => {
+    const generation = targetGeneration.current.value;
     if (!profile?.ip_address) return;
     if (!confirm(`Put ${profile.name} (${profile.ip_address}) into rest mode?`)) return;
     setStandbyBusy(true);
@@ -1271,17 +1395,20 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
         ip: profile.ip_address,
         profile_id: profile.id,
       });
+      if (generation !== targetGeneration.current.value) return;
       if (!r.success) throw new Error(r.error);
       // Standby disconnects our session as a side-effect; reflect it locally.
       setSessionId('');
       setSessionState('idle');
       onNotification?.(
-        r.already_standby ? 'PS5 was already in rest mode' : 'Rest mode sent - PS5 is going to rest',
+        r.already_standby ? `${pairConsoleLabel} was already in rest mode` : `Rest mode sent - ${pairConsoleLabel} is going to rest`,
         'success',
       );
     } catch (e) {
+      if (generation !== targetGeneration.current.value) return;
       onNotification?.(`Rest mode failed: ${e.message}`, 'error');
     } finally {
+      if (generation !== targetGeneration.current.value) return;
       setStandbyBusy(false);
       // Give the console a moment to actually transition before we poll
       // its DDP status, otherwise we still see "Ok" for a few seconds.
@@ -1290,8 +1417,9 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
   };
 
   const forceReset = async () => {
+    const generation = targetGeneration.current.value;
     if (!profile?.ip_address) return;
-    if (!confirm('Force-reset will clear ALL Remote Play sessions for this PS5 on the sidecar. If the PS5 still refuses to connect afterwards, put it into Rest Mode and back on. Continue?')) return;
+    if (!confirm(`Force-reset will clear all Remote Play sessions for this ${pairConsoleLabel}. If it still refuses to connect, put it into Rest Mode and back on. Continue?`)) return;
     userStoppedRef.current = true;
     try {
       const r = await api.post(`${RP}/quick-stop`, { ip: profile.ip_address, all: true });
@@ -1300,8 +1428,10 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
         'success',
       );
     } catch (e) {
+      if (generation !== targetGeneration.current.value) return;
       onNotification?.(`Reset failed: ${e.message}`, 'error');
     }
+    if (generation !== targetGeneration.current.value) return;
     setSessionId('');
     setSessionState('idle');
   };
@@ -1559,43 +1689,10 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
   // must be read AFTER Down: right after PS no icon is focused and the
   // detector returns a meaningless slot.
   const resetToMainScreen = async () => {
-    await stepSendCommand('ps');
-    await new Promise(r => setTimeout(r, 800));
-    await stepSendCommand('down');
-    await new Promise(r => setTimeout(r, 400));
-
-    let steps = 0;
-    let direction = 'left';
-    try {
-      // An <img> (MJPEG) or a <video> (WebRTC), whichever is shown.
-      const img = videoImgRef.current;
-      const frameW = img?.naturalWidth || img?.videoWidth;
-      const frameH = img?.naturalHeight || img?.videoHeight;
-      if (img && frameW) {
-        const canvas = document.createElement('canvas');
-        canvas.width = frameW;
-        canvas.height = frameH;
-        const ctx = canvas.getContext('2d');
-        ctx.drawImage(img, 0, 0);
-        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-        const focusedIdx = detectFocusedControlCenterIcon(imageData, canvas.width, canvas.height);
-        if (focusedIdx != null) {
-          const path = shortestPathOnRing(focusedIdx, CONTROL_CENTER_HOME_INDEX, CONTROL_CENTER_SLOT_COUNT);
-          steps = path.steps;
-          direction = path.direction;
-        }
-      }
-    } catch (e) {
-      // No readable frame (video off, canvas error, ...) - plain
-      // PS, Down, Cross.
-    }
-
-    for (let i = 0; i < steps; i++) {
-      await stepSendCommand(direction);
-      await new Promise(r => setTimeout(r, 150));
-    }
-    if (steps > 0) await new Promise(r => setTimeout(r, 200));
-    await stepSendCommand('cross');
+    // PS5's long PS press returns Home regardless of the remembered Control
+    // Center icon. On PS4 a short PS press leaves the running application.
+    await stepSendCommand('ps', isPs4Profile ? 80 : 1500);
+    await new Promise(resolve => setTimeout(resolve, 1200));
   };
 
   const executeStepLine = async (parsed) => {
@@ -1680,7 +1777,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
   // .rp-live-layout ancestor) so the user can press real buttons while
   // building/running a script live.
   const renderManualPad = () => {
-    const byId = Object.fromEntries(PS5_BUTTONS.map(b => [b.id, b]));
+    const byId = Object.fromEntries(PS5_BUTTONS.map(b => [b.id, b.id === 'share' ? { ...b, label: isPs4Profile ? 'Share' : 'Create' } : b]));
     // A plain function, not a component: a component defined in here is a
     // new type on every render, so React replaced every pad button each
     // time RemotePlay re-rendered - and a button replaced while held never
@@ -1830,13 +1927,13 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
         mjpegFps={15}
         muted={rpMuted}
         mediaRef={videoImgRef}
-        alt="PS5 preview"
+        alt={`${pairConsoleLabel} preview`}
         style={{ width: '100%', borderRadius: 8, display: 'block', background: '#000' }}
         onError={(msg, level) => onNotification?.(msg, level)}
         onModeChange={setVideoMode}
       />
     ) : (
-      <div className="text-muted text-sm">No video session yet - hit Start session above.</div>
+        <div className="text-muted text-sm">Start a Remote Play session to see the stream here.</div>
     )
   );
 
@@ -2138,14 +2235,15 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
 
   function renderFullscreenOverlay() {
     const handleStick = (side) => ({ x, y }) => onStick(side)({ x, y });
+    const controlAlpha = Math.max(0.1, 1 - fullscreenTransparency / 100);
 
     // PS5-themed translucent tints. Press state brings each to ~0.95 alpha
     // automatically (see HoldButton).
     const btnBg = {
-      cross: 'rgba(94, 156, 255, 0.30)',
-      circle: 'rgba(231, 76, 76, 0.30)',
-      square: 'rgba(255, 128, 230, 0.30)',
-      triangle: 'rgba(100, 220, 140, 0.30)',
+      cross: `rgba(94, 156, 255, ${controlAlpha})`,
+      circle: `rgba(231, 76, 76, ${controlAlpha})`,
+      square: `rgba(255, 128, 230, ${controlAlpha})`,
+      triangle: `rgba(100, 220, 140, ${controlAlpha})`,
     };
 
     // Responsive sizing - clamp(min, vh-based, max). Landscape phones tend
@@ -2192,26 +2290,26 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
             size={numHint('shoulder')} style={{ width: SZ.shoulder, height: SZ.shoulder }} />
         </div>
 
-        {/* ─── Top-center: system buttons (PS / Touch / Opt / Share) ────
-            Moved up from the bottom so the bottom half is free for the
-            primary face / d-pad / stick clusters - matches most mobile
-            game overlays (Steam Link, Moonlight). */}
+        {/* ─── Lower-center: system buttons (PS / Touch / Opt / Share) ───
+            A compact two-row cluster keeps the upper edge of the game clear
+            and stays between the two analog sticks on a phone in landscape. */}
         <div style={{
           position: 'absolute',
-          top: 'max(12px, env(safe-area-inset-top))',
+          bottom: 'max(8px, env(safe-area-inset-bottom))',
           left: '50%', transform: 'translateX(-50%)',
-          display: 'flex', gap: 6,
+          display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: 6,
+          width: 'min(92vw, 320px)',
           pointerEvents: 'auto',
-          background: 'rgba(10, 12, 18, 0.30)',
+          background: `rgba(10, 12, 18, ${controlAlpha})`,
           WebkitBackdropFilter: 'blur(10px) saturate(140%)',
           backdropFilter: 'blur(10px) saturate(140%)',
-          padding: '4px 8px', borderRadius: 999,
+          padding: '5px 8px', borderRadius: 18,
           border: '1px solid rgba(255,255,255,0.15)',
         }}>
           <HoldButton id="ps" label="PS" onPress={overlayPress} onRelease={overlayRelease}
             size={numHint('sys')} fontSize={14} style={{ width: SZ.sys, height: SZ.sys }} />
           {/* Touchpad uses a sidecar-side `tap` instead of press/release —
-              PS5 needs ~200 ms of held-down state for the touchpad click
+              The console needs ~200 ms of held-down state for the touchpad click
               to register. See sendTouchpadTap() for the rationale. The
               HoldButton's visual press feedback still works because its
               internal state machine toggles on the pointer events; we just
@@ -2245,17 +2343,12 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
           <HoldButton id="shake" label="Shk"
             onPress={() => sendShake(700, 0.85)}
             onRelease={() => { /* one-shot, daemon thread on sidecar */ }}
-            background="rgba(245, 166, 35, 0.30)"
+            background={`rgba(245, 166, 35, ${controlAlpha})`}
             size={numHint('sys')} fontSize={13}
             style={{ width: SZ.sys, height: SZ.sys }} />
         </div>
 
-        {/* ─── Record toggle (just below the system-button strip) ────────
-            A dedicated REC button is needed here because the inline button
-            (top-right on the video) is hidden in fullscreen — that corner
-            is now occupied by the R1/R2 cluster. Centred below the system
-            row sits in an empty band on every supported viewport and never
-            crosses into the d-pad / face / shoulder territory. */}
+        {/* ─── Record toggle in the upper-right corner ────────────────── */}
         <button
           type="button"
           onClick={recording ? stopRecording : startRecording}
@@ -2263,11 +2356,11 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
           className={recording ? 'rp-rec-btn rp-rec-active' : 'rp-rec-btn'}
           style={{
             position: 'absolute',
-            top: 'calc(max(12px, env(safe-area-inset-top)) + clamp(48px, 7vh, 60px))',
-            left: '50%', transform: 'translateX(-50%)',
+            top: 'max(12px, env(safe-area-inset-top))',
+            right: 'calc(max(12px, env(safe-area-inset-right)) + 104px)',
             height: 36, minWidth: 36, padding: recording ? '0 10px' : 0,
             borderRadius: 999,
-            background: recording ? 'rgba(220, 50, 50, 0.85)' : 'rgba(10, 12, 18, 0.55)',
+            background: recording ? 'rgba(220, 50, 50, 0.85)' : `rgba(10, 12, 18, ${controlAlpha})`,
             color: '#fff', border: '1px solid rgba(255,255,255,0.25)',
             fontSize: recording ? 12 : 14, fontWeight: 700, cursor: 'pointer',
             display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
@@ -2387,8 +2480,8 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
     return (
       <div className="empty-state">
         <div className="empty-state-icon">🎮</div>
-        <div className="empty-state-title">No profile yet</div>
-        <div className="empty-state-text">Create a PS5 profile in Settings first.</div>
+        <div className="empty-state-title">No console selected</div>
+        <div className="empty-state-text">Add a console in Settings → Your consoles to get started.</div>
       </div>
     );
   }
@@ -2419,6 +2512,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
           <select
             className="select"
             value={profileId}
+            disabled={oneClickBusy || autoPinBusy || offactBusy || pairBusy}
             onChange={e => setProfileId(e.target.value)}
             style={{ flex: 1 }}
           >
@@ -2431,7 +2525,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
             className="btn btn-ghost btn-sm"
             onClick={() => refreshPs5State(false)}
             disabled={!profile || (usingSharedStatus ? ps5StatusCtx.busy : ps5Busy)}
-            title="Re-query PS5 power state (DDP discover)"
+            title="Refresh console power state"
           >
             {(usingSharedStatus ? ps5StatusCtx.busy : ps5Busy) ? '⏳' : '🔄'}
           </button>
@@ -2444,7 +2538,21 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
         {profile && (
           <div className="flex items-center justify-between flex-wrap gap-sm">
             <div className="text-xs text-muted">
-              PSN: {profileView?.psn_online_id || profileView?.psn_account_id || <em>not linked</em>}
+              <span style={{ display: 'inline-flex', flexDirection: 'column', lineHeight: 1.35 }}>
+                <span>{isPs4Profile ? 'Console account' : 'Sony account'}: {isPs4Profile
+                  ? profileView?.console_user || (profileView?.psn_account_id ? 'Account' : <em>not detected</em>)
+                  : profileView?.sony_online_id || profileView?.psn_online_id || (profileView?.sony_account_id || profileView?.psn_account_id ? 'Account' : <em>not detected</em>)}</span>
+                {(isPs4Profile ? profileView?.psn_account_id : profileView?.sony_account_id || profileView?.psn_account_id) &&
+                  <span style={{ fontSize: '0.9em', opacity: 0.8 }}>ID: {isPs4Profile ? profileView.psn_account_id : profileView.sony_account_id || profileView.psn_account_id}</span>}
+                {!isPs4Profile && profileView?.sony_account_id && profileView?.psn_account_id && !sameAccountId(profileView.sony_account_id, profileView.psn_account_id) && <>
+                  <span style={{ marginTop: 4 }}>Console account: {profileView?.psn_online_id || 'Account'}</span>
+                  <span style={{ fontSize: '0.9em', opacity: 0.8 }}>ID: {profileView.psn_account_id}</span>
+                </>}
+                {isPs4Profile && profileView?.sony_account_id && <>
+                  <span style={{ marginTop: 4 }}>Sony account: {profileView.sony_online_id || 'Account'}</span>
+                  <span style={{ fontSize: '0.9em', opacity: 0.8 }}>ID: {profileView.sony_account_id}</span>
+                </>}
+              </span>
               {' · '}
               RP: {paired ? <span style={{ color: 'var(--green)' }}>paired</span> : <em>not paired</em>}
             </div>
@@ -2466,480 +2574,25 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
       </Section>
       )}
 
-      {(view === 'settings' || (view === 'all' && effectiveShowSetup)) && (<>
-
-      {/* ───────────────────────────────────────────────────────────────────
-          Sub-tab selector + jailbreak status badge. PS5-only because the
-          two divergent paths (PIN auto-fetch via rp-get-pin.elf and PSN
-          activation via offact.elf) are PS5-targeted (prospero-clang ABI +
-          12.x regmgr offsets). On PS4 we collapse to the original linear
-          OAuth → PIN flow without a tab switcher.
-
-          The order inside each tab implements the user-requested flow:
-            • PSN Activated:  0=Auto-fetch  1=PSN account  2=Pair
-            • Not Activated:  1=offact (+inline OAuth prereq)  2=Auto-fetch+Pair
-          ─────────────────────────────────────────────────────────────── */}
-      {isPs5Profile && (
-        <div
-          className="flex gap-xs flex-wrap items-center"
-          role="tablist"
-          aria-label="Pairing path"
-          style={{
-            padding: 4,
-            background: 'rgba(255, 255, 255, 0.03)',
-            borderRadius: 8,
-            border: '1px solid var(--border)',
-          }}
-        >
-          <button
-            type="button"
-            role="tab"
-            aria-selected={pairTab === 'activated'}
-            className={`btn btn-sm ${pairTab === 'activated' ? 'btn-primary' : 'btn-ghost'}`}
-            style={{ flex: '1 1 220px' }}
-            onClick={() => setPairTab('activated')}
-            title="PS5 is signed into PSN already. Use rp-get-pin.elf to grab the PIN (and PSN account) in one click, then pair."
-          >
-            {pairTab === 'activated' ? '● ' : ''}🔐 PSN Activated
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={pairTab === 'unactivated'}
-            className={`btn btn-sm ${pairTab === 'unactivated' ? 'btn-primary' : 'btn-ghost'}`}
-            style={{ flex: '1 1 220px' }}
-            onClick={() => setPairTab('unactivated')}
-            title="PS5 is NOT signed into PSN. Link a PSN account here via OAuth, then push it onto the console with offact.elf, then pair."
-          >
-            {pairTab === 'unactivated' ? '● ' : ''}🪄 Not Activated
-          </button>
-        </div>
+      {(view === 'settings' || (view === 'all' && effectiveShowSetup)) && (
+        <RemotePlayPairing key={profile?.id}
+          consoleLabel={pairConsoleLabel} menuPath={pairMenuPath} paired={paired} liveSession={liveSession}
+          disabled={!profile?.ip_address} busy={oneClickBusy || autoPinBusy || offactBusy || pairBusy || oauthBusy}
+          progress={pairProgress} result={oneClickResult} pairTab={pairTab} setPairTab={setPairTab}
+          pin={pin} setPin={setPin} pinResult={autoPinResult} activationResult={offactResult}
+          onOneClickPair={oneClickPair} onFetchPin={autoFetchPin} onActivate={activateOffline}
+          onPair={pair} onForgetPair={forgetPair}
+          account={{ linked: accountLinked, sonyLinked: !!profileView?.sony_account_id,
+            sonyName: profileView?.sony_online_id || profileView?.sony_account_id,
+            sonyId: profileView?.sony_account_id, consoleId: profileView?.psn_account_id,
+            mismatch: !!profileView?.sony_account_id && !!profileView?.psn_account_id && !sameAccountId(profileView.sony_account_id, profileView.psn_account_id),
+            name: profileView?.console_user || profileView?.psn_account_id,
+            id: profileView?.psn_account_id,
+            busy: oauthBusy, loginUrl, redirectUrl, setRedirectUrl, onLogin: startOAuth, onExchange: finishOAuth,
+            manualId: manualAccount, setManualId: setManualAccount, manualName: manualOnlineId,
+            setManualName: setManualOnlineId, onSave: saveManualAccount, onForget: forgetAccount }}
+        />
       )}
-
-      {/* ═══════════════════════════════════════════════════════════════════
-          PSN Activated path (PS5)  ──  also the PS4 fallback (no sub-tabs).
-          Order: 0 · Auto-fetch PIN → 1 · PSN account (OAuth) → 2 · Pair.
-          ═══════════════════════════════════════════════════════════════ */}
-      {(!isPs5Profile || pairTab === 'activated') && (<>
-
-        {/* ─── Step 0: Auto-fetch PIN (PS5 only) ───────────────────────────
-            Sends rp-get-pin.elf to elfldr:9021. The payload reads the
-            foreground user's PSN account_id + online_id from regmgr and
-            calls sceRemoteplayGeneratePinCode, then prints both on its
-            stdout. We parse it, drop the captured account_id into the
-            profile (backend persistence), and pre-fill the PIN below. */}
-        {isPs5Profile && (
-          <Section
-            title={autoPinResult?.pin ? '0 · Auto-fetch PIN ✓' : '0 · Auto-fetch PIN'}
-            hint={liveSession
-              ? '⛔ A Remote Play session is live - stop it first (Control tab above) before fetching a PIN, otherwise rp-get-pin.elf attaching to SceShellUI can knock the session out.'
-              : '⚡ Sends rp-get-pin.elf to elfldr (port 9021) and captures the PIN + PSN account from its stdout. If the PS5 is PSN-signed-in this also auto-fills step 1 — no manual Sony OAuth needed.'}
-          >
-            <div className="flex gap-sm flex-wrap items-center">
-              <button
-                type="button"
-                className="btn btn-primary"
-                disabled={autoPinBusy || !profile?.ip_address || liveSession}
-                onClick={autoFetchPin}
-                title="Send rp-get-pin.elf to the PS5 and read PIN + Account ID from its stdout"
-              >
-                {autoPinBusy ? '⏳ Sending payload…' : '🪄 Auto-fetch PIN'}
-              </button>
-              {autoPinResult?.pin && (
-                <span className="text-sm" style={{ color: 'var(--green)' }}>
-                  ✓ PIN: <b style={{ letterSpacing: 2 }}>{autoPinResult.pin}</b>
-                </span>
-              )}
-              {autoPinResult?.online_id && (
-                <span className="text-sm" style={{ color: 'var(--text)' }}>
-                  👤 <b>{autoPinResult.online_id}</b>
-                </span>
-              )}
-              {autoPinResult?.account_id && (
-                <span className="text-xs" style={{ color: 'var(--muted)', fontFamily: 'monospace' }} title={autoPinResult.account_id}>
-                  acct: {autoPinResult.account_id.slice(0, 16)}…
-                </span>
-              )}
-              {autoPinResult?.message && !autoPinResult.pin && (
-                <span className="text-sm" style={{ color: 'var(--yellow)' }}>{autoPinResult.message}</span>
-              )}
-              {autoPinResult?.error && !autoPinResult.pin && (
-                <span className="text-sm" style={{ color: 'var(--red)' }}>{autoPinResult.error}</span>
-              )}
-            </div>
-            {Array.isArray(autoPinResult?.log) && autoPinResult.log.length > 0 && !autoPinResult.pin && (
-              <details style={{ fontSize: '0.85em' }}>
-                <summary style={{ cursor: 'pointer', color: 'var(--muted)' }}>
-                  Show payload output ({autoPinResult.log.length} lines)
-                </summary>
-                <pre
-                  style={{
-                    margin: '6px 0 0 0',
-                    padding: 8,
-                    background: 'rgba(0, 0, 0, 0.25)',
-                    borderRadius: 4,
-                    maxHeight: 200,
-                    overflow: 'auto',
-                    fontFamily: 'monospace',
-                    fontSize: '0.75rem',
-                    lineHeight: 1.4,
-                    whiteSpace: 'pre-wrap',
-                    wordBreak: 'break-all',
-                  }}
-                >
-                  {autoPinResult.log.join('\n')}
-                </pre>
-              </details>
-            )}
-          </Section>
-        )}
-
-        {/* ─── Step 1: Link PSN account (Sony OAuth) ───────────────────────
-            On PSN-activated consoles step 0 already populates this when it
-            succeeds, so OAuth here becomes a manual fallback / re-link.
-            Still required if rp-get-pin.elf can't run (no HEN yet) or the
-            PS5 isn't PSN-signed-in (caller should switch to Not Activated
-            tab in that case). */}
-        <Section
-          title={accountLinked ? '1 · PSN account ✓' : '1 · Link PSN account'}
-          hint={accountLinked
-            ? `Linked as ${profileView?.psn_online_id || profileView?.psn_account_id}. Re-link below if you switch PSN accounts. (Step 0 fills this automatically when it succeeds.)`
-            : "Sony OAuth → opens in a new tab. Sign in, then when the page goes blank or to a 'redirect' URL, copy the FULL URL from the browser address bar and paste below. (You can skip this if step 0 already captured a PSN-signed-in console.)"}
-        >
-          <div className="flex gap-sm flex-wrap">
-            <button className="btn btn-primary" disabled={oauthBusy || !profile} onClick={startOAuth}>
-              {oauthBusy ? '⏳ Opening…' : accountLinked ? '🔄 Re-link Sony account' : '🔗 Open Sony login'}
-            </button>
-            {accountLinked && (
-              <button
-                className="btn btn-ghost"
-                onClick={forgetAccount}
-                disabled={oauthBusy}
-                title="Drop the linked PSN account from this profile. Pairing credentials are kept."
-              >
-                🗑 Forget
-              </button>
-            )}
-          </div>
-          {loginUrl && (
-            <a href={loginUrl} target="_blank" rel="noopener noreferrer" className="text-xs text-muted truncate">
-              {loginUrl}
-            </a>
-          )}
-          <label className="text-sm text-muted" style={{ display: 'block' }}>Redirect URL after sign-in</label>
-          <textarea
-            className="input"
-            rows={2}
-            placeholder="https://my.account.sony.com/...?code=..."
-            value={redirectUrl}
-            onChange={e => setRedirectUrl(e.target.value)}
-          />
-          <button className="btn btn-success" disabled={oauthBusy || !redirectUrl.trim() || !profile} onClick={finishOAuth}>
-            {oauthBusy ? '⏳' : '✓ Extract account ID'}
-          </button>
-        </Section>
-
-        {/* ─── Step 2: Pair (PIN entry + Pair button) ──────────────────── */}
-        <Section
-          title={paired ? `2 · Pair ${pairConsoleLabel} ✓` : `2 · Pair ${pairConsoleLabel}`}
-          hint={
-            paired
-              ? 'Already paired. Re-pair below with a fresh PIN if you swap PSN accounts, or click Forget pairing to start over.'
-              : !accountLinked
-                ? 'Link a PSN account first (step 0 if your PS5 is PSN-signed-in, otherwise step 1).'
-                : isPs5Profile
-                  ? `Use the PIN from step 0 above, or open ${pairMenuPath.split(': ')[1]} on the ${pairConsoleLabel} and type that PIN.`
-                  : `On the ${pairConsoleLabel}: ${pairMenuPath.split(': ')[1]}. Type the 8-digit PIN shown there below.`
-          }
-        >
-          <input
-            className="input"
-            inputMode="numeric"
-            maxLength={9}
-            placeholder="12345678"
-            value={pin}
-            onChange={e => setPin(e.target.value)}
-            disabled={!accountLinked}
-            style={{ fontSize: '1.5rem', letterSpacing: 4, textAlign: 'center' }}
-          />
-          <div className="flex gap-sm flex-wrap">
-            <button
-              className="btn btn-success"
-              disabled={!accountLinked || pairBusy || pin.replace(/\D/g, '').length < 8 || liveSession}
-              onClick={pair}
-            >
-              {pairBusy ? '⏳ Pairing…' : paired ? '🔄 Re-pair' : '🤝 Pair'}
-            </button>
-            {paired && (
-              <button className="btn btn-ghost" onClick={forgetPair}>🗑 Forget pairing</button>
-            )}
-          </div>
-        </Section>
-      </>)}
-
-      {/* ═══════════════════════════════════════════════════════════════════
-          Not Activated path (PS5 only). The PS5 isn't PSN-signed-in, so
-          we must first push our OAuth-linked PSN id onto its registry via
-          offact.elf, THEN rp-get-pin.elf can ask Remote Play for a PIN.
-          Order: 1 · offact (with inline OAuth prereq) → 2 · Auto-fetch+Pair.
-          ═══════════════════════════════════════════════════════════════ */}
-      {isPs5Profile && pairTab === 'unactivated' && (<>
-
-        {/* ─── Step 1: Push linked PSN account to console (offact.elf) ─── */}
-        <Section
-          title={offactResult?.success ? '1 · Push linked PSN account ✓' : '1 · Push linked PSN account'}
-          hint={
-            offactResult?.success
-              ? `Linked PSN id is now on the PS5${offactResult.user ? ` as ${offactResult.user}` : ''}. Continue to step 2 to grab a PIN and pair.`
-              : accountLinked
-                ? `Sends offact.elf to elfldr:9021. It reads the foreground user's registry slot, drops a trigger file with your linked PSN id (${profile?.psn_online_id || `${profile?.psn_account_id?.slice(0, 12)}…`}), then reconciles them — adopting if empty, overwriting if mismatched.`
-                : 'Requires a linked PSN account first — complete the inline OAuth below, then send the payload.'
-          }
-        >
-          {/* Inline OAuth — required prereq for offact. Compact when already
-              linked, full UX when not. We don't render a separate "Step 1
-              OAuth" section in this tab because the user explicitly asked
-              for offact to be Step 1. */}
-          {!accountLinked && (
-            <div
-              className="flex flex-col gap-sm"
-              style={{
-                padding: 12,
-                border: '1px solid var(--yellow)',
-                borderRadius: 8,
-                background: 'rgba(255, 193, 7, 0.08)',
-              }}
-            >
-              <div className="text-sm" style={{ color: 'var(--yellow)', lineHeight: 1.5 }}>
-                ⚠ <b>Link a PSN account first.</b> offact.elf mirrors the account_id from this profile
-                onto the console — without a linked PSN id it has nothing to push and will refuse.
-              </div>
-              <div className="flex gap-sm flex-wrap">
-                <button className="btn btn-primary btn-sm" disabled={oauthBusy || !profile} onClick={startOAuth}>
-                  {oauthBusy ? '⏳ Opening…' : '🔗 Open Sony login'}
-                </button>
-              </div>
-              {loginUrl && (
-                <a href={loginUrl} target="_blank" rel="noopener noreferrer" className="text-xs text-muted truncate">
-                  {loginUrl}
-                </a>
-              )}
-              <label className="text-sm text-muted" style={{ display: 'block' }}>Redirect URL after sign-in</label>
-              <textarea
-                className="input"
-                rows={2}
-                placeholder="https://my.account.sony.com/...?code=..."
-                value={redirectUrl}
-                onChange={e => setRedirectUrl(e.target.value)}
-              />
-              <button className="btn btn-success btn-sm" disabled={oauthBusy || !redirectUrl.trim() || !profile} onClick={finishOAuth}>
-                {oauthBusy ? '⏳' : '✓ Extract account ID'}
-              </button>
-            </div>
-          )}
-
-          {accountLinked && (
-            <div className="text-sm" style={{ color: 'var(--muted)' }}>
-              ✓ Linked PSN: <b>{profileView?.psn_online_id || profileView?.psn_account_id}</b>
-              {' · '}
-              <button
-                type="button"
-                className="btn btn-ghost btn-sm"
-                onClick={forgetAccount}
-                style={{ padding: '2px 8px', fontSize: '0.8rem' }}
-              >
-                🗑 Forget &amp; re-link
-              </button>
-            </div>
-          )}
-
-          <details style={{ fontSize: '0.85em' }}>
-            <summary style={{ cursor: 'pointer', color: 'var(--muted)' }}>
-              How offact.elf reconciles the account
-            </summary>
-            <div
-              className="text-sm"
-              style={{
-                marginTop: 8,
-                padding: 12,
-                border: '1px solid var(--border)',
-                borderRadius: 8,
-                background: 'rgba(126, 87, 194, 0.08)',
-                lineHeight: 1.5,
-              }}
-            >
-              The manager writes the <code>account_id</code> from your linked PSN account into a small
-              trigger file on the PS5 (<code>/data/.p5manager-offact</code>) over FTP, then sends
-              <code> offact.elf </code> to <code>elfldr:9021</code>. The payload reads the foreground
-              user's registry slot and reconciles it with the trigger:
-              <ul style={{ margin: '6px 0 6px 18px' }}>
-                <li><b>empty slot</b> → adopts the linked PSN id</li>
-                <li><b>different id</b> → overwrites to match the linked PSN id</li>
-                <li><b>already in sync</b> → no-op, just confirms <code>type="np"</code> + <code>flags=0x1002</code></li>
-              </ul>
-              We never invent a synthetic id — if you haven't linked a PSN account and the console has
-              no PSN signed in either, the payload refuses to activate.
-              <br /><br />
-              <span style={{ color: 'var(--muted)' }}>
-                Source: vendored <code>ps5-payload-dev/offact</code> at <code>p5managerclient/offact/</code>,
-                reworked to read the manager-supplied account_id instead of synthesising one from the
-                local display name.
-              </span>
-            </div>
-          </details>
-
-          <div className="flex gap-sm flex-wrap items-center">
-            <button
-              type="button"
-              className="btn btn-primary"
-              disabled={offactBusy || !profile?.ip_address || !accountLinked}
-              onClick={activateOffline}
-              title={
-                !accountLinked
-                  ? 'Link a PSN account above first.'
-                  : 'Send offact.elf to the PS5 and sync its registry to the linked PSN account'
-              }
-            >
-              {offactBusy ? '⏳ Sending payload…' : '🪄 Push linked PSN account to console'}
-            </button>
-            {offactResult?.success && offactResult?.user && (
-              <span className="text-sm" style={{ color: 'var(--green)' }}>
-                ✓ {offactResult.activated === 'already' ? 'Already activated' : 'Activated'}: <b>{offactResult.user}</b>
-                {' '}<span style={{ color: 'var(--muted)' }}>(slot {offactResult.slot})</span>
-              </span>
-            )}
-            {offactResult?.account_id && (
-              <span className="text-xs" style={{ color: 'var(--muted)', fontFamily: 'monospace' }} title={offactResult.account_id_hex || offactResult.account_id}>
-                acct: {offactResult.account_id.slice(0, 16)}…
-              </span>
-            )}
-            {offactResult?.message && !offactResult.success && (
-              <span className="text-sm" style={{ color: 'var(--yellow)' }}>{offactResult.message}</span>
-            )}
-            {offactResult?.error && (
-              <span className="text-sm" style={{ color: 'var(--red)' }}>{offactResult.error}</span>
-            )}
-          </div>
-
-          {Array.isArray(offactResult?.log) && offactResult.log.length > 0 && (
-            <details style={{ fontSize: '0.85em' }}>
-              <summary style={{ cursor: 'pointer', color: 'var(--muted)' }}>
-                Show payload output ({offactResult.log.length} lines)
-              </summary>
-              <pre
-                style={{
-                  margin: '6px 0 0 0',
-                  padding: 8,
-                  background: 'rgba(0, 0, 0, 0.25)',
-                  borderRadius: 4,
-                  maxHeight: 200,
-                  overflow: 'auto',
-                  fontFamily: 'monospace',
-                  fontSize: '0.75rem',
-                  lineHeight: 1.4,
-                  whiteSpace: 'pre-wrap',
-                  wordBreak: 'break-all',
-                }}
-              >
-                {offactResult.log.join('\n')}
-              </pre>
-            </details>
-          )}
-        </Section>
-
-        {/* ─── Step 2: Auto-fetch PIN & Pair (combined) ────────────────────
-            Now that offact.elf has flipped the registry to look PSN-active,
-            rp-get-pin.elf can ask Remote Play for a PIN, and the regular
-            pairing handshake will accept it. We collapse both into one
-            section since the user runs them back-to-back. */}
-        <Section
-          title={paired ? `2 · Auto-fetch PIN & Pair ${pairConsoleLabel} ✓` : `2 · Auto-fetch PIN & Pair ${pairConsoleLabel}`}
-          hint={
-            liveSession
-              ? '⛔ A Remote Play session is live - stop it first (Control tab above) before fetching a PIN or pairing, otherwise rp-get-pin.elf attaching to SceShellUI can knock the session out.'
-              : paired
-                ? 'Already paired. Re-pair below with a fresh PIN if you swap PSN accounts, or click Forget pairing to start over.'
-                : offactResult?.success
-                  ? 'PSN id is on the console — click Auto-fetch PIN to grab one via rp-get-pin.elf, then Pair.'
-                  : 'Run step 1 first so the console has a PSN-linked user; rp-get-pin.elf needs that to generate a PIN.'
-          }
-        >
-          <div className="flex gap-sm flex-wrap items-center">
-            <button
-              type="button"
-              className="btn btn-primary"
-              disabled={autoPinBusy || !profile?.ip_address || liveSession}
-              onClick={autoFetchPin}
-              title="Send rp-get-pin.elf to the PS5 and read PIN + Account ID from its stdout"
-            >
-              {autoPinBusy ? '⏳ Sending payload…' : '🪄 Auto-fetch PIN'}
-            </button>
-            {autoPinResult?.pin && (
-              <span className="text-sm" style={{ color: 'var(--green)' }}>
-                ✓ PIN: <b style={{ letterSpacing: 2 }}>{autoPinResult.pin}</b>
-              </span>
-            )}
-            {autoPinResult?.online_id && (
-              <span className="text-sm" style={{ color: 'var(--text)' }}>
-                👤 <b>{autoPinResult.online_id}</b>
-              </span>
-            )}
-            {autoPinResult?.message && !autoPinResult.pin && (
-              <span className="text-sm" style={{ color: 'var(--yellow)' }}>{autoPinResult.message}</span>
-            )}
-            {autoPinResult?.error && !autoPinResult.pin && (
-              <span className="text-sm" style={{ color: 'var(--red)' }}>{autoPinResult.error}</span>
-            )}
-          </div>
-          {Array.isArray(autoPinResult?.log) && autoPinResult.log.length > 0 && !autoPinResult.pin && (
-            <details style={{ fontSize: '0.85em' }}>
-              <summary style={{ cursor: 'pointer', color: 'var(--muted)' }}>
-                Show payload output ({autoPinResult.log.length} lines)
-              </summary>
-              <pre
-                style={{
-                  margin: '6px 0 0 0',
-                  padding: 8,
-                  background: 'rgba(0, 0, 0, 0.25)',
-                  borderRadius: 4,
-                  maxHeight: 200,
-                  overflow: 'auto',
-                  fontFamily: 'monospace',
-                  fontSize: '0.75rem',
-                  lineHeight: 1.4,
-                  whiteSpace: 'pre-wrap',
-                  wordBreak: 'break-all',
-                }}
-              >
-                {autoPinResult.log.join('\n')}
-              </pre>
-            </details>
-          )}
-          <input
-            className="input"
-            inputMode="numeric"
-            maxLength={9}
-            placeholder="12345678"
-            value={pin}
-            onChange={e => setPin(e.target.value)}
-            disabled={!accountLinked}
-            style={{ fontSize: '1.5rem', letterSpacing: 4, textAlign: 'center' }}
-          />
-          <div className="flex gap-sm flex-wrap">
-            <button
-              className="btn btn-success"
-              disabled={!accountLinked || pairBusy || pin.replace(/\D/g, '').length < 8 || liveSession}
-              onClick={pair}
-            >
-              {pairBusy ? '⏳ Pairing…' : paired ? '🔄 Re-pair' : '🤝 Pair'}
-            </button>
-            {paired && (
-              <button className="btn btn-ghost" onClick={forgetPair}>🗑 Forget pairing</button>
-            )}
-          </div>
-        </Section>
-      </>)}
-      </>)}
 
       {showMainBlock && (<>
       <Section
@@ -2953,15 +2606,15 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
           : 'pair first'}
         hint={
           !paired
-            ? 'Pair the PS5 in step 2 first.'
+            ? 'Pair the console in Remote Play Settings first.'
             : liveSession
               ? null
                 : warmCache
                   ? `⚡ Warm cache ready (${Math.round(warmCache.ttl_s)}s left${warmCache.resolution ? `, ${warmCache.resolution}` : ''}) — Start session will resume in milliseconds.`
                 : ps5State?.error
-                  ? '⚠ PS5 is offline / unreachable — check network and power on the console.'
+                  ? `⚠ ${pairConsoleLabel} is offline or unreachable. Check its power and network connection.`
                   : (ps5State?.code === 620 || /standby/i.test(ps5State?.status || ''))
-                    ? '🌙 PS5 is in rest mode. Start session will wake it (15-90 s). Tip: 📡 Wake PS5 first if you want it ready in the background.'
+                    ? `🌙 ${pairConsoleLabel} is in rest mode. Starting a session will wake it. Use Wake ${pairConsoleLabel} to prepare it in advance.`
                     : 'Start a control-only Remote Play session. By default the video stream is ignored - tick "Stream video" below if you want a live preview (uses more CPU).'
         }
       >
@@ -3026,11 +2679,16 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
           >
             {sessionState === 'connecting'
               ? (retryStatus
-                  ? `🔒 PS5 locked, retrying in ${Math.ceil(retryStatus.remainingS)}s…`
+                  ? `🔒 ${pairConsoleLabel} locked, retrying in ${Math.ceil(retryStatus.remainingS)}s…`
                   : '⏳ Starting…')
               : enableVideo ? '▶ Start session + video'
               : '▶ Start session'}
           </button>
+          {liveSession && !sessionHasVideo && (
+            <button className="btn btn-primary" onClick={() => startSession(true)}>
+              📺 Open video
+            </button>
+          )}
           <button
             className="btn btn-danger"
             disabled={!paired || (sessionState === 'idle' && !sessionId)}
@@ -3042,15 +2700,15 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
             className="btn btn-ghost"
             disabled={!paired || wakeBusy || liveSession}
             onClick={wakePs5}
-            title="Pre-warm: opens a full Remote Play session (waking the PS5 from rest mode if needed) and immediately parks it in the warm cache so the next Start session resumes in milliseconds."
+            title={`Pre-warm: opens a full Remote Play session (waking the ${pairConsoleLabel} from rest mode if needed) and parks it in the warm cache so the next Start session resumes immediately.`}
           >
-            {wakeBusy ? '⏳ Waking…' : '📡 Wake PS5'}
+            {wakeBusy ? '⏳ Waking…' : `📡 Wake ${pairConsoleLabel}`}
           </button>
           <button
             className="btn btn-ghost"
             disabled={!paired || standbyBusy}
             onClick={standbyPs5}
-            title="Puts the PS5 into rest mode via Remote Play. Restart isn't supported by the RP protocol."
+            title={`Puts the ${pairConsoleLabel} into rest mode via Remote Play. Restart is not supported by the RP protocol.`}
           >
             {standbyBusy ? '⏳ Rest mode…' : '🌙 Rest mode'}
           </button>
@@ -3058,7 +2716,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
             className="btn btn-ghost"
             disabled={!paired}
             onClick={forceReset}
-            title="Clears every cached Remote Play session on the sidecar. Use when the PS5 keeps reporting 'Another Remote Play session is connected'."
+            title={`Clears cached Remote Play sessions for ${pairConsoleLabel}. Use when it reports another Remote Play session is connected.`}
           >
             🧹 Force reset
           </button>
@@ -3092,12 +2750,13 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
           onOpenScripts={fetchExistingScripts}
           onRunScript={(sc) => runFullScript(sc.script, sc.name)}
           scriptRunning={runningPickedScript}
-          payloads={payloadsList}
+          payloads={sessionPayloads}
           payloadsLoaded={payloadsLoaded}
           onOpenPayloads={() => { if (!payloadsLoaded) fetchPayloadsList(); }}
           onSendPayload={sendPayload}
           sendingPayloadId={sendingPayloadId}
           targetName={profile?.name}
+          payloadPlatform={payloadPlatform}
         />
 
         {sessionViewTab === 'control' && (
@@ -3152,8 +2811,12 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
                   maxWidth: fsActive ? undefined : 'var(--rp-video-max, 640px)',
                   margin: fsActive ? 0 : '0 auto',
                   width: fsActive ? '100vw' : '100%',
-                  height: fsActive ? '100vh' : undefined,
+                  // dvh tracks the visible mobile viewport as browser chrome
+                  // and the on-screen controls change; 100vh can leave a
+                  // black strip or clip controls on iOS/Android.
+                  height: fsActive ? '100dvh' : undefined,
                   touchAction: fsActive ? 'none' : undefined,
+                  '--fs-control-alpha': fsActive ? String(Math.max(0.1, 1 - fullscreenTransparency / 100)) : undefined,
                 }}
               >
                 <RemotePlayVideo
@@ -3161,7 +2824,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
                   nonce={videoNonce}
                   mjpegFps={videoFps}
                   muted={rpMuted}
-                  alt="PS5 Remote Play preview"
+                  alt={`${pairConsoleLabel} Remote Play preview`}
                   style={{
                     width: '100%', height: '100%', display: 'block',
                     objectFit: 'contain',
@@ -3188,7 +2851,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
                       left: fsActive ? 'max(12px, env(safe-area-inset-left))' : 'auto',
                       right: fsActive ? 'auto' : 8,
                       width: 44, height: 44, borderRadius: 8,
-                      background: 'rgba(0,0,0,0.55)',
+                      background: `rgba(0,0,0,${fsActive ? Math.max(0.1, 1 - fullscreenTransparency / 100) : 0.55})`,
                       color: '#fff', border: '1px solid rgba(255,255,255,0.3)',
                       fontSize: 20, cursor: 'pointer',
                       display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -3210,7 +2873,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
                     left: fsActive ? 'max(12px, env(safe-area-inset-left))' : 'auto',
                     right: fsActive ? 'auto' : 8,
                     width: 44, height: 44, borderRadius: 8,
-                    background: 'rgba(0,0,0,0.55)',
+                    background: `rgba(0,0,0,${fsActive ? Math.max(0.1, 1 - fullscreenTransparency / 100) : 0.55})`,
                     color: '#fff', border: '1px solid rgba(255,255,255,0.3)',
                     fontSize: 22, fontWeight: 700, cursor: 'pointer',
                     display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -3330,7 +2993,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
             </datalist>
             {stepPanel ? (
               <>
-                <div className="flex items-center justify-between mb-sm" style={{ flexWrap: 'wrap', gap: 6 }}>
+                <div className="flex items-center justify-between mb-sm step-editor-heading" style={{ flexWrap: 'wrap', gap: 6 }}>
                   <span className="font-bold" style={{ fontSize: '0.9rem' }}>👣 {stepPanel.name}</span>
                   <div className="flex gap-sm">
                     <button className="btn btn-ghost btn-sm" onClick={closeStepPanel}>✕ Close</button>
@@ -3374,7 +3037,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
                         moved out of the manual pad and the panel header
                         respectively so every step-editor action lives in
                         one place. */}
-                    <div className="flex items-center gap-sm mb-sm" style={{ flexWrap: 'wrap' }}>
+                    <div className="flex items-center gap-sm mb-sm step-editor-actions" style={{ flexWrap: 'wrap' }}>
                       <button
                         type="button"
                         className="btn btn-secondary btn-sm"
@@ -3407,7 +3070,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
                         script. Next/Prev/Restart just move the cursor;
                         "Replay to" runs forward from wherever the cursor
                         already is through the chosen step number. */}
-                    <div className="flex items-center gap-sm mb-sm" style={{ flexWrap: 'wrap' }}>
+                    <div className="flex items-center gap-sm mb-sm step-editor-navigation" style={{ flexWrap: 'wrap' }}>
                       <button
                         className="btn btn-ghost btn-sm"
                         onClick={stepPrev}
@@ -3496,7 +3159,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
 
                       {stepPanel.steps.length === 0 && (
                         <div className="text-sm text-muted" style={{ padding: '8px 0' }}>
-                          No commands yet - use the ＋ above to add the first one.
+                          No steps yet. Choose ＋ above to add the first command.
                         </div>
                       )}
 
@@ -3577,10 +3240,11 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
                     >
                       🆕 New script (live)
                     </button>
-                    <ScriptRunner
+                    <ScriptRunner consoleType={profile?.console_type}
                       ip={profile?.ip_address}
                       liveSession={liveSession}
                       onStartSession={() => startSession(true)}
+                      onStopSession={stopSession}
                       sendCommand={stepSendCommand}
                       scripts={scripts}
                       onScriptsChange={onScriptsChange}
@@ -3620,7 +3284,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
             <div className="rp-rec-modal-body">
               {recExistingScripts.length === 0 ? (
                 <div className="text-sm text-muted">
-                  No scripts yet - record one (● above) or create one in the Scripts tab.
+                  No scripts yet. Record one above or create one in the Input Scripts tab.
                 </div>
               ) : (
                 <div className="flex-col" style={{ gap: 6, maxHeight: 320, overflowY: 'auto' }}>

@@ -17,6 +17,8 @@
 // `version` is a whole number that goes up with each change; the app offers
 // an update when the listed one is higher than the installed one.
 
+import { validateSequenceSteps } from './sequenceChecks.js';
+
 export const STORE_REPO = 'quatrixone/p5-manager';
 export const STORE_BRANCH = 'main';
 
@@ -24,12 +26,12 @@ export const STEP_TYPES = new Set([
   'wait', 'wol', 'check_port', 'payload', 'download', 'extract', 'ftp_upload',
   'convert', 'input_script', 'rp_session',
 ]);
-const KINDS = { template: 'templates', script: 'scripts', homebrew: 'homebrew' };
+const KINDS = { template: 'templates', script: 'scripts', homebrew: 'homebrew', payload: 'payloads' };
 export const HOMEBREW_FILE_TYPES = new Set(['pkg', 'elf', 'bin', 'lua']);
 const MAX_STEPS = 100;
 const MAX_SCRIPT_CHARS = 20_000;
 
-export const storeDir = (kind) => KINDS[kind];
+export const storeDir = (kind) => Object.hasOwn(KINDS, kind) ? KINDS[kind] : undefined;
 
 function text(v, max, what, errors, { required = true } = {}) {
   if (v === undefined || v === null || v === '') {
@@ -44,7 +46,7 @@ function text(v, max, what, errors, { required = true } = {}) {
 export function validateStoreItem(item, { submission = false } = {}) {
   const errors = [];
   if (!item || typeof item !== 'object' || Array.isArray(item)) return ['the item has to be a JSON object'];
-  if (!KINDS[item.kind]) errors.push('kind has to be "template", "script" or "homebrew"');
+  if (!Object.hasOwn(KINDS, item.kind)) errors.push('kind has to be "template", "script" "homebrew" or "payload"');
   if (typeof item.id !== 'string' || !/^[a-z0-9][a-z0-9-]{2,63}$/.test(item.id)) {
     errors.push('id has to be 3 to 64 lowercase letters, digits and dashes');
   }
@@ -64,6 +66,7 @@ export function validateStoreItem(item, { submission = false } = {}) {
         else if (!STEP_TYPES.has(s.type)) errors.push(`step ${i + 1}: unknown type "${s.type}"`);
       });
     }
+    if (Array.isArray(item.steps) && item.steps.length) { try { validateSequenceSteps(item.steps); } catch (e) { errors.push(e.message); } }
     if (item.autoTrigger !== undefined && item.autoTrigger !== 'loader_down') errors.push('autoTrigger can only be "loader_down"');
     if (item.requiresProfile !== undefined && typeof item.requiresProfile !== 'boolean') errors.push('requiresProfile has to be true or false');
   }
@@ -71,7 +74,7 @@ export function validateStoreItem(item, { submission = false } = {}) {
     if (typeof item.script !== 'string' || !item.script.trim()) errors.push('script is missing');
     else if (item.script.length > MAX_SCRIPT_CHARS) errors.push(`script is longer than ${MAX_SCRIPT_CHARS} characters`);
   }
-  if (item.kind === 'homebrew') {
+  if (item.kind === 'homebrew' || item.kind === 'payload') {
     if (!['ps4', 'ps5'].includes(item.console_type)) errors.push('console_type has to be "ps4" or "ps5"');
     text(item.app_version, 20, 'app_version', errors, { required: false });
     text(item.license, 40, 'license', errors, { required: false });
@@ -81,6 +84,7 @@ export function validateStoreItem(item, { submission = false } = {}) {
       item.files.forEach((f, i) => {
         const n = `file ${i + 1}`;
         if (!f || typeof f !== 'object') { errors.push(`${n} has to be an object`); return; }
+        if (item.kind === 'payload' && f.type === 'pkg') errors.push(`${n}: payloads cannot contain pkg files`);
         if (!HOMEBREW_FILE_TYPES.has(f.type)) errors.push(`${n}: type has to be pkg, elf, bin or lua`);
         if (typeof f.url !== 'string' || !/^https:\/\/\S{4,500}$/.test(f.url)) errors.push(`${n}: url has to be an https:// address`);
         if (!(submission && f.sha256 === undefined) && (typeof f.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(f.sha256))) {
@@ -111,9 +115,9 @@ export function indexEntry(item, path) {
     author: item.author,
     version: item.version,
     ...(item.console_type ? { console_type: item.console_type } : {}),
-    ...(item.kind === 'template' ? { steps: item.steps.length, ...(item.autoTrigger ? { autoTrigger: item.autoTrigger } : {}) } : {}),
+    ...(item.kind === 'template' ? { steps: item.steps.length, requiresProfile: item.requiresProfile !== false, ...(item.autoTrigger ? { autoTrigger: item.autoTrigger } : {}) } : {}),
     ...(item.kind === 'script' ? { lines: item.script.split('\n').filter((l) => l.trim() && !l.trim().startsWith('//')).length } : {}),
-    ...(item.kind === 'homebrew' ? {
+    ...(['homebrew', 'payload'].includes(item.kind) ? {
       files: item.files.map((f) => f.type),
       ...(item.app_version ? { app_version: item.app_version } : {}),
       ...(item.files.every((f) => f.size) ? { size: item.files.reduce((a, f) => a + f.size, 0) } : {}),
