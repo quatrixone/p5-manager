@@ -11,6 +11,12 @@
 // .pkg to the console's Remote Package Installer, which fetches it from
 // this server.
 import express from 'express';
+import { fpkgiCatalog, FPKGI_CATEGORIES, FPKGI_REPO, catalogPage } from '../lib/fpkgiCatalog.js';
+import { createMarketplaceNews, NEWS_INTERVAL_MS } from '../lib/marketplaceNews.js';
+import { prepareStoreDraft } from '../lib/storeOwnership.js';
+import { STORE_BASE, fetchCatalogJson, readMarketplaceBuiltinList } from '../lib/marketplaceCatalog.js';
+import { ps4HomebrewMetadata } from '../lib/ps4HomebrewMetadata.js';
+import { homebrewIcons, matchHomebrewIcon } from '../lib/homebrewIcons.js';
 import { encodeCatalog, decodeCatalog } from '../lib/catalogLinks.js';
 import crypto from 'crypto';
 import fs from 'fs';
@@ -19,31 +25,24 @@ import path from 'path';
 import { pipeline } from 'stream/promises';
 import { Readable, Transform } from 'stream';
 import { getRepo, log } from '../db/sqlite.js';
-import { downloadsDir, payloadsDir } from '../lib/paths.js';
+import { downloadsDir, payloadsDir, internalDataDir } from '../lib/paths.js';
 import { insertPayload } from '../lib/defaultPayloads.js';
 import {
-  STORE_REPO, STORE_BRANCH, validateStoreItem, storeDir, itemFromScript, itemFromSequence, slugify, homebrewFileName,
+  STORE_REPO, validateStoreItem, storeDir, itemFromScript, itemFromSequence, slugify, homebrewFileName,
 } from '../lib/storeItem.js';
 
 const router = express.Router();
 
-const STORE_BASE = (process.env.P5M_STORE_URL || `https://raw.githubusercontent.com/${STORE_REPO}/${STORE_BRANCH}/store/`).replace(/\/?$/, '/');
 const INDEX_TTL_MS = 10 * 60 * 1000;
 // GitHub refuses longer new-issue links; what does not fit is pasted.
 const MAX_ISSUE_URL = 7500;
 
 let indexCache = { at: 0, data: null };
 
-async function fetchJson(url) {
-  const r = await fetch(url, { signal: AbortSignal.timeout(15_000), headers: { 'Cache-Control': 'no-cache' } });
-  if (!r.ok) throw Object.assign(new Error(`the marketplace answered ${r.status}`), { status: 502 });
-  return decodeCatalog(await r.json());
-}
-
 async function storeIndex(force = false) {
   if (!force && indexCache.data && Date.now() - indexCache.at < INDEX_TTL_MS) return indexCache.data;
-  const data = await fetchJson(`${STORE_BASE}index.json`);
-  if (!Array.isArray(data?.items)) throw Object.assign(new Error('the marketplace index is not usable'), { status: 502 });
+  const data = await fetchCatalogJson(`${STORE_BASE}index.json`);
+  if (!Array.isArray(data?.items) || data.items.some(i => !storeDir(i.kind) || typeof i.id !== 'string' || !/^[a-z0-9][a-z0-9-]{2,63}$/.test(i.id) || !Number.isInteger(i.version) || i.version < 1)) throw Object.assign(new Error('the marketplace index is not usable'), { status: 502 });
   indexCache = { at: Date.now(), data };
   return data;
 }
@@ -52,7 +51,7 @@ async function storeItem(kind, id) {
   const index = await storeIndex();
   const entry = index.items.find((i) => i.kind === kind && i.id === id);
   if (!entry) throw Object.assign(new Error('no such item in the marketplace'), { status: 404 });
-  const item = await fetchJson(`${STORE_BASE}${storeDir(kind)}/${id}.json`);
+  const item = await fetchCatalogJson(`${STORE_BASE}${storeDir(kind)}/${id}.json`);
   const errors = validateStoreItem(item);
   if (errors.length) throw Object.assign(new Error(`the item is not usable: ${errors.join('; ')}`), { status: 502 });
   if (item.kind !== kind || item.id !== id) throw Object.assign(new Error('the item does not match its listing'), { status: 502 });
@@ -72,17 +71,65 @@ const handle = (fn) => async (req, res) => {
   }
 };
 
+router.get('/catalog/categories', (_req, res) => res.json({ categories: FPKGI_CATEGORIES, repo: FPKGI_REPO }));
+router.get('/catalog', handle(async req => {
+  const catalog = await fpkgiCatalog.read(req.query.platform || 'ps4', req.query.category || 'homebrew', { refresh: req.query.refresh === '1' });
+  return catalogPage(catalog, { query: req.query.q, page: req.query.page, limit: req.query.limit });
+}));
+
+const news = createMarketplaceNews({ file: path.join(internalDataDir, 'marketplace', 'news.json'), collect: async () => {
+  const sources = [];
+  try {
+    const index = await storeIndex(true);
+    sources.push({ key: 'marketplace', label: 'Marketplace', items: index.items.map(i => ({ ...i, id: `${i.kind}:${i.id}`, store_id: i.id, source: 'marketplace' })) });
+  } catch (e) { sources.push({ key: 'marketplace', label: 'Marketplace', warning: e.message }); }
+  const tasks = ['ps4', 'ps5'].flatMap(platform => FPKGI_CATEGORIES.map(category => ({ platform, category: category.id })));
+  // At most four source requests at a time, including catalogs shared by PS5.
+  await Promise.all(Array.from({ length: 4 }, async () => {
+    while (tasks.length) {
+      const { platform, category } = tasks.shift();
+      const key = `fpkgi:${platform}:${category}`;
+      try {
+        const data = await fpkgiCatalog.read(platform, category, { refresh: true });
+        sources.push({ key, label: `${platform.toUpperCase()} ${category}`, warning: data.warning,
+          items: data.items.map(i => ({ ...i, kind: 'catalog', source: 'fpkgi', sourceUrl: data.sourceUrl })) });
+      } catch (e) { sources.push({ key, warning: e.message }); }
+    }
+  }));
+  return sources;
+} });
+const newsTimer = setInterval(() => {
+  if (!news.hasStarted()) return;
+  news.refresh({ force: true }).catch(e => log('error', `Marketplace news refresh: ${e.message}`));
+  Promise.all(['inputScripts.json', 'templates.json'].map(name => readMarketplaceBuiltinList(name, { refresh: true })))
+    .catch(e => log('error', `Marketplace script refresh: ${e.message}`));
+}, NEWS_INTERVAL_MS);
+newsTimer.unref();
+router.get('/news', handle(async req => {
+  const platform = req.query.platform || 'ps4';
+  if (!['ps4', 'ps5'].includes(platform)) throw Object.assign(new Error('Unknown platform'), { status: 400 });
+  return news.page({ force: req.query.refresh === '1', platform, query: req.query.q, event: req.query.event || 'all', page: req.query.page });
+}));
+
 router.get('/index', handle(async (req) => {
-  const index = await storeIndex(req.query.refresh === '1');
+  const refresh = req.query.refresh === '1';
+  const [index, icons, ps4] = await Promise.all([storeIndex(refresh), homebrewIcons({ refresh }), ps4HomebrewMetadata({ refresh })]);
   const mine = new Map(installs().map((i) => [`${i.kind}:${i.store_id}`, i]));
   return {
     generated: index.generated || null,
+    iconWarning: [icons.warning, ps4.warning].filter(Boolean).join(' · ') || null,
+    updates: index.items.filter(i => { const have = mine.get(`${i.kind}:${i.id}`); return have && i.version > have.version; }).length,
     repo: STORE_REPO,
     items: index.items.map((i) => {
       const have = mine.get(`${i.kind}:${i.id}`);
-      return { ...i, installed: have ? have.version : null, update: !!have && i.version > have.version };
+      return { ...i, icon: matchHomebrewIcon(i, [...ps4.rows, ...icons.rows.filter(r => !ps4.rows.some(p => p.id === r.id && p.name === r.name))]), installed: have ? have.version : null, update: !!have && i.version > have.version };
     }),
   };
+}));
+
+router.post('/refresh-builtins', handle(async () => {
+  await Promise.all(['inputScripts.json', 'templates.json'].map(name => readMarketplaceBuiltinList(name, { refresh: true })));
+  return {};
 }));
 
 // The whole item, to look at before installing.
@@ -185,9 +232,9 @@ function portableSteps(steps) {
 // Builds the item for one of the user's scripts or sequences and the link
 // to the GitHub issue that submits it.
 router.post('/publish', handle(async (req) => {
-  const { kind, localId, description, author, console_type: consoleType } = req.body || {};
+  const { kind, localId, description, storeId, author, console_type: consoleType } = req.body || {};
   const repo = getRepo();
-  const meta = { description: String(description || '').trim(), author: String(author || '').trim(), console_type: consoleType || undefined };
+  const meta = { description: String(description || '').trim(), author: String(author || "").trim(), console_type: consoleType || undefined };
   let item;
   if (kind === 'script') {
     const row = repo.queryOne('SELECT name, script FROM input_scripts WHERE id = ?', [parseInt(localId, 10)]);
@@ -197,18 +244,31 @@ router.post('/publish', handle(async (req) => {
     const row = repo.queryOne('SELECT name, steps, auto_trigger FROM autoload_sequences WHERE id = ?', [parseInt(localId, 10)]);
     if (!row) throw Object.assign(new Error('no such sequence'), { status: 404 });
     item = itemFromSequence({ ...row, steps: portableSteps(JSON.parse(row.steps)) }, { ...meta, id: slugify(row.name) });
+  } else if (kind === 'homebrew' || kind === 'payload') {
+    const submitted = req.body?.item;
+    if (!submitted || typeof submitted !== 'object' || Array.isArray(submitted)) throw Object.assign(new Error('Provide the homebrew item JSON'), { status: 400 });
+    item = { ...decodeCatalog(submitted), kind, id: slugify(submitted.name), ...meta, console_type: consoleType || submitted.console_type, version: 1 };
   } else {
-    throw Object.assign(new Error('kind has to be "script" or "template"'), { status: 400 });
+    throw Object.assign(new Error('Choose script, template, homebrew or payload'), { status: 400 });
   }
-  const errors = validateStoreItem(item);
+  if (storeId) {
+    const old = await storeItem(kind, storeId);
+    item = prepareStoreDraft({ ...item, id: old.id }, old, meta.author);
+  } else {
+    const index = await storeIndex(true);
+    const collision = index.items.find(i => i.kind === kind && i.id === item.id);
+    if (collision) throw Object.assign(new Error('This item id already exists; choose Update my item or use a different name'), { status: 409 });
+    item = prepareStoreDraft(item, null, meta.author);
+  }
+  const errors = validateStoreItem(item, { submission: true });
   if (errors.length) throw Object.assign(new Error(errors.join('; ')), { status: 400 });
 
   const json = JSON.stringify(encodeCatalog(item), null, 2);
   const base = `https://github.com/${STORE_REPO}/issues/new?template=store-submission.yml`
-    + `&title=${encodeURIComponent(`[store] ${item.name}`)}&labels=store-submission`;
+    + `&title=${encodeURIComponent(`[store] ${storeId ? 'Update ' : ''}${item.name} v${item.version}`)}&labels=store-submission`;
   const full = `${base}&item=${encodeURIComponent(json)}`;
   const fits = full.length <= MAX_ISSUE_URL;
-  return { item, json, issueUrl: fits ? full : base, prefilled: fits };
+  return { identityVerified: false, item, json, issueUrl: fits ? full : base, prefilled: fits };
 }));
 
 // ── homebrew ────────────────────────────────────────────────────────────

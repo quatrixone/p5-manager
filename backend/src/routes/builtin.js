@@ -1,4 +1,4 @@
-// Editor API for /frontend/builtin/*.
+// Editor API for local payload defaults and persistent Marketplace overrides.
 //
 // Lets the hidden UI editor (frontend BuiltinEditor.jsx) read and write the
 // three built-in JSON files. Edits are:
@@ -15,6 +15,7 @@ import fs from 'fs';
 import path from 'path';
 import { log } from '../db/sqlite.js';
 import { getBuiltinDir } from '../lib/builtinLoader.js';
+import { MARKETPLACE_BUILTINS, readMarketplaceBuiltinList, writeMarketplaceBuiltinList, restoreMarketplaceBuiltinBackup } from '../lib/marketplaceCatalog.js';
 
 const router = express.Router();
 
@@ -69,7 +70,8 @@ router.get('/files', (req, res) => {
       try { stat = fs.statSync(p); } catch (_) {}
       return {
         ...meta,
-        exists: !!stat,
+        source: MARKETPLACE_BUILTINS.has(meta.name) ? 'marketplace' : 'local',
+        exists: MARKETPLACE_BUILTINS.has(meta.name) || !!stat,
         size: stat ? stat.size : 0,
         mtime: stat ? stat.mtimeMs : null,
       };
@@ -81,12 +83,14 @@ router.get('/files', (req, res) => {
   }
 });
 
-router.get('/files/:name', (req, res) => {
+router.get('/files/:name', async (req, res) => {
   try {
     const { filePath } = resolveBuiltinFile(req.params.name);
-    if (!fs.existsSync(filePath)) {
-      return res.status(404).json({ error: 'File missing on disk' });
+    if (MARKETPLACE_BUILTINS.has(req.params.name)) {
+      const content = JSON.stringify(await readMarketplaceBuiltinList(req.params.name), null, 2);
+      return res.json({ name: req.params.name, content, size: Buffer.byteLength(content), mtime: null, source: 'marketplace' });
     }
+    if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'File missing on disk' });
     const content = JSON.stringify(decodeCatalog(JSON.parse(fs.readFileSync(filePath, 'utf8'))), null, 2);
     const stat = fs.statSync(filePath);
     res.json({
@@ -122,6 +126,10 @@ router.put('/files/:name', async (req, res) => {
       return res.status(400).json({ error: `Invalid JSON: ${err.message}` });
     }
     if (!Array.isArray(parsed)) return res.status(400).json({ error: 'The file has to be a JSON array' });
+    if (MARKETPLACE_BUILTINS.has(req.params.name)) {
+      await writeMarketplaceBuiltinList(req.params.name, parsed);
+      return res.json({ success: true, size: Buffer.byteLength(content), mtime: null });
+    }
     tmpPath = `${filePath}.tmp-${Date.now()}-${process.pid}`;
     fs.writeFileSync(tmpPath, JSON.stringify(encodeCatalog(parsed), null, 2) + '\n', 'utf8');
 
@@ -147,6 +155,10 @@ router.put('/files/:name', async (req, res) => {
 router.post('/files/:name/restore-backup', (req, res) => {
   try {
     const { filePath } = resolveBuiltinFile(req.params.name);
+    if (MARKETPLACE_BUILTINS.has(req.params.name)) {
+      restoreMarketplaceBuiltinBackup(req.params.name);
+      return res.json({ success: true, mtime: null });
+    }
     const bak = `${filePath}.bak`;
     if (!fs.existsSync(bak)) {
       return res.status(404).json({ error: 'No backup available' });

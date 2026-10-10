@@ -1,0 +1,12 @@
+{
+  "name": "Restart PS5",
+  "description": "Open the PS5 Control Center Power menu and select Restart. Check the Power icon focus in step mode before first use.",
+  "notes": "PS5 only. Control Center remembers its last icon and icon layout varies. This legacy macro needs its right-tap count calibrated to the console before running; it is not a universal restart command. Restart disconnects Remote Play. Do not append further input commands to this script.",
+  "script": "ps\nwait 800\ndown\nwait 400\nright 10x\nwait 400\ncross\nwait 400\ndown 2x\nwait 400\ncross",
+  "console_type": "ps5",
+  "id": "restart-ps5",
+  "builtin_id": "builtin:restart-ps5",
+  "kind": "script",
+  "author": "P5 Manager",
+  "version": 1
+}

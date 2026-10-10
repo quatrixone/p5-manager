@@ -1,0 +1,50 @@
+{
+  "name": "PS5: Full game pipeline (download → extract → mkpfs → FTP)",
+  "description": "Open a Remote Play session (holds PS5 awake), download, extract, convert to .ffpfsc, upload via FTP, then rest mode. PS5-specific because of the mkpfs pack step.",
+  "console_type": "ps5",
+  "requiresProfile": true,
+  "steps": [
+    {
+      "type": "rp_session",
+      "action": "start",
+      "name": "Start Remote Play session"
+    },
+    {
+      "type": "download",
+      "url": "p5enc:v1:-oeuhi2GTAEfpFj6bChlxEFoVlDPQ81MxkiTCkhEZ1StJ-MCAfqfsOVo7cC8lEPn-HjkMPN6k1U",
+      "dest_kind": "local",
+      "dest_path": "/data/mkpfs",
+      "name": "Download game.rar"
+    },
+    {
+      "type": "extract",
+      "source": "local-fs",
+      "local_path": "/data/mkpfs/game.rar",
+      "dest_kind": "local-fs",
+      "dest_local_path": "/data/mkpfs",
+      "name": "Extract game.rar"
+    },
+    {
+      "type": "convert",
+      "mode": "pack-file",
+      "source_path": "/data/mkpfs/game.exfat",
+      "name": "Convert to .ffpfsc"
+    },
+    {
+      "type": "ftp_upload",
+      "local_path": "/data/mkpfs/game.ffpfsc",
+      "dest_path": "/data/homebrew",
+      "name": "Upload .ffpfsc to PS5"
+    },
+    {
+      "type": "rp_session",
+      "action": "standby",
+      "name": "Console rest mode"
+    }
+  ],
+  "id": "full-pipeline",
+  "builtin_id": "tpl-full-pipeline",
+  "kind": "template",
+  "author": "P5 Manager",
+  "version": 1
+}

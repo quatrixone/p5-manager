@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, useCallback } from 'react';
 import { api } from '../lib/api.js';
 
-// Hidden editor for /frontend/builtin/*.js. Reached via URL hash (#builtin)
+// Hidden editor for local payload defaults and Marketplace overrides. Reached via URL hash (#builtin)
 // — intentionally absent from the main navigation. See App.jsx for the
 // routing hookup and the small "Edit built-ins" link in Settings.
 function BuiltinEditor({ onClose, onNotification }) {

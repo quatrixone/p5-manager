@@ -11,16 +11,23 @@ import fs from 'fs';
 import path from 'path';
 import { execFileSync } from 'child_process';
 import { fileURLToPath } from 'url';
+import { prepareStoreSubmission } from '../backend/src/lib/storeOwnership.js';
 import { validateStoreItem, storeDir } from '../backend/src/lib/storeItem.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const body = fs.readFileSync(process.argv[2], 'utf8');
 const block = /```(?:json)?\s*\n([\s\S]*?)\n```/.exec(body);
 if (!block) throw new Error('the issue has no JSON block');
-const item = decodeCatalog(JSON.parse(block[1]));
+let item = decodeCatalog(JSON.parse(block[1]));
 
 const errors = validateStoreItem(item, { submission: true });
 if (errors.length) throw new Error(errors.join('; '));
+
+const rel = `store/${storeDir(item.kind)}/${item.id}.json`;
+const file = path.join(root, rel);
+const old = fs.existsSync(file) ? decodeCatalog(JSON.parse(fs.readFileSync(file, 'utf8'))) : null;
+// Values are set from github.event.issue.user in the workflow, never the JSON.
+item = prepareStoreSubmission(item, old, { login: process.env.SUBMITTER_LOGIN, id: Number(process.env.SUBMITTER_ID) });
 
 if (['homebrew', 'payload'].includes(item.kind)) {
   for (const f of item.files) {
@@ -34,13 +41,6 @@ if (['homebrew', 'payload'].includes(item.kind)) {
   }
 }
 
-const rel = `store/${storeDir(item.kind)}/${item.id}.json`;
-const file = path.join(root, rel);
-if (fs.existsSync(file)) {
-  const old = decodeCatalog(JSON.parse(fs.readFileSync(file, 'utf8')));
-  const same = JSON.stringify({ ...old, version: 0 }) === JSON.stringify({ ...item, version: 0 });
-  item.version = same ? old.version : Math.max(old.version + 1, item.version);
-}
 const final = validateStoreItem(item);
 if (final.length) throw new Error(final.join('; '));
 fs.mkdirSync(path.dirname(file), { recursive: true });

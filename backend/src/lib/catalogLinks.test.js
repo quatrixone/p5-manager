@@ -23,8 +23,13 @@ test('tampering and truncated ciphertext are rejected; legacy links still load',
 });
 
 test('all shipped catalogs have encrypted links and valid payload items', () => {
-  for (const name of ['payloads', 'templates', 'inputScripts']) {
+  for (const name of ['payloads']) {
     const stored = JSON.parse(fs.readFileSync(new URL(`../../../frontend/builtin/${name}.json`, import.meta.url)));
+    assert.equal(hasPlainLinks(stored), false, name);
+    assert.ok(Array.isArray(decodeCatalog(stored)));
+  }
+  for (const name of ['templates', 'inputScripts']) {
+    const stored = JSON.parse(fs.readFileSync(new URL(`../../../store/builtin/${name}.json`, import.meta.url)));
     assert.equal(hasPlainLinks(stored), false, name);
     assert.ok(Array.isArray(decodeCatalog(stored)));
   }

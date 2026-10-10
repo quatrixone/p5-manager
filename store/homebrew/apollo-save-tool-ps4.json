@@ -1,0 +1,22 @@
+{
+  "id": "apollo-save-tool-ps4",
+  "name": "Apollo Save Tool PS4",
+  "homebrew_id": "APOL00004",
+  "description": "Manage, export and import PS4 save data with Apollo Save Tool. Install through Remote Package Installer.",
+  "icon": "p5enc:v1:XyU_dFle57GpkuXh3mjoxWmpUqaMU9QFheCaJNwMVlV-LRZaO-p8zNBr5tfyb_07kXexXVQMmAror0zj0FK-SKwuz04AjeaQCv2efQpEQxL6wtoqsMe4jF111rxwLOMxQKpMNVDBizY",
+  "kind": "homebrew",
+  "author": "bucanero",
+  "version": 1,
+  "console_type": "ps4",
+  "app_version": "2.3.2",
+  "homepage": "p5enc:v1:lH50ccNu026K_4_yeOkFbHagqPVkof1XPS_s5OC4NRrm3_GyHDXUTh8wrLoC13--IEbCOWf1MhqyeIEpy9rkPeVw",
+  "files": [
+    {
+      "type": "pkg",
+      "url": "p5enc:v1:hOHDTuMlqjqHihLi2eXEh4rJeplCDDWot3a5NUrOYAAexXcR6CfXEuy5naP2dl-iu8FZpKyrkzpg7DKf1BvlIUkr4f4vBOmV0UvEDEqntAc3wH_HdhQ6SqlpYHvfhK-yRy9UGlr3vBRwZcGdmv7lHpc-p6IvnfuX9LhQm_Ier83vENUw",
+      "name": "IV0000-APOL00004_00-APOLLO0000000PS4.pkg",
+      "sha256": "2baf876cf5689a2fee96f7a1920ddf2f8713b92adfc6fe0e84f38707cb1e0f17",
+      "size": 22675456
+    }
+  ]
+}

@@ -57,6 +57,10 @@ services:
       - NODE_ENV=production
       - PORT=3001
       - DATA_DIR=/app/data
+      # Optional Marketplace catalog sources.
+      - P5M_STORE_URL=${P5M_STORE_URL:-}
+      - P5M_PS4_HOMEBREW_URL=${P5M_PS4_HOMEBREW_URL:-}
+      - P5M_FPKGI_CATALOG_URL=${P5M_FPKGI_CATALOG_URL:-}
       - REMOTEPLAY_SIDECAR_URL=http://127.0.0.1:9555
       # Memory + CPU footprint tuning. Defaults (V8 picks heap target from
       # host RAM = 11 GB here) leave Node sitting on ~115 MB RSS at idle

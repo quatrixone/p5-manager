@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import Modal from './UI/Modal';
-import { api, apiSafe } from '../lib/api.js';
+import { api } from '../lib/api.js';
 import { AVAILABLE_COMMANDS, buildOskInputs, parseLine } from '../lib/inputScriptDsl.js';
 
 // Script list + editor, embedded inside RemotePlay's "Input Scripts" tab.
@@ -21,11 +21,14 @@ function ScriptRunner({ consoleType, ip, liveSession, onStartSession, onStopSess
   const [manualBusy, setManualBusy] = useState(null); // cmd currently in flight, or null
   const [isRunning, setIsRunning] = useState(null); // holds the id/key of the script currently running, or null
   const [stopRequested, setStopRequested] = useState(false);
-  // Built-in scripts ship with the app (source: /frontend/builtin/inputScripts.json).
+  // Curated scripts load from Marketplace; local edits persist separately.
   // Fetched once on mount via /api/input-scripts/builtin; rendered above the
   // user-saved list in their own card. Editable in place via the edit modal
-  // below (PUT /input-scripts/builtin/:id rewrites the source file).
+  // below (PUT /input-scripts/builtin/:id saves a local override).
   const [builtinScripts, setBuiltinScripts] = useState([]);
+  const [builtinError, setBuiltinError] = useState('');
+  const [builtinLoading, setBuiltinLoading] = useState(false);
+  const builtinRequest = useRef(0);
 
   // Single combined "Scripts" card has two tabs: built-in (curated) and
   // saved (user-created in this DB). We default to built-in because most
@@ -42,14 +45,24 @@ function ScriptRunner({ consoleType, ip, liveSession, onStartSession, onStopSess
   const [savingModal, setSavingModal] = useState(false);
   const [modalError, setModalError] = useState('');
 
-  const fetchBuiltinScripts = () => {
-    apiSafe.get(`/input-scripts/builtin${consoleType ? '?console_type=' + consoleType : ''}`).then(list => {
-      if (Array.isArray(list)) setBuiltinScripts(list);
-    });
+  const fetchBuiltinScripts = async (refresh = false) => {
+    const requestId = ++builtinRequest.current;
+    setBuiltinLoading(true);
+    setBuiltinError('');
+    try {
+      const params = new URLSearchParams();
+      if (consoleType) params.set('console_type', consoleType);
+      if (refresh) params.set('refresh', '1');
+      const list = await api.get(`/input-scripts/builtin?${params}`);
+      if (requestId === builtinRequest.current && Array.isArray(list)) setBuiltinScripts(list);
+    } catch (e) { if (requestId === builtinRequest.current) setBuiltinError(e.message); }
+    finally { if (requestId === builtinRequest.current) setBuiltinLoading(false); }
   };
 
   useEffect(() => {
+    setBuiltinScripts([]);
     fetchBuiltinScripts();
+    return () => { builtinRequest.current++; };
   }, [consoleType]);
 
   const addOutput = (msg, type = 'info') => {
@@ -305,7 +318,7 @@ function ScriptRunner({ consoleType, ip, liveSession, onStartSession, onStopSess
   return (
     <div className="flex-col gap-md">
       {/* Combined Scripts card with two tabs:
-            • Built-in — curated (source: /frontend/builtin/inputScripts.json),
+            • Built-in — curated (source: Marketplace),
               editable in place via ✏️
             • Saved   — user-created entries from the local DB
           Tabs save vertical space on mobile (single header instead of two
@@ -332,14 +345,16 @@ function ScriptRunner({ consoleType, ip, liveSession, onStartSession, onStopSess
               <span className="badge badge-muted" style={{ marginLeft: 6 }}>{scripts?.length || 0}</span>
             </button>
           </div>
+          {scriptsTab === 'builtin' && <button className="btn btn-secondary btn-sm" onClick={() => fetchBuiltinScripts(true)} disabled={builtinLoading}>{builtinLoading ? 'Loading…' : '↻ Marketplace'}</button>}
           {scriptsTab === 'saved' && (
             <button className="btn btn-primary btn-sm" onClick={openNewScript}>＋ New</button>
           )}
         </div>
         <div className="comp-card-body">
+          {builtinError && scriptsTab === 'builtin' && <div className="text-sm mb-sm" style={{ color: 'var(--red)' }}>Marketplace: {builtinError}</div>}
           {scriptsTab === 'builtin' && (
             builtinScripts.length === 0 ? (
-              <div className="text-sm text-muted">No built-in scripts available.</div>
+              <div className="text-sm text-muted">{builtinLoading ? 'Loading Marketplace scripts…' : 'No Marketplace scripts available.'}</div>
             ) : (
               <div className="flex-col builtin-list" style={{ gap: 6, maxHeight: 260, overflowY: 'auto' }}>
                 {builtinScripts.map(b => (
@@ -399,6 +414,7 @@ function ScriptRunner({ consoleType, ip, liveSession, onStartSession, onStopSess
             )
           )}
 
+          {scriptsTab === 'builtin' && <button className="btn btn-secondary btn-sm" onClick={() => fetchBuiltinScripts(true)} disabled={builtinLoading}>{builtinLoading ? 'Loading…' : '↻ Marketplace'}</button>}
           {scriptsTab === 'saved' && (
             !scripts || scripts.length === 0 ? (
               <div className="text-sm text-muted">

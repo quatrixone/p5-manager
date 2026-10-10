@@ -19,6 +19,8 @@ const CANDIDATE_DIRS = [
   path.resolve(__dirname, '../../../frontend/builtin'),
   // Docker runtime layout (see Dockerfile)
   path.resolve(__dirname, '../../builtin'),
+  // Windows portable app/backend/src/lib -> app/builtin
+  path.resolve(__dirname, '../../../builtin'),
 ].filter(Boolean);
 
 let cachedDir = null;

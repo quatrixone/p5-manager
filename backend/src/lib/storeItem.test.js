@@ -42,3 +42,15 @@ test('payload items install ELF/BIN/LUA but refuse packages and missing checksum
   assert.ok(validateStoreItem({ ...payload, files: [{ ...payload.files[0], sha256: undefined }] }).some(e => e.includes('sha256')));
   assert.ok(validateStoreItem({ ...base, kind: 'constructor' }).length);
 });
+
+
+test('icons and curated ids are validated and kept in the listing', () => {
+  const item = { ...base, kind: 'script', script: 'home', builtin_id: 'builtin:my-item', icon: 'https://api.pkg-zone.com/storedata/app.png', homebrew_id: 'TEST00001' };
+  assert.deepEqual(validateStoreItem(item), []);
+  const entry = indexEntry(item, 'scripts/my-item.json');
+  assert.equal(entry.icon, item.icon);
+  assert.equal(entry.homebrew_id, item.homebrew_id);
+  assert.equal(entry.builtin_id, item.builtin_id);
+  assert.ok(validateStoreItem({ ...item, icon: 'javascript:alert(1)' }).some(e => e.startsWith('icon')));
+  assert.ok(validateStoreItem({ ...item, builtin_id: '../bad' }).some(e => e.startsWith('builtin_id')));
+});

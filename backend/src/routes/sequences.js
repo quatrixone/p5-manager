@@ -2,23 +2,14 @@ import express from 'express';
 import { portRetry, validateSequenceSteps } from '../lib/sequenceChecks.js';
 import net from 'net';
 import { getRepo, log } from '../db/sqlite.js';
-import { readBuiltinList } from '../lib/builtinLoader.js';
+import { readMarketplaceBuiltinList } from '../lib/marketplaceCatalog.js';
 import { readBuiltinInputScripts } from './inputScripts.js';
 import { installedTemplates } from './store.js';
 
 const router = express.Router();
 
-// Built-in templates live in /frontend/builtin/templates.json so the user
-// only edits one place to change what shows up in the Autoload "Templates"
-// menu. readBuiltinList() rereads the file when it changes, so edits via
-// the built-in editor show on the very next request without a restart.
 async function getBuiltinTemplates() {
-  try {
-    return readBuiltinList('templates.json');
-  } catch (err) {
-    log('error', `Failed to load built-in templates: ${err.message}`);
-    return [];
-  }
+  return readMarketplaceBuiltinList('templates.json');
 }
 
 // Local API base used by sequence step execution. Keeps sequences decoupled
@@ -455,7 +446,7 @@ async function execInputScript(step, ctx) {
   else if (typeof step.scriptId === 'string' && step.scriptId.startsWith('builtin:')) {
     // Built-in scripts are not in the input_scripts table; take the current
     // text so an edit of the built-in applies to the next run.
-    const builtin = readBuiltinInputScripts().find(s => s.id === step.scriptId);
+    const builtin = (await readBuiltinInputScripts()).find(s => s.id === step.scriptId);
     if (!builtin?.script) throw new Error(`Built-in script "${step.scriptId}" not found`);
     if (builtin.console_type && builtin.console_type !== ctx.profile.console_type) throw new Error(`${builtin.name} requires ${builtin.console_type.toUpperCase()}`);
     body.script = builtin.script;
@@ -789,12 +780,13 @@ router.post('/runs/:runId/cancel', (req, res) => {
 
 // ---- Built-in templates: always available, no DB rows needed -----------------
 //
-// Source of truth: /frontend/builtin/templates.json (see top of this file).
+// Source of truth: Marketplace; local cache and edits persist in DATA_DIR.
 
 router.get('/templates/list', async (req, res) => {
   try {
     // The built-in ones, then those installed from the marketplace.
-    res.json([...(await getBuiltinTemplates()), ...installedTemplates()]);
+    const curated = await getBuiltinTemplates();
+    res.json([...curated, ...installedTemplates().filter(t => !curated.some(b => b.store?.id === t.store?.id))]);
   } catch (err) {
     log('error', `templates/list failed: ${err.message}`);
     res.status(500).json({ error: err.message });

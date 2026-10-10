@@ -7,9 +7,9 @@ name: Marketplace
 
 on:
   push:
-    paths: ['store/**', 'scripts/build-store-index.mjs', 'backend/src/lib/storeItem.js', 'backend/src/lib/catalogLinks.js', 'scripts/store-accept.mjs']
+    paths: ['store/**', 'scripts/build-store-index.mjs', 'backend/src/lib/storeItem.js', 'backend/src/lib/catalogLinks.js', 'scripts/store-accept.mjs', 'backend/src/lib/storeOwnership.js']
   pull_request:
-    paths: ['store/**', 'scripts/build-store-index.mjs', 'backend/src/lib/storeItem.js', 'backend/src/lib/catalogLinks.js', 'scripts/store-accept.mjs']
+    paths: ['store/**', 'scripts/build-store-index.mjs', 'backend/src/lib/storeItem.js', 'backend/src/lib/catalogLinks.js', 'scripts/store-accept.mjs', 'backend/src/lib/storeOwnership.js']
   issues:
     types: [labeled]
 
@@ -41,6 +41,8 @@ jobs:
         id: add
         env:
           BODY: ${{ github.event.issue.body }}
+          SUBMITTER_LOGIN: ${{ github.event.issue.user.login }}
+          SUBMITTER_ID: ${{ github.event.issue.user.id }}
         run: |
           set -euo pipefail
           printf '%s' "$BODY" > "$RUNNER_TEMP/issue.md"

@@ -1,0 +1,12 @@
+{
+  "name": "Open User's Guide",
+  "description": "Return Home, find Settings from the right edge, open User's Guide and confirm the certificate prompt for a configured local guide page.",
+  "notes": "PS5 only. Live-tested on the configured console: long PS returns Home; the top strip stops at the profile icon, then left selects Settings. Twenty Up taps reach the first Settings entry regardless of its last focus. The final Cross accepts this console's local User Guide certificate prompt; remove that line if your guide page has no prompt. The script leaves the guide open. It does not assume a particular jailbreak page or close its webview. Language/firmware and guide-host differences can require adjustment.",
+  "script": "home\nwait 1200\nup\nwait 500\nright 5x\nwait 500\nleft\nwait 500\ncross\nwait 1500\nup 20x\nwait 600\ncross\nwait 1000\nright\nwait 400\ncross\nwait 5000\ncross\nwait 5000",
+  "console_type": "ps5",
+  "id": "open-user-guide",
+  "builtin_id": "builtin:open-user-guide",
+  "kind": "script",
+  "author": "P5 Manager",
+  "version": 1
+}

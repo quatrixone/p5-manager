@@ -16,7 +16,7 @@ for (const entry of payloads) {
   fs.writeFileSync(new URL(`../store/payloads/${id}.json`, import.meta.url), JSON.stringify(encodeCatalog(item), null, 2) + '\n');
   console.log(`${entry.filename}: checksum pinned`);
 }
-for (const file of ['payloads.json', 'templates.json', 'inputScripts.json']) {
+for (const file of ['payloads.json']) {
   const url = new URL(`../frontend/builtin/${file}`, import.meta.url);
   fs.writeFileSync(url, JSON.stringify(encodeCatalog(JSON.parse(fs.readFileSync(url))), null, 2) + '\n');
 }

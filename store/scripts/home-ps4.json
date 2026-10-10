@@ -1,0 +1,11 @@
+{
+  "name": "PS4: Return Home",
+  "console_type": "ps4",
+  "description": "Tap PS to leave the running application for the PS4 home screen.",
+  "script": "home\nwait 1200",
+  "id": "home-ps4",
+  "builtin_id": "builtin:home-ps4",
+  "kind": "script",
+  "author": "P5 Manager",
+  "version": 1
+}

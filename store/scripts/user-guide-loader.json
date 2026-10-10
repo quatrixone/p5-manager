@@ -1,0 +1,12 @@
+{
+  "name": "PS5: Start guide loader",
+  "console_type": "ps5",
+  "description": "Press the selected action on the already-open configured User Guide loader page.",
+  "notes": "Run only after Open User's Guide has reached your loader page. This console's Relapse page opens with the pointer on Jailbreak. Adjust the button/navigation if another host or page is used. The Autoload port check, rather than a fixed sleep, determines completion.",
+  "script": "cross\nwait 2000",
+  "id": "user-guide-loader",
+  "builtin_id": "builtin:user-guide-loader",
+  "kind": "script",
+  "author": "P5 Manager",
+  "version": 1
+}

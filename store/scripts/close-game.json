@@ -1,0 +1,12 @@
+{
+  "name": "Close current game",
+  "description": "Open Control Center, navigate to the running game card and pick Close Game.",
+  "script": "ps\nwait 400\ndown\nwait 400\nright\nwait 400\ncross\nwait 400\ncross\nwait 400\ndown\nwait 400\ndown\nwait 400\ncross\nwait 2500\nps\nwait 400\ndown\nwait 400\nleft\nwait 400\ncross",
+  "console_type": "ps5",
+  "notes": "PS5 only. This legacy Control Center macro depends on the remembered icon and running-game card. Verify it in step mode for the console layout before running; use a saved calibrated copy if the layout differs.",
+  "id": "close-game",
+  "builtin_id": "builtin:close-game",
+  "kind": "script",
+  "author": "P5 Manager",
+  "version": 1
+}

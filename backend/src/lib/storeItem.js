@@ -53,6 +53,11 @@ export function validateStoreItem(item, { submission = false } = {}) {
   text(item.name, 80, 'name', errors);
   text(item.description, 500, 'description', errors);
   text(item.author, 40, 'author', errors);
+  if (item.github_owner_id !== undefined && (!Number.isSafeInteger(item.github_owner_id) || item.github_owner_id < 1)) errors.push('github_owner_id has to be a positive GitHub user id');
+  if (item.icon !== undefined && (typeof item.icon !== 'string' || !/^https:\/\/\S{4,500}$/.test(item.icon))) errors.push('icon has to be an https:// address');
+  if (item.homebrew_id !== undefined && (typeof item.homebrew_id !== 'string' || !/^[A-Z0-9]{9}$/.test(item.homebrew_id))) errors.push('homebrew_id must be a nine-character Homebrew Store title id');
+  if (item.builtin_id !== undefined && (typeof item.builtin_id !== 'string' || !((item.kind === 'script' && /^builtin:[a-z0-9-]+$/.test(item.builtin_id)) || (item.kind === 'template' && /^tpl-[a-z0-9-]+$/.test(item.builtin_id))))) errors.push('builtin_id is only valid for curated scripts and templates');
+
   if (!Number.isInteger(item.version) || item.version < 1) errors.push('version has to be a whole number from 1');
   if (item.console_type !== undefined && !['ps4', 'ps5'].includes(item.console_type)) {
     errors.push('console_type has to be "ps4" or "ps5" (or left out for both)');
@@ -114,6 +119,10 @@ export function indexEntry(item, path) {
     description: item.description,
     author: item.author,
     version: item.version,
+    ...(item.github_owner_id ? { github_owner_id: item.github_owner_id } : {}),
+    ...(item.icon ? { icon: item.icon } : {}),
+    ...(item.homebrew_id ? { homebrew_id: item.homebrew_id } : {}),
+    ...(item.builtin_id ? { builtin_id: item.builtin_id } : {}),
     ...(item.console_type ? { console_type: item.console_type } : {}),
     ...(item.kind === 'template' ? { steps: item.steps.length, requiresProfile: item.requiresProfile !== false, ...(item.autoTrigger ? { autoTrigger: item.autoTrigger } : {}) } : {}),
     ...(item.kind === 'script' ? { lines: item.script.split('\n').filter((l) => l.trim() && !l.trim().startsWith('//')).length } : {}),
