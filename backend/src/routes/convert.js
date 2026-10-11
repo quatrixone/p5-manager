@@ -919,6 +919,41 @@ router.post('/ftp/move', async (req, res) => {
   }
 });
 
+// Change Unix permissions (chmod) of a file or folder on the PS5 FTP via
+// the SITE CHMOD extension, which the PS5's zftpd supports. `recursive`
+// walks a folder depth-first (same traversal as /ftp/du) and applies the
+// mode to every file and subfolder below it, plus the folder itself.
+router.post('/ftp/chmod', async (req, res) => {
+  try {
+    const { ip, path: target, mode, recursive } = req.body || {};
+    if (!ip || !target || !mode) return res.status(400).json({ error: 'ip, path and mode required' });
+    if (!/^[0-7]{3,4}$/.test(mode)) return res.status(400).json({ error: 'mode must be an octal value like 755' });
+    const clean = cleanDir(target);
+    const ftp = loadFtp();
+    let count = 0;
+    await withFtp(ip, ftp, async (client) => {
+      const chmod = async (p) => { await client.send(`SITE CHMOD ${mode} ${p}`); count++; };
+      if (recursive) {
+        const walk = async (dir) => {
+          const entries = await client.list(dir);
+          for (const e of entries) {
+            if (e.name === '.' || e.name === '..') continue;
+            const child = joinPath(dir, e.name);
+            if (e.type === 2 || e.isDirectory === true) await walk(child);
+            await chmod(child);
+          }
+        };
+        await walk(clean);
+      }
+      await chmod(clean);
+    });
+    log('info', `FTP chmod ${ip}:${clean} -> ${mode}${recursive ? ` (recursive, ${count} items)` : ''}`);
+    res.json({ success: true, count });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
 // Rename / move a file or folder on an SMB share. smbclient's `rename`
 // is an in-share rename (no cross-share moves) and works for files and
 // directories alike. Copy on SMB is not implemented for the same
