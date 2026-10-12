@@ -23,6 +23,10 @@ permissions:
 jobs:
   apk:
     runs-on: ubuntu-latest
+    # The secrets context cannot be read in an `if`, so the key's presence
+    # travels as an environment variable.
+    env:
+      KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
     steps:
       - uses: actions/checkout@v4
 
@@ -43,9 +47,7 @@ jobs:
       # one; without it the APK carries the debug signature, which is enough
       # to install by hand but not to update over a differently signed copy.
       - name: Set up the signing key
-        if: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
-        env:
-          KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        if: ${{ env.KEYSTORE != '' }}
         working-directory: android
         run: |
           echo "$KEYSTORE" | base64 -d > app/release.jks
