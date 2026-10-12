@@ -1,0 +1,18 @@
+{
+  "kind": "payload",
+  "id": "setlogserver",
+  "name": "setlogserver.lua",
+  "description": "PS5 Lua log redirector (used by Log viewer)",
+  "author": "Gezine",
+  "version": 1,
+  "console_type": "ps5",
+  "files": [
+    {
+      "type": "lua",
+      "name": "setlogserver.lua",
+      "url": "p5enc:v1:MZGfCJFlMWpdulVsKm3zp_uvwewfBWFZ6eHBj_xvF_tZw44KzQMVD9ZF04d5YXVqgkJDN07AZ_if976Wxxzqbzu0-1VHD4GM2kfIp0fOsrm9raivhzZzPHlfnFtbgESdPxBROZyegl7jvTw",
+      "sha256": "4388b53bdb87b714735b938ebc2964a989912783cd87e1060ef607431c7ed047",
+      "size": 997
+    }
+  ]
+}

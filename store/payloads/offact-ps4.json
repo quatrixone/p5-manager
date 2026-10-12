@@ -1,0 +1,18 @@
+{
+  "kind": "payload",
+  "id": "offact-ps4",
+  "name": "offact-ps4.bin",
+  "description": "Check or activate a PS4 console account for offline Remote Play.",
+  "author": "quatrixone",
+  "version": 1,
+  "console_type": "ps4",
+  "files": [
+    {
+      "type": "bin",
+      "name": "offact-ps4.bin",
+      "url": "p5enc:v1:cZI0KM13CotDpxn93FXhkSOaYqMXnfScDh-1xopYAJcEME8NyQg7Bd-JzyAkBgpqdj6MlJjfI-dF2ooamEEL0advHaC3ZZ-mLrnSwVestS7obPuKf0zpQNIYpjye91qupH6c4I_sx6iiYSZjVS-HAvFnUIBnIBcAjlImcKd6Q1y2eg",
+      "sha256": "b87ee2ada1c802b5b6a09e5e21b5d925180975b27737bcbc51b7b8d51cd73e8f",
+      "size": 46660
+    }
+  ]
+}

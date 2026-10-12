@@ -1,0 +1,18 @@
+{
+  "kind": "payload",
+  "id": "ps5-backpork",
+  "name": "ps5-backpork.elf",
+  "description": "PS5 BackPork ELF",
+  "author": "BestPig",
+  "version": 1,
+  "console_type": "ps5",
+  "files": [
+    {
+      "type": "elf",
+      "name": "ps5-backpork.elf",
+      "url": "p5enc:v1:XWmpfl06F3ZMuxRi7MttQn70ISueBdGR1Jo4n26NHJLItY9u0XtXQ8nzd33ZjKH6WvgOIJ0nB_1N_q_sC3mXoPgbAGHbFYPSFjmsJo265jnn42QHSV_p67VoNVmx8BfTIw1V7w3D",
+      "sha256": "d74e4cd119b2bb1fd423f2f5b1c9a7f096b3e588c753af1ab48b983d56216a52",
+      "size": 99800
+    }
+  ]
+}

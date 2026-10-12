@@ -61,6 +61,7 @@ function PS5Control({ profiles, onNotification, onProfilesChanged }) {
   const [rpSession, setRpSession] = useState({ state: 'idle', sessionId: null, warmTtl: null, video: false });
 
   const defaultProfile = profiles.find(p => p.is_default) || profiles[0];
+  const consoleLabel = defaultProfile?.console_type === 'ps4' ? 'PS4' : 'PS5';
 
   // An Autoload sequence that is steering this console right now. While it
   // runs the whole tab is locked: presses from here would land in the middle
@@ -180,7 +181,7 @@ function PS5Control({ profiles, onNotification, onProfilesChanged }) {
     try {
       const data = await api.post('/remoteplay/standby', { profile_id: defaultProfile.id });
       if (data.success) {
-        if (data.already_standby) showToast('PS5 already in rest mode', 'info');
+        if (data.already_standby) showToast(`${consoleLabel} already in rest mode`, 'info');
         else showToast(`Rest mode sent (${data.via || 'ok'})`, 'success');
         setTimeout(() => ps5Status.refresh(true), 4000);
       } else {
@@ -195,7 +196,7 @@ function PS5Control({ profiles, onNotification, onProfilesChanged }) {
   const getStatusBadge = () => {
     switch (ps5Status.state) {
       case 'online': {
-        if (defaultProfile?.console_type === 'ps4' && ps5Status.ddp?.success && /^ok$/i.test(ps5Status.ddp.status || '')) {
+        if (!ps5Status.portStatus?.reachable && ps5Status.ddp?.success && /^ok$/i.test(ps5Status.ddp.status || '')) {
           return <Badge variant="success">Console online</Badge>;
         }
         // Payload-listener mapping (the old badge mislabelled 9020 as
@@ -265,7 +266,7 @@ function PS5Control({ profiles, onNotification, onProfilesChanged }) {
       const data = await api.post('/remoteplay/quick-stop', { ip: defaultProfile.ip_address, all: wasWarm });
       if (data.success) {
         showToast(wasWarm
-          ? 'Warm cache cleared — next Start will wait ~60 s for the PS5 session lock'
+          ? `Warm cache cleared — next Start may wait for the ${consoleLabel} session lock`
           : 'Session soft-stopped — parked in warm cache for instant re-start', 'success');
         // Snap the badge so the user sees feedback before the 3 s poll
         // catches up.

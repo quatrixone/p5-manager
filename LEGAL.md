@@ -16,11 +16,15 @@ They are used here only to describe what the software works with.
 
 - Original source code written for this project, under the MIT licence
   (see [LICENSE](LICENSE)).
-- Three small payloads under `p5managerclient/`, as source and as compiled
+- Four small payloads under `p5managerclient/`, as source and as compiled
   `.elf`, built with the open-source
   [ps5-payload-dev SDK](https://github.com/ps5-payload-dev/sdk). They are
   not all original work and not all under the MIT licence:
   - `pkg-install/` was written for this project (MIT).
+  - `save-mounter/` is the payload of
+    [n0llptr/Playstation-5-Save-Mounter](https://github.com/n0llptr/Playstation-5-Save-Mounter),
+    unchanged, under the GNU GPL version 3 (see
+    [p5managerclient/save-mounter/LICENSE](p5managerclient/save-mounter/LICENSE)).
   - `offact/` is derived from
     [ps5-payload-dev/offact](https://github.com/ps5-payload-dev/offact) by
     John Törnblom and is under the GNU GPL version 3 or later (see

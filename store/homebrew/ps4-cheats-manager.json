@@ -1,0 +1,22 @@
+{
+  "id": "ps4-cheats-manager",
+  "name": "PS4 Cheats Manager",
+  "homebrew_id": "CHTM00777",
+  "description": "Manage GoldHEN cheats and game patches on PS4. Install through Remote Package Installer, then launch the app from Home.",
+  "kind": "homebrew",
+  "author": "bucanero",
+  "version": 1,
+  "console_type": "ps4",
+  "app_version": "1.2.2",
+  "homepage": "p5enc:v1:UsUyZ4S1pNiaghhphQ7G-Mr4UkaBWAPRpx7DfciuaW_w89p2RBGckUjt4evLElV--xy82caLlDNnYpu6g4PJpWGHKeiTKwIA",
+  "icon": "p5enc:v1:vHNnM_UpAmkOH0Gn5E0STCXYo5jfTwUlYhdT4CQjbHZgix4ktjguFVAMWvcan1uyJy7h3hLBFJmnCi4",
+  "files": [
+    {
+      "type": "pkg",
+      "url": "p5enc:v1:aXroFP7g17IzzZbR5dajt3oM0uFG_5kYQf8lR_YE7UdE_2HJNxE7PsuSC5Mv_kaw5BJaAKy3cSstJOVUXGS4a4MJLTZs8-nM9mbpo0zN-wOYOLnFkNvw6Oessy6-aq7-a0s1gR44EQ_2xRkhgmOgWxM-2DamGqZ1xTTTzYCPJ9bNLdQkiUjNoPcL",
+      "name": "IV0000-CHTM00777_00-PS4CHEATSMANAGER.pkg",
+      "sha256": "73f93d0c8343a0c9805768b68402dbba45c87f8bb882584e6aad503d79753b82",
+      "size": 19202048
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "id": "ps4-webdav-client",
+  "name": "PS4 Webdav Client",
+  "homebrew_id": "WDVC00001",
+  "description": "Browse WebDAV servers and transfer files with this PS4 homebrew client. Install through Remote Package Installer.",
+  "kind": "homebrew",
+  "author": "cy33hc",
+  "version": 1,
+  "console_type": "ps4",
+  "app_version": "1.04",
+  "homepage": "p5enc:v1:FvfpMtFdvnMKEaKO-W2FA4HVnJOz7eY1bmUS3wwMc7IXFwC1KVv3eeoYRf5MTlvzrv-8G3QUAzV_il0Fo0PXWW56CJY8siM",
+  "icon": "p5enc:v1:fxyWe7bOw81GBIoLP6g1LLX6Nz3hSoLyhflPKGpNkcYTVdIz0Yu1_McNFVjtbwquhXEkWkNbgAcAfrA",
+  "files": [
+    {
+      "type": "pkg",
+      "url": "p5enc:v1:CQAdR8MYxSnNieBjvevVUfkqM1FWOy--eteBlWDdEEzrdFvwSgbKKBiZPk7mQDObh9efzn-K_1stydB_gCWT-7f97aSeqRq8lRiaXIrIQjEQtwTPTmowAcktyyQJrkHMaTFfmPYhGf7yMK5AJkqV-K3c8IA",
+      "name": "ps4_webdav_client.pkg",
+      "sha256": "518182353dc6fe609bc6fc76432d13a2d7d34baa9bb839be846cdf7e058964c8",
+      "size": 36044800
+    }
+  ]
+}

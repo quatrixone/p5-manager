@@ -1,0 +1,37 @@
+{
+  "name": "PS4: Load GoldHEN (wake → wait → send goldhen.bin)",
+  "description": "Wake the PS4, wait 8 seconds for a manually enabled BIN loader, send goldhen.bin to TCP 9020, then verify the payload-sender port stayed open.",
+  "console_type": "ps4",
+  "requiresProfile": true,
+  "notes": "PS4 takes longer than PS5 to open the GoldHEN exploit listener, so the port check retries the wake + wait pair. Requires your own compatible goldhen.bin (and ftp_server.bin for the FTP template). These templates cannot bootstrap a jailbreak from a closed BIN-loader port.",
+  "steps": [
+    {
+      "type": "wol",
+      "name": "Wake on LAN"
+    },
+    {
+      "type": "wait",
+      "duration": 8000,
+      "name": "Wait 8 seconds"
+    },
+    {
+      "type": "check_port",
+      "port": 9020,
+      "retryFromStep": 1,
+      "retryToStep": 2,
+      "name": "Check GoldHEN port 9020 (retry wake on fail)",
+      "waitSeconds": 60,
+      "maxRetries": 2
+    },
+    {
+      "type": "payload",
+      "payloadName": "goldhen.bin",
+      "name": "Send goldhen.bin"
+    }
+  ],
+  "id": "goldhen-load",
+  "builtin_id": "tpl-goldhen-load",
+  "kind": "template",
+  "author": "P5 Manager",
+  "version": 1
+}

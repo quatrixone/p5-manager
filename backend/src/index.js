@@ -44,7 +44,11 @@ try { baseDeps = depsHash(path.join(baseRoot, 'package-lock.json')); } catch (_)
 // Play service; `pydeps` there names the Python packages it was built with.
 const platform = process.env.P5M_PORTABLE === '1' ? 'windows' : 'docker';
 let basePydeps = '';
-try { basePydeps = fs.readFileSync(path.resolve(baseRoot, '../pyremoteplay/pydeps'), 'utf8').trim(); } catch (_) {}
+// The Remote Play service's folder was called pyremoteplay in earlier
+// packages.
+for (const dir of ['remoteplay', 'pyremoteplay']) {
+  try { basePydeps = fs.readFileSync(path.resolve(baseRoot, `../${dir}/pydeps`), 'utf8').trim(); break; } catch (_) {}
+}
 
 function pickDownloadedCopy() {
   const current = path.join(updateDir, 'current');

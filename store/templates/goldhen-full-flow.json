@@ -1,0 +1,61 @@
+{
+  "name": "PS4: GoldHEN + FTP ready (wake → load → start FTP → verify :2121)",
+  "description": "With an already-enabled BIN loader: wake the PS4, load goldhen.bin, then load ftp_server.bin and succeed when port 2121 (FTP) is open so you can immediately browse the PS4 from the File Ops tab.",
+  "console_type": "ps4",
+  "requiresProfile": true,
+  "notes": "The last port check has no retry: the run fails if FTP never comes up. Requires your own compatible goldhen.bin (and ftp_server.bin for the FTP template). These templates cannot bootstrap a jailbreak from a closed BIN-loader port.",
+  "steps": [
+    {
+      "type": "wol",
+      "name": "Wake on LAN"
+    },
+    {
+      "type": "wait",
+      "duration": 8000,
+      "name": "Wait 8 seconds"
+    },
+    {
+      "type": "check_port",
+      "port": 9020,
+      "retryFromStep": 1,
+      "retryToStep": 2,
+      "name": "Check GoldHEN port 9020 (retry wake on fail)",
+      "waitSeconds": 60,
+      "maxRetries": 2
+    },
+    {
+      "type": "payload",
+      "payloadName": "goldhen.bin",
+      "name": "Send goldhen.bin"
+    },
+    {
+      "type": "wait",
+      "duration": 4000,
+      "name": "Wait 4 seconds for jailbreak to settle"
+    },
+    {
+      "type": "payload",
+      "payloadName": "ftp_server.bin",
+      "name": "Send ftp_server.bin"
+    },
+    {
+      "type": "wait",
+      "duration": 3000,
+      "name": "Wait 3 seconds for FTP to bind"
+    },
+    {
+      "type": "check_port",
+      "port": 2121,
+      "retryFromStep": 8,
+      "retryToStep": 8,
+      "name": "Verify FTP port 2121 (success)",
+      "waitSeconds": 30,
+      "maxRetries": 2
+    }
+  ],
+  "id": "goldhen-full-flow",
+  "builtin_id": "tpl-goldhen-full-flow",
+  "kind": "template",
+  "author": "P5 Manager",
+  "version": 1
+}

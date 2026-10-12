@@ -1,0 +1,308 @@
+{
+  "generated": "2026-10-10T13:28:43.705Z",
+  "items": [
+    {
+      "kind": "template",
+      "id": "download-extract-upload",
+      "name": "Download → extract → upload (cross-platform)",
+      "description": "Open a Remote Play session (keeps the console awake), download a file, extract it locally, upload the result via FTP, then rest mode. Works for PS4 (GoldHEN FTP) or PS5 — adjust the destination path to your console.",
+      "author": "P5 Manager",
+      "version": 1,
+      "builtin_id": "tpl-download-extract-upload",
+      "steps": 5,
+      "requiresProfile": true,
+      "path": "templates/download-extract-upload.json"
+    },
+    {
+      "kind": "template",
+      "id": "full-pipeline",
+      "name": "PS5: Full game pipeline (download → extract → mkpfs → FTP)",
+      "description": "Open a Remote Play session (holds PS5 awake), download, extract, convert to .ffpfsc, upload via FTP, then rest mode. PS5-specific because of the mkpfs pack step.",
+      "author": "P5 Manager",
+      "version": 1,
+      "builtin_id": "tpl-full-pipeline",
+      "console_type": "ps5",
+      "steps": 6,
+      "requiresProfile": true,
+      "path": "templates/full-pipeline.json"
+    },
+    {
+      "kind": "template",
+      "id": "goldhen-full-flow",
+      "name": "PS4: GoldHEN + FTP ready (wake → load → start FTP → verify :2121)",
+      "description": "With an already-enabled BIN loader: wake the PS4, load goldhen.bin, then load ftp_server.bin and succeed when port 2121 (FTP) is open so you can immediately browse the PS4 from the File Ops tab.",
+      "author": "P5 Manager",
+      "version": 1,
+      "builtin_id": "tpl-goldhen-full-flow",
+      "console_type": "ps4",
+      "steps": 8,
+      "requiresProfile": true,
+      "path": "templates/goldhen-full-flow.json"
+    },
+    {
+      "kind": "template",
+      "id": "goldhen-load",
+      "name": "PS4: Load GoldHEN (wake → wait → send goldhen.bin)",
+      "description": "Wake the PS4, wait 8 seconds for a manually enabled BIN loader, send goldhen.bin to TCP 9020, then verify the payload-sender port stayed open.",
+      "author": "P5 Manager",
+      "version": 1,
+      "builtin_id": "tpl-goldhen-load",
+      "console_type": "ps4",
+      "steps": 4,
+      "requiresProfile": true,
+      "path": "templates/goldhen-load.json"
+    },
+    {
+      "kind": "template",
+      "id": "userguide-jailbreak-autoload",
+      "name": "PS5: Guide loader → kstuff → ShadowMount → zftpd",
+      "description": "When the PS5 is online and its ELF loader is closed: open the configured guide loader, wait for port 9021, send kstuff, ShadowMountPlus and zftpd, then verify FTP.",
+      "author": "P5 Manager",
+      "version": 1,
+      "builtin_id": "tpl-userguide-jailbreak-autoload",
+      "console_type": "ps5",
+      "steps": 9,
+      "requiresProfile": true,
+      "autoTrigger": "loader_down",
+      "path": "templates/userguide-jailbreak-autoload.json"
+    },
+    {
+      "kind": "script",
+      "id": "close-game",
+      "name": "Close current game",
+      "description": "Open Control Center, navigate to the running game card and pick Close Game.",
+      "author": "P5 Manager",
+      "version": 1,
+      "builtin_id": "builtin:close-game",
+      "console_type": "ps5",
+      "lines": 23,
+      "path": "scripts/close-game.json"
+    },
+    {
+      "kind": "script",
+      "id": "home-ps4",
+      "name": "PS4: Return Home",
+      "description": "Tap PS to leave the running application for the PS4 home screen.",
+      "author": "P5 Manager",
+      "version": 1,
+      "builtin_id": "builtin:home-ps4",
+      "console_type": "ps4",
+      "lines": 2,
+      "path": "scripts/home-ps4.json"
+    },
+    {
+      "kind": "script",
+      "id": "home-ps5",
+      "name": "PS5: Return Home",
+      "description": "Hold PS to return to Home from an application, Settings or User Guide.",
+      "author": "P5 Manager",
+      "version": 1,
+      "builtin_id": "builtin:home-ps5",
+      "console_type": "ps5",
+      "lines": 2,
+      "path": "scripts/home-ps5.json"
+    },
+    {
+      "kind": "script",
+      "id": "open-user-guide",
+      "name": "Open User's Guide",
+      "description": "Return Home, find Settings from the right edge, open User's Guide and confirm the certificate prompt for a configured local guide page.",
+      "author": "P5 Manager",
+      "version": 1,
+      "builtin_id": "builtin:open-user-guide",
+      "console_type": "ps5",
+      "lines": 20,
+      "path": "scripts/open-user-guide.json"
+    },
+    {
+      "kind": "script",
+      "id": "restart-ps5",
+      "name": "Restart PS5",
+      "description": "Open the PS5 Control Center Power menu and select Restart. Check the Power icon focus in step mode before first use.",
+      "author": "P5 Manager",
+      "version": 1,
+      "builtin_id": "builtin:restart-ps5",
+      "console_type": "ps5",
+      "lines": 11,
+      "path": "scripts/restart-ps5.json"
+    },
+    {
+      "kind": "script",
+      "id": "user-guide-loader",
+      "name": "PS5: Start guide loader",
+      "description": "Press the selected action on the already-open configured User Guide loader page.",
+      "author": "P5 Manager",
+      "version": 1,
+      "builtin_id": "builtin:user-guide-loader",
+      "console_type": "ps5",
+      "lines": 2,
+      "path": "scripts/user-guide-loader.json"
+    },
+    {
+      "kind": "homebrew",
+      "id": "apollo-save-tool-ps4",
+      "name": "Apollo Save Tool PS4",
+      "description": "Manage, export and import PS4 save data with Apollo Save Tool. Install through Remote Package Installer.",
+      "author": "bucanero",
+      "version": 1,
+      "icon": "p5enc:v1:amdS5D5emX5sEpd4K1Mwk14ZnI5vxCkE2TWwEXB_QNUEQFdYE1tNzD0MPWR2G4a_jrFLfviLRGJPhDPwt3rwMGWOmz-xw5nZVF_N1-_VVF7ymzuGYYCQEIABYV5PAhMxwQTv5O2accI",
+      "homebrew_id": "APOL00004",
+      "console_type": "ps4",
+      "files": [
+        "pkg"
+      ],
+      "app_version": "2.3.2",
+      "size": 22675456,
+      "homepage": "p5enc:v1:46Y8-xR720ht03wWp2ORP0SfatGDiooF61Wj83vUVjK8prZNDKP3qjZ6QAffvrvZCsBM5xrjPVmb1LBwA85x2iJS",
+      "path": "homebrew/apollo-save-tool-ps4.json"
+    },
+    {
+      "kind": "homebrew",
+      "id": "ps4-cheats-manager",
+      "name": "PS4 Cheats Manager",
+      "description": "Manage GoldHEN cheats and game patches on PS4. Install through Remote Package Installer, then launch the app from Home.",
+      "author": "bucanero",
+      "version": 1,
+      "icon": "p5enc:v1:EEia0rOOvDtL7BClmS7SPIGe-8yF8RTZfLKVEwwEIAGTv2ea4P8K_dEpaSYzD_0JlWpMF_vxwZuxAgs",
+      "homebrew_id": "CHTM00777",
+      "console_type": "ps4",
+      "files": [
+        "pkg"
+      ],
+      "app_version": "1.2.2",
+      "size": 19202048,
+      "homepage": "p5enc:v1:7xd1k628rlUEbSW4TGlwYGDPWf4Pp9NSsAFnIPYsO04G4ITvXJZn51eG7zwJjgfYEHVXwKkMLsU5MxWSZ0_DM63lqrwdAxBb",
+      "path": "homebrew/ps4-cheats-manager.json"
+    },
+    {
+      "kind": "homebrew",
+      "id": "ps4-webdav-client",
+      "name": "PS4 Webdav Client",
+      "description": "Browse WebDAV servers and transfer files with this PS4 homebrew client. Install through Remote Package Installer.",
+      "author": "cy33hc",
+      "version": 1,
+      "icon": "p5enc:v1:zbJHI8HhoBb63clTQN5FosI31aU2vgnhrWiVnEx8oj-9TZ-fI_EFr828dgORVpva1RIj18T5oysVx6M",
+      "homebrew_id": "WDVC00001",
+      "console_type": "ps4",
+      "files": [
+        "pkg"
+      ],
+      "app_version": "1.04",
+      "size": 36044800,
+      "homepage": "p5enc:v1:B1zofTva2wBy3oh7d0-3gCUZsexzSWu9IpgodcCYWWs-42Ay4NYiB5Hv-zBragAtBFXQAejin4U-SReVZaFtS4AnDbE2ppo",
+      "path": "homebrew/ps4-webdav-client.json"
+    },
+    {
+      "kind": "payload",
+      "id": "klogsrv-ps5",
+      "name": "klogsrv-ps5.elf",
+      "description": "PS5 Kernel log server (used by Log viewer)",
+      "author": "ps5-payload-dev",
+      "version": 1,
+      "console_type": "ps5",
+      "files": [
+        "elf"
+      ],
+      "size": 135248,
+      "path": "payloads/klogsrv-ps5.json"
+    },
+    {
+      "kind": "payload",
+      "id": "kstuff",
+      "name": "kstuff.elf",
+      "description": "PS5 kstuff-lite v1.11",
+      "author": "EchoStretch",
+      "version": 1,
+      "console_type": "ps5",
+      "files": [
+        "elf"
+      ],
+      "size": 1737080,
+      "path": "payloads/kstuff.json"
+    },
+    {
+      "kind": "payload",
+      "id": "offact-ps4",
+      "name": "offact-ps4.bin",
+      "description": "Check or activate a PS4 console account for offline Remote Play.",
+      "author": "quatrixone",
+      "version": 1,
+      "console_type": "ps4",
+      "files": [
+        "bin"
+      ],
+      "size": 46660,
+      "path": "payloads/offact-ps4.json"
+    },
+    {
+      "kind": "payload",
+      "id": "ps5-backpork",
+      "name": "ps5-backpork.elf",
+      "description": "PS5 BackPork ELF",
+      "author": "BestPig",
+      "version": 1,
+      "console_type": "ps5",
+      "files": [
+        "elf"
+      ],
+      "size": 99800,
+      "path": "payloads/ps5-backpork.json"
+    },
+    {
+      "kind": "payload",
+      "id": "rp-get-pin-ps4",
+      "name": "rp-get-pin-ps4.bin",
+      "description": "Read the PS4 Remote Play PIN and console account ID.",
+      "author": "quatrixone",
+      "version": 1,
+      "console_type": "ps4",
+      "files": [
+        "bin"
+      ],
+      "size": 51972,
+      "path": "payloads/rp-get-pin-ps4.json"
+    },
+    {
+      "kind": "payload",
+      "id": "setlogserver",
+      "name": "setlogserver.lua",
+      "description": "PS5 Lua log redirector (used by Log viewer)",
+      "author": "Gezine",
+      "version": 1,
+      "console_type": "ps5",
+      "files": [
+        "lua"
+      ],
+      "size": 997,
+      "path": "payloads/setlogserver.json"
+    },
+    {
+      "kind": "payload",
+      "id": "shadowmountplus",
+      "name": "shadowmountplus.elf",
+      "description": "PS5 ShadowMountPlus 1.7beta3 (game mounting + Library API)",
+      "author": "drakmor",
+      "version": 1,
+      "console_type": "ps5",
+      "files": [
+        "elf"
+      ],
+      "size": 2437848,
+      "path": "payloads/shadowmountplus.json"
+    },
+    {
+      "kind": "payload",
+      "id": "zftpd-ps5-zhttp-v1-6-0",
+      "name": "zftpd-ps5-zhttp-v1.6.0.elf",
+      "description": "PS5 FTP server zftpd 1.6.0 (File Ops, downloads to the console)",
+      "author": "seregonwar",
+      "version": 1,
+      "console_type": "ps5",
+      "files": [
+        "elf"
+      ],
+      "size": 19221056,
+      "path": "payloads/zftpd-ps5-zhttp-v1-6-0.json"
+    }
+  ]
+}

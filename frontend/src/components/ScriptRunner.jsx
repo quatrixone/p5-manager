@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import Modal from './UI/Modal';
-import { api, apiSafe } from '../lib/api.js';
+import { api } from '../lib/api.js';
 import { AVAILABLE_COMMANDS, buildOskInputs, parseLine } from '../lib/inputScriptDsl.js';
 
 // Script list + editor, embedded inside RemotePlay's "Input Scripts" tab.
@@ -12,7 +12,7 @@ import { AVAILABLE_COMMANDS, buildOskInputs, parseLine } from '../lib/inputScrip
 // that goes through the RP session's own input channel, so "▶ Run" here
 // and the step-by-step "👣 Step" mode both ultimately press buttons the
 // same way as the on-screen touch controller.
-function ScriptRunner({ ip, liveSession, onStartSession, onStopSession, sendCommand, scripts, onScriptsChange, onRequestStep, onResetToMainScreen }) {
+function ScriptRunner({ consoleType, ip, liveSession, onStartSession, onStopSession, sendCommand, scripts, onScriptsChange, onRequestStep, onResetToMainScreen }) {
   // The stop function as of the latest render: the one runScript closed
   // over was made before the session it has to stop existed.
   const onStopSessionRef = useRef(onStopSession);
@@ -21,11 +21,14 @@ function ScriptRunner({ ip, liveSession, onStartSession, onStopSession, sendComm
   const [manualBusy, setManualBusy] = useState(null); // cmd currently in flight, or null
   const [isRunning, setIsRunning] = useState(null); // holds the id/key of the script currently running, or null
   const [stopRequested, setStopRequested] = useState(false);
-  // Built-in scripts ship with the app (source: /frontend/builtin/inputScripts.json).
+  // Curated scripts load from Marketplace; local edits persist separately.
   // Fetched once on mount via /api/input-scripts/builtin; rendered above the
   // user-saved list in their own card. Editable in place via the edit modal
-  // below (PUT /input-scripts/builtin/:id rewrites the source file).
+  // below (PUT /input-scripts/builtin/:id saves a local override).
   const [builtinScripts, setBuiltinScripts] = useState([]);
+  const [builtinError, setBuiltinError] = useState('');
+  const [builtinLoading, setBuiltinLoading] = useState(false);
+  const builtinRequest = useRef(0);
 
   // Single combined "Scripts" card has two tabs: built-in (curated) and
   // saved (user-created in this DB). We default to built-in because most
@@ -42,15 +45,25 @@ function ScriptRunner({ ip, liveSession, onStartSession, onStopSession, sendComm
   const [savingModal, setSavingModal] = useState(false);
   const [modalError, setModalError] = useState('');
 
-  const fetchBuiltinScripts = () => {
-    apiSafe.get('/input-scripts/builtin').then(list => {
-      if (Array.isArray(list)) setBuiltinScripts(list);
-    });
+  const fetchBuiltinScripts = async (refresh = false) => {
+    const requestId = ++builtinRequest.current;
+    setBuiltinLoading(true);
+    setBuiltinError('');
+    try {
+      const params = new URLSearchParams();
+      if (consoleType) params.set('console_type', consoleType);
+      if (refresh) params.set('refresh', '1');
+      const list = await api.get(`/input-scripts/builtin?${params}`);
+      if (requestId === builtinRequest.current && Array.isArray(list)) setBuiltinScripts(list);
+    } catch (e) { if (requestId === builtinRequest.current) setBuiltinError(e.message); }
+    finally { if (requestId === builtinRequest.current) setBuiltinLoading(false); }
   };
 
   useEffect(() => {
+    setBuiltinScripts([]);
     fetchBuiltinScripts();
-  }, []);
+    return () => { builtinRequest.current++; };
+  }, [consoleType]);
 
   const addOutput = (msg, type = 'info') => {
     setOutput(prev => [...prev, { msg, type, time: new Date().toLocaleTimeString() }]);
@@ -165,7 +178,7 @@ function ScriptRunner({ ip, liveSession, onStartSession, onStopSession, sendComm
 
   const runScript = async (scriptToRun, key = 'script') => {
     if (!ip) {
-      addOutput('No PS5 IP address configured', 'error');
+      addOutput('No console IP address configured', 'error');
       return;
     }
     // A session this run opens is this run's to close; one the user had
@@ -305,7 +318,7 @@ function ScriptRunner({ ip, liveSession, onStartSession, onStopSession, sendComm
   return (
     <div className="flex-col gap-md">
       {/* Combined Scripts card with two tabs:
-            • Built-in — curated (source: /frontend/builtin/inputScripts.json),
+            • Built-in — curated (source: Marketplace),
               editable in place via ✏️
             • Saved   — user-created entries from the local DB
           Tabs save vertical space on mobile (single header instead of two
@@ -332,14 +345,16 @@ function ScriptRunner({ ip, liveSession, onStartSession, onStopSession, sendComm
               <span className="badge badge-muted" style={{ marginLeft: 6 }}>{scripts?.length || 0}</span>
             </button>
           </div>
+          {scriptsTab === 'builtin' && <button className="btn btn-secondary btn-sm" onClick={() => fetchBuiltinScripts(true)} disabled={builtinLoading}>{builtinLoading ? 'Loading…' : '↻ Marketplace'}</button>}
           {scriptsTab === 'saved' && (
             <button className="btn btn-primary btn-sm" onClick={openNewScript}>＋ New</button>
           )}
         </div>
         <div className="comp-card-body">
+          {builtinError && scriptsTab === 'builtin' && <div className="text-sm mb-sm" style={{ color: 'var(--red)' }}>Marketplace: {builtinError}</div>}
           {scriptsTab === 'builtin' && (
             builtinScripts.length === 0 ? (
-              <div className="text-sm text-muted">No built-in scripts available.</div>
+              <div className="text-sm text-muted">{builtinLoading ? 'Loading Marketplace scripts…' : 'No Marketplace scripts available.'}</div>
             ) : (
               <div className="flex-col builtin-list" style={{ gap: 6, maxHeight: 260, overflowY: 'auto' }}>
                 {builtinScripts.map(b => (
@@ -399,6 +414,7 @@ function ScriptRunner({ ip, liveSession, onStartSession, onStopSession, sendComm
             )
           )}
 
+          {scriptsTab === 'builtin' && <button className="btn btn-secondary btn-sm" onClick={() => fetchBuiltinScripts(true)} disabled={builtinLoading}>{builtinLoading ? 'Loading…' : '↻ Marketplace'}</button>}
           {scriptsTab === 'saved' && (
             !scripts || scripts.length === 0 ? (
               <div className="text-sm text-muted">
@@ -483,7 +499,7 @@ function ScriptRunner({ ip, liveSession, onStartSession, onStopSession, sendComm
             </div>
           </div>
           <p className="text-xs text-muted mt-sm">
-            Append <code>10x</code>, <code>x10</code>, or <code>*10</code> to repeat. Use <code>text &lt;string&gt;</code> to type on the PS5 on-screen keyboard.
+            Append <code>10x</code>, <code>x10</code>, or <code>*10</code> to repeat. Use <code>text &lt;string&gt;</code> to type on the console on-screen keyboard.
           </p>
         </div>
       </div>

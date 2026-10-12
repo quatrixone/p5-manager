@@ -27,8 +27,8 @@ jobs:
             context: .
             build-contexts: ''
           - image: p5-manager-remoteplay
-            context: ./pyremoteplay
-            # p5rp is built from rpnative/ (see pyremoteplay/Dockerfile).
+            context: ./remoteplay
+            # p5rp is built from rpnative/ (see remoteplay/Dockerfile).
             build-contexts: rpnative=./rpnative
     steps:
       - uses: actions/checkout@v4

@@ -1,0 +1,18 @@
+{
+  "kind": "payload",
+  "id": "kstuff",
+  "name": "kstuff.elf",
+  "description": "PS5 kstuff-lite v1.11",
+  "author": "EchoStretch",
+  "version": 1,
+  "console_type": "ps5",
+  "files": [
+    {
+      "type": "elf",
+      "name": "kstuff.elf",
+      "url": "p5enc:v1:nVE4RqYXxqiwbWzcOaAgMrdg8RIjN-KuwyOdCrmiF91I4aUfIWF-YvGvpMmkF1x7BS2EfmfW03rfpzEnHntNrh7Q1L2Bfe7IE93CQ9jBYj4dRNaiV1IqMHkRvBS0tHTN-dpXVnaIgtUo",
+      "sha256": "ab9a6cb4d3b1daf139d4d646e402b1cf569071acd64599c936d7a3a6164dc779",
+      "size": 1737080
+    }
+  ]
+}

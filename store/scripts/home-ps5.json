@@ -1,0 +1,11 @@
+{
+  "name": "PS5: Return Home",
+  "console_type": "ps5",
+  "description": "Hold PS to return to Home from an application, Settings or User Guide.",
+  "script": "home\nwait 1200",
+  "id": "home-ps5",
+  "builtin_id": "builtin:home-ps5",
+  "kind": "script",
+  "author": "P5 Manager",
+  "version": 1
+}

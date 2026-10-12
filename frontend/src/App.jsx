@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import PayloadList from './components/PayloadList';
-import LogViewer from './components/LogViewer';
+import Tools from './components/Tools';
 import AutoloadBuilder from './components/AutoloadBuilder';
 import PS5Control from './components/PS5Control';
 import Settings from './components/Settings';
@@ -21,7 +21,7 @@ const tabs = [
   { id: 'files', label: 'File Ops', icon: '📁' },
   { id: 'library', label: 'Library', icon: '🕹️' },
   { id: 'remote', label: 'P5 Control', icon: '🎮' },
-  { id: 'logs', label: 'Logs', icon: '📋' },
+  { id: 'tools', label: 'Tools', icon: '🧰' },
   { id: 'settings', label: 'Settings', icon: '⚙️' }
 ];
 
@@ -37,6 +37,8 @@ function App() {
     // Dashboard and standalone remoteplay tabs were removed - migrate.
     if (!saved || saved === 'dashboard') return 'payloads';
     if (saved === 'remoteplay') return 'remote';
+    // Logs moved into Tools.
+    if (saved === 'logs') return 'tools';
     return saved;
   });
   const [showBuiltinEditor, setShowBuiltinEditor] = useState(readHashRoute);
@@ -394,7 +396,7 @@ function App() {
 
   return (
     <PlatformProvider activeProfile={defaultProfile}>
-    <Ps5StatusProvider profile={defaultProfile}>
+    <Ps5StatusProvider key={defaultProfile?.id || 'none'} profile={defaultProfile}>
     <>
       <header className="app-topbar">
         <PlatformAwareBrand />
@@ -466,8 +468,8 @@ function App() {
               onProfileSetDefault={setDefaultProfile}
             />
           )}
-          {!showBuiltinEditor && activeTab === 'logs' && (
-            <LogViewer logs={logs} onRefresh={fetchLogs} profiles={profiles} />
+          {!showBuiltinEditor && activeTab === 'tools' && (
+            <Tools logs={logs} onRefreshLogs={fetchLogs} profiles={profiles} onNotification={showNotification} />
           )}
         </main>
       </div>
@@ -493,8 +495,8 @@ function TopbarPs5Status({ profile, profiles = [], onSwitch, onManage }) {
   const { state, portStatus } = usePs5Status();
   const [open, setOpen] = useState(false);
   const label = {
-    online: 'Payload host up',
-    waking: 'Console awake, payload host not loaded',
+    online: portStatus?.reachable ? 'Payload host up' : 'Console online',
+    waking: 'Waking…',
     standby: 'In rest mode',
     offline: 'Unreachable',
   }[state];

@@ -1,45 +1,42 @@
-// Editor API for /frontend/builtin/*.
+// Editor API for local payload defaults and persistent Marketplace overrides.
 //
 // Lets the hidden UI editor (frontend BuiltinEditor.jsx) read and write the
-// three built-in source files. Edits are:
+// three built-in JSON files. Edits are:
 //   * restricted to a fixed allow-list of filenames,
-//   * validated before touching the real file - JS files by attempting a
-//     dynamic import of a temp copy (a syntax error or runtime throw
-//     aborts the save), JSON files (inputScripts.json) by JSON.parse,
-//   * atomic (write to tmp, fsync, rename),
-//   * backed up — previous version goes to `<file>.bak` next to it,
-//   * cache-invalidated so loadBuiltin() picks the new file up immediately.
+//   * validated before touching the real file: it has to parse as a JSON
+//     array,
+//   * atomic (write to tmp, rename),
+//   * backed up — previous version goes to `<file>.bak` next to it.
+// readBuiltinList() sees the new mtime and rereads the file.
 
 import express from 'express';
+import { encodeCatalog, decodeCatalog } from '../lib/catalogLinks.js';
 import fs from 'fs';
 import path from 'path';
-import { pathToFileURL } from 'url';
 import { log } from '../db/sqlite.js';
-import { getBuiltinDir, clearBuiltinCache } from '../lib/builtinLoader.js';
+import { getBuiltinDir } from '../lib/builtinLoader.js';
+import { MARKETPLACE_BUILTINS, readMarketplaceBuiltinList, writeMarketplaceBuiltinList, restoreMarketplaceBuiltinBackup } from '../lib/marketplaceCatalog.js';
 
 const router = express.Router();
 
-// Only these files can be read/written. Each entry advertises the named
-// export(s) the editor should expect after a successful save — pure
-// metadata for the UI; the server doesn't enforce the export name beyond
-// confirming the dynamic import doesn't throw.
+// Only these files can be read/written.
 const EDITABLE_FILES = [
   {
-    name: 'payloads.js',
+    name: 'payloads.json',
     title: 'Default Payloads',
-    description: 'Payloads auto-downloaded on startup. Each entry has filename + url + tag + description.',
-    expectsExport: 'ESSENTIAL_PAYLOADS',
+    description: 'Payloads auto-downloaded on startup. Each entry has filename + url + console_type + port + tag + description (+ notes).',
+    format: 'json',
   },
   {
-    name: 'templates.js',
+    name: 'templates.json',
     title: 'Autoload Templates',
     description: 'Sequence templates shown in the Autoload "Templates" panel.',
-    expectsExport: 'DEFAULT_TEMPLATES',
+    format: 'json',
   },
   {
     name: 'inputScripts.json',
     title: 'Built-in Input Scripts',
-    description: 'Script Runner macros (Restart PS5, Rest Mode, …). Plain JSON array, not a JS module.',
+    description: 'Script Runner macros (Restart PS5, Rest Mode, …).',
     format: 'json',
   },
 ];
@@ -73,7 +70,8 @@ router.get('/files', (req, res) => {
       try { stat = fs.statSync(p); } catch (_) {}
       return {
         ...meta,
-        exists: !!stat,
+        source: MARKETPLACE_BUILTINS.has(meta.name) ? 'marketplace' : 'local',
+        exists: MARKETPLACE_BUILTINS.has(meta.name) || !!stat,
         size: stat ? stat.size : 0,
         mtime: stat ? stat.mtimeMs : null,
       };
@@ -85,13 +83,15 @@ router.get('/files', (req, res) => {
   }
 });
 
-router.get('/files/:name', (req, res) => {
+router.get('/files/:name', async (req, res) => {
   try {
     const { filePath } = resolveBuiltinFile(req.params.name);
-    if (!fs.existsSync(filePath)) {
-      return res.status(404).json({ error: 'File missing on disk' });
+    if (MARKETPLACE_BUILTINS.has(req.params.name)) {
+      const content = JSON.stringify(await readMarketplaceBuiltinList(req.params.name), null, 2);
+      return res.json({ name: req.params.name, content, size: Buffer.byteLength(content), mtime: null, source: 'marketplace' });
     }
-    const content = fs.readFileSync(filePath, 'utf8');
+    if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'File missing on disk' });
+    const content = JSON.stringify(decodeCatalog(JSON.parse(fs.readFileSync(filePath, 'utf8'))), null, 2);
     const stat = fs.statSync(filePath);
     res.json({
       name: req.params.name,
@@ -109,7 +109,7 @@ router.get('/files/:name', (req, res) => {
 router.put('/files/:name', async (req, res) => {
   let tmpPath = null;
   try {
-    const { filePath, meta } = resolveBuiltinFile(req.params.name);
+    const { filePath } = resolveBuiltinFile(req.params.name);
     const { content } = req.body || {};
     if (typeof content !== 'string') {
       return res.status(400).json({ error: '`content` must be a string' });
@@ -118,37 +118,20 @@ router.put('/files/:name', async (req, res) => {
       return res.status(413).json({ error: `File exceeds ${MAX_BYTES} bytes` });
     }
 
-    // Validate by writing a tmp sibling first and only replacing the real
-    // file if that validates clean. JSON files (inputScripts.json) just
-    // need JSON.parse to succeed - importing them as a module would force
-    // a `.js` extension on the tmp file and validate the wrong thing
-    // entirely. JS files keep the dynamic-import check (same directory so
-    // any sibling imports and relative URLs behave the same; the query
-    // string busts Node's ESM cache each time).
-    if (meta.format === 'json') {
-      tmpPath = `${filePath}.tmp-${Date.now()}-${process.pid}.json`;
-      fs.writeFileSync(tmpPath, content, 'utf8');
-      try {
-        JSON.parse(content);
-      } catch (err) {
-        try { fs.unlinkSync(tmpPath); } catch (_) {}
-        tmpPath = null;
-        return res.status(400).json({ error: `Invalid JSON: ${err.message}` });
-      }
-    } else {
-      tmpPath = `${filePath}.tmp-${Date.now()}-${process.pid}.js`;
-      fs.writeFileSync(tmpPath, content, 'utf8');
-      try {
-        const url = pathToFileURL(tmpPath).href + `?v=${Date.now()}`;
-        await import(url);
-      } catch (err) {
-        try { fs.unlinkSync(tmpPath); } catch (_) {}
-        tmpPath = null;
-        return res.status(400).json({
-          error: `Script failed validation: ${err.message}`,
-        });
-      }
+    // Only a JSON array replaces the real file.
+    let parsed;
+    try {
+      parsed = decodeCatalog(JSON.parse(content));
+    } catch (err) {
+      return res.status(400).json({ error: `Invalid JSON: ${err.message}` });
     }
+    if (!Array.isArray(parsed)) return res.status(400).json({ error: 'The file has to be a JSON array' });
+    if (MARKETPLACE_BUILTINS.has(req.params.name)) {
+      await writeMarketplaceBuiltinList(req.params.name, parsed);
+      return res.json({ success: true, size: Buffer.byteLength(content), mtime: null });
+    }
+    tmpPath = `${filePath}.tmp-${Date.now()}-${process.pid}`;
+    fs.writeFileSync(tmpPath, JSON.stringify(encodeCatalog(parsed), null, 2) + '\n', 'utf8');
 
     // Backup current version (best effort) then atomically replace.
     if (fs.existsSync(filePath)) {
@@ -156,8 +139,6 @@ router.put('/files/:name', async (req, res) => {
     }
     fs.renameSync(tmpPath, filePath);
     tmpPath = null;
-
-    clearBuiltinCache(req.params.name);
 
     const stat = fs.statSync(filePath);
     log('info', `Built-in updated: ${req.params.name} (${stat.size} bytes)`);
@@ -174,12 +155,15 @@ router.put('/files/:name', async (req, res) => {
 router.post('/files/:name/restore-backup', (req, res) => {
   try {
     const { filePath } = resolveBuiltinFile(req.params.name);
+    if (MARKETPLACE_BUILTINS.has(req.params.name)) {
+      restoreMarketplaceBuiltinBackup(req.params.name);
+      return res.json({ success: true, mtime: null });
+    }
     const bak = `${filePath}.bak`;
     if (!fs.existsSync(bak)) {
       return res.status(404).json({ error: 'No backup available' });
     }
-    fs.copyFileSync(bak, filePath);
-    clearBuiltinCache(req.params.name);
+    fs.writeFileSync(filePath, JSON.stringify(encodeCatalog(decodeCatalog(JSON.parse(fs.readFileSync(bak, 'utf8')))), null, 2) + '\n');
     const stat = fs.statSync(filePath);
     log('info', `Built-in restored from backup: ${req.params.name}`);
     res.json({ success: true, size: stat.size, mtime: stat.mtimeMs });

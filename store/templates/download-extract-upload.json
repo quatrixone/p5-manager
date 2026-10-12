@@ -1,0 +1,43 @@
+{
+  "name": "Download → extract → upload (cross-platform)",
+  "description": "Open a Remote Play session (keeps the console awake), download a file, extract it locally, upload the result via FTP, then rest mode. Works for PS4 (GoldHEN FTP) or PS5 — adjust the destination path to your console.",
+  "requiresProfile": true,
+  "steps": [
+    {
+      "type": "rp_session",
+      "action": "start",
+      "name": "Start Remote Play session"
+    },
+    {
+      "type": "download",
+      "url": "p5enc:v1:mI3ssUQP1Dy6lf2B4P9T5XhJNoV8Fujqt5Hh79xzqrXtpsnGaka7AUNIMFwle7RMk9Vhf7fJwPLm2_s",
+      "dest_kind": "local",
+      "dest_path": "/data/mkpfs",
+      "name": "Download archive.zip"
+    },
+    {
+      "type": "extract",
+      "source": "local-fs",
+      "local_path": "/data/mkpfs/archive.zip",
+      "dest_kind": "local-fs",
+      "dest_local_path": "/data/mkpfs",
+      "name": "Extract archive.zip"
+    },
+    {
+      "type": "ftp_upload",
+      "local_path": "/data/mkpfs/file.ffpfsc",
+      "dest_path": "/data/homebrew",
+      "name": "Upload to console FTP"
+    },
+    {
+      "type": "rp_session",
+      "action": "standby",
+      "name": "Console rest mode"
+    }
+  ],
+  "id": "download-extract-upload",
+  "builtin_id": "tpl-download-extract-upload",
+  "kind": "template",
+  "author": "P5 Manager",
+  "version": 1
+}

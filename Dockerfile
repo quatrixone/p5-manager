@@ -134,16 +134,13 @@ COPY backend/ ./
 # server can serve `__dirname/../dist` (matches local dev layout).
 COPY --from=frontend-builder /app/backend/dist ./dist
 
-# /frontend/builtin/ holds the user-editable lists of built-in payloads,
-# autoload templates and input scripts. Both the frontend (bundled by
-# Vite) and the backend import these files at runtime; copy them so the
-# backend loader (src/lib/builtinLoader.js) can resolve ../../builtin
-# from /app/src/lib/.
-COPY frontend/builtin/ ./builtin/
+# Only payload defaults ship with the app. Scripts and Autoload templates
+# load from Marketplace at runtime, with a persistent cache in DATA_DIR.
+COPY frontend/builtin/payloads.json ./builtin/payloads.json
 
 # The app's own payloads, copied into the payloads folder on start when they
 # are not there (backend/src/lib/defaultPayloads.js).
-COPY p5managerclient/rp-get-pin/rp-get-pin.elf p5managerclient/offact/offact.elf p5managerclient/pkg-install/pkg-install.elf ./vendored/
+COPY p5managerclient/rp-get-pin/rp-get-pin.elf p5managerclient/offact/offact.elf p5managerclient/pkg-install/pkg-install.elf p5managerclient/save-mounter/save-mounter.elf ./vendored/
 COPY p5managerclient/rp-get-pin-ps4/rp-get-pin-ps4.bin p5managerclient/offact-ps4/offact-ps4.bin ./vendored/
 
 RUN mkdir -p /app/data/payloads
