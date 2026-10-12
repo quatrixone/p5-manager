@@ -180,6 +180,12 @@ export default function FileBrowser({
   const [renameBusy, setRenameBusy] = useState(false);
   const [infoTarget, setInfoTarget] = useState(null);
 
+  // Set permissions (chmod) modal state - FTP only.
+  const [chmodTarget, setChmodTarget] = useState(null);
+  const [chmodValue, setChmodValue] = useState('755');
+  const [chmodRecursive, setChmodRecursive] = useState(false);
+  const [chmodBusy, setChmodBusy] = useState(false);
+
   const openMenu = (e, fileName) => {
     e.stopPropagation();
     if (menuOpen === fileName) { setMenuOpen(null); setMenuStyle(null); return; }
@@ -577,6 +583,37 @@ export default function FileBrowser({
       onNotification?.(`Rename failed: ${e.message}`, 'error');
     } finally {
       setRenameBusy(false);
+    }
+  };
+
+  // Open the chmod modal - FTP only, pre-filled with a sane default.
+  const openChmod = (entry) => {
+    setChmodTarget(entry);
+    setChmodValue('755');
+    setChmodRecursive(false);
+  };
+
+  // Commit the chmod via SITE CHMOD. Mode must be a 3-4 digit octal value.
+  const confirmChmod = async () => {
+    const target = chmodTarget;
+    if (!target) return;
+    const mode = (chmodValue || '').trim();
+    if (!/^[0-7]{3,4}$/.test(mode)) {
+      onNotification?.('Permissions must be an octal value like 755', 'error');
+      return;
+    }
+    setChmodBusy(true);
+    try {
+      if (!ftpIp) throw new Error('Select a console first');
+      const target_path = joinEntryPath(path, target.name);
+      const recursive = !!(target.isDir && chmodRecursive);
+      await api.post('/convert/ftp/chmod', { ip: ftpIp, path: target_path, mode, recursive });
+      onNotification?.(`Permissions set to ${mode}${recursive ? ' (recursive)' : ''}`, 'success');
+      setChmodTarget(null);
+    } catch (e) {
+      onNotification?.(`Set permissions failed: ${e.message}`, 'error');
+    } finally {
+      setChmodBusy(false);
     }
   };
 
@@ -1196,6 +1233,11 @@ export default function FileBrowser({
         action: () => openRename(f),
         title: 'Rename this item (in place, same folder)',
       },
+      kind === 'ftp' && {
+        label: '🔑 Set permissions',
+        action: () => openChmod(f),
+        title: 'Change Unix permissions (chmod) for this item',
+      },
       {
         label: 'ℹ Show info',
         action: () => showInfo(f),
@@ -1698,6 +1740,57 @@ export default function FileBrowser({
             <div className="text-xs text-muted">
               Use the kebab → Cut and Paste in another folder to also change location.
             </div>
+          </form>
+        )}
+      </Modal>
+
+      {/* Set permissions modal - FTP only. Submits an octal mode (e.g. 755)
+          to the /ftp/chmod endpoint via SITE CHMOD. */}
+      <Modal
+        isOpen={!!chmodTarget}
+        onClose={() => { if (!chmodBusy) setChmodTarget(null); }}
+        title={`Set permissions — ${chmodTarget?.name || ''}`}
+        footer={
+          <>
+            <button className="btn btn-ghost" onClick={() => setChmodTarget(null)} disabled={chmodBusy}>
+              Cancel
+            </button>
+            <button className="btn btn-primary" onClick={confirmChmod} disabled={chmodBusy || !/^[0-7]{3,4}$/.test(chmodValue.trim())}>
+              {chmodBusy ? '⏳ Applying…' : 'Apply'}
+            </button>
+          </>
+        }
+      >
+        {chmodTarget && (
+          <form
+            onSubmit={(e) => { e.preventDefault(); confirmChmod(); }}
+            className="flex-col gap-sm"
+          >
+            <div className="text-xs text-muted truncate" title={chmodTarget.name}>
+              Target: <span style={{ color: 'var(--text)' }}>{chmodTarget.name}</span>
+            </div>
+            <input
+              className="input"
+              autoFocus
+              value={chmodValue}
+              onChange={(e) => setChmodValue(e.target.value.replace(/[^0-7]/g, '').slice(0, 4))}
+              placeholder="755"
+              disabled={chmodBusy}
+            />
+            <div className="text-xs text-muted">
+              Octal mode, e.g. 755 (rwxr-xr-x) or 777 (rwxrwxrwx).
+            </div>
+            {chmodTarget.isDir && (
+              <label className="flex items-center gap-xs text-xs" style={{ cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={chmodRecursive}
+                  onChange={(e) => setChmodRecursive(e.target.checked)}
+                  disabled={chmodBusy}
+                />
+                Apply recursively to everything inside this folder
+              </label>
+            )}
           </form>
         )}
       </Modal>
