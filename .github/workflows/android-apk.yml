@@ -35,7 +35,14 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      # Its default package list still names the long-gone "tools" package,
+      # so nothing is installed here; the two below are what a build needs.
       - uses: android-actions/setup-android@v3
+        with:
+          packages: ''
+
+      - name: Android SDK packages
+        run: sdkmanager --install "platforms;android-35" "build-tools;35.0.0"
 
       - uses: gradle/actions/setup-gradle@v4
 
