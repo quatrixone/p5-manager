@@ -21,6 +21,34 @@ export const VENDORED_PAYLOADS = [
   { filename: 'pkg-install.elf', dir: 'pkg-install', console_type: 'ps5' },
   { filename: 'save-mounter.elf', dir: 'save-mounter', console_type: 'ps5' },
 ];
+// Same bytes on both sides? Used to tell a payload that only needs its
+// version recorded from one that really has to be rewritten. Reads both
+// files; they are a few hundred kB at most.
+export function sameContent(a, b) {
+  try {
+    if (fs.statSync(a).size !== fs.statSync(b).size) return false;
+    return fs.readFileSync(a).equals(fs.readFileSync(b));
+  } catch {
+    return false;
+  }
+}
+
+// Put a shipped payload in place. Returns 'copied', or 'kept' when the
+// file on disk cannot be overwritten but already holds the same bytes —
+// a payloads folder left over from a run as another user (root, before
+// the compose file pinned the container to the host user) is read-only
+// to us, and rewriting it is then pointless anyway.
+export function placeVendoredPayload(source, filepath) {
+  try {
+    fs.copyFileSync(source, filepath);
+    return 'copied';
+  } catch (e) {
+    if (e.code !== 'EACCES' && e.code !== 'EPERM') throw e;
+    if (sameContent(source, filepath)) return 'kept';
+    throw new Error(`cannot replace ${filepath} (owned by another user): ${e.message}`);
+  }
+}
+
 export function vendoredSource(entry) {
   const candidates = [
     path.resolve(__dirname, '../../vendored', entry.filename),
@@ -267,9 +295,15 @@ export async function ensureDefaultPayloads({ force = false } = {}) {
       const source = vendoredSource(entry);
       if (!source) throw new Error('not shipped with this installation');
       const filepath = path.join(payloadsDir, entry.filename);
-      fs.copyFileSync(source, filepath);
+      const outcome = placeVendoredPayload(source, filepath);
       const size = fs.statSync(filepath).size;
       insertPayload({ name: entry.filename, filename: entry.filename, filepath, size, version: entry.version, console_type: entry.console_type });
+      if (outcome === 'kept') {
+        // Only the version in the database was missing, so this is not
+        // worth a line on every boot.
+        summary.skipped.push(entry.filename);
+        continue;
+      }
       log('info', `Added the app's own payload: ${entry.filename}`);
       summary.added.push({ filename: entry.filename, size });
     } catch (e) {
