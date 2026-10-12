@@ -1,66 +1,25 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { api, apiSafe } from '../lib/api.js';
 import { usePlatform } from '../contexts/PlatformContext';
-import CatalogHub from './CatalogHub.jsx';
+import { usePs5Status } from '../contexts/Ps5StatusContext';
 import MarketplaceNews from './MarketplaceNews.jsx';
+import SourcesPanel from './SourcesPanel.jsx';
+import { ItemActions, ItemCard, StoreIcon } from './MarketplaceItem.jsx';
+import { KIND_LABEL, sizeLabel } from '../lib/marketplaceView.js';
 
 const API = '/store';
-const KINDS = [
-  { id: 'all', label: 'All' },
-  { id: 'payload', label: '📦 Payloads' },
-  { id: 'homebrew', label: '🎮 Homebrew' },
-  { id: 'template', label: '⚡ Autoload' },
-  { id: 'script', label: '🕹️ Scripts' },
-];
-const KIND_LABEL = { payload: 'Payload', homebrew: 'Homebrew', template: 'Autoload template', script: 'Input script' };
+const mb = (n) => sizeLabel(n);
 
-const mb = (n) => (n ? `${(n / 1e6).toFixed(n > 1e7 ? 0 : 1)} MB` : '');
-
-const KIND_ICON = { homebrew: '🎮', payload: '📦', script: '🕹️', template: '⚡' };
-function StoreIcon({ entry, size = 48 }) {
-  const [broken, setBroken] = useState(false);
-  useEffect(() => setBroken(false), [entry.icon]);
-  const style = { width: size, height: size, flexShrink: 0, borderRadius: 10, objectFit: 'contain', background: 'var(--bg-secondary)', display: 'grid', placeItems: 'center', fontSize: size / 2 };
-  return entry.icon && !broken
-    ? <img src={entry.icon} alt={`${entry.name} icon`} loading="lazy" referrerPolicy="no-referrer" style={style} onError={() => setBroken(true)} />
-    : <span style={style} aria-hidden="true">{KIND_ICON[entry.kind]}</span>;
-}
-
-function Detail({ entry, profiles, onClose, onInstalled, onNotification }) {
+function Detail({ entry, profiles, consoleOnline, onClose, onInstalled, onNotification }) {
   const [item, setItem] = useState(null);
   const [error, setError] = useState('');
-  const [pid, setPid] = useState('');
-  const [job, setJob] = useState(null);
-  const [busy, setBusy] = useState(false);
   const targets = profiles.filter((p) => !entry.console_type || (p.console_type || 'ps5') === entry.console_type);
   const needsConsole = (entry.kind === 'template' && entry.requiresProfile !== false) || (entry.kind === 'homebrew' && (entry.files || []).includes('pkg'));
 
   useEffect(() => {
     api.get(`${API}/item/${entry.kind}/${entry.id}`).then((r) => setItem(r.item)).catch((e) => setError(e.message));
   }, [entry]);
-  useEffect(() => { if (!pid && targets.length) setPid(String(targets[0].id)); }, [targets, pid]);
-  useEffect(() => {
-    if (!job || job.state !== 'running') return undefined;
-    const t = setInterval(async () => {
-      const r = await apiSafe.get(`${API}/jobs/${job.id}`);
-      if (!r?.job) return;
-      setJob(r.job);
-      if (r.job.state === 'done') { onNotification?.(`${entry.name} installed`, 'success'); onInstalled(); }
-      if (r.job.state === 'failed') onNotification?.(r.job.error, 'error');
-    }, 1000);
-    return () => clearInterval(t);
-  }, [job, entry, onInstalled, onNotification]);
 
-  const install = async () => {
-    if (entry.installed && ['script', 'template'].includes(entry.kind) && !window.confirm(`Replace ${entry.name} with the Marketplace version? Changes to the imported copy will be overwritten. Local curated-script overrides are kept.`)) return;
-    setBusy(true);
-    try {
-      const r = await api.post(`${API}/install`, { kind: entry.kind, id: entry.id, profileId: pid || undefined });
-      if (r.job) setJob(r.job);
-      else { onNotification?.(`${entry.name} installed`, 'success'); onInstalled(); }
-    } catch (e) { onNotification?.(e.message, 'error'); }
-    setBusy(false);
-  };
   const uninstall = async () => {
     if (!window.confirm(`Remove ${entry.name}?`)) return;
     try {
@@ -70,7 +29,6 @@ function Detail({ entry, profiles, onClose, onInstalled, onNotification }) {
     } catch (e) { onNotification?.(e.message, 'error'); }
   };
 
-  const running = job?.state === 'running';
   return (
     <div className="comp-card mt-sm" style={{ borderColor: 'var(--accent, var(--blue))' }}>
       <div className="comp-card-body">
@@ -107,24 +65,13 @@ function Detail({ entry, profiles, onClose, onInstalled, onNotification }) {
             </div>
           </div>
         )}
-        {needsConsole && (
-          targets.length
-            ? (
-              <select className="select mb-sm" value={pid} onChange={(e) => setPid(e.target.value)} style={{ width: '100%', minHeight: 40 }}>
-                {targets.map((p) => <option key={p.id} value={p.id}>Install on {p.name} ({p.ip_address})</option>)}
-              </select>
-            )
-            : <div className="text-sm text-muted mb-sm">No {(entry.console_type || 'console').toUpperCase()} profile to install it on.</div>
-        )}
-        {job && (
-          <div className="text-sm mb-sm" style={{ color: job.state === 'failed' ? 'var(--red)' : undefined }}>
-            {running ? '⏳ ' : job.state === 'done' ? '✅ ' : '❌ '}{job.state === 'failed' ? job.error : job.step}
-          </div>
+        {needsConsole && !targets.length && (
+          <div className="text-sm text-muted mb-sm">No {(entry.console_type || 'console').toUpperCase()} profile to install it on.</div>
         )}
         <div className="flex gap-sm flex-wrap">
-          <button className="btn btn-primary" onClick={install} disabled={busy || running || !item || (needsConsole && !pid)} style={{ flex: '1 1 160px', minHeight: 44 }}>
-            {entry.update ? 'Update' : entry.kind === 'homebrew' ? 'Install' : entry.installed ? 'Import again' : 'Import'}
-          </button>
+          <div style={{ flex: '1 1 160px' }}>
+            <ItemActions item={entry} profiles={profiles} consoleOnline={consoleOnline} onNotification={onNotification} onDone={onInstalled} />
+          </div>
           {entry.installed && !['homebrew', 'payload'].includes(entry.kind) && (
             <button className="btn btn-danger" onClick={uninstall} style={{ minHeight: 44 }}>Remove</button>
           )}
@@ -254,129 +201,201 @@ function Publish({ onNotification, entries }) {
   );
 }
 
-// Marketplace: homebrew apps, Autoload templates and input scripts
-// shared by users (store/ in the repository), installed with a tap.
+// Marketplace: one list for the curated store, the FPKGi Catalog Hub and
+// any catalog the user added, with New activity in front of it.
+const KINDS = [
+  { id: 'all', label: 'All' },
+  { id: 'payload', label: '📦 Payloads' },
+  { id: 'homebrew', label: '🎮 Homebrew' },
+  { id: 'template', label: '⚡ Autoload' },
+  { id: 'script', label: '🕹️ Scripts' },
+  { id: 'catalog', label: '💿 Packages' },
+];
+
+function CatalogDetail({ item, profiles, consoleOnline, onClose, onNotification, onDone }) {
+  return (
+    <div className="comp-card mt-sm" style={{ borderColor: 'var(--accent, var(--blue))' }}>
+      <div className="comp-card-body">
+        <div className="flex items-center justify-between gap-sm">
+          <div className="flex items-center gap-sm"><StoreIcon entry={item} size={64} /><div className="font-bold">{item.name}</div></div>
+          <button className="btn btn-sm btn-secondary" onClick={onClose}>✕</button>
+        </div>
+        <div className="text-xs text-muted mb-sm">
+          {[item.title_id, item.region, item.version && `v${item.version}`, item.min_fw && `FW ${item.min_fw}`, item.size && mb(item.size)].filter(Boolean).join(' · ')}
+        </div>
+        <div className="text-xs mb-sm">Listed by {item.author}. {item.verified ? 'The source pins a SHA-256, which is checked after the download.' : 'The source gives no SHA-256, so the package cannot be checked.'}</div>
+        {item.sha256 && <details className="text-xs mb-sm"><summary>SHA-256</summary><code style={{ wordBreak: 'break-all' }}>{item.sha256}</code></details>}
+        {item.package_url && <div className="text-xs mb-sm" style={{ wordBreak: 'break-all' }}>📦 <a href={item.package_url} target="_blank" rel="noreferrer">{item.package_url}</a></div>}
+        <ItemActions item={item} profiles={profiles} consoleOnline={consoleOnline} onNotification={onNotification} onDone={onDone} />
+      </div>
+    </div>
+  );
+}
+
 export default function Marketplace({ profiles = [], onNotification }) {
   const { mode } = usePlatform();
-  const [source, setSource] = useState('new');
-  const [hubSelection, setHubSelection] = useState({ category: 'homebrew', query: '' });
-  const [data, setData] = useState(null);
-  const [error, setError] = useState('');
+  const { state } = usePs5Status();
+  // Unknown ('waking') never blocks an action; the install says the truth.
+  const consoleOnline = state === 'online' ? true : state === 'waking' ? null : false;
+  const [section, setSection] = useState('new');
+  const [sourcesOpen, setSourcesOpen] = useState(false);
+  const [platform, setPlatform] = useState(mode === 'ps4' ? 'ps4' : 'ps5');
+  const [source, setSource] = useState('all');
+  const [category, setCategory] = useState('all');
   const [kind, setKind] = useState('all');
   const [query, setQuery] = useState('');
   const [updatesOnly, setUpdatesOnly] = useState(false);
+  const [page, setPage] = useState(1);
+  const [data, setData] = useState(null);
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [revision, setRevision] = useState(0);
   const [open, setOpen] = useState(null);
-  // Only what fits the console of the active profile - unless asked for all.
-  const [platform, setPlatform] = useState(mode === 'ps4' ? 'ps4' : 'ps5');
+
   useEffect(() => { if (mode === 'ps4' || mode === 'ps5') { setPlatform(mode); setOpen(null); } }, [mode]);
-  const fits = (i) => !i.console_type || i.console_type === platform;
-
-  const load = useCallback(async (refresh = false) => {
-    setError('');
-    try { setData(await api.get(`${API}/index${refresh ? '?refresh=1' : ''}`)); return true; } catch (e) { setError(e.message); return false; }
-  }, []);
+  useEffect(() => { setPage(1); }, [platform, source, category, kind, query, updatesOnly]);
   useEffect(() => {
-    load();
-    const timer = setInterval(() => load(true), 15 * 60 * 1000);
+    const timer = setInterval(() => setRevision((v) => v + 1), 15 * 60 * 1000);
     return () => clearInterval(timer);
-  }, [load]);
+  }, []);
 
-  const items = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    return (data?.items || [])
-      .filter((i) => kind === 'all' || i.kind === kind)
-      .filter(fits)
-      .filter(i => !updatesOnly || i.update)
-      .filter((i) => !q || `${i.name} ${i.description} ${i.author}`.toLowerCase().includes(q));
-  }, [data, kind, query, platform, updatesOnly]); // eslint-disable-line react-hooks/exhaustive-deps
+  const load = useCallback(async ({ refresh = false } = {}) => {
+    setLoading(true);
+    setError('');
+    try {
+      const params = new URLSearchParams({
+        platform, source, category, kind, q: query, page: String(page), limit: '48',
+        updates: updatesOnly ? '1' : '0', refresh: refresh ? '1' : '0',
+      });
+      const result = await api.get(`${API}/browse?${params}`);
+      setData(result);
+      if (result.page !== page) setPage(result.page);
+      return true;
+    } catch (e) { setError(e.message); return false; }
+    finally { setLoading(false); }
+  }, [platform, source, category, kind, query, updatesOnly, page]);
 
-  const reopen = useCallback(async () => {
-    await load(true);
-    setOpen((o) => (o ? { ...o } : o));
-  }, [load]);
+  useEffect(() => {
+    if (section !== 'browse') return undefined;
+    const timer = setTimeout(() => { load(); }, 250);
+    return () => clearTimeout(timer);
+  }, [section, load, revision]);
+
   const checkUpdates = async () => {
     setRefreshing(true);
     try {
-      const [catalogs, loaded] = await Promise.all([
-        api.post(`${API}/refresh-builtins`, {}).catch(e => ({ error: e.message })),
-        load(true),
+      const [builtins, loaded] = await Promise.all([
+        api.post(`${API}/refresh-builtins`, {}).catch((e) => ({ error: e.message })),
+        load({ refresh: true }),
       ]);
       if (!loaded) return;
-      if (catalogs.error) { onNotification?.(`Store checked, but curated scripts could not refresh: ${catalogs.error}`, 'error'); return; }
-      onNotification?.('Marketplace checked; curated scripts and templates refreshed. Local edits kept.', 'success');
+      if (builtins.error) { onNotification?.(`Checked, but the curated scripts could not refresh: ${builtins.error}`, 'error'); return; }
+      onNotification?.('Marketplace checked; curated scripts, templates and the default payload list refreshed. Local edits kept.', 'success');
     } catch (e) { onNotification?.(e.message, 'error'); }
     finally { setRefreshing(false); }
   };
-  const openEntry = open && (data?.items || []).find((i) => i.kind === open.kind && i.id === open.id);
+
+  const items = data?.items || [];
+  const openItem = open && items.find((i) => i.origin === open.origin && i.kind === open.kind && String(i.id) === String(open.id));
 
   return (
     <div>
       <div className="flex gap-sm flex-wrap mb-sm">
-        <button className={`btn ${source === 'new' ? 'btn-primary' : 'btn-secondary'}`} aria-pressed={source === 'new'} onClick={() => setSource('new')}>New</button>
-        <button className={`btn ${source === 'marketplace' ? 'btn-primary' : 'btn-secondary'}`} aria-pressed={source === 'marketplace'} onClick={() => setSource('marketplace')}>Marketplace</button>
-        <button className={`btn ${source === 'fpkgi' ? 'btn-primary' : 'btn-secondary'}`} aria-pressed={source === 'fpkgi'} onClick={() => setSource('fpkgi')}>FPKGi Catalog Hub</button>
-        {source !== 'marketplace' && ['ps4', 'ps5'].map(p => <button key={p} className={`btn ${platform === p ? 'btn-primary' : 'btn-secondary'}`} aria-pressed={platform === p} onClick={() => setPlatform(p)}>{p.toUpperCase()}</button>)}
-      </div>
-      {source === 'new' ? <MarketplaceNews key={platform} platform={platform} onOpen={item => {
-        if (item.source === 'fpkgi') { setHubSelection({ category: item.category, query: item.title_id || item.name }); setSource('fpkgi'); }
-        else { setSource('marketplace'); setKind('all'); setQuery(''); setUpdatesOnly(false); setOpen({ kind: item.kind, id: item.store_id }); }
-      }} /> : source === 'fpkgi' ? <CatalogHub key={platform} platform={platform} initialCategory={hubSelection.category} initialQuery={hubSelection.query} /> : <>
-      <div className="flex gap-sm flex-wrap mb-sm">
-        <input className="input" placeholder="🔍 Search" value={query} onChange={(e) => setQuery(e.target.value)} style={{ flex: '1 1 200px', minHeight: 40 }} />
-        <button className="btn btn-secondary" onClick={checkUpdates} disabled={refreshing} style={{ minHeight: 40 }}>{refreshing ? 'Checking…' : '↻ Check updates'}</button>
-        <button className={`btn ${updatesOnly ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setUpdatesOnly(v => !v)} aria-pressed={updatesOnly} style={{ minHeight: 40 }}>Updates ({(data?.items || []).filter(i => fits(i) && i.update).length})</button>
-      </div>
-      <div className="flex gap-xs flex-wrap mb-sm">
-        {KINDS.map((k) => (
-          <button key={k.id} className={`btn btn-sm ${kind === k.id ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setKind(k.id)} style={{ minHeight: 36 }}>{k.label}</button>
+        <button className={`btn ${section === 'new' ? 'btn-primary' : 'btn-secondary'}`} aria-pressed={section === 'new'} onClick={() => setSection('new')}>New</button>
+        <button className={`btn ${section === 'browse' ? 'btn-primary' : 'btn-secondary'}`} aria-pressed={section === 'browse'} onClick={() => setSection('browse')}>Marketplace</button>
+        {['ps4', 'ps5'].map((p) => (
+          <button key={p} className={`btn ${platform === p ? 'btn-primary' : 'btn-secondary'}`} aria-pressed={platform === p} onClick={() => setPlatform(p)}>{p.toUpperCase()}</button>
         ))}
-        {['ps4', 'ps5'].map(p => (
-          <button key={p} className={`btn btn-sm ${platform === p ? 'btn-primary' : 'btn-secondary'}`}
-            onClick={() => { setPlatform(p); setOpen(null); }} aria-pressed={platform === p} style={{ minHeight: 36 }}>
-            {p.toUpperCase()}
-          </button>
-        ))}
+        <button className="btn btn-secondary" aria-expanded={sourcesOpen} onClick={() => setSourcesOpen((v) => !v)}>⚙ Sources</button>
       </div>
-      {data?.iconWarning && <div className="text-xs text-muted mb-sm">{data.iconWarning}. Cached icons and category icons are used.</div>}
-      {error && <div className="text-sm" style={{ color: 'var(--red)' }}>Marketplace unreachable: {error}</div>}
-      {data && items.length === 0 && (
-        <div className="empty-state">
-          <div className="empty-state-icon">🛒</div>
-          <div className="empty-state-title">{updatesOnly ? 'No available updates' : data.items.length ? 'Nothing matches' : 'The marketplace is empty so far'}</div>
-          <div className="empty-state-text">
-            {!data.items.length ? 'Publish the first one below.' : `No ${platform.toUpperCase()} items match these filters.`}
+
+      {sourcesOpen && (
+        <SourcesPanel onNotification={onNotification} onChanged={() => { setSource('all'); load({ refresh: true }); }} />
+      )}
+
+      {section === 'new' ? (
+        <MarketplaceNews
+          key={platform}
+          platform={platform}
+          profiles={profiles}
+          consoleOnline={consoleOnline}
+          onNotification={onNotification}
+          onOpen={(item) => {
+            setSection('browse');
+            setSource(item.origin || 'all');
+            setKind('all');
+            setQuery(item.title_id || item.name);
+            setUpdatesOnly(false);
+          }}
+        />
+      ) : (
+        <>
+          <div className="flex gap-sm flex-wrap mb-sm">
+            <input className="input" aria-label="Search the marketplace" placeholder="🔍 Search name, title ID or author" value={query} onChange={(e) => setQuery(e.target.value)} maxLength={200} style={{ flex: '2 1 200px', minHeight: 40 }} />
+            <select className="select" aria-label="Source" value={source} onChange={(e) => setSource(e.target.value)} style={{ flex: '1 1 160px', minHeight: 40 }}>
+              <option value="all">All sources</option>
+              {(data?.sources || []).map((srv) => <option key={srv.id} value={srv.id}>{srv.label}</option>)}
+            </select>
+            <select className="select" aria-label="Catalog category" value={category} onChange={(e) => setCategory(e.target.value)} style={{ flex: '1 1 140px', minHeight: 40 }}>
+              <option value="all">All categories</option>
+              {(data?.categories || []).map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
+            </select>
+            <button className="btn btn-secondary" onClick={checkUpdates} disabled={refreshing} style={{ minHeight: 40 }}>{refreshing ? 'Checking…' : '↻ Check updates'}</button>
+            <button className={`btn ${updatesOnly ? 'btn-primary' : 'btn-secondary'}`} aria-pressed={updatesOnly} onClick={() => setUpdatesOnly((v) => !v)} style={{ minHeight: 40 }}>Updates</button>
           </div>
-        </div>
-      )}
-      {openEntry && (
-        <Detail entry={openEntry} profiles={profiles} onClose={() => setOpen(null)} onInstalled={reopen} onNotification={onNotification} />
-      )}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 8, marginTop: 8 }}>
-        {items.map((i) => (
-          <button
-            key={`${i.kind}:${i.id}`}
-            type="button"
-            className="comp-card"
-            onClick={() => setOpen({ kind: i.kind, id: i.id })}
-            style={{ textAlign: 'left', cursor: 'pointer', color: 'inherit', padding: 0 }}
-          >
-            <div className="comp-card-body p-sm">
-              <div className="flex items-center justify-between gap-xs">
-                <div className="flex items-center gap-sm"><StoreIcon entry={i} /><span className="font-bold" style={{ wordBreak: 'break-word' }}>{i.name}</span></div>
-                {i.update ? <span className="badge badge-warning">Update v{i.version}</span> : i.installed ? <span className="badge badge-success">✓</span> : null}
-              </div>
-              <div className="text-xs text-muted">
-                v{i.app_version || i.version} · {KIND_LABEL[i.kind]}{i.console_type ? ` · ${i.console_type.toUpperCase()}` : ''} · {i.author}
-                {['homebrew', 'payload'].includes(i.kind) && i.size ? ` · ${mb(i.size)}` : ''}
-              </div>
-              <div className="text-xs mt-xs" style={{ display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{i.description}</div>
+          <div className="flex gap-xs flex-wrap mb-sm">
+            {KINDS.map((k) => (
+              <button key={k.id} className={`btn btn-sm ${kind === k.id ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setKind(k.id)} style={{ minHeight: 36 }}>{k.label}</button>
+            ))}
+          </div>
+
+          {loading && <div className="text-xs text-muted mb-sm">Loading the {platform.toUpperCase()} list…</div>}
+          {error && <div role="alert" className="text-sm" style={{ color: 'var(--red)' }}>Marketplace unreachable: {error}</div>}
+          {!!data?.warnings?.length && (
+            <details className="text-xs mb-sm"><summary>Some sources are unavailable; the last saved copy is shown</summary>{data.warnings.map((w) => <div key={w}>{w}</div>)}</details>
+          )}
+          {data?.libraryTakenAt && (
+            <div className="text-xs text-muted mb-sm">What is on the console is from the Library check on {new Date(data.libraryTakenAt).toLocaleString()}.</div>
+          )}
+
+          {openItem && (openItem.kind === 'catalog'
+            ? <CatalogDetail item={openItem} profiles={profiles} consoleOnline={consoleOnline} onClose={() => setOpen(null)} onNotification={onNotification} onDone={() => load({ refresh: false })} />
+            : <Detail entry={openItem} profiles={profiles} consoleOnline={consoleOnline} onClose={() => setOpen(null)} onInstalled={() => load({ refresh: false })} onNotification={onNotification} />)}
+
+          {data && !items.length && !loading && (
+            <div className="empty-state">
+              <div className="empty-state-icon">🛒</div>
+              <div className="empty-state-title">{updatesOnly ? 'No available updates' : 'Nothing matches'}</div>
+              <div className="empty-state-text">No {platform.toUpperCase()} items match these filters.</div>
             </div>
-          </button>
-        ))}
-      </div>
-      <Publish onNotification={onNotification} entries={data?.items} />
-      </>}
+          )}
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 8, marginTop: 8 }}>
+            {items.map((i) => (
+              <ItemCard
+                key={`${i.origin}:${i.kind}:${i.id}`}
+                item={i}
+                profiles={profiles}
+                consoleOnline={consoleOnline}
+                onOpen={() => setOpen({ origin: i.origin, kind: i.kind, id: i.id })}
+                onNotification={onNotification}
+                onDone={() => load({ refresh: false })}
+              />
+            ))}
+          </div>
+
+          {data && data.pages > 1 && (
+            <div className="flex items-center justify-between gap-sm mt-sm">
+              <button className="btn btn-secondary" disabled={loading || data.page <= 1} onClick={() => setPage(data.page - 1)}>Previous</button>
+              <span className="text-sm">Page {data.page} / {data.pages} · {data.total} items</span>
+              <button className="btn btn-secondary" disabled={loading || data.page >= data.pages} onClick={() => setPage(data.page + 1)}>Next</button>
+            </div>
+          )}
+
+          <Publish onNotification={onNotification} entries={items.filter((i) => i.origin === 'marketplace')} />
+        </>
+      )}
     </div>
   );
 }

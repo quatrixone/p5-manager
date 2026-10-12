@@ -111,7 +111,18 @@ newsTimer.unref();
 router.get('/news', handle(async req => {
   const platform = req.query.platform || 'ps4';
   if (!['ps4', 'ps5'].includes(platform)) throw Object.assign(new Error('Unknown platform'), { status: 400 });
-  return news.page({ force: req.query.refresh === '1', platform, query: req.query.q, event: req.query.event || 'all', page: req.query.page });
+  const page = await news.page({ force: req.query.refresh === '1', platform, query: req.query.q, event: req.query.event || 'all', page: req.query.page });
+  // The feed offers the same actions as the list, so it needs the same
+  // answer about what is already installed.
+  const profileId = activeProfileId(req.query.profileId);
+  const snapshot = profileId ? librarySnapshots.read(profileId) : null;
+  const decorated = decorateInstalled(
+    page.items.map((i) => (i.source === 'marketplace'
+      ? { ...i, id: i.store_id, newsId: i.newsId, origin: 'marketplace', installable: true, verified: true }
+      : { ...i, origin: 'fpkgi', installable: !!i.package_url && /\.pkg$/i.test(i.package_url), verified: !!i.sha256 })),
+    { installs: installs(), titles: snapshot?.titles || null, takenAt: snapshot?.takenAt || null },
+  );
+  return { ...page, items: decorated, libraryTakenAt: snapshot?.takenAt || null };
 }));
 
 router.get('/index', handle(async (req) => {

@@ -31,10 +31,14 @@ export function homebrewTitleId(item) {
   return null;
 }
 
+// A catalog package is recorded under its origin, because the same id can
+// exist in two catalogs; everything else is keyed by kind and store id.
+export const installKey = (item) => (item.kind === 'catalog' ? `catalog:${item.origin}:${item.id}` : `${item.kind}:${item.id}`);
+
 export function decorateInstalled(items, { installs = [], titles = null, takenAt = null } = {}) {
   const mine = new Map(installs.map((i) => [`${i.kind}:${i.store_id}`, i]));
   return items.map((item) => {
-    const have = mine.get(`${item.kind}:${item.id}`);
+    const have = mine.get(installKey(item));
     const id = item.kind === 'homebrew' ? homebrewTitleId(item) : null;
     const onConsole = titles ? (id ? titles.has(id) : null) : null;
     return {

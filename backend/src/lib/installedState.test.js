@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createLibrarySnapshots, titleIdsOf, decorateInstalled } from './installedState.js';
+import { createLibrarySnapshots, titleIdsOf, decorateInstalled, installKey } from './installedState.js';
 
 const installs = [
   { kind: 'script', store_id: 'home', version: 1 },
@@ -55,4 +55,13 @@ test('a snapshot is written per profile and read back after a restart', (t) => {
   assert.deepEqual([...back.titles], ['CUSA00001']);
   assert.equal(back.takenAt, new Date(1_000).toISOString());
   assert.equal(snapshots.read(8), null);
+});
+
+test('a catalog package is remembered per catalog, not per id alone', () => {
+  const item = { kind: 'catalog', id: 'abc', origin: 'fpkgi', version: 1 };
+  assert.equal(installKey(item), 'catalog:fpkgi:abc');
+  const [mine] = decorateInstalled([item], { installs: [{ kind: 'catalog', store_id: 'fpkgi:abc', version: 1 }] });
+  assert.equal(mine.installed, 1);
+  const [theirs] = decorateInstalled([{ ...item, origin: 'source:3' }], { installs: [{ kind: 'catalog', store_id: 'fpkgi:abc', version: 1 }] });
+  assert.equal(theirs.installed, null);
 });
