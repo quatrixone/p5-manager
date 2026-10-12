@@ -54,10 +54,14 @@ export function compareVersions(a, b) {
 // the name the store item installs under, which is what the user sees.
 export function localIndex({ payloads = [], scripts = [], sequences = [] } = {}) {
   const name = (v) => String(v || '').trim().toLowerCase();
+  const row = (r) => ({ name: r.filename || r.name, version: r.version || null });
   return {
-    payload: new Map(payloads.map((p) => [name(p.filename || p.name), p.version || null])),
-    script: new Map(scripts.map((s) => [name(s.name), s.version || null])),
-    template: new Map(sequences.map((q) => [name(q.name), q.version || null])),
+    payload: new Map(payloads.map((p) => [name(p.filename || p.name), row(p)])),
+    script: new Map(scripts.map((s) => [name(s.name), row(s)])),
+    template: new Map(sequences.map((q) => [name(q.name), row(q)])),
+    // A payload the user renamed is still that payload, so the checksum
+    // decides before the name does.
+    bySha: new Map(payloads.filter((p) => /^[a-f0-9]{64}$/i.test(String(p.sha256 || ''))).map((p) => [String(p.sha256).toLowerCase(), row(p)])),
   };
 }
 
@@ -69,8 +73,11 @@ export function decorateInstalled(items, { installs = [], titles = null, takenAt
     const onConsole = titles ? (id ? titles.has(id) : null) : null;
     const here = local?.[item.kind];
     const key = String(item.name || '').trim().toLowerCase();
-    const inLibrary = !!here?.has(key);
-    const localVersion = inLibrary ? here.get(key) : null;
+    const sum = String(item.sha256 || '').toLowerCase();
+    const match = (sum && local?.bySha?.get(sum)) || here?.get(key) || null;
+    const inLibrary = !!match;
+    const localVersion = match?.version || null;
+    const localName = match?.name || null;
     // Our own record knows which store revision was installed. Without one,
     // a copy already in the library is "installed", and only a newer app
     // version in the listing makes it an update.
@@ -84,6 +91,7 @@ export function decorateInstalled(items, { installs = [], titles = null, takenAt
       onConsole,
       inLibrary,
       localVersion,
+      localName,
       installedFrom: have ? 'records' : onConsole ? 'console' : inLibrary ? 'library' : null,
       libraryTakenAt: onConsole ? takenAt : null,
     };

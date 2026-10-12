@@ -1,7 +1,5 @@
 import fs from 'fs';
 import path from 'path';
-import fetch from 'node-fetch';
-import AdmZip from 'adm-zip';
 import { getRepo, log } from '../db/sqlite.js';
 import { readBuiltinList } from './builtinLoader.js';
 import { readMarketplaceBuiltinList } from './marketplaceCatalog.js';
@@ -119,63 +117,6 @@ export function insertPayload({ name, filename, filepath, source_url, size, vers
   repo.save();
 }
 
-async function fetchBuffer(url) {
-  const res = await fetch(url, { redirect: 'follow' });
-  if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
-  const ab = await res.arrayBuffer();
-  return Buffer.from(ab);
-}
-
-async function downloadEntry(entry) {
-  ensurePayloadsDir();
-  const url = entry.url;
-  const targetFilename = entry.filename;
-
-  // ZIP archives: extract and keep the first .lua/.elf/.bin that matches the
-  // expected target filename, or the first one we find. .bin is the PS4
-  // GoldHEN payload format, so it gets the same treatment as PS5 .elf/.lua.
-  if (url.toLowerCase().endsWith('.zip')) {
-    const buf = await fetchBuffer(url);
-    const zip = new AdmZip(buf);
-    let written = null;
-    for (const e of zip.getEntries()) {
-      const en = e.entryName.toLowerCase();
-      if (en.endsWith('.lua') || en.endsWith('.elf') || en.endsWith('.bin')) {
-        const name = path.basename(e.entryName);
-        const filepath = path.join(payloadsDir, name);
-        const data = e.getData();
-        fs.writeFileSync(filepath, data);
-        insertPayload({
-          name,
-          filename: name,
-          filepath,
-          source_url: url,
-          size: data.length,
-          console_type: entry.console_type,
-        });
-        if (!written || name.toLowerCase() === targetFilename.toLowerCase()) {
-          written = { name, filepath, size: data.length };
-        }
-      }
-    }
-    if (!written) throw new Error(`No .lua/.elf/.bin inside ${url}`);
-    return written;
-  }
-
-  const buf = await fetchBuffer(url);
-  const filepath = path.join(payloadsDir, targetFilename);
-  fs.writeFileSync(filepath, buf);
-  insertPayload({
-    name: targetFilename,
-    filename: targetFilename,
-    filepath,
-    source_url: url,
-    size: buf.length,
-    console_type: entry.console_type,
-  });
-  return { name: targetFilename, filepath, size: buf.length };
-}
-
 // Heuristic platform detection from filename. Kept local so this module
 // doesn't depend on routes/payloads.js (which has its own slightly broader
 // detector that also takes URL hints). For a bare disk scan we only have
@@ -275,9 +216,10 @@ export async function scanPayloadsDir() {
   return added;
 }
 
-// Ensure every essential payload is present. Missing entries are downloaded.
-// Returns a summary. Errors on individual entries are logged but do not abort
-// the whole batch — startup must remain resilient when offline.
+// Put the app's own payloads in the library: the ones built from
+// p5managerclient/ and shipped with the app. Nothing is downloaded here -
+// the rest of the built-in payloads are Marketplace items the user
+// installs, so they can be updated without a new release.
 export async function ensureDefaultPayloads({ force = false } = {}) {
   const summary = { added: [], skipped: [], failed: [] };
   ensurePayloadsDir();
@@ -319,28 +261,8 @@ export async function ensureDefaultPayloads({ force = false } = {}) {
     }
   }
 
-  const list = await getEssentialPayloads();
-  for (const entry of list) {
-    try {
-      if (!force && payloadExists(entry.filename)) {
-        summary.skipped.push(entry.filename);
-        continue;
-      }
-      log('info', `Downloading default payload: ${entry.filename} (${entry.description || entry.tag})`);
-      const r = await downloadEntry(entry);
-      summary.added.push({ filename: entry.filename, size: r.size });
-    } catch (e) {
-      // Default-payload download failures are not fatal — the upstream
-      // GitHub release may have been retagged, deleted or rate-limited,
-      // and the user can still upload the file by hand. Log as `warn`
-      // (not `error`) so a transient 404 doesn't pollute the "Errors"
-      // filter in the log viewer with permanent noise on every boot.
-      const msg = `Default payload ${entry.filename} unavailable: ${e.message}`;
-      if (/HTTP 4\d\d/.test(e.message)) log('warn', msg);
-      else log('error', msg);
-      summary.failed.push({ filename: entry.filename, error: e.message });
-    }
-  }
-
+  // Everything else is a Marketplace item now. The app ships only what it
+  // builds itself, and the payloads the built-in features use are
+  // installed from Marketplace, where they can also be updated.
   return summary;
 }

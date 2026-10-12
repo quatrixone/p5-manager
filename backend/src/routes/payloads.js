@@ -190,7 +190,10 @@ router.get('/', async (req, res) => {
   }
 });
 
-// List the essential built-in payloads that the manager auto-installs.
+// The payloads the built-in features expect (logs, Remote Play pairing,
+// the game library). The app no longer downloads them: they are
+// Marketplace items, and this list is what the Payloads tab marks as
+// built-in so the user can see which ones are missing.
 router.get('/defaults', async (req, res) => {
   try {
     const list = await getEssentialPayloads();
@@ -206,8 +209,9 @@ router.get('/defaults', async (req, res) => {
   }
 });
 
-// Manually re-run the default-payload bootstrap. With ?force=1, re-download
-// even payloads that already exist (overwrites the local files).
+// Put the app's own payloads (p5managerclient builds) back in the library.
+// With ?force=1, overwrite the copies already there. Everything else comes
+// from Marketplace.
 router.post('/defaults/restore', async (req, res) => {
   try {
     const force = req.query.force === '1' || req.body?.force === true;

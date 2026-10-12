@@ -129,6 +129,10 @@ export function indexEntry(item, path) {
     ...(['homebrew', 'payload'].includes(item.kind) ? {
       files: item.files.map((f) => f.type),
       ...(item.app_version ? { app_version: item.app_version } : {}),
+      // A single-file payload is listed with its checksum, so the app can
+      // recognise the very same file already in the library, whatever the
+      // user called it.
+      ...(item.files.length === 1 && item.files[0].sha256 ? { sha256: item.files[0].sha256 } : {}),
       ...(item.files.every((f) => f.size) ? { size: item.files.reduce((a, f) => a + f.size, 0) } : {}),
       ...(item.homepage ? { homepage: item.homepage } : {}),
     } : {}),

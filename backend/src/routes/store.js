@@ -244,12 +244,30 @@ async function fpkgiGroup(platform, category, refresh) {
   return { origin: 'fpkgi', label: 'FPKGi Catalog Hub', items, warning: warnings[0] || null };
 }
 
+// Checksums of the payload files on disk, so a listing finds the very same
+// file even when the user renamed it. Hashing is cheap for payloads (a few
+// hundred kB) and is redone only when a file changes.
+const payloadSums = new Map(); // filepath -> { mtimeMs, size, sha256 }
+const MAX_HASHED_BYTES = 64 * 1024 * 1024;
+function payloadSum(row) {
+  if (/^[a-f0-9]{64}$/i.test(String(row.sha256 || ''))) return String(row.sha256).toLowerCase();
+  try {
+    const stat = fs.statSync(row.filepath);
+    if (stat.size > MAX_HASHED_BYTES) return null;
+    const cached = payloadSums.get(row.filepath);
+    if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) return cached.sha256;
+    const sha256 = crypto.createHash('sha256').update(fs.readFileSync(row.filepath)).digest('hex');
+    payloadSums.set(row.filepath, { mtimeMs: stat.mtimeMs, size: stat.size, sha256 });
+    return sha256;
+  } catch { return null; }
+}
+
 // Payload files, scripts and Autoload sequences the user already has, so
 // an item that is plainly there says so instead of offering a fresh install.
 function localLibrary() {
   const repo = getRepo();
   return localIndex({
-    payloads: repo.queryAll('SELECT filename, version FROM payloads'),
+    payloads: repo.queryAll('SELECT filename, filepath, version, sha256 FROM payloads').map((p) => ({ ...p, sha256: payloadSum(p) })),
     scripts: repo.queryAll('SELECT name FROM input_scripts'),
     sequences: repo.queryAll('SELECT name FROM autoload_sequences'),
   });
@@ -261,6 +279,42 @@ function activeProfileId(value) {
   const row = getRepo().queryOne('SELECT id FROM profiles ORDER BY is_default DESC, id ASC LIMIT 1');
   return row?.id || null;
 }
+
+// What is worth telling the user about without them opening the
+// Marketplace: items they have with a newer version listed, and curated
+// built-ins (scripts, Autoload templates) that changed since they last
+// looked. Deliberately cheap - the curated index only, no catalogs.
+const SEEN_KEY = 'store_builtins_seen';
+const seenBuiltins = () => {
+  try { return JSON.parse(getRepo().queryScalar('SELECT value FROM settings WHERE key = ?', [SEEN_KEY]) || '{}'); } catch { return {}; }
+};
+
+router.get('/updates', handle(async (req) => {
+  const platform = ['ps4', 'ps5'].includes(req.query.platform) ? req.query.platform : null;
+  const index = await storeIndex(false);
+  const items = decorateInstalled(
+    index.items.filter((i) => !platform || !i.console_type || i.console_type === platform),
+    { installs: installs(), local: localLibrary() },
+  );
+  const updates = items.filter((i) => i.update).map((i) => ({ kind: i.kind, id: i.id, name: i.name, version: i.app_version || i.version }));
+  const seen = seenBuiltins();
+  // A built-in is read from the store at run time, so it is never
+  // "installed"; what the user wants to know is that it changed.
+  const builtins = items
+    .filter((i) => i.builtin_id && Number(i.version) > Number(seen[i.builtin_id] || 0))
+    .map((i) => ({ kind: i.kind, id: i.id, name: i.name, version: i.version, builtin_id: i.builtin_id }));
+  return { updates, builtins, total: updates.length + builtins.length, generated: index.generated || null };
+}));
+
+// The user has seen the current built-ins: stop counting them.
+router.post('/updates/seen', handle(async () => {
+  const index = await storeIndex(false);
+  const seen = { ...seenBuiltins() };
+  for (const item of index.items) if (item.builtin_id) seen[item.builtin_id] = item.version;
+  getRepo().run('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value', [SEEN_KEY, JSON.stringify(seen)]);
+  getRepo().save();
+  return { seen: Object.keys(seen).length };
+}));
 
 router.get('/browse', handle(async (req) => {
   const platform = ['ps4', 'ps5'].includes(req.query.platform) ? req.query.platform : 'ps5';

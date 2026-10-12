@@ -115,3 +115,29 @@ test('our own record still wins over a file that happens to share the name', () 
   assert.equal(item.installed, 1);
   assert.equal(item.update, true);
 });
+
+test('the same file under another name is still the same payload', () => {
+  const sum = 'b'.repeat(64);
+  const local = localIndex({ payloads: [{ filename: 'kstuff-renamed.elf', version: null, sha256: sum }] });
+  const [item] = decorateInstalled([{ kind: 'payload', id: 'kstuff', name: 'kstuff.elf', version: 1, sha256: sum }], { local });
+  assert.equal(item.inLibrary, true);
+  assert.equal(item.localName, 'kstuff-renamed.elf');
+  // A different file that happens to share the name is not a match by sum,
+  // but the name still counts: the user has something called that.
+  const [other] = decorateInstalled([{ kind: 'payload', id: 'kstuff', name: 'kstuff-renamed.elf', version: 1, sha256: 'c'.repeat(64) }], { local });
+  assert.equal(other.inLibrary, true);
+  const [absent] = decorateInstalled([{ kind: 'payload', id: 'x', name: 'x.elf', version: 1, sha256: 'd'.repeat(64) }], { local });
+  assert.equal(absent.inLibrary, false);
+});
+
+test('a checksum match beats a name match when both are possible', () => {
+  const sum = 'e'.repeat(64);
+  const local = localIndex({ payloads: [
+    { filename: 'kstuff.elf', version: 'v1.00', sha256: 'f'.repeat(64) },
+    { filename: 'kstuff-new.elf', version: 'v1.11', sha256: sum },
+  ] });
+  const [item] = decorateInstalled([{ kind: 'payload', id: 'kstuff', name: 'kstuff.elf', version: 1, app_version: '1.11', sha256: sum }], { local });
+  assert.equal(item.localName, 'kstuff-new.elf');
+  assert.equal(item.localVersion, 'v1.11');
+  assert.equal(item.update, false);
+});
