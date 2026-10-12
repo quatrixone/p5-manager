@@ -167,6 +167,26 @@ def wakeup(ip: str, regist_key: str, host_type: Optional[str] = None) -> None:
     }, host_type)
 
 
+# The port a session request goes to (chiaki: SESSION_PORT). A console can
+# answer discovery while this one is shut: Remote Play switched off, or its
+# service gone after a crash.
+SESSION_PORT = 9295
+
+
+async def tcp_open(ip: str, port: int, timeout: float = 2.0) -> bool:
+    """True when something accepts a TCP connection there."""
+    try:
+        _, writer = await asyncio.wait_for(asyncio.open_connection(ip, port), timeout)
+    except (OSError, asyncio.TimeoutError):
+        return False
+    writer.close()
+    try:
+        await writer.wait_closed()
+    except OSError:
+        pass
+    return True
+
+
 def launch(ip: str, account_id: str, host_type: Optional[str] = None) -> bool:
     cred = launch_credential(account_id)
     if not cred:

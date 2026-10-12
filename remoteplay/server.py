@@ -315,6 +315,30 @@ async def _bring_up(ip: str, regist_key: str, host_type: Optional[str], account_
         await asyncio.sleep(3.0)
 
 
+async def _require_rp_service(ip: str, account_id: str, host_type: Optional[str]) -> None:
+    """The console is on; make sure Remote Play itself is listening.
+
+    A console that answers discovery can still refuse the session port -
+    Remote Play switched off in its settings, or its service gone after a
+    crash. LAUNCH is the one thing that can still start it (it also signs
+    the account in past the user-select screen); when the port stays shut
+    after that, asking p5rp twenty times only hides what is wrong.
+    """
+    if await ddp.tcp_open(ip, ddp.SESSION_PORT, timeout=2.0):
+        return
+    if account_id and ddp.launch(ip, account_id, host_type):
+        log.info("console %s does not listen on %d - LAUNCH sent", ip, ddp.SESSION_PORT)
+        for _ in range(4):
+            await asyncio.sleep(2.0)
+            if await ddp.tcp_open(ip, ddp.SESSION_PORT, timeout=2.0):
+                return
+    raise HTTPException(502, (
+        "The console is on but Remote Play is not running on it: nothing answers on port "
+        f"{ddp.SESSION_PORT}. Check Settings > System > Remote Play on the console, and if it is "
+        "already on, restart the console - a crash leaves the Remote Play service down."
+    ))
+
+
 class WakeReq(BaseModel):
     ip: str
     account_id: Optional[str] = None
@@ -407,7 +431,9 @@ async def _session_open(req: StartSessionReq) -> Dict[str, Any]:
     if req.host_type:
         is_ps4 = str(req.host_type).upper() == "PS4"
     host_type = "PS4" if is_ps4 else "PS5"
-    await _bring_up(req.ip, regist, host_type, _decimal_account_id(req.account_id, req.user_profile))
+    account = _decimal_account_id(req.account_id, req.user_profile)
+    await _bring_up(req.ip, regist, host_type, account)
+    await _require_rp_service(req.ip, account, host_type)
 
     last: Optional[Exception] = None
     session = None
