@@ -30,17 +30,27 @@ endforeach()
 set(CURL_DISABLE_LDAP ON CACHE BOOL "" FORCE)
 set(CURL_USE_OPENSSL ON CACHE BOOL "" FORCE)
 
-# OpenSSL for Android: the NDK's prefab package, pulled in by Gradle.
+# OpenSSL for Android: the NDK's prefab package, pulled in by Gradle. It
+# arrives as imported targets, while chiaki and its vendored curl both call
+# find_package(OpenSSL) and expect the variables FindOpenSSL produces - so
+# fill those in from the targets, in the cache, where find_path and
+# find_library look before searching.
 find_package(openssl REQUIRED CONFIG)
-get_target_property(OPENSSL_SSL_LIB openssl::ssl IMPORTED_LOCATION)
-get_target_property(OPENSSL_CRYPTO_LIB openssl::crypto IMPORTED_LOCATION)
-get_target_property(OPENSSL_INCLUDE_DIR openssl::ssl INTERFACE_INCLUDE_DIRECTORIES)
+get_target_property(P5RP_SSL_LIB openssl::ssl IMPORTED_LOCATION)
+get_target_property(P5RP_CRYPTO_LIB openssl::crypto IMPORTED_LOCATION)
+get_target_property(P5RP_SSL_INCLUDES openssl::ssl INTERFACE_INCLUDE_DIRECTORIES)
+list(GET P5RP_SSL_INCLUDES 0 P5RP_SSL_INCLUDE)
+if(NOT EXISTS "${P5RP_SSL_INCLUDE}/openssl/opensslv.h")
+  message(FATAL_ERROR "The OpenSSL prefab package has no headers at ${P5RP_SSL_INCLUDE}")
+endif()
+set(OPENSSL_INCLUDE_DIR "${P5RP_SSL_INCLUDE}" CACHE PATH "" FORCE)
+set(OPENSSL_SSL_LIBRARY "${P5RP_SSL_LIB}" CACHE FILEPATH "" FORCE)
+set(OPENSSL_CRYPTO_LIBRARY "${P5RP_CRYPTO_LIB}" CACHE FILEPATH "" FORCE)
+set(OPENSSL_LIBRARIES ${P5RP_SSL_LIB} ${P5RP_CRYPTO_LIB})
+set(OPENSSL_INCLUDE_DIRS "${P5RP_SSL_INCLUDE}")
 set(OPENSSL_FOUND TRUE)
-set(OPENSSL_LIBRARIES ${OPENSSL_SSL_LIB} ${OPENSSL_CRYPTO_LIB})
-set(OPENSSL_INCLUDE_DIRS ${OPENSSL_INCLUDE_DIR})
-set(OPENSSL_SSL_LIBRARY ${OPENSSL_SSL_LIB} CACHE FILEPATH "" FORCE)
-set(OPENSSL_CRYPTO_LIBRARY ${OPENSSL_CRYPTO_LIB} CACHE FILEPATH "" FORCE)
-set(OPENSSL_ROOT_DIR "" CACHE PATH "" FORCE)
+set(OPENSSL_USE_STATIC_LIBS OFF)
+message(STATUS "OpenSSL for Android: ${P5RP_SSL_LIB} (headers ${P5RP_SSL_INCLUDE})")
 
 # The three libraries chiaki-lib wants from the system, built from source.
 FetchContent_Declare(json-c
