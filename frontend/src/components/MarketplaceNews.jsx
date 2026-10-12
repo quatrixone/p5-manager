@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
+import { ItemActions } from './MarketplaceItem.jsx';
 
-export default function MarketplaceNews({ platform, onOpen }) {
+export default function MarketplaceNews({ platform, profiles = [], consoleOnline = null, onNotification, onOpen }) {
   const [data, setData] = useState(null), [error, setError] = useState('');
   const [query, setQuery] = useState(''), [event, setEvent] = useState('all'), [page, setPage] = useState(1);
   const [loading, setLoading] = useState(false), [revision, setRevision] = useState(0);
@@ -43,7 +44,10 @@ export default function MarketplaceNews({ platform, onOpen }) {
           <div className="font-bold mt-xs" style={{ wordBreak: 'break-word' }}>{item.name}</div>
           <div className="text-xs text-muted">{item.source === 'marketplace' ? 'Marketplace' : 'FPKGi Catalog Hub'} · {item.category || item.kind}{(item.app_version || item.version) ? ` · v${item.app_version || item.version}` : ''}</div>
           <div className="text-xs text-muted mt-xs">{new Date(item.detectedAt).toLocaleString()}</div>
-          <button className="btn btn-secondary mt-sm" onClick={() => onOpen(item)}>{item.source === 'marketplace' ? 'View in Marketplace' : 'View in catalog'}</button>
+          <div className="mt-sm">
+            <ItemActions item={item} profiles={profiles} consoleOnline={consoleOnline} onNotification={onNotification} onDone={() => setRevision(v => v + 1)} />
+          </div>
+          <button className="btn btn-secondary mt-xs" onClick={() => onOpen(item)}>Show in the list</button>
         </div>
       </div>)}
     </div>

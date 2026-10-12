@@ -241,6 +241,23 @@ export async function initDatabase() {
     )
   `);
 
+  // Catalogs the user added themselves. They sit beside the curated store
+  // and the FPKGi hub in one Marketplace list; `format` is detected from the
+  // content on the first read and kept here so the UI can say what it is.
+  db.run(`
+    CREATE TABLE IF NOT EXISTS store_sources (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      url TEXT NOT NULL UNIQUE,
+      format TEXT,
+      console_type TEXT,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      last_fetched_at DATETIME,
+      last_error TEXT
+    )
+  `);
+
   migrateLegacySettings(db);
 
   // Source registry (SMB + FTP origins used by the file browser). Previously

@@ -18,6 +18,8 @@ import {
 // runs on the console (default port 10101, POST + JSON under /api/v1,
 // `status: 0` means OK). The browser never talks to the console directly:
 // no CORS / mixed-content trouble, and destructive calls are validated here.
+import { librarySnapshots } from '../lib/installedState.js';
+
 const router = express.Router();
 
 // Short-lived capability URLs let the PS4's Remote Package Installer fetch a
@@ -200,6 +202,13 @@ router.post('/:ip/ps4/install', async (req, res) => {
 
 // PS4's installed titles are listed in app.db. This endpoint only downloads
 // and reads that database over GoldHEN FTP; it never modifies console data.
+// Keep what the console reported, by profile, so the Marketplace can still
+// say what is installed while the console is off.
+function rememberLibrary(ip, library) {
+  const profile = getRepo().queryOne('SELECT id FROM profiles WHERE ip_address = ? ORDER BY is_default DESC, id ASC LIMIT 1', [ip]);
+  if (profile) librarySnapshots.write(profile.id, library);
+}
+
 router.get('/:ip/ps4', async (req, res) => {
   const ftp = new FtpClient(12_000);
   const chunks = [];
@@ -219,6 +228,7 @@ router.get('/:ip/ps4', async (req, res) => {
       ...g,
       icon: `/api/library/${req.params.ip}/icon/${g.title_id}`,
     }));
+    rememberLibrary(req.params.ip, { games });
     res.json({ platform: 'ps4', source: 'app.db', games, count: games.length });
   } catch (e) {
     log('warn', `PS4 library ${req.params.ip}: ${e.message}`);
@@ -264,6 +274,7 @@ router.get('/:ip/overview', async (req, res) => {
       sm(ip, '/games/storage/status').catch(() => null),
     ]);
     const volumes = buildVolumes(storage.mounts);
+    rememberLibrary(ip, games);
     res.json({
       version: version.shadowmount_version,
       capabilities: version.capabilities || [],

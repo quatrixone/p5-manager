@@ -170,3 +170,14 @@ test.after(async () => {
   await Promise.all([new Promise(resolve => source.close(resolve)), new Promise(resolve => apiServer.close(resolve))]);
   flushPendingSave(); saveDatabase(); fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('the default payload list is a marketplace catalog of its own, keyed by file name', () => {
+  const list = [{ filename: 'klogsrv-ps5.elf', url: 'https://example.org/k.elf', console_type: 'ps5', port: 9021 }];
+  assert.deepEqual(catalog.validateBuiltinCatalog('payloads.json', list), list);
+  assert.equal(catalog.builtinKey(list[0]), 'klogsrv-ps5.elf');
+  assert.throws(() => catalog.validateBuiltinCatalog('payloads.json', [{ filename: '../escape.elf', url: 'https://example.org/e' }]), /file name/);
+  assert.throws(() => catalog.validateBuiltinCatalog('payloads.json', [{ filename: 'a.elf' }]), /URL/);
+  assert.throws(() => catalog.validateBuiltinCatalog('payloads.json', [...list, ...list]), /Duplicate/);
+  assert.throws(() => catalog.validateBuiltinCatalog('payloads.json', [{ filename: 'a.elf', url: 'https://example.org/a', port: 'nine' }]), /port/);
+  assert.throws(() => catalog.validateBuiltinCatalog('payloads.json', [{ filename: 'a.elf', url: 'https://example.org/a', console_type: 'ps3' }]), /platform/);
+});

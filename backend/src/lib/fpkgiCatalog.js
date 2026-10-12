@@ -23,7 +23,13 @@ export function externalUrl(value) {
 }
 const text = (v, max = 500) => typeof v === 'string' && v.trim() ? v.slice(0, max) : null;
 export function parseFpkgiCatalog(data, platform, category) {
-  const source = catalogPath(platform, category);
+  return parseFpkgiRows(data, { source: catalogPath(platform, category), category, console_type: platform });
+}
+
+// The FPKGi shape without the Catalog Hub's file layout, so a catalog a
+// user points us at is read exactly like one of ours. `source` only has to
+// be stable: it keeps the generated ids apart between catalogs.
+export function parseFpkgiRows(data, { source, category = 'custom', console_type = null }) {
   if (!data?.DATA || typeof data.DATA !== 'object' || Array.isArray(data.DATA)) throw new Error('Invalid FPKGi catalog DATA');
   if (Object.keys(data.DATA).length > 100_000) throw new Error('FPKGi catalog has too many entries');
   return Object.entries(data.DATA).filter(([, row]) => row && typeof row === 'object' && !Array.isArray(row)).map(([url, row]) => ({
@@ -34,7 +40,7 @@ export function parseFpkgiCatalog(data, platform, category) {
     size: Number.isSafeInteger(row.size) && row.size > 0 ? row.size : null,
     icon: externalUrl(row.cover_url), package_url: externalUrl(url),
     sha256: typeof row.sha256 === 'string' && /^[a-f0-9]{64}$/i.test(row.sha256) ? row.sha256.toLowerCase() : null,
-    category, console_type: platform, source_path: source,
+    category, console_type, source_path: source,
   }));
 }
 

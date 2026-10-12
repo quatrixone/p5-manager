@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import PayloadList from './components/PayloadList';
-import Tools from './components/Tools';
+import LogViewer from './components/LogViewer';
+import Marketplace from './components/Marketplace';
 import AutoloadBuilder from './components/AutoloadBuilder';
 import PS5Control from './components/PS5Control';
 import Settings from './components/Settings';
@@ -21,7 +22,8 @@ const tabs = [
   { id: 'files', label: 'File Ops', icon: '📁' },
   { id: 'library', label: 'Library', icon: '🕹️' },
   { id: 'remote', label: 'P5 Control', icon: '🎮' },
-  { id: 'tools', label: 'Tools', icon: '🧰' },
+  { id: 'store', label: 'Marketplace', icon: '🛒' },
+  { id: 'logs', label: 'Logs', icon: '📋' },
   { id: 'settings', label: 'Settings', icon: '⚙️' }
 ];
 
@@ -37,8 +39,9 @@ function App() {
     // Dashboard and standalone remoteplay tabs were removed - migrate.
     if (!saved || saved === 'dashboard') return 'payloads';
     if (saved === 'remoteplay') return 'remote';
-    // Logs moved into Tools.
-    if (saved === 'logs') return 'tools';
+    // The Tools tab is gone: its two halves, the Marketplace and the
+    // logs, are sections of their own again.
+    if (saved === 'tools') return 'store';
     return saved;
   });
   const [showBuiltinEditor, setShowBuiltinEditor] = useState(readHashRoute);
@@ -468,8 +471,11 @@ function App() {
               onProfileSetDefault={setDefaultProfile}
             />
           )}
-          {!showBuiltinEditor && activeTab === 'tools' && (
-            <Tools logs={logs} onRefreshLogs={fetchLogs} profiles={profiles} onNotification={showNotification} />
+          {!showBuiltinEditor && activeTab === 'store' && (
+            <Marketplace profiles={profiles} onNotification={showNotification} />
+          )}
+          {!showBuiltinEditor && activeTab === 'logs' && (
+            <LogViewer logs={logs} onRefresh={fetchLogs} profiles={profiles} />
           )}
         </main>
       </div>
@@ -599,7 +605,10 @@ function Sidebar({ activeTab, setActiveTab }) {
 function MobileNav({ activeTab, setActiveTab }) {
   const { mode } = usePlatform();
   const [moreOpen, setMoreOpen] = useState(false);
-  const primaryIds = ['files', 'library', 'remote', 'payloads'];
+  // The bar holds the daily sections and the Marketplace, in `tabs`
+  // order, so Marketplace is the last button before More; the logs and
+  // the settings are one tap further, inside the More sheet.
+  const primaryIds = ['files', 'library', 'remote', 'payloads', 'store'];
   const primaryTabs = tabs.filter(tab => primaryIds.includes(tab.id));
   const moreTabs = tabs.filter(tab => !primaryIds.includes(tab.id));
   const selectTab = (id) => {
@@ -650,7 +659,7 @@ function MobileNav({ activeTab, setActiveTab }) {
             <div className="mobile-more-sheet-head">
               <div>
                 <strong>More</strong>
-                <div className="text-xs text-muted">Tools and settings</div>
+                <div className="text-xs text-muted">Logs and settings</div>
               </div>
               <button className="btn btn-icon btn-ghost" onClick={() => setMoreOpen(false)} aria-label="Close">×</button>
             </div>

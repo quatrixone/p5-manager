@@ -1,4 +1,4 @@
-// Tools -> Marketplace: Autoload templates, input scripts and homebrew
+// Marketplace: Autoload templates, input scripts and homebrew
 // apps shared by users. They live in store/ of the repository
 // (lib/storeItem.js says what an item is); the app reads store/index.json
 // and the items from GitHub, installs them, and turns the user's own
@@ -12,6 +12,9 @@
 // this server.
 import express from 'express';
 import { fpkgiCatalog, FPKGI_CATEGORIES, FPKGI_REPO, catalogPage } from '../lib/fpkgiCatalog.js';
+import { catalogSources, decorateCatalogRows, normalizeSourceUrl, detectSourceFormat } from '../lib/catalogSource.js';
+import { browse } from '../lib/marketplaceBrowse.js';
+import { decorateInstalled, librarySnapshots } from '../lib/installedState.js';
 import { createMarketplaceNews, NEWS_INTERVAL_MS } from '../lib/marketplaceNews.js';
 import { prepareStoreDraft } from '../lib/storeOwnership.js';
 import { STORE_BASE, fetchCatalogJson, readMarketplaceBuiltinList } from '../lib/marketplaceCatalog.js';
@@ -101,14 +104,25 @@ const news = createMarketplaceNews({ file: path.join(internalDataDir, 'marketpla
 const newsTimer = setInterval(() => {
   if (!news.hasStarted()) return;
   news.refresh({ force: true }).catch(e => log('error', `Marketplace news refresh: ${e.message}`));
-  Promise.all(['inputScripts.json', 'templates.json'].map(name => readMarketplaceBuiltinList(name, { refresh: true })))
+  Promise.all(['inputScripts.json', 'templates.json', 'payloads.json'].map(name => readMarketplaceBuiltinList(name, { refresh: true })))
     .catch(e => log('error', `Marketplace script refresh: ${e.message}`));
 }, NEWS_INTERVAL_MS);
 newsTimer.unref();
 router.get('/news', handle(async req => {
   const platform = req.query.platform || 'ps4';
   if (!['ps4', 'ps5'].includes(platform)) throw Object.assign(new Error('Unknown platform'), { status: 400 });
-  return news.page({ force: req.query.refresh === '1', platform, query: req.query.q, event: req.query.event || 'all', page: req.query.page });
+  const page = await news.page({ force: req.query.refresh === '1', platform, query: req.query.q, event: req.query.event || 'all', page: req.query.page });
+  // The feed offers the same actions as the list, so it needs the same
+  // answer about what is already installed.
+  const profileId = activeProfileId(req.query.profileId);
+  const snapshot = profileId ? librarySnapshots.read(profileId) : null;
+  const decorated = decorateInstalled(
+    page.items.map((i) => (i.source === 'marketplace'
+      ? { ...i, id: i.store_id, newsId: i.newsId, origin: 'marketplace', installable: true, verified: true }
+      : { ...i, origin: 'fpkgi', installable: !!i.package_url && /\.pkg$/i.test(i.package_url), verified: !!i.sha256 })),
+    { installs: installs(), titles: snapshot?.titles || null, takenAt: snapshot?.takenAt || null },
+  );
+  return { ...page, items: decorated, libraryTakenAt: snapshot?.takenAt || null };
 }));
 
 router.get('/index', handle(async (req) => {
@@ -127,8 +141,156 @@ router.get('/index', handle(async (req) => {
   };
 }));
 
+// ---------- sources the user added, and the one list they feed ----------
+
+const sourceRows = () => getRepo().queryAll(
+  'SELECT id, name, url, format, console_type, enabled, created_at, last_fetched_at, last_error FROM store_sources ORDER BY id',
+).map((r) => ({ ...r, enabled: !!r.enabled }));
+
+const sourceName = (value, url) => {
+  const name = String(value || '').trim().slice(0, 80);
+  if (name) return name;
+  try { return new URL(url).hostname; } catch { return 'Catalog'; }
+};
+
+function sourceById(id) {
+  const row = getRepo().queryOne('SELECT id, name, url, format, console_type, enabled FROM store_sources WHERE id = ?', [Number(id)]);
+  if (!row) throw Object.assign(new Error('no such source'), { status: 404 });
+  return { ...row, enabled: !!row.enabled };
+}
+
+// Read a source and keep what happened on its row, so the panel can show
+// when it was last read and why it is empty.
+async function readSource(source, { refresh = false } = {}) {
+  const result = await catalogSources.read(source, { refresh });
+  getRepo().run('UPDATE store_sources SET last_fetched_at = ?, last_error = ? WHERE id = ?',
+    [result.fetchedAt, result.warning || null, source.id]);
+  getRepo().save();
+  return result;
+}
+
+router.get('/sources', handle(async () => ({ sources: sourceRows() })));
+
+router.post('/sources', handle(async (req) => {
+  const url = normalizeSourceUrl(req.body?.url);
+  const consoleType = req.body?.console_type || null;
+  if (consoleType && !['ps4', 'ps5'].includes(consoleType)) throw Object.assign(new Error('a source is for PS4, PS5 or both'), { status: 400 });
+  if (getRepo().queryOne('SELECT id FROM store_sources WHERE url = ?', [url])) throw Object.assign(new Error('that source is already in the list'), { status: 409 });
+  const name = sourceName(req.body?.name, url);
+  const id = getRepo().runAndSave(
+    'INSERT INTO store_sources (name, url, console_type, enabled) VALUES (?, ?, ?, 1)', [name, url, consoleType],
+  );
+  // Read it once now: the user finds out here whether the URL is a catalog
+  // at all, instead of wondering why the list did not change.
+  const source = { id, name, url, console_type: consoleType };
+  const result = await readSource(source, { refresh: true });
+  if (result.warning) {
+    getRepo().runAndSave('DELETE FROM store_sources WHERE id = ?', [id]);
+    catalogSources.forget(id);
+    throw Object.assign(new Error(result.warning), { status: 502 });
+  }
+  const format = detectFormatOf(result.items);
+  getRepo().runAndSave('UPDATE store_sources SET format = ? WHERE id = ?', [format, id]);
+  log('info', `marketplace: added source "${name}" (${format}, ${result.items.length} items)`);
+  return { source: { ...source, format, enabled: true, items: result.items.length } };
+}));
+
+const detectFormatOf = (items) => (items.some((i) => i.kind === 'catalog') ? 'fpkgi' : 'store');
+
+router.patch('/sources/:id', handle(async (req) => {
+  const source = sourceById(req.params.id);
+  const name = req.body?.name === undefined ? source.name : sourceName(req.body.name, source.url);
+  const enabled = req.body?.enabled === undefined ? source.enabled : !!req.body.enabled;
+  getRepo().runAndSave('UPDATE store_sources SET name = ?, enabled = ? WHERE id = ?', [name, enabled ? 1 : 0, source.id]);
+  return { source: { ...source, name, enabled } };
+}));
+
+router.delete('/sources/:id', handle(async (req) => {
+  const source = sourceById(req.params.id);
+  getRepo().runAndSave('DELETE FROM store_sources WHERE id = ?', [source.id]);
+  catalogSources.forget(source.id);
+  fs.rmSync(path.join(internalDataDir, 'marketplace', 'sources', `${source.id}.json`), { force: true });
+  log('info', `marketplace: removed source "${source.name}"`);
+  return {};
+}));
+
+// The curated index as list items: same shape as a catalog row, so the one
+// list does not have to know which half an item came from.
+async function curatedItems(refresh) {
+  const [index, icons, ps4] = await Promise.all([storeIndex(refresh), homebrewIcons({ refresh }), ps4HomebrewMetadata({ refresh })]);
+  const rows = [...ps4.rows, ...icons.rows.filter((r) => !ps4.rows.some((p) => p.id === r.id && p.name === r.name))];
+  return {
+    items: index.items.map((i) => ({ ...i, icon: matchHomebrewIcon(i, rows), origin: 'marketplace', installable: true, verified: true })),
+    warning: [icons.warning, ps4.warning].filter(Boolean).join(' · ') || null,
+  };
+}
+
+async function fpkgiGroup(platform, category, refresh) {
+  const wanted = category === 'all' ? FPKGI_CATEGORIES.map((c) => c.id) : [category];
+  const items = [];
+  const warnings = [];
+  const queue = [...wanted];
+  // Four at a time, as the news collector does: the hub is 22 files.
+  await Promise.all(Array.from({ length: 4 }, async () => {
+    while (queue.length) {
+      const id = queue.shift();
+      try {
+        const data = await fpkgiCatalog.read(platform, id, { refresh });
+        if (data.warning) warnings.push(data.warning);
+        items.push(...decorateCatalogRows(data.items, { origin: 'fpkgi', author: 'FPKGi Catalog Hub' }));
+      } catch (e) { warnings.push(`FPKGi ${id}: ${e.message}`); }
+    }
+  }));
+  return { origin: 'fpkgi', label: 'FPKGi Catalog Hub', items, warning: warnings[0] || null };
+}
+
+function activeProfileId(value) {
+  const asked = Number(value);
+  if (Number.isSafeInteger(asked) && asked > 0) return asked;
+  const row = getRepo().queryOne('SELECT id FROM profiles ORDER BY is_default DESC, id ASC LIMIT 1');
+  return row?.id || null;
+}
+
+router.get('/browse', handle(async (req) => {
+  const platform = ['ps4', 'ps5'].includes(req.query.platform) ? req.query.platform : 'ps5';
+  const refresh = req.query.refresh === '1';
+  const source = String(req.query.source || 'all');
+  const category = String(req.query.category || 'all');
+  const groups = [];
+  if (source === 'all' || source === 'marketplace') {
+    try {
+      const curated = await curatedItems(refresh);
+      groups.push({ origin: 'marketplace', label: 'Marketplace', items: curated.items, warning: curated.warning });
+    } catch (e) { groups.push({ origin: 'marketplace', label: 'Marketplace', items: [], warning: `Marketplace unavailable: ${e.message}` }); }
+  }
+  if (source === 'all' || source === 'fpkgi') groups.push(await fpkgiGroup(platform, category, refresh));
+  for (const row of sourceRows().filter((r) => r.enabled)) {
+    const origin = `source:${row.id}`;
+    if (source !== 'all' && source !== origin) continue;
+    const result = await readSource(row, { refresh });
+    groups.push({ origin, label: row.name, items: result.items, warning: result.warning });
+  }
+  const profileId = activeProfileId(req.query.profileId);
+  const snapshot = profileId ? librarySnapshots.read(profileId) : null;
+  const page = browse(groups, {
+    platform, source, category, kind: String(req.query.kind || 'all'), query: req.query.q,
+    updatesOnly: req.query.updates === '1', page: req.query.page, limit: req.query.limit,
+  });
+  return {
+    ...page,
+    items: decorateInstalled(page.items, { installs: installs(), titles: snapshot?.titles || null, takenAt: snapshot?.takenAt || null }),
+    sources: [
+      { id: 'marketplace', label: 'Marketplace' },
+      { id: 'fpkgi', label: 'FPKGi Catalog Hub' },
+      ...sourceRows().filter((r) => r.enabled).map((r) => ({ id: `source:${r.id}`, label: r.name })),
+    ],
+    categories: FPKGI_CATEGORIES,
+    libraryTakenAt: snapshot?.takenAt || null,
+  };
+}));
+
 router.post('/refresh-builtins', handle(async () => {
-  await Promise.all(['inputScripts.json', 'templates.json'].map(name => readMarketplaceBuiltinList(name, { refresh: true })));
+  await Promise.all(['inputScripts.json', 'templates.json', 'payloads.json'].map(name => readMarketplaceBuiltinList(name, { refresh: true })));
   return {};
 }));
 
@@ -305,10 +467,13 @@ router.get('/jobs/:id', (req, res) => {
 });
 
 // Downloads `f` into `dir`, checking its SHA-256 (and size) on the way.
-async function downloadChecked(f, dir, onProgress) {
+async function downloadChecked(f, dir, onProgress, { allowUnverified = false } = {}) {
   const name = homebrewFileName(f);
   const dest = path.join(dir, name);
-  if (fs.existsSync(dest)) {
+  // A curated listing always pins a checksum. A catalog entry often does
+  // not, and the caller has to say out loud that it accepts that.
+  if (!f.sha256 && !allowUnverified) throw new Error(`${name} has no checksum to check it against`);
+  if (fs.existsSync(dest) && f.sha256) {
     const have = crypto.createHash('sha256').update(fs.readFileSync(dest)).digest('hex');
     if (have === f.sha256) return dest;
   }
@@ -332,7 +497,7 @@ async function downloadChecked(f, dir, onProgress) {
     fs.createWriteStream(tmp),
   );
   const sum = hash.digest('hex');
-  if (sum !== f.sha256 || (f.size && got !== f.size)) {
+  if ((f.sha256 && sum !== f.sha256) || (f.sha256 && f.size && got !== f.size)) {
     fs.rmSync(tmp, { force: true });
     throw new Error(`${name} is not the file the marketplace lists (checksum ${sum.slice(0, 12)}…) - not installing it`);
   }
@@ -449,5 +614,77 @@ async function installHomebrew(kind, id, profileId) {
   });
   return { job };
 }
+
+// ---------- installing a package a catalog listed ----------
+
+// Catalog rows live in the readers' caches, so an install resolves the
+// same row the list showed instead of trusting what the browser sends.
+async function findCatalogItem(origin, id, platform) {
+  if (origin === 'fpkgi') {
+    for (const category of FPKGI_CATEGORIES) {
+      const data = await fpkgiCatalog.read(platform, category.id, {});
+      const row = data.items.find((i) => i.id === id);
+      if (row) return decorateCatalogRows([row], { origin, author: 'FPKGi Catalog Hub' })[0];
+    }
+    throw Object.assign(new Error('that package is no longer in the catalog'), { status: 404 });
+  }
+  const sourceId = /^source:(\d+)$/.exec(origin)?.[1];
+  if (!sourceId) throw Object.assign(new Error('unknown catalog'), { status: 400 });
+  const result = await readSource(sourceById(sourceId));
+  const item = result.items.find((i) => i.id === id);
+  if (!item) throw Object.assign(new Error('that package is no longer in the source'), { status: 404 });
+  return item;
+}
+
+router.post('/install-catalog', handle(async (req) => {
+  const { origin, id, profileId } = req.body || {};
+  const profile = getRepo().queryOne('SELECT id, name, ip_address, console_type FROM profiles WHERE id = ?', [Number(profileId)]);
+  if (!profile?.ip_address) throw Object.assign(new Error('pick the console to install it on'), { status: 400 });
+  const platform = profile.console_type || 'ps5';
+  const item = await findCatalogItem(String(origin), String(id), platform);
+  if (!item.installable) throw Object.assign(new Error('this listing has no package this app can install'), { status: 400 });
+  if (item.console_type && item.console_type !== platform) {
+    throw Object.assign(new Error(`this is a ${item.console_type.toUpperCase()} package and ${profile.name} is not one`), { status: 400 });
+  }
+  // A catalog rarely pins a checksum. Installing anyway is the user's call,
+  // and it is theirs to make explicitly.
+  if (!item.verified && req.body?.acknowledgeUnverified !== true) {
+    throw Object.assign(new Error('this package has no checksum; confirm that you want to install it unverified'), { status: 428 });
+  }
+  const name = `${(item.title_id || item.id)}.pkg`;
+  const job = newJob(async (j, say) => {
+    say(`Downloading ${item.name}`);
+    const file = await downloadChecked(
+      { url: item.package_url, name, size: item.size || 0, sha256: item.sha256 || null },
+      path.join(downloadsDir, 'store', 'catalog'),
+      (got, total) => { j.step = total ? `Downloading ${item.name}: ${Math.floor((got / total) * 100)} %` : `Downloading ${item.name}: ${(got / 1e6).toFixed(1)} MB`; },
+      { allowUnverified: !item.verified },
+    );
+    let done;
+    if (platform === 'ps5') {
+      say(`Adding ${item.name} to the install queue`);
+      const r = await fetch(`${API}/convert/install/queue`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ip: profile.ip_address, source_kind: 'local', local_path: file }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.error || `install queue answered ${r.status}`);
+      done = `${item.name}: in the install queue (File Ops → Tasks)`;
+    } else {
+      await installPs4Pkg(profile.ip_address, file, say);
+      done = `${item.name}: installed on ${profile.name}`;
+    }
+    getRepo().run(
+      `INSERT INTO store_installs (kind, store_id, version, name, data, local_id) VALUES ('catalog', ?, 1, ?, ?, NULL)
+       ON CONFLICT(kind, store_id) DO UPDATE SET name = excluded.name, data = excluded.data, installed_at = CURRENT_TIMESTAMP`,
+      [`${item.origin}:${item.id}`, item.name, JSON.stringify(encodeCatalog(item))],
+    );
+    getRepo().save();
+    log('info', `marketplace: installed ${item.verified ? '' : 'unverified '}catalog package "${item.name}" from ${item.origin} (${done})`);
+    say(done);
+    return { done: [done] };
+  });
+  return { job, unverified: !item.verified };
+}));
 
 export default router;

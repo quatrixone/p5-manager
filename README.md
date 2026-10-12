@@ -17,7 +17,8 @@ P5 Manager is an independent hobby project and is not affiliated with Sony Inter
 - **Payloads:** organize, update, and send payloads to the selected console.
 - **File Ops:** browse local, network, and console storage; transfer files and run supported install, download, extract, and conversion tasks.
 - **Library:** view and manage titles detected by ShadowMountPlus. Available actions depend on the console.
-- **Tools:** console logs and a Marketplace for payloads, homebrew apps, Autoload templates and input scripts. See [store/README.md](store/README.md).
+- **Marketplace:** payloads, homebrew apps, Autoload templates and input scripts, shared between users. See [store/README.md](store/README.md).
+- **Logs:** console and kernel logs, with filters.
 - **Saves:** mount, back up and restore PS5 saves in File Ops. The save mounter payload has its own GPL-3.0 licence.
 - **Mobile-ready:** responsive layout and installable PWA.
 
