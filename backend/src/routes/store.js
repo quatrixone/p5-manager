@@ -286,8 +286,17 @@ function activeProfileId(value) {
 // looked. Deliberately cheap - the curated index only, no catalogs.
 const SEEN_KEY = 'store_builtins_seen';
 const seenBuiltins = () => {
-  try { return JSON.parse(getRepo().queryScalar('SELECT value FROM settings WHERE key = ?', [SEEN_KEY]) || '{}'); } catch { return {}; }
+  const stored = getRepo().queryScalar('SELECT value FROM settings WHERE key = ?', [SEEN_KEY]);
+  if (stored === undefined || stored === null) return null;
+  try { return JSON.parse(stored); } catch { return {}; }
 };
+function rememberBuiltins(index) {
+  const seen = { ...(seenBuiltins() || {}) };
+  for (const item of index.items) if (item.builtin_id) seen[item.builtin_id] = item.version;
+  getRepo().run('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value', [SEEN_KEY, JSON.stringify(seen)]);
+  getRepo().save();
+  return seen;
+}
 
 router.get('/updates', handle(async (req) => {
   const platform = ['ps4', 'ps5'].includes(req.query.platform) ? req.query.platform : null;
@@ -297,9 +306,11 @@ router.get('/updates', handle(async (req) => {
     { installs: installs(), local: localLibrary() },
   );
   const updates = items.filter((i) => i.update).map((i) => ({ kind: i.kind, id: i.id, name: i.name, version: i.app_version || i.version }));
-  const seen = seenBuiltins();
   // A built-in is read from the store at run time, so it is never
-  // "installed"; what the user wants to know is that it changed.
+  // "installed"; what the user wants to know is that it changed. On the
+  // very first check nothing has been missed, so the current versions
+  // become the baseline instead of eight announcements.
+  const seen = seenBuiltins() ?? rememberBuiltins(index);
   const builtins = items
     .filter((i) => i.builtin_id && Number(i.version) > Number(seen[i.builtin_id] || 0))
     .map((i) => ({ kind: i.kind, id: i.id, name: i.name, version: i.version, builtin_id: i.builtin_id }));
@@ -307,14 +318,7 @@ router.get('/updates', handle(async (req) => {
 }));
 
 // The user has seen the current built-ins: stop counting them.
-router.post('/updates/seen', handle(async () => {
-  const index = await storeIndex(false);
-  const seen = { ...seenBuiltins() };
-  for (const item of index.items) if (item.builtin_id) seen[item.builtin_id] = item.version;
-  getRepo().run('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value', [SEEN_KEY, JSON.stringify(seen)]);
-  getRepo().save();
-  return { seen: Object.keys(seen).length };
-}));
+router.post('/updates/seen', handle(async () => ({ seen: Object.keys(rememberBuiltins(await storeIndex(false))).length })));
 
 router.get('/browse', handle(async (req) => {
   const platform = ['ps4', 'ps5'].includes(req.query.platform) ? req.query.platform : 'ps5';
