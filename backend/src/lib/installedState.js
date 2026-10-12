@@ -35,18 +35,56 @@ export function homebrewTitleId(item) {
 // exist in two catalogs; everything else is keyed by kind and store id.
 export const installKey = (item) => (item.kind === 'catalog' ? `catalog:${item.origin}:${item.id}` : `${item.kind}:${item.id}`);
 
-export function decorateInstalled(items, { installs = [], titles = null, takenAt = null } = {}) {
+// Version strings here are whatever an author wrote: "1.11", "v1.09",
+// "1.6beta16", or nothing at all. Compare the numbers and admit when
+// there is nothing to compare, rather than inventing an update.
+export function compareVersions(a, b) {
+  const parts = (v) => String(v || '').trim().replace(/^v+/i, '').match(/\d+/g)?.map(Number) || null;
+  const left = parts(a), right = parts(b);
+  if (!left || !right) return null;
+  for (let i = 0; i < Math.max(left.length, right.length); i += 1) {
+    const d = (left[i] || 0) - (right[i] || 0);
+    if (d) return d > 0 ? 1 : -1;
+  }
+  return 0;
+}
+
+// What the user already has outside the Marketplace: a payload file in the
+// library, a script in My Scripts, a saved Autoload sequence. Matched by
+// the name the store item installs under, which is what the user sees.
+export function localIndex({ payloads = [], scripts = [], sequences = [] } = {}) {
+  const name = (v) => String(v || '').trim().toLowerCase();
+  return {
+    payload: new Map(payloads.map((p) => [name(p.filename || p.name), p.version || null])),
+    script: new Map(scripts.map((s) => [name(s.name), s.version || null])),
+    template: new Map(sequences.map((q) => [name(q.name), q.version || null])),
+  };
+}
+
+export function decorateInstalled(items, { installs = [], titles = null, takenAt = null, local = null } = {}) {
   const mine = new Map(installs.map((i) => [`${i.kind}:${i.store_id}`, i]));
   return items.map((item) => {
     const have = mine.get(installKey(item));
     const id = item.kind === 'homebrew' ? homebrewTitleId(item) : null;
     const onConsole = titles ? (id ? titles.has(id) : null) : null;
+    const here = local?.[item.kind];
+    const key = String(item.name || '').trim().toLowerCase();
+    const inLibrary = !!here?.has(key);
+    const localVersion = inLibrary ? here.get(key) : null;
+    // Our own record knows which store revision was installed. Without one,
+    // a copy already in the library is "installed", and only a newer app
+    // version in the listing makes it an update.
+    const update = have
+      ? Number(item.version) > Number(have.version)
+      : inLibrary && compareVersions(item.app_version, localVersion) === 1;
     return {
       ...item,
       installed: have ? have.version : null,
-      update: !!have && Number(item.version) > Number(have.version),
+      update,
       onConsole,
-      installedFrom: have ? 'records' : onConsole ? 'console' : null,
+      inLibrary,
+      localVersion,
+      installedFrom: have ? 'records' : onConsole ? 'console' : inLibrary ? 'library' : null,
       libraryTakenAt: onConsole ? takenAt : null,
     };
   });

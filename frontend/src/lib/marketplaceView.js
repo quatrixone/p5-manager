@@ -22,7 +22,7 @@ export function actionFor(item, { consoleOnline = null, hasProfile = true } = {}
   if (item.kind === 'catalog' && !item.installable) {
     return { action: 'link', label: 'Open package link', disabled: !item.package_url, reason: item.package_url ? '' : 'This listing has no usable link' };
   }
-  const label = item.update ? 'Update' : item.installed || item.onConsole ? 'Install again' : 'Install';
+  const label = item.update ? 'Update' : item.installed || item.onConsole || item.inLibrary ? 'Install again' : 'Install';
   const action = item.kind === 'catalog' ? 'install-catalog' : 'install';
   if (!needsConsole(item)) return { action, label, disabled: false, reason: '' };
   if (!hasProfile) return { action, label, disabled: true, reason: `No ${(item.console_type || 'console').toUpperCase()} profile to install it on` };
@@ -32,8 +32,15 @@ export function actionFor(item, { consoleOnline = null, hasProfile = true } = {}
 
 // What the card shows about having it already, and where that is known from.
 export function installedBadge(item) {
-  if (item.update) return { text: `Update v${item.version}`, tone: 'warning', title: `Installed: v${item.installed}` };
+  if (item.update) {
+    const have = item.installed ? `v${item.installed}` : item.localVersion || 'an older copy';
+    return { text: item.app_version ? `Update v${item.app_version}` : `Update v${item.version}`, tone: 'warning', title: `You have ${have}` };
+  }
   if (item.installed) return { text: '✓ Installed', tone: 'success', title: `Installed by P5 Manager (v${item.installed})` };
+  if (item.inLibrary) {
+    const where = { payload: 'the payload library', script: 'My Scripts', template: 'Autoload' }[item.kind] || 'your library';
+    return { text: '✓ Installed', tone: 'success', title: `Already in ${where}${item.localVersion ? ` (${item.localVersion})` : ''}` };
+  }
   if (item.onConsole) {
     const when = item.libraryTakenAt ? new Date(item.libraryTakenAt).toLocaleString() : null;
     return { text: '✓ On console', tone: 'success', title: when ? `Seen in the console library on ${when}` : 'Seen in the console library' };

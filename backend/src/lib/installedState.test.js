@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createLibrarySnapshots, titleIdsOf, decorateInstalled, installKey } from './installedState.js';
+import { createLibrarySnapshots, titleIdsOf, decorateInstalled, installKey, compareVersions, localIndex } from './installedState.js';
 
 const installs = [
   { kind: 'script', store_id: 'home', version: 1 },
@@ -64,4 +64,54 @@ test('a catalog package is remembered per catalog, not per id alone', () => {
   assert.equal(mine.installed, 1);
   const [theirs] = decorateInstalled([{ ...item, origin: 'source:3' }], { installs: [{ kind: 'catalog', store_id: 'fpkgi:abc', version: 1 }] });
   assert.equal(theirs.installed, null);
+});
+
+test('versions compare on their numbers, and say so when they cannot', () => {
+  assert.equal(compareVersions('1.11', 'v1.09'), 1);
+  assert.equal(compareVersions('v1.09', '1.11'), -1);
+  assert.equal(compareVersions('1.6beta16', '1.6beta16'), 0);
+  assert.equal(compareVersions('2.0', '1.9.9'), 1);
+  assert.equal(compareVersions('1.2', '1.2.0'), 0);
+  assert.equal(compareVersions('', '1.0'), null);
+  assert.equal(compareVersions('nightly', '1.0'), null);
+});
+
+test('what is already in Payloads, Autoload and Scripts counts as installed', () => {
+  const local = localIndex({
+    payloads: [{ filename: 'kstuff.elf', version: 'v1.09' }],
+    scripts: [{ name: 'PS5: Return Home' }],
+    sequences: [{ name: 'GoldHEN: load' }],
+  });
+  const [payload] = decorateInstalled([{ kind: 'payload', id: 'kstuff', name: 'kstuff.elf', version: 1 }], { local });
+  assert.equal(payload.inLibrary, true);
+  assert.equal(payload.installedFrom, 'library');
+  assert.equal(payload.update, false);
+  const [script] = decorateInstalled([{ kind: 'script', id: 'home', name: 'PS5: Return Home', version: 1 }], { local });
+  assert.equal(script.inLibrary, true);
+  const [template] = decorateInstalled([{ kind: 'template', id: 'gh', name: 'GoldHEN: load', version: 1 }], { local });
+  assert.equal(template.inLibrary, true);
+  const [absent] = decorateInstalled([{ kind: 'payload', id: 'other', name: 'other.elf', version: 1 }], { local });
+  assert.equal(absent.inLibrary, false);
+  assert.equal(absent.installedFrom, null);
+});
+
+test('a newer app version in the store is an update for a file already in the library', () => {
+  const local = localIndex({ payloads: [{ filename: 'kstuff.elf', version: 'v1.09' }] });
+  const [newer] = decorateInstalled([{ kind: 'payload', id: 'kstuff', name: 'kstuff.elf', version: 1, app_version: '1.11' }], { local });
+  assert.equal(newer.update, true);
+  assert.equal(newer.localVersion, 'v1.09');
+  const [same] = decorateInstalled([{ kind: 'payload', id: 'kstuff', name: 'kstuff.elf', version: 1, app_version: '1.09' }], { local });
+  assert.equal(same.update, false);
+  // Nothing to compare against: already there, and we do not invent an update.
+  const [unknown] = decorateInstalled([{ kind: 'payload', id: 'kstuff', name: 'kstuff.elf', version: 1 }], { local });
+  assert.equal(unknown.update, false);
+});
+
+test('our own record still wins over a file that happens to share the name', () => {
+  const local = localIndex({ payloads: [{ filename: 'kstuff.elf', version: 'v1.09' }] });
+  const installs = [{ kind: 'payload', store_id: 'kstuff', version: 1 }];
+  const [item] = decorateInstalled([{ kind: 'payload', id: 'kstuff', name: 'kstuff.elf', version: 2, app_version: '1.09' }], { installs, local });
+  assert.equal(item.installedFrom, 'records');
+  assert.equal(item.installed, 1);
+  assert.equal(item.update, true);
 });
