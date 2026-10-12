@@ -17,6 +17,7 @@ import io
 import json
 import logging
 import os
+import re
 import shutil
 import struct
 import sys
@@ -121,6 +122,8 @@ class ChiakiSession:
         self.quit_reason: str = ""
         self.quit_detail: str = ""
         self.quit_error: bool = False
+        # The console's own code for refusing a session, as libchiaki logs it.
+        self.quit_app_reason: str = ""
         self.stats: Dict[str, Any] = {}
         self.audio_format: Optional[bytes] = None  # the 'H' record's text
         self._subscribers: list = []
@@ -189,17 +192,38 @@ class ChiakiSession:
             # has cleared it. chiaki keeps asking for about twenty seconds,
             # which is why reconnecting after a crash works there; so do we.
             # "In use" is not ours to retry: server.py waits for the console
-            # to let the previous session go and tells the user how long.
+            # to let the previous session go and tells the user how long. A
+            # console waiting on a system message answers the same way however
+            # often it is asked, so that one is reported at once too.
             in_use = "in use" in (self.quit_reason or "").lower()
-            if in_use or not self.quit_error or deadline - time.monotonic() <= _RETRY_PAUSE:
+            settled = self.quit_app_reason in self._APP_REASONS
+            if in_use or settled or not self.quit_error or deadline - time.monotonic() <= _RETRY_PAUSE:
                 raise ChiakiError(self._describe_quit(), self.quit_reason)
             log.info("rp %s: %s - asking again (attempt %d)", self.ip, self._describe_quit(), attempt + 1)
             await self.close()
             self._reset_attempt()
             await asyncio.sleep(_RETRY_PAUSE)
 
+    # Application reasons libchiaki does not name. 0x80108b26 is what a PS5
+    # answers while a system message is waiting on its screen - the dialog
+    # after a crash is the one that gets people stuck, because nothing in
+    # the app can dismiss it.
+    _APP_REASONS = {
+        "0x80108b26": "The console is not accepting Remote Play: a system message is waiting on its screen "
+                      "(the one a crash leaves behind). Confirm it on the console, then try again.",
+    }
+
+    def _note_log(self, msg: str) -> None:
+        """Keep the console's refusal code from libchiaki's log line."""
+        m = re.search(r"Reported Application Reason:\s*(0x[0-9a-fA-F]+)", msg)
+        if m:
+            self.quit_app_reason = m.group(1).lower()
+
     def _describe_quit(self) -> str:
         reason = self.quit_reason or "the session ended"
+        known = self._APP_REASONS.get(self.quit_app_reason)
+        if known:
+            return known
         if "in use" in reason.lower():
             return "Another Remote Play session is connected to the console"
         return reason + (f": {self.quit_detail}" if self.quit_detail else "")
@@ -224,6 +248,7 @@ class ChiakiSession:
                     self.stats = e
                 elif kind == "log":
                     msg = str(e.get("msg") or "")
+                    self._note_log(msg)
                     # The console answers the session request with a text that
                     # libchiaki dumps as hex, harmless and long.
                     if "Session Id" in msg or msg.startswith(("offset", " ")):

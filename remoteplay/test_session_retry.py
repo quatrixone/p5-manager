@@ -99,6 +99,23 @@ class SessionRetry(unittest.IsolatedAsyncioTestCase):
         finally:
             await session.close()
 
+    async def test_a_console_waiting_on_a_system_message_is_not_asked_again(self):
+        # It answers the same way however often it is asked; the user has to
+        # confirm the message on the console, so say that straight away.
+        self.use("""
+            say(event='log', level='error', msg='Reported Application Reason: 0x80108b26 (unknown)')
+            say(event='quit', error=True, reason='Unknown Session Request Error')
+            sys.exit(1)
+        """)
+        session = self.session()
+        try:
+            with self.assertRaises(chiaki_engine.ChiakiError) as caught:
+                await session.start(timeout=5.0)
+            self.assertIn('system message', str(caught.exception))
+            self.assertEqual(self.attempts(), 1)
+        finally:
+            await session.close()
+
     async def test_a_session_that_connected_is_not_restarted_behind_our_back(self):
         self.use("""
             say(event='connected')
