@@ -17,6 +17,7 @@ import io
 import json
 import logging
 import os
+import re
 import shutil
 import struct
 import sys
@@ -27,6 +28,8 @@ from typing import Any, Dict, Optional, Tuple
 log = logging.getLogger("rp-sidecar.chiaki")
 
 RECORD_HEAD = 14  # kind(1) flags(1) length(4) time(8)
+# How long to wait before asking a console that just refused us again.
+_RETRY_PAUSE = 1.0
 FLAG_KEY = 1
 
 # Names the app uses for buttons -> the helper's. L2 and R2 are triggers.
@@ -118,6 +121,9 @@ class ChiakiSession:
         self._ended = asyncio.Event()
         self.quit_reason: str = ""
         self.quit_detail: str = ""
+        self.quit_error: bool = False
+        # The console's own code for refusing a session, as libchiaki logs it.
+        self.quit_app_reason: str = ""
         self.stats: Dict[str, Any] = {}
         self.audio_format: Optional[bytes] = None  # the 'H' record's text
         self._subscribers: list = []
@@ -135,10 +141,7 @@ class ChiakiSession:
         return self._ended.is_set()
 
     # ── life cycle ────────────────────────────────────────────────────
-    async def start(self, timeout: float = 20.0) -> None:
-        helper = find_helper()
-        if not helper:
-            raise ChiakiError("p5rp is not installed next to the Remote Play service")
+    async def _spawn(self, helper: str) -> None:
         args = [helper, "--host", self.ip, "--res", str(_RESOLUTIONS.get(self.resolution, 720)), "--fps", str(self.fps)]
         if self._ps4:
             args.append("--ps4")
@@ -151,6 +154,8 @@ class ChiakiSession:
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )
         self._tasks = [asyncio.create_task(self._read_events()), asyncio.create_task(self._read_records())]
+
+    async def _wait_for_start(self, timeout: float) -> None:
         connected = asyncio.create_task(self._connected.wait())
         ended = asyncio.create_task(self._ended.wait())
         try:
@@ -158,14 +163,67 @@ class ChiakiSession:
         finally:
             connected.cancel()
             ended.cancel()
-        if self._ended.is_set():
-            raise ChiakiError(self._describe_quit(), self.quit_reason)
-        if not self._connected.is_set():
+
+    def _reset_attempt(self) -> None:
+        self._proc = None
+        self._tasks = []
+        self._connected = asyncio.Event()
+        self._ended = asyncio.Event()
+
+    async def start(self, timeout: float = 20.0) -> None:
+        helper = find_helper()
+        if not helper:
+            raise ChiakiError("p5rp is not installed next to the Remote Play service")
+        deadline = time.monotonic() + timeout
+        attempt = 0
+        while True:
+            attempt += 1
+            await self._spawn(helper)
+            await self._wait_for_start(max(0.5, deadline - time.monotonic()))
+            if self._connected.is_set():
+                if attempt > 1:
+                    log.info("rp %s: connected on attempt %d", self.ip, attempt)
+                return
+            if not self._ended.is_set():
+                await self.close()
+                raise ChiakiError("the console did not answer in time", "timeout")
+            # Remote Play on the console can crash, and the session it left
+            # behind is reported as crashed or still in use until the console
+            # has cleared it. chiaki keeps asking for about twenty seconds,
+            # which is why reconnecting after a crash works there; so do we.
+            # "In use" is not ours to retry: server.py waits for the console
+            # to let the previous session go and tells the user how long. A
+            # console waiting on a system message answers the same way however
+            # often it is asked, so that one is reported at once too.
+            in_use = "in use" in (self.quit_reason or "").lower()
+            settled = self.quit_app_reason in self._APP_REASONS
+            if in_use or settled or not self.quit_error or deadline - time.monotonic() <= _RETRY_PAUSE:
+                raise ChiakiError(self._describe_quit(), self.quit_reason)
+            log.info("rp %s: %s - asking again (attempt %d)", self.ip, self._describe_quit(), attempt + 1)
             await self.close()
-            raise ChiakiError("the console did not answer in time", "timeout")
+            self._reset_attempt()
+            await asyncio.sleep(_RETRY_PAUSE)
+
+    # Application reasons libchiaki does not name. 0x80108b26 is what a PS5
+    # answers while a system message is waiting on its screen - the dialog
+    # after a crash is the one that gets people stuck, because nothing in
+    # the app can dismiss it.
+    _APP_REASONS = {
+        "0x80108b26": "The console is not accepting Remote Play: a system message is waiting on its screen "
+                      "(the one a crash leaves behind). Confirm it on the console, then try again.",
+    }
+
+    def _note_log(self, msg: str) -> None:
+        """Keep the console's refusal code from libchiaki's log line."""
+        m = re.search(r"Reported Application Reason:\s*(0x[0-9a-fA-F]+)", msg)
+        if m:
+            self.quit_app_reason = m.group(1).lower()
 
     def _describe_quit(self) -> str:
         reason = self.quit_reason or "the session ended"
+        known = self._APP_REASONS.get(self.quit_app_reason)
+        if known:
+            return known
         if "in use" in reason.lower():
             return "Another Remote Play session is connected to the console"
         return reason + (f": {self.quit_detail}" if self.quit_detail else "")
@@ -184,11 +242,13 @@ class ChiakiSession:
                 elif kind == "quit":
                     self.quit_reason = str(e.get("reason") or "")
                     self.quit_detail = str(e.get("detail") or "")
+                    self.quit_error = bool(e.get("error"))
                     self._ended.set()
                 elif kind == "stats":
                     self.stats = e
                 elif kind == "log":
                     msg = str(e.get("msg") or "")
+                    self._note_log(msg)
                     # The console answers the session request with a text that
                     # libchiaki dumps as hex, harmless and long.
                     if "Session Id" in msg or msg.startswith(("offset", " ")):
