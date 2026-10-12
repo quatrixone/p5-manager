@@ -1,4 +1,4 @@
-// Tools -> Marketplace: Autoload templates, input scripts and homebrew
+// Marketplace: Autoload templates, input scripts and homebrew
 // apps shared by users. They live in store/ of the repository
 // (lib/storeItem.js says what an item is); the app reads store/index.json
 // and the items from GitHub, installs them, and turns the user's own

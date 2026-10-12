@@ -254,7 +254,7 @@ function Publish({ onNotification, entries }) {
   );
 }
 
-// Tools -> Marketplace: homebrew apps, Autoload templates and input scripts
+// Marketplace: homebrew apps, Autoload templates and input scripts
 // shared by users (store/ in the repository), installed with a tap.
 export default function Marketplace({ profiles = [], onNotification }) {
   const { mode } = usePlatform();

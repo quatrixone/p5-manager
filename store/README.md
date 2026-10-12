@@ -1,12 +1,12 @@
 # Marketplace
 
-What **Tools → Marketplace** in P5 Manager lists: homebrew apps, Autoload
+What **Marketplace** in P5 Manager lists: homebrew apps, Autoload
 templates and input scripts shared by users. The app reads
 [`index.json`](index.json) and the item files from this folder on `main`.
 
 ## Adding something
 
-In the app: **Tools → Marketplace → Publish** picks one of your scripts or
+In the app: **Marketplace → Publish** picks one of your scripts or
 Autoload sequences and opens a prefilled
 [submission issue](../.github/ISSUE_TEMPLATE/store-submission.yml). A
 maintainer reviews it and adds the `store-accepted` label; the
@@ -176,7 +176,7 @@ verified SHA-256 and size. PS4 PKG installation uses Remote Package Installer.
 
 ## Full external catalog browser
 
-**Tools → Marketplace → FPKGi Catalog Hub** loads all catalog files from
+**Marketplace → FPKGi Catalog Hub** loads all catalog files from
 Dinos17/FPKGi-Catalog-Hub for PS4 and PS5, with eleven categories: Games,
 Applications, Game updates, DLC, Demos, Homebrew, Emulators, Themes, PS1, PS2,
 and PSP. PS5's PS1/PS2 views use the shared PS4-format catalogs. PS5 PSP reads
