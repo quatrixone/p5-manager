@@ -1,0 +1,5 @@
+<resources>
+    <!-- The web UI's own background, so the app does not flash white while
+         the page loads. -->
+    <color name="background">#0A0B10</color>
+</resources>

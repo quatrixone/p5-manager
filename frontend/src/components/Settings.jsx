@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import AppQr from './AppQr.jsx';
 import Modal from './UI/Modal';
 import Badge from './UI/Badge';
 import RemoteSourcesSection from './RemoteSourcesSection';
@@ -411,6 +412,8 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
   const renderConfig = () => (
     <div className="flex-col gap-md">
       <h2 className="font-bold" style={{ fontSize: '1.25rem' }}>Configuration</h2>
+
+      <AppQr />
 
       <div className="comp-card">
         <div className="comp-card-body">

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- "P5" in the app's accent, on the dark background the manager uses. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#5EEAD4"
+        android:pathData="M33,34h12.5c6.6,0 11,4.2 11,10.4c0,6.2 -4.4,10.4 -11,10.4h-6.3v12.8h-6.2zM39.2,49.6h5.6c3.3,0 5.4,-2 5.4,-5.2c0,-3.2 -2.1,-5.2 -5.4,-5.2h-5.6z" />
+    <path
+        android:fillColor="#5EEAD4"
+        android:pathData="M60,62.4l3.6,-3.9c2,2 4.3,3.1 6.9,3.1c3.2,0 5.3,-1.9 5.3,-4.8c0,-2.8 -2,-4.6 -5.1,-4.6c-2,0 -3.7,0.7 -5.1,2.1l-4.3,-1.3l1.6,-19h17.9v5.2h-13l-0.8,9.1c1.4,-0.9 3.1,-1.4 5,-1.4c5.7,0 9.7,3.9 9.7,9.7c0,6.1 -4.5,10.3 -11.1,10.3c-4.2,0 -7.8,-1.6 -10.6,-4.5z" />
+</vector>

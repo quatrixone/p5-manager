@@ -1,0 +1,18 @@
+<resources>
+    <string name="app_name">P5 Manager</string>
+    <string name="server_address">Server address</string>
+    <string name="server_hint">http://10.0.0.5:3001</string>
+    <string name="server_name_hint">Name (optional)</string>
+    <string name="connect">Connect</string>
+    <string name="scan_qr">Scan QR code</string>
+    <string name="scan_prompt">Point the camera at the QR code in Settings on the P5 Manager web page</string>
+    <string name="saved_servers">Saved servers</string>
+    <string name="forget">Forget</string>
+    <string name="address_needed">Enter the address of your P5 Manager, for example http://10.0.0.5:3001</string>
+    <string name="address_unusable">That is not an address this app can open</string>
+    <string name="camera_needed">Camera access is needed to read the QR code</string>
+    <string name="reload">Reload</string>
+    <string name="switch_server">Switch server</string>
+    <string name="offline">P5 Manager did not answer at %1$s</string>
+    <string name="retry">Try again</string>
+</resources>

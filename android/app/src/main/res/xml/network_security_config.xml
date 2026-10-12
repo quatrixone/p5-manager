@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  P5 Manager runs on the user's own network, over plain http. Cleartext is
+  allowed for private addresses only; anything on the public internet still
+  has to be https.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">localhost</domain>
+        <domain includeSubdomains="true">10.0.0.0/8</domain>
+        <domain includeSubdomains="true">172.16.0.0/12</domain>
+        <domain includeSubdomains="true">192.168.0.0/16</domain>
+        <domain includeSubdomains="true">169.254.0.0/16</domain>
+        <domain includeSubdomains="true">100.64.0.0/10</domain>
+        <domain includeSubdomains="true">.local</domain>
+    </domain-config>
+</network-security-config>
