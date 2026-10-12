@@ -42,7 +42,14 @@ jobs:
           packages: ''
 
       - name: Android SDK packages
-        run: sdkmanager --install "platforms;android-35" "build-tools;35.0.0"
+        run: sdkmanager --install "platforms;android-35" "build-tools;35.0.0" "ndk;27.1.12297006" "cmake;3.22.1"
+
+      # chiaki generates its protocol code at build time with python-protobuf.
+      - name: Build-time tools for libchiaki
+        run: |
+          python3 -m pip install --upgrade protobuf
+          sudo apt-get update
+          sudo apt-get install -y ninja-build
 
       - uses: gradle/actions/setup-gradle@v4
 

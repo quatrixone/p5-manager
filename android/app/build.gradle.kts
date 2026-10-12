@@ -6,6 +6,9 @@ plugins {
 android {
     namespace = "com.p5manager.app"
     compileSdk = 35
+    // Pinned so the native session is built against the same toolchain in
+    // CI and on a workstation.
+    ndkVersion = "27.1.12297006"
 
     defaultConfig {
         applicationId = "com.p5manager.app"
@@ -16,7 +19,25 @@ android {
         // The native Remote Play client is built for 64-bit phones only;
         // every console-era device is one.
         ndk { abiFilters += listOf("arm64-v8a") }
+        externalNativeBuild {
+            cmake {
+                // chiaki-lib and its dependencies are C; nothing here needs
+                // the C++ standard library beyond what the NDK links by
+                // default.
+                arguments += listOf("-DANDROID_STL=c++_shared")
+            }
+        }
     }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
+    }
+
+    // OpenSSL comes from the NDK's own prefab package.
+    buildFeatures { prefab = true }
 
     // The repository's own key, handed in by CI through the environment.
     // Without it the release APK carries the debug signature: enough to
@@ -58,5 +79,7 @@ dependencies {
     implementation("androidx.constraintlayout:constraintlayout:2.2.0")
     // QR scanning for the server address the web UI shows.
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")
+    // OpenSSL for the native Remote Play session, as a prefab AAR.
+    implementation("com.android.ndk.thirdparty:openssl:1.1.1q-beta-1")
     testImplementation("junit:junit:4.13.2")
 }
