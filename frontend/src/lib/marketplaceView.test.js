@@ -58,3 +58,16 @@ test('a package with no checksum says so before it is installed', () => {
   assert.equal(unverifiedWarning({ ...catalogPkg, verified: true }), '');
   assert.equal(unverifiedWarning(script), '');
 });
+
+test('an item already in Payloads, Scripts or Autoload reads as installed', () => {
+  const payload = { kind: 'payload', id: 'kstuff', name: 'kstuff.elf', version: 1, inLibrary: true, localVersion: 'v1.09' };
+  assert.equal(installedBadge(payload).text, '✓ Installed');
+  assert.match(installedBadge(payload).title, /payload library \(v1.09\)/);
+  assert.equal(actionFor(payload).label, 'Install again');
+  const script = { kind: 'script', id: 'home', name: 'Home', version: 1, inLibrary: true };
+  assert.match(installedBadge(script).title, /My Scripts/);
+  const newer = { ...payload, update: true, app_version: '1.11' };
+  assert.equal(installedBadge(newer).text, 'Update v1.11');
+  assert.match(installedBadge(newer).title, /You have v1.09/);
+  assert.equal(actionFor(newer).label, 'Update');
+});

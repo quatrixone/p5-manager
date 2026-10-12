@@ -14,7 +14,7 @@ import express from 'express';
 import { fpkgiCatalog, FPKGI_CATEGORIES, FPKGI_REPO, catalogPage } from '../lib/fpkgiCatalog.js';
 import { catalogSources, decorateCatalogRows, normalizeSourceUrl, detectSourceFormat } from '../lib/catalogSource.js';
 import { browse } from '../lib/marketplaceBrowse.js';
-import { decorateInstalled, librarySnapshots } from '../lib/installedState.js';
+import { decorateInstalled, librarySnapshots, localIndex } from '../lib/installedState.js';
 import { createMarketplaceNews, NEWS_INTERVAL_MS } from '../lib/marketplaceNews.js';
 import { prepareStoreDraft } from '../lib/storeOwnership.js';
 import { STORE_BASE, fetchCatalogJson, readMarketplaceBuiltinList } from '../lib/marketplaceCatalog.js';
@@ -120,7 +120,7 @@ router.get('/news', handle(async req => {
     page.items.map((i) => (i.source === 'marketplace'
       ? { ...i, id: i.store_id, newsId: i.newsId, origin: 'marketplace', installable: true, verified: true }
       : { ...i, origin: 'fpkgi', installable: !!i.package_url && /\.pkg$/i.test(i.package_url), verified: !!i.sha256 })),
-    { installs: installs(), titles: snapshot?.titles || null, takenAt: snapshot?.takenAt || null },
+    { installs: installs(), titles: snapshot?.titles || null, takenAt: snapshot?.takenAt || null, local: localLibrary() },
   );
   return { ...page, items: decorated, libraryTakenAt: snapshot?.takenAt || null };
 }));
@@ -244,6 +244,17 @@ async function fpkgiGroup(platform, category, refresh) {
   return { origin: 'fpkgi', label: 'FPKGi Catalog Hub', items, warning: warnings[0] || null };
 }
 
+// Payload files, scripts and Autoload sequences the user already has, so
+// an item that is plainly there says so instead of offering a fresh install.
+function localLibrary() {
+  const repo = getRepo();
+  return localIndex({
+    payloads: repo.queryAll('SELECT filename, version FROM payloads'),
+    scripts: repo.queryAll('SELECT name FROM input_scripts'),
+    sequences: repo.queryAll('SELECT name FROM autoload_sequences'),
+  });
+}
+
 function activeProfileId(value) {
   const asked = Number(value);
   if (Number.isSafeInteger(asked) && asked > 0) return asked;
@@ -278,7 +289,7 @@ router.get('/browse', handle(async (req) => {
   });
   return {
     ...page,
-    items: decorateInstalled(page.items, { installs: installs(), titles: snapshot?.titles || null, takenAt: snapshot?.takenAt || null }),
+    items: decorateInstalled(page.items, { installs: installs(), titles: snapshot?.titles || null, takenAt: snapshot?.takenAt || null, local: localLibrary() }),
     sources: [
       { id: 'marketplace', label: 'Marketplace' },
       { id: 'fpkgi', label: 'FPKGi Catalog Hub' },
