@@ -67,6 +67,25 @@ if (check) {
   console.log(`store/index.json: ${items.length} items`);
 }
 
+// The default payload list ships with the app and is published here too,
+// so running installs pick up a new default without waiting for a release.
+{
+  const target = path.join(store, 'builtin', 'payloads.json');
+  // Copied verbatim: the links in it are already sealed, and resealing
+  // them would rewrite the file on every run.
+  const source = new URL('../frontend/builtin/payloads.json', import.meta.url);
+  const payloads = fs.readFileSync(source, 'utf8');
+  if (check) {
+    if (!fs.existsSync(target) || fs.readFileSync(target, 'utf8') !== payloads) {
+      console.error(`${target} is out of date: run node scripts/build-store-index.mjs`);
+      process.exit(1);
+    }
+  } else {
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, payloads);
+  }
+}
+
 // Runtime catalogs are generated from the same item sources as Marketplace.
 for (const [kind, name] of [['script', 'inputScripts.json'], ['template', 'templates.json']]) {
   const target = path.join(store, 'builtin', name);

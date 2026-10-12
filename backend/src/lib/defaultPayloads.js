@@ -4,6 +4,7 @@ import fetch from 'node-fetch';
 import AdmZip from 'adm-zip';
 import { getRepo, log } from '../db/sqlite.js';
 import { readBuiltinList } from './builtinLoader.js';
+import { readMarketplaceBuiltinList } from './marketplaceCatalog.js';
 import { payloadsDir } from './paths.js';
 import { fileURLToPath } from 'url';
 
@@ -57,11 +58,17 @@ export function vendoredSource(entry) {
   return candidates.find(p => fs.existsSync(p)) || null;
 }
 
-// Authoritative list lives in /frontend/builtin/payloads.json — single
-// source of truth so the user only edits one file to change what gets
-// auto-fetched. readBuiltinList() rereads it when it changes.
+// The list comes from the Marketplace, like the curated scripts and
+// templates, so a new default payload reaches running installs without a
+// release. The copy shipped in the app answers while the first fetch has
+// not happened yet, or when there is no network at all.
 export async function getEssentialPayloads() {
-  return readBuiltinList('payloads.json');
+  try {
+    return await readMarketplaceBuiltinList('payloads.json');
+  } catch (e) {
+    log('warn', `Default payload list from the marketplace unavailable: ${e.message}`);
+    return readBuiltinList('payloads.json');
+  }
 }
 
 function ensurePayloadsDir() {
