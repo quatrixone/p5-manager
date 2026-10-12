@@ -116,6 +116,37 @@ class SessionRetry(unittest.IsolatedAsyncioTestCase):
         finally:
             await session.close()
 
+    async def test_an_attempt_that_hangs_is_abandoned_and_tried_again(self):
+        # A console whose Remote Play service is still coming up can leave
+        # p5rp waiting with nothing to say. One attempt must not eat the
+        # whole budget.
+        self.use("""
+            if attempt == 1:
+                time.sleep(60)
+            say(event='connected')
+            time.sleep(30)
+        """)
+        session = self.session()
+        try:
+            await session.start(timeout=20.0)
+            self.assertTrue(session.is_ready)
+            self.assertEqual(self.attempts(), 2)
+        finally:
+            await session.close()
+
+    async def test_a_console_that_never_answers_reports_the_timeout(self):
+        self.use("""
+            time.sleep(60)
+        """)
+        session = self.session()
+        try:
+            with self.assertRaises(chiaki_engine.ChiakiError) as caught:
+                await session.start(timeout=9.0)
+            self.assertIn('in time', str(caught.exception))
+            self.assertGreater(self.attempts(), 1)
+        finally:
+            await session.close()
+
     async def test_a_session_that_connected_is_not_restarted_behind_our_back(self):
         self.use("""
             say(event='connected')

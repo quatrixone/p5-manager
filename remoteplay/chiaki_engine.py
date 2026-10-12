@@ -30,6 +30,10 @@ log = logging.getLogger("rp-sidecar.chiaki")
 RECORD_HEAD = 14  # kind(1) flags(1) length(4) time(8)
 # How long to wait before asking a console that just refused us again.
 _RETRY_PAUSE = 1.0
+# How long one attempt may stay silent. A console whose Remote Play service
+# is still coming up can leave the helper waiting with nothing to say, and
+# one such attempt must not eat the whole start budget.
+_ATTEMPT_WAIT = 8.0
 FLAG_KEY = 1
 
 # Names the app uses for buttons -> the helper's. L2 and R2 are triggers.
@@ -178,15 +182,24 @@ class ChiakiSession:
         attempt = 0
         while True:
             attempt += 1
+            remaining = deadline - time.monotonic()
             await self._spawn(helper)
-            await self._wait_for_start(max(0.5, deadline - time.monotonic()))
+            await self._wait_for_start(max(0.5, min(_ATTEMPT_WAIT, remaining)))
             if self._connected.is_set():
                 if attempt > 1:
                     log.info("rp %s: connected on attempt %d", self.ip, attempt)
                 return
             if not self._ended.is_set():
+                # Silent so far: start over while any budget is left. The
+                # pause before asking again is for a console that refused us,
+                # not for one that said nothing.
+                if deadline - time.monotonic() <= 0.5:
+                    await self.close()
+                    raise ChiakiError("the console did not answer in time", "timeout")
+                log.info("rp %s: no answer yet - asking again (attempt %d)", self.ip, attempt + 1)
                 await self.close()
-                raise ChiakiError("the console did not answer in time", "timeout")
+                self._reset_attempt()
+                continue
             # Remote Play on the console can crash, and the session it left
             # behind is reported as crashed or still in use until the console
             # has cleared it. chiaki keeps asking for about twenty seconds,
