@@ -377,10 +377,10 @@ function PayloadList({ payloads, profiles, onFetchUrl, onSend, onDelete, onUpdat
           {onRestoreDefaults && (
             <button
               className="btn btn-sm btn-ghost"
-              title="Restore the payloads included with P5 Manager"
+              title="Put the payloads built into P5 Manager back in the library. The rest are installed from Marketplace."
               onClick={() => onRestoreDefaults(false)}
             >
-              ✨ Restore built-ins
+              ✨ Restore app payloads
             </button>
           )}
           <button className="btn btn-sm btn-secondary" onClick={() => setMultiSelect(!multiSelect)}>
@@ -421,8 +421,8 @@ function PayloadList({ payloads, profiles, onFetchUrl, onSend, onDelete, onUpdat
         <EmptyState
           icon="🧷"
           title="No built-in payloads present"
-          text="These payloads are needed by built-in features such as logs, Remote Play pairing and account activation. Restore them to make those features available again."
-          action={onRestoreDefaults && <button className="btn btn-primary" onClick={() => onRestoreDefaults(false)}>✨ Restore built-ins</button>}
+          text="Built-in features such as logs, Remote Play pairing and the game library need these payloads. Install them from Marketplace; the ones P5 Manager builds itself can be restored here."
+          action={onRestoreDefaults && <button className="btn btn-primary" onClick={() => onRestoreDefaults(false)}>✨ Restore app payloads</button>}
         />
       ) : visiblePayloads.length === 0 ? (
         <EmptyState

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import PayloadList from './components/PayloadList';
 import LogViewer from './components/LogViewer';
@@ -13,6 +13,7 @@ import UpdateBanner from './components/UpdateBanner';
 import { PlatformProvider, usePlatform } from './contexts/PlatformContext';
 import { Ps5StatusProvider, usePs5Status } from './contexts/Ps5StatusContext';
 import useVisiblePolling from './hooks/useVisiblePolling';
+import { createContext, useContext } from 'react';
 import { api, apiSafe } from './lib/api.js';
 import './styles.css';
 
@@ -26,6 +27,13 @@ const tabs = [
   { id: 'logs', label: 'Logs', icon: '📋' },
   { id: 'settings', label: 'Settings', icon: '⚙️' }
 ];
+
+// How many Marketplace items have a newer version, and how many curated
+// built-ins changed. Polled in one place and shown as a badge on the
+// Marketplace entry, so the user hears about a new version without
+// opening the tab.
+const MarketplaceUpdatesContext = createContext({ total: 0, refresh: () => {} });
+export const useMarketplaceUpdates = () => useContext(MarketplaceUpdatesContext);
 
 // Hidden route: the built-in editor lives at #builtin. It is intentionally
 // absent from `tabs` so it doesn't show up in the sidebar / bottom nav.
@@ -389,6 +397,22 @@ function App() {
 
   const defaultProfile = profiles.find(p => p.is_default) || profiles[0];
 
+  // Marketplace updates: one poll for the badge in both navigations, and a
+  // single notice the first time this session sees something new.
+  const [storeUpdates, setStoreUpdates] = useState({ total: 0, updates: [], builtins: [] });
+  const announced = useRef(false);
+  const refreshStoreUpdates = useCallback(async () => {
+    const r = await apiSafe.get('/store/updates');
+    if (!r) return;
+    setStoreUpdates(r);
+    if (r.total > 0 && !announced.current) {
+      announced.current = true;
+      const first = (r.updates[0] || r.builtins[0])?.name;
+      showNotification(r.total === 1 ? `Marketplace: an update for ${first}` : `Marketplace: ${r.total} updates available`, 'info');
+    }
+  }, []);
+  useVisiblePolling(refreshStoreUpdates, 15 * 60 * 1000);
+
   const sidebar = (
     <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} />
   );
@@ -400,6 +424,7 @@ function App() {
   return (
     <PlatformProvider activeProfile={defaultProfile}>
     <Ps5StatusProvider key={defaultProfile?.id || 'none'} profile={defaultProfile}>
+    <MarketplaceUpdatesContext.Provider value={{ ...storeUpdates, refresh: refreshStoreUpdates }}>
     <>
       <header className="app-topbar">
         <PlatformAwareBrand />
@@ -482,6 +507,7 @@ function App() {
 
       {mobileNav}
     </>
+    </MarketplaceUpdatesContext.Provider>
     </Ps5StatusProvider>
     </PlatformProvider>
   );
@@ -585,6 +611,7 @@ function effectiveTabLabel(tabId, mode) {
 
 function Sidebar({ activeTab, setActiveTab }) {
   const { mode } = usePlatform();
+  const { total } = useMarketplaceUpdates();
   return (
     <aside className="app-sidebar">
       <h6>Workspace</h6>
@@ -596,6 +623,9 @@ function Sidebar({ activeTab, setActiveTab }) {
         >
           <span className="nav-item-icon">{tab.icon}</span>
           <span>{effectiveTabLabel(tab.id, mode) || tab.label}</span>
+          {tab.id === 'store' && total > 0 && (
+            <span className="badge badge-warning" title={`${total} update${total === 1 ? '' : 's'} available`} style={{ marginLeft: 'auto' }}>{total}</span>
+          )}
         </button>
       ))}
     </aside>
@@ -604,6 +634,7 @@ function Sidebar({ activeTab, setActiveTab }) {
 
 function MobileNav({ activeTab, setActiveTab }) {
   const { mode } = usePlatform();
+  const { total: updates } = useMarketplaceUpdates();
   const [moreOpen, setMoreOpen] = useState(false);
   // The bar holds the daily sections and the Marketplace, in `tabs`
   // order, so Marketplace is the last button before More; the logs and
@@ -637,7 +668,7 @@ function MobileNav({ activeTab, setActiveTab }) {
               onClick={() => selectTab(tab.id)}
               aria-current={activeTab === tab.id ? 'page' : undefined}
             >
-              <span className="bottom-nav-icon" aria-hidden="true">{tab.icon}</span>
+              <span className="bottom-nav-icon" aria-hidden="true">{tab.icon}{tab.id === 'store' && updates > 0 ? <span className="bottom-nav-dot" aria-hidden="true" /> : null}</span>
               <span>{effectiveTabLabel(tab.id, mode) || tab.label}</span>
             </button>
           ))}

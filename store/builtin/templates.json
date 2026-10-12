@@ -11,7 +11,7 @@
       },
       {
         "type": "download",
-        "url": "p5enc:v1:xTq0Tf-7mxjDc-fnn9ZG47KgAspOkWWEBjIny434UETXRs-2zeezzDd6FafrQ1QyDslszPynpOht87A",
+        "url": "p5enc:v1:h_HYUB4XVfKCLqQzujX_ek3GeRbYDo6YY73YV73625A6urDrzmV96f3LRWkY3aobIZKNOJyRPy-otGs",
         "dest_kind": "local",
         "dest_path": "/data/mkpfs",
         "name": "Download archive.zip"
@@ -56,7 +56,7 @@
       },
       {
         "type": "download",
-        "url": "p5enc:v1:UM0-pYEFT3Op6_7B2ntUKozunpHaynqv_7VqXBMok5ry46z55kzzBtjTOHR-egA--sXyLTXgpZY",
+        "url": "p5enc:v1:LgEVcfKswYJWCQ1UuooWIRF_BJeanxK1dP2CG1OSk5MZu1rqnE_yE09k2jrfFdNku0mzAsquKzg",
         "dest_kind": "local",
         "dest_path": "/data/mkpfs",
         "name": "Download game.rar"

@@ -1,5 +1,5 @@
 {
-  "generated": "2026-10-10T13:28:43.705Z",
+  "generated": "2026-10-12T10:47:41.346Z",
   "items": [
     {
       "kind": "template",
@@ -145,15 +145,16 @@
       "description": "Manage, export and import PS4 save data with Apollo Save Tool. Install through Remote Package Installer.",
       "author": "bucanero",
       "version": 1,
-      "icon": "p5enc:v1:amdS5D5emX5sEpd4K1Mwk14ZnI5vxCkE2TWwEXB_QNUEQFdYE1tNzD0MPWR2G4a_jrFLfviLRGJPhDPwt3rwMGWOmz-xw5nZVF_N1-_VVF7ymzuGYYCQEIABYV5PAhMxwQTv5O2accI",
+      "icon": "p5enc:v1:baHG9iyvwNKdD2Op0I4yHIj1jOFDzm3QbgbR5weHQZMUc4mN_29VmbJhKvxerxX4-2foLR1AFf1Tr6vyFcPw52p_9tG9ECGlo4OuhEI_x71NtR5rJv3r0EVvWJxnoWJLOF5dK1ervak",
       "homebrew_id": "APOL00004",
       "console_type": "ps4",
       "files": [
         "pkg"
       ],
       "app_version": "2.3.2",
+      "sha256": "2baf876cf5689a2fee96f7a1920ddf2f8713b92adfc6fe0e84f38707cb1e0f17",
       "size": 22675456,
-      "homepage": "p5enc:v1:46Y8-xR720ht03wWp2ORP0SfatGDiooF61Wj83vUVjK8prZNDKP3qjZ6QAffvrvZCsBM5xrjPVmb1LBwA85x2iJS",
+      "homepage": "p5enc:v1:Fca9kJEQARTrmQ6WvSjU4t0h6Fl4BzJyA_RP1kxisBQ01VzchjzKfN5owMs57BqLTHuRr5zNAl6GeHpIACWNrpDx",
       "path": "homebrew/apollo-save-tool-ps4.json"
     },
     {
@@ -163,15 +164,16 @@
       "description": "Manage GoldHEN cheats and game patches on PS4. Install through Remote Package Installer, then launch the app from Home.",
       "author": "bucanero",
       "version": 1,
-      "icon": "p5enc:v1:EEia0rOOvDtL7BClmS7SPIGe-8yF8RTZfLKVEwwEIAGTv2ea4P8K_dEpaSYzD_0JlWpMF_vxwZuxAgs",
+      "icon": "p5enc:v1:QxLB7HgIwDAk7o9KvhqMrkg55B7RuXXlxR0NDDCjRnkHHOBTo8XwvO_PZeeqKn4S6Akg6eorFLDZKSM",
       "homebrew_id": "CHTM00777",
       "console_type": "ps4",
       "files": [
         "pkg"
       ],
       "app_version": "1.2.2",
+      "sha256": "73f93d0c8343a0c9805768b68402dbba45c87f8bb882584e6aad503d79753b82",
       "size": 19202048,
-      "homepage": "p5enc:v1:7xd1k628rlUEbSW4TGlwYGDPWf4Pp9NSsAFnIPYsO04G4ITvXJZn51eG7zwJjgfYEHVXwKkMLsU5MxWSZ0_DM63lqrwdAxBb",
+      "homepage": "p5enc:v1:FKofXW1yUiWsc6pPzTtmseq2dQyN3sJDtZgIje-NGMy6kwYYkg_-XOW1alUV9ts7qS0dI7IepnXsEmjUcf4xPbriTo-wXlEg",
       "path": "homebrew/ps4-cheats-manager.json"
     },
     {
@@ -181,15 +183,16 @@
       "description": "Browse WebDAV servers and transfer files with this PS4 homebrew client. Install through Remote Package Installer.",
       "author": "cy33hc",
       "version": 1,
-      "icon": "p5enc:v1:zbJHI8HhoBb63clTQN5FosI31aU2vgnhrWiVnEx8oj-9TZ-fI_EFr828dgORVpva1RIj18T5oysVx6M",
+      "icon": "p5enc:v1:0DrJtYQ_2Rk9pi8pGggewzlKALzdN1KfNxqQrbXz-u_7_gyp55WtBH7F5tzRk8HvIARKHMOEjsutrvc",
       "homebrew_id": "WDVC00001",
       "console_type": "ps4",
       "files": [
         "pkg"
       ],
       "app_version": "1.04",
+      "sha256": "518182353dc6fe609bc6fc76432d13a2d7d34baa9bb839be846cdf7e058964c8",
       "size": 36044800,
-      "homepage": "p5enc:v1:B1zofTva2wBy3oh7d0-3gCUZsexzSWu9IpgodcCYWWs-42Ay4NYiB5Hv-zBragAtBFXQAejin4U-SReVZaFtS4AnDbE2ppo",
+      "homepage": "p5enc:v1:P2UJHmY2N1rbRhKaqu-HfRQqy4WqHvi5HHrZdRGIR1_bfZzuL_kkk4Hv7dzIWsyMwbfEDntkFBlOelwPCZw36nllQHWrBOw",
       "path": "homebrew/ps4-webdav-client.json"
     },
     {
@@ -203,6 +206,7 @@
       "files": [
         "elf"
       ],
+      "sha256": "f6eb1b415ecf3340b89a56a0cb04ba5c714430085851ada13a98012b63a5a4cf",
       "size": 135248,
       "path": "payloads/klogsrv-ps5.json"
     },
@@ -217,6 +221,7 @@
       "files": [
         "elf"
       ],
+      "sha256": "ab9a6cb4d3b1daf139d4d646e402b1cf569071acd64599c936d7a3a6164dc779",
       "size": 1737080,
       "path": "payloads/kstuff.json"
     },
@@ -231,6 +236,7 @@
       "files": [
         "bin"
       ],
+      "sha256": "b87ee2ada1c802b5b6a09e5e21b5d925180975b27737bcbc51b7b8d51cd73e8f",
       "size": 46660,
       "path": "payloads/offact-ps4.json"
     },
@@ -245,6 +251,7 @@
       "files": [
         "elf"
       ],
+      "sha256": "d74e4cd119b2bb1fd423f2f5b1c9a7f096b3e588c753af1ab48b983d56216a52",
       "size": 99800,
       "path": "payloads/ps5-backpork.json"
     },
@@ -259,6 +266,7 @@
       "files": [
         "bin"
       ],
+      "sha256": "2eaf9662c8eaf407eabbb6988c169e0ea575d27c8c9bda361d27d6bf7db67913",
       "size": 51972,
       "path": "payloads/rp-get-pin-ps4.json"
     },
@@ -273,6 +281,7 @@
       "files": [
         "lua"
       ],
+      "sha256": "4388b53bdb87b714735b938ebc2964a989912783cd87e1060ef607431c7ed047",
       "size": 997,
       "path": "payloads/setlogserver.json"
     },
@@ -287,6 +296,7 @@
       "files": [
         "elf"
       ],
+      "sha256": "2a7427e20ba7a70bd8cd01e47eb00ee7ca82db82dff3da7884f48f9c3fcbe95a",
       "size": 2437848,
       "path": "payloads/shadowmountplus.json"
     },
@@ -301,6 +311,7 @@
       "files": [
         "elf"
       ],
+      "sha256": "fc59b60aab2dce9a8bae385c106bfa174048d765c826101355f1f010a789b497",
       "size": 19221056,
       "path": "payloads/zftpd-ps5-zhttp-v1-6-0.json"
     }

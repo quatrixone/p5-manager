@@ -508,7 +508,18 @@ pre,
   transition: color 0.15s ease;
   position: relative;
 }
-.bottom-nav-item .bottom-nav-icon { font-size: 1.4rem; line-height: 1; }
+.bottom-nav-item .bottom-nav-icon { font-size: 1.4rem; line-height: 1; position: relative; }
+/* Marketplace has something new: a dot on the icon, no number to read at
+   this size. */
+.bottom-nav-dot {
+  position: absolute;
+  top: -2px;
+  right: -4px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--yellow, #f5a623);
+}
 .bottom-nav-item.active { color: var(--accent); }
 .bottom-nav-item.active::before {
   content: '';

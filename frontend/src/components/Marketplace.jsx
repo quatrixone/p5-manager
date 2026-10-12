@@ -6,6 +6,7 @@ import MarketplaceNews from './MarketplaceNews.jsx';
 import SourcesPanel from './SourcesPanel.jsx';
 import { ItemActions, ItemCard, StoreIcon } from './MarketplaceItem.jsx';
 import { KIND_LABEL, sizeLabel } from '../lib/marketplaceView.js';
+import { useMarketplaceUpdates } from '../App.jsx';
 
 const API = '/store';
 const mb = (n) => sizeLabel(n);
@@ -235,6 +236,7 @@ function CatalogDetail({ item, profiles, consoleOnline, onClose, onNotification,
 export default function Marketplace({ profiles = [], onNotification }) {
   const { mode } = usePlatform();
   const { state } = usePs5Status();
+  const storeUpdates = useMarketplaceUpdates();
   // Unknown ('waking') never blocks an action; the install says the truth.
   const consoleOnline = state === 'online' ? true : state === 'waking' ? null : false;
   const [section, setSection] = useState('new');
@@ -254,6 +256,11 @@ export default function Marketplace({ profiles = [], onNotification }) {
   const [open, setOpen] = useState(null);
 
   useEffect(() => { if (mode === 'ps4' || mode === 'ps5') { setPlatform(mode); setOpen(null); } }, [mode]);
+  // Opening the Marketplace is the user seeing what changed in the curated
+  // built-ins, so the badge stops counting them.
+  useEffect(() => {
+    apiSafe.post(`${API}/updates/seen`, {}).then(() => storeUpdates.refresh?.());
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { setPage(1); }, [platform, source, category, kind, query, updatesOnly]);
   useEffect(() => {
     const timer = setInterval(() => setRevision((v) => v + 1), 15 * 60 * 1000);
