@@ -31,8 +31,7 @@ import { getRepo, log } from '../db/sqlite.js';
 import { downloadsDir, payloadsDir, internalDataDir } from '../lib/paths.js';
 import { insertPayload } from '../lib/defaultPayloads.js';
 import {
-  STORE_REPO, validateStoreItem, storeDir, itemFromScript, itemFromSequence, slugify, homebrewFileName,
-} from '../lib/storeItem.js';
+  STORE_REPO, validateStoreItem, storeDir, itemFromScript, itemFromSequence, slugify, homebrewFileName, uninstallableFiles } from '../lib/storeItem.js';
 
 const router = express.Router();
 
@@ -631,6 +630,10 @@ async function installPs4Pkg(ip, file, say) {
 
 async function installHomebrew(kind, id, profileId) {
   const item = await storeItem(kind, id);
+  // Listed and described, but there is nowhere to put a PS5 native archive
+  // yet; saying so beats copying it into the payload library.
+  const stuck = uninstallableFiles(item);
+  if (stuck.length) throw Object.assign(new Error(`P5 Manager cannot install ${stuck.join(', ')} yet - get it from the app's own page`), { status: 400 });
   const needsConsole = item.files.some((f) => f.type === 'pkg');
   let profile = null;
   if (needsConsole) {

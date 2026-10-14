@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { validateStoreItem, indexEntry, homebrewFileName, slugify, itemFromSequence, STORE_REPO, STORE_BRANCH } from './storeItem.js';
+import { validateStoreItem, indexEntry, homebrewFileName, slugify, itemFromSequence, uninstallableFiles, STORE_REPO, STORE_BRANCH } from './storeItem.js';
 
 const base = { id: 'my-item', name: 'My item', description: 'Does a thing', author: 'me', version: 1 };
 
@@ -58,4 +58,24 @@ test('icons and curated ids are validated and kept in the listing', () => {
 test('the catalog the app reads is the marketplace repository', () => {
   assert.equal(STORE_REPO, 'quatrixone/p5-marketplace');
   assert.equal(STORE_BRANCH, 'main');
+});
+
+test('the catalog native archives and coming-soon entries are readable, and only some types install', () => {
+  const archive = { kind: 'homebrew', id: 'hb-ppsa99997', name: 'Archive app', description: 'd', author: 'dev', version: 1,
+    console_type: 'ps5', title_id: 'PPSA99997',
+    files: [{ type: 'zip', url: 'https://example.org/PPSA99997.zip', sha256: 'a'.repeat(64) }] };
+  assert.deepEqual(validateStoreItem(archive), []);
+  assert.deepEqual(validateStoreItem({ ...archive, files: [{ ...archive.files[0], type: 'ffpfsc', url: 'https://example.org/PPSA99997.ffpfsc' }] }), []);
+  // An archive is PS5-only and needs its title id, and the extension has to
+  // match the declared type.
+  assert.ok(validateStoreItem({ ...archive, console_type: 'ps4' }).some(e => e.includes('native archives')));
+  assert.ok(validateStoreItem({ ...archive, title_id: undefined }).some(e => e.includes('native archives')));
+  assert.ok(validateStoreItem({ ...archive, title_id: 'CUSA12345' }).some(e => e.includes('title_id')));
+  assert.ok(validateStoreItem({ ...archive, files: [{ ...archive.files[0], url: 'https://example.org/PPSA99997.pkg' }] }).some(e => e.includes('extension')));
+  // A coming-soon listing carries no files at all.
+  assert.deepEqual(validateStoreItem({ ...archive, comingSoon: true, files: [] }), []);
+  assert.ok(validateStoreItem({ ...archive, comingSoon: true }).some(e => e.includes('coming-soon')));
+  // What the app can actually put somewhere.
+  assert.deepEqual(uninstallableFiles(archive), ['PPSA99997.zip']);
+  assert.deepEqual(uninstallableFiles({ ...archive, files: [{ type: 'pkg', url: 'https://example.org/a.pkg' }] }), []);
 });
