@@ -108,10 +108,10 @@
       "name": "Open User's Guide",
       "description": "Return Home, find Settings from the right edge, open User's Guide and confirm the certificate prompt for a configured local guide page.",
       "author": "P5 Manager",
-      "version": 1,
+      "version": 2,
       "builtin_id": "builtin:open-user-guide",
       "console_type": "ps5",
-      "lines": 20,
+      "lines": 22,
       "path": "scripts/open-user-guide.json"
     },
     {
