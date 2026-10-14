@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { validateStoreItem, indexEntry, homebrewFileName, slugify, itemFromSequence } from './storeItem.js';
+import { validateStoreItem, indexEntry, homebrewFileName, slugify, itemFromSequence, STORE_REPO, STORE_BRANCH } from './storeItem.js';
 
 const base = { id: 'my-item', name: 'My item', description: 'Does a thing', author: 'me', version: 1 };
 
@@ -53,4 +53,9 @@ test('icons and curated ids are validated and kept in the listing', () => {
   assert.equal(entry.builtin_id, item.builtin_id);
   assert.ok(validateStoreItem({ ...item, icon: 'javascript:alert(1)' }).some(e => e.startsWith('icon')));
   assert.ok(validateStoreItem({ ...item, builtin_id: '../bad' }).some(e => e.startsWith('builtin_id')));
+});
+
+test('the catalog the app reads is the marketplace repository', () => {
+  assert.equal(STORE_REPO, 'quatrixone/p5-marketplace');
+  assert.equal(STORE_BRANCH, 'main');
 });

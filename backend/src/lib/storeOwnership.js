@@ -10,7 +10,11 @@ export function prepareStoreDraft(item, old, login) {
 
 export function ownsStoreItem(item, user) {
   if (!item || !user) return false;
-  if (Number.isSafeInteger(item.github_owner_id)) return item.github_owner_id === user.id;
+  // The catalog pins an owner as owner.github_id; github_owner_id is what
+  // items listed before that carried.
+  const id = Number.isSafeInteger(item.owner?.github_id) ? item.owner.github_id
+    : Number.isSafeInteger(item.github_owner_id) ? item.github_owner_id : null;
+  if (id !== null) return id === user.id;
   return typeof item.author === 'string' && item.author.toLowerCase() === user.login.toLowerCase();
 }
 export function prepareStoreSubmission(item, old, user) {

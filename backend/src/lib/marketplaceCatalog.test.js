@@ -181,3 +181,18 @@ test('the default payload list is a marketplace catalog of its own, keyed by fil
   assert.throws(() => catalog.validateBuiltinCatalog('payloads.json', [{ filename: 'a.elf', url: 'https://example.org/a', port: 'nine' }]), /port/);
   assert.throws(() => catalog.validateBuiltinCatalog('payloads.json', [{ filename: 'a.elf', url: 'https://example.org/a', console_type: 'ps3' }]), /platform/);
 });
+
+test('a catalog without the curated manifest keeps the last copy instead of emptying the list', async () => {
+  const known = await catalog.readMarketplaceBuiltinList('inputScripts.json');
+  assert.ok(known.length, 'a persisted copy exists from the earlier reads');
+  const storeUrl = process.env.P5M_STORE_URL;
+  process.env.P5M_STORE_URL = `${origin}/no-such-store/`;
+  try {
+    const missing = await import('./marketplaceCatalog.js?missing');
+    // A 404 is reported, never answered with an empty curated list.
+    await assert.rejects(missing.readMarketplaceBuiltinList('inputScripts.json', { refresh: true }), /404/);
+    assert.deepEqual(await missing.readMarketplaceBuiltinList('inputScripts.json'), known);
+  } finally {
+    process.env.P5M_STORE_URL = storeUrl;
+  }
+});

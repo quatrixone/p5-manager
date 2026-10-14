@@ -36,3 +36,13 @@ test('drafts validate the GitHub login and cannot claim curated ids', () => {
   for (const login of ['', 'bad name', '-bad', 'bad-', 'x'.repeat(40)]) assert.throws(() => prepareStoreDraft({}, null, login), /GitHub username/);
   assert.throws(() => prepareStoreDraft({ builtin_id: 'builtin:home' }, null, 'owner'), /Curated/);
 });
+
+test('ownership reads the catalog owner object and still accepts legacy items', () => {
+  const user = { id: 57962558, login: 'quatrixone' };
+  assert.equal(ownsStoreItem({ owner: { github_id: 57962558, github_login: 'quatrixone' } }, user), true);
+  assert.equal(ownsStoreItem({ owner: { github_id: 1, github_login: 'someone' } }, user), false);
+  assert.equal(ownsStoreItem({ github_owner_id: 57962558 }, user), true);
+  // A pinned id decides even when the login happens to match.
+  assert.equal(ownsStoreItem({ owner: { github_id: 1, github_login: 'quatrixone' } }, user), false);
+  assert.equal(ownsStoreItem({ author: 'quatrixone' }, user), true);
+});

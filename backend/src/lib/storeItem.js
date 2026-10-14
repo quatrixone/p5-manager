@@ -19,7 +19,7 @@
 
 import { validateSequenceSteps } from './sequenceChecks.js';
 
-export const STORE_REPO = 'quatrixone/p5-manager';
+export const STORE_REPO = 'quatrixone/p5-marketplace';
 export const STORE_BRANCH = 'main';
 
 export const STEP_TYPES = new Set([
