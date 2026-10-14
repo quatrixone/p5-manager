@@ -66,6 +66,9 @@ export function validateStoreItem(item, { submission = false } = {}) {
   if (item.console_type !== undefined && !['ps4', 'ps5'].includes(item.console_type)) {
     errors.push('console_type has to be "ps4" or "ps5" (or left out for both)');
   }
+  // The catalog's accept step insists on one console for a submission; a
+  // draft that says "both" would fail there instead of here.
+  if (submission && !['ps4', 'ps5'].includes(item.console_type)) errors.push('choose one console: PS4 or PS5');
   if (item.kind === 'template') {
     if (!Array.isArray(item.steps) || item.steps.length === 0) errors.push('steps has to be a list with at least one step');
     else if (item.steps.length > MAX_STEPS) errors.push(`more than ${MAX_STEPS} steps`);

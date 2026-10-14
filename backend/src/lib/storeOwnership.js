@@ -5,6 +5,7 @@ export function prepareStoreDraft(item, old, login) {
   if (item.builtin_id && (!old || item.builtin_id !== old.builtin_id)) throw Object.assign(new Error('Curated builtin ids cannot be claimed through submissions'), { status: 400 });
   const draft = { ...(old || {}), ...item, author: login, version: old ? old.version + 1 : 1 };
   delete draft.github_owner_id;
+  delete draft.owner;
   return draft;
 }
 

@@ -135,7 +135,7 @@ test('PS4 metadata keeps cached covers and distinguishes apps with duplicate tit
 test('issue drafts work without OAuth and never claim to verify the author', async () => {
   const publish = body => fetch(`${apiOrigin}/api/store/publish`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   const localId = getRepo().runAndSave('INSERT INTO input_scripts (name, script) VALUES (?, ?)', ['Renamed script', 'home\nwait 500']);
-  const body = { kind: 'script', localId, description: 'New script content', storeId: 'owned-script', author: 'owner' };
+  const body = { kind: 'script', localId, description: 'New script content', storeId: 'owned-script', author: 'owner', console_type: 'ps5' };
   assert.equal((await publish({ ...body, author: '' })).status, 400);
   assert.equal((await publish({ ...body, author: 'invalid user' })).status, 400);
   const r = await publish(body); assert.equal(r.status, 200);

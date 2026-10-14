@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ownsStoreItem, prepareStoreSubmission, prepareStoreDraft } from './storeOwnership.js';
+import { validateStoreItem } from './storeItem.js';
 const owner = { id: 123, login: 'owner' };
 test('verified identity replaces supplied author, owner and version', () => {
   const item = prepareStoreSubmission({ id: 'app', author: 'fake', github_owner_id: 99, version: 400 }, null, owner);
@@ -45,4 +46,16 @@ test('ownership reads the catalog owner object and still accepts legacy items', 
   // A pinned id decides even when the login happens to match.
   assert.equal(ownsStoreItem({ owner: { github_id: 1, github_login: 'quatrixone' } }, user), false);
   assert.equal(ownsStoreItem({ author: 'quatrixone' }, user), true);
+});
+
+test('a submission the catalog would refuse is refused here, and a draft claims no owner', () => {
+  // The catalog requires one console on a submission; letting "both" through
+  // means the maintainer's accept workflow fails instead of the form.
+  const both = { kind: 'script', id: 'my-script', name: 'S', description: 'd', author: 'me', version: 1, script: 'home' };
+  assert.ok(validateStoreItem(both, { submission: true }).some(e => e.includes('one console')));
+  assert.deepEqual(validateStoreItem({ ...both, console_type: 'ps5' }, { submission: true }), []);
+  // A hand-edited JSON cannot carry an owner into the issue body.
+  const draft = prepareStoreDraft({ ...both, console_type: 'ps5', owner: { github_id: 9, github_login: 'someone' }, github_owner_id: 9 }, null, 'me');
+  assert.equal(draft.owner, undefined);
+  assert.equal(draft.github_owner_id, undefined);
 });

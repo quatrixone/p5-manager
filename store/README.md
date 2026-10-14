@@ -1,17 +1,24 @@
 # Marketplace
 
 What **Marketplace** in P5 Manager lists: homebrew apps, Autoload
-templates and input scripts shared by users. The app reads
-[`index.json`](index.json) and the item files from this folder on `main`.
+templates and input scripts shared by users.
+
+**The app no longer reads this folder.** The catalog it reads lives in
+[quatrixone/p5-marketplace](https://github.com/quatrixone/p5-marketplace)
+(`store/` on `main`), so a catalog change needs no app release. The files
+here are the history of the curated items that were moved there, kept for
+one release so the switch can be undone by reverting a single constant
+(`STORE_REPO` in `backend/src/lib/storeItem.js`). The workflow and issue
+template beside them are part of that history too and no longer run for
+submissions.
 
 ## Adding something
 
 In the app: **Marketplace → Publish** picks one of your scripts or
-Autoload sequences and opens a prefilled
-[submission issue](../.github/ISSUE_TEMPLATE/store-submission.yml). A
-maintainer reviews it and adds the `store-accepted` label; the
-[Marketplace workflow](../.github/workflows/store.yml) then opens a pull
-request with the item, and it is listed once that is merged.
+Autoload sequences, asks which console it is for, and opens a prefilled
+submission issue **on the catalog repository**. A maintainer reviews it and
+adds the `store-accepted` label; that repository's Marketplace workflow then
+opens a pull request with the item, and it is listed once that is merged.
 
 Homebrew and payloads can also be submitted from Publish, using the item JSON
 editor (schema below).
@@ -169,9 +176,12 @@ require a matching name; PS4 metadata does not match PS5-only entries.
 Unavailable metadata keeps cached covers and reports a warning.
 
 This supplemental source does not automatically import its package URLs.
-The reviewed Marketplace now includes PS4 Cheats Manager, PS4 WebDAV Client
-and Apollo Save Tool for PS4, linked to their authors' GitHub releases with
-verified SHA-256 and size. PS4 PKG installation uses Remote Package Installer.
+The reviewed catalog includes PS4 Cheats Manager, PS4 WebDAV Client and
+Apollo Save Tool for PS4, linked to their authors' GitHub releases with
+verified SHA-256 and size. PS4 PKG installation uses Remote Package
+Installer. PS5 native archives (`zip`, `ffpfsc`) are listed and described,
+but the app has nowhere to install them yet and says so instead of
+pretending they are payloads.
 
 
 ## Full external catalog browser
