@@ -176,12 +176,12 @@ verified SHA-256 and size. PS4 PKG installation uses Remote Package Installer.
 
 ## Full external catalog browser
 
-**Marketplace → FPKGi Catalog Hub** loads all catalog files from
-Dinos17/FPKGi-Catalog-Hub for PS4 and PS5, with eleven categories: Games,
-Applications, Game updates, DLC, Demos, Homebrew, Emulators, Themes, PS1, PS2,
-and PSP. PS5's PS1/PS2 views use the shared PS4-format catalogs. PS5 PSP reads
-`ps5/psp.json`. Empty source categories remain available and show an empty-state
-message. Native PS4 entries are not silently relabeled as native PS5 games.
+**Marketplace → FPKGi Catalog Hub** loads the Applications, Homebrew and
+Emulators catalogs from Dinos17/FPKGi-Catalog-Hub for PS4 and PS5. Retail
+categories are not offered: games, game updates, DLC, demos, themes, PS1, PS2
+and PSP are not listed, and asking for one is rejected. Empty source categories
+remain available and show an empty-state message. Native PS4 entries are not
+silently relabeled as native PS5 games.
 
 The browser preserves package variants, shows title id, source version,
 region, size, minimum firmware and covers, and searches/paginates on the

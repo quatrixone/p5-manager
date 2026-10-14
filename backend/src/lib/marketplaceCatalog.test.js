@@ -154,8 +154,9 @@ test('issue drafts work without OAuth and never claim to verify the author', asy
   const collisionId = getRepo().runAndSave('INSERT INTO input_scripts (name, script) VALUES (?, ?)', ['Owned Script', 'home']);
   assert.equal((await publish({ kind: 'script', author: 'owner', localId: collisionId, description: 'Collision' })).status, 409);
 });
-test('catalog API exposes all categories and news shows refreshed versions for both sources', async () => {
-  const categories = await request('/store/catalog/categories'); assert.equal(categories.categories.length, 11);
+test('catalog API exposes the offered categories and news shows refreshed versions for both sources', async () => {
+  const categories = await request('/store/catalog/categories');
+  assert.deepEqual(categories.categories.map(c => c.id), ['apps', 'homebrew', 'emulators']);
   const listing = await request('/store/catalog?platform=ps5&category=apps');
   assert.equal(listing.total, 1); assert.equal(listing.items[0].console_type, 'ps5');
   const invalid = await fetch(`${apiOrigin}/store/catalog?platform=ps4&category=bad`); assert.equal(invalid.status, 400);

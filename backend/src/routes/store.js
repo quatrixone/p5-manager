@@ -80,7 +80,8 @@ router.get('/catalog', handle(async req => {
   return catalogPage(catalog, { query: req.query.q, page: req.query.page, limit: req.query.limit });
 }));
 
-const news = createMarketplaceNews({ file: path.join(internalDataDir, 'marketplace', 'news.json'), collect: async () => {
+const knownNewsSource = (key) => key === 'marketplace' || ['ps4', 'ps5'].some(p => FPKGI_CATEGORIES.some(c => key === `fpkgi:${p}:${c.id}`));
+const news = createMarketplaceNews({ file: path.join(internalDataDir, 'marketplace', 'news.json'), knownSource: knownNewsSource, collect: async () => {
   const sources = [];
   try {
     const index = await storeIndex(true);

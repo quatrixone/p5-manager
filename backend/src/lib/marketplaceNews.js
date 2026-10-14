@@ -6,14 +6,28 @@ export const NEWS_INTERVAL_MS = 15 * 60 * 1000;
 
 // Successful sources replace their snapshots; unavailable sources retain
 // their last entries. Each item keeps its latest observed change across restarts.
-export function createMarketplaceNews({ file, collect, now = Date.now }) {
-  let records = {}, checkedAt = null, warnings = [], pending = null, started = false;
+export function createMarketplaceNews({ file, collect, now = Date.now, knownSource = () => true }) {
+  let records = {}, checkedAt = null, warnings = [], pending = null, started = false, pruned = false;
+  function persist(recordsToSave, at, warns) {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(`${file}.tmp`, JSON.stringify(encodeCatalog({ records: recordsToSave, checkedAt: at, warnings: warns })));
+    fs.renameSync(`${file}.tmp`, file);
+  }
   try {
     const saved = decodeCatalog(JSON.parse(fs.readFileSync(file, 'utf8')));
-    if (saved.records && typeof saved.records === 'object' && !Array.isArray(saved.records)) records = saved.records;
+    if (saved.records && typeof saved.records === 'object' && !Array.isArray(saved.records)) {
+      // A source we no longer collect would otherwise keep its entries for
+      // ever, because only its own refresh can replace them.
+      records = Object.fromEntries(Object.entries(saved.records).filter(([, r]) => knownSource(r?.sourceKey)));
+      // Persisted here, not left to the next refresh: that one returns early
+      // while the fifteen-minute snapshot is still fresh, so the dropped
+      // entries would survive a restart.
+      pruned = Object.keys(records).length !== Object.keys(saved.records).length;
+    }
     checkedAt = Number.isFinite(saved.checkedAt) ? saved.checkedAt : null;
     warnings = Array.isArray(saved.warnings) ? saved.warnings.filter(w => typeof w === 'string') : [];
   } catch { /* No previous snapshot. */ }
+  if (pruned) try { persist(records, checkedAt, warnings); } catch { /* A read-only data directory prunes again next start. */ }
   async function refresh({ force = false } = {}) {
     started = true;
     if (pending) return pending;
@@ -36,9 +50,7 @@ export function createMarketplaceNews({ file, collect, now = Date.now }) {
         }
         for (const [key, record] of Object.entries(next)) if (record.sourceKey === source.key && !present.has(key)) delete next[key];
       }
-      fs.mkdirSync(path.dirname(file), { recursive: true });
-      fs.writeFileSync(`${file}.tmp`, JSON.stringify(encodeCatalog({ records: next, checkedAt: at, warnings })));
-      fs.renameSync(`${file}.tmp`, file);
+      persist(next, at, warnings);
       records = next; checkedAt = at;
     })().finally(() => { pending = null; });
     return pending;
