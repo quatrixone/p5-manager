@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createLibrarySnapshots, titleIdsOf, decorateInstalled, installKey, compareVersions, localIndex } from './installedState.js';
+import { createLibrarySnapshots, titleIdsOf, decorateInstalled, installKey, compareVersions, localIndex, homebrewTitleId } from './installedState.js';
 
 const installs = [
   { kind: 'script', store_id: 'home', version: 1 },
@@ -140,4 +140,14 @@ test('a checksum match beats a name match when both are possible', () => {
   assert.equal(item.localName, 'kstuff-new.elf');
   assert.equal(item.localVersion, 'v1.11');
   assert.equal(item.update, false);
+});
+
+test('a catalog title id counts whether it is called homebrew_id or title_id', () => {
+  assert.equal(homebrewTitleId({ homebrew_id: 'CHTM00777' }), 'CHTM00777');
+  // The catalog names it title_id; without this the console check is never
+  // answered for any of its homebrew.
+  assert.equal(homebrewTitleId({ title_id: 'PPSA99997' }), 'PPSA99997');
+  assert.equal(homebrewTitleId({ title_id: 'ppsa99997' }), 'PPSA99997');
+  assert.equal(homebrewTitleId({ files: [{ name: 'IV0000-CHTM00777_00-x.pkg' }] }), 'CHTM00777');
+  assert.equal(homebrewTitleId({ title_id: 'nonsense' }), null);
 });
