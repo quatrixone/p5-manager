@@ -19,6 +19,7 @@ import { createMarketplaceNews, NEWS_INTERVAL_MS } from '../lib/marketplaceNews.
 import { prepareStoreDraft } from '../lib/storeOwnership.js';
 import { STORE_BASE, fetchCatalogJson, readMarketplaceBuiltinList } from '../lib/marketplaceCatalog.js';
 import { ps4HomebrewMetadata } from '../lib/ps4HomebrewMetadata.js';
+import { requireConsoleReachable } from '../lib/consoleStatus.js';
 import { homebrewIcons, matchHomebrewIcon } from '../lib/homebrewIcons.js';
 import { encodeCatalog, decodeCatalog } from '../lib/catalogLinks.js';
 import crypto from 'crypto';
@@ -650,6 +651,8 @@ async function installHomebrew(kind, id, profileId) {
     if ((profile.console_type || 'ps5') !== item.console_type) {
       throw Object.assign(new Error(`this is a ${item.console_type.toUpperCase()} app and ${profile.name} is not one`), { status: 400 });
     }
+    // An address is not the same as a console that is on.
+    await requireConsoleReachable(profile);
   }
   const job = newJob(async (j, say) => {
     const dir = path.join(downloadsDir, 'store', item.id);
@@ -727,6 +730,7 @@ router.post('/install-catalog', handle(async (req) => {
   if (item.console_type && item.console_type !== platform) {
     throw Object.assign(new Error(`this is a ${item.console_type.toUpperCase()} package and ${profile.name} is not one`), { status: 400 });
   }
+  await requireConsoleReachable(profile);
   // A catalog rarely pins a checksum. Installing anyway is the user's call,
   // and it is theirs to make explicitly.
   if (!item.verified && req.body?.acknowledgeUnverified !== true) {

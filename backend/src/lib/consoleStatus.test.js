@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { discoverConsole, _resetConsoleStatus } from './consoleStatus.js';
+import { discoverConsole, _resetConsoleStatus, requireConsoleReachable } from './consoleStatus.js';
 
 function fakeSidecar(answers) {
   const calls = [];
@@ -50,4 +50,21 @@ test('callers at the same time share one search', async (t) => {
   assert.equal(b.status_code, 620);
   assert.equal(calls.length, 1);
   assert.match(calls[0], /host_type=PS4/);
+});
+
+test('an install that the console has to receive is refused while it does not answer', async () => {
+  // A profile with an address is not the same as a console that is on; the
+  // install used to start a job that then died halfway.
+  await assert.rejects(
+    requireConsoleReachable({ id: 1, name: 'Living room', ip_address: '192.0.2.10', console_type: 'ps5' }, async () => null),
+    (e) => e.status === 400 && /Living room is not on/.test(e.message),
+  );
+  assert.deepEqual(
+    await requireConsoleReachable({ id: 1, name: 'Living room', ip_address: '192.0.2.10', console_type: 'ps5' }, async () => ({ status: 'Ok' })),
+    { status: 'Ok' },
+  );
+  await assert.rejects(
+    requireConsoleReachable({ id: 1, name: 'No address', ip_address: '' }, async () => ({ status: 'Ok' })),
+    (e) => e.status === 400 && /pick the console/.test(e.message),
+  );
 });
