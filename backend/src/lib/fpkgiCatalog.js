@@ -7,16 +7,15 @@ import { internalDataDir } from './paths.js';
 import { encodeCatalog, decodeCatalog } from './catalogLinks.js';
 
 export const FPKGI_REPO = 'https://github.com/Dinos17/FPKGi-Catalog-Hub';
+// Retail categories (games, updates, DLC, demos, themes, PS1, PS2, PSP) are
+// deliberately not offered; the browser lists homebrew, applications and
+// emulators only.
 export const FPKGI_CATEGORIES = [
-  ['games', 'Games'], ['apps', 'Applications'], ['updates', 'Game updates'],
-  ['dlc', 'DLC'], ['demos', 'Demos'], ['homebrew', 'Homebrew'],
-  ['emulators', 'Emulators'], ['themes', 'Themes'], ['ps1', 'PS1'],
-  ['ps2', 'PS2'], ['psp', 'PSP'],
+  ['apps', 'Applications'], ['homebrew', 'Homebrew'], ['emulators', 'Emulators'],
 ].map(([id, label]) => ({ id, label }));
 export function catalogPath(platform, category) {
   if (!['ps4', 'ps5'].includes(platform) || !FPKGI_CATEGORIES.some(c => c.id === category)) throw Object.assign(new Error('Unknown platform or catalog category'), { status: 400 });
-  if (platform === 'ps4' || ['ps1', 'ps2'].includes(category)) return `ps4/${category}.json`;
-  return category === 'psp' ? 'ps5/psp.json' : `ps5/ps5-${category}.json`;
+  return platform === 'ps4' ? `ps4/${category}.json` : `ps5/ps5-${category}.json`;
 }
 export function externalUrl(value) {
   try { const u = new URL(value); return u.protocol === 'https:' && !u.username && !u.password ? u.href : null; } catch { return null; }

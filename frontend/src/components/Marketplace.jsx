@@ -5,7 +5,7 @@ import { usePs5Status } from '../contexts/Ps5StatusContext';
 import MarketplaceNews from './MarketplaceNews.jsx';
 import SourcesPanel from './SourcesPanel.jsx';
 import { ItemActions, ItemCard, StoreIcon } from './MarketplaceItem.jsx';
-import { KIND_LABEL, sizeLabel } from '../lib/marketplaceView.js';
+import { KIND_LABEL, sizeLabel, ownedEntries } from '../lib/marketplaceView.js';
 import { useMarketplaceUpdates } from '../App.jsx';
 
 const API = '/store';
@@ -99,7 +99,7 @@ function Publish({ onNotification, entries }) {
   const [itemJson, setItemJson] = useState('{}');
   const [itemLoading, setItemLoading] = useState(false);
   const packaged = kind === 'homebrew' || kind === 'payload';
-  const owned = (entries || []).filter(i => i.kind === kind && (showAll || i.author?.toLowerCase() === login.toLowerCase()));
+  const owned = ownedEntries(entries, kind, login, showAll);
   const updating = owned.find(i => i.id === storeId);
   const [mine, setMine] = useState({ script: [], template: [] });
   const [localId, setLocalId] = useState('');
@@ -182,12 +182,12 @@ function Publish({ onNotification, entries }) {
         <div className="flex gap-sm flex-wrap mb-sm">
           <div className="text-sm" style={{ flex: '1 1 160px' }}>{validLogin ? `GitHub username: @${login}` : 'Enter your GitHub username above.'}</div>
           <select className="select" value={consoleType} onChange={(e) => setConsoleType(e.target.value)} style={{ flex: '1 1 120px', minHeight: 40 }}>
-            <option value="">PS4 + PS5</option>
+            <option value="">Pick a console…</option>
             <option value="ps5">PS5</option>
             <option value="ps4">PS4</option>
           </select>
         </div>
-        <button className="btn btn-primary" onClick={publish} disabled={!validLogin || (!packaged && !localId) || itemLoading || !description.trim() || (publishMode === 'update' && !storeId)} style={{ width: '100%', minHeight: 44 }}>
+        <button className="btn btn-primary" onClick={publish} disabled={!validLogin || !consoleType || (!packaged && !localId) || itemLoading || !description.trim() || (publishMode === 'update' && !storeId)} style={{ width: '100%', minHeight: 44 }}>
           {publishMode === 'update' ? 'Submit update on GitHub' : 'Publish on GitHub'}
         </button>
         {result && <a className="btn btn-secondary mt-sm" href={result.issueUrl} target="_blank" rel="noreferrer">Open submission on GitHub</a>}

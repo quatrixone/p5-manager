@@ -5,12 +5,17 @@ export function prepareStoreDraft(item, old, login) {
   if (item.builtin_id && (!old || item.builtin_id !== old.builtin_id)) throw Object.assign(new Error('Curated builtin ids cannot be claimed through submissions'), { status: 400 });
   const draft = { ...(old || {}), ...item, author: login, version: old ? old.version + 1 : 1 };
   delete draft.github_owner_id;
+  delete draft.owner;
   return draft;
 }
 
 export function ownsStoreItem(item, user) {
   if (!item || !user) return false;
-  if (Number.isSafeInteger(item.github_owner_id)) return item.github_owner_id === user.id;
+  // The catalog pins an owner as owner.github_id; github_owner_id is what
+  // items listed before that carried.
+  const id = Number.isSafeInteger(item.owner?.github_id) ? item.owner.github_id
+    : Number.isSafeInteger(item.github_owner_id) ? item.github_owner_id : null;
+  if (id !== null) return id === user.id;
   return typeof item.author === 'string' && item.author.toLowerCase() === user.login.toLowerCase();
 }
 export function prepareStoreSubmission(item, old, user) {
