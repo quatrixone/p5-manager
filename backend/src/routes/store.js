@@ -111,7 +111,15 @@ newsTimer.unref();
 router.get('/news', handle(async req => {
   const platform = req.query.platform || 'ps4';
   if (!['ps4', 'ps5'].includes(platform)) throw Object.assign(new Error('Unknown platform'), { status: 400 });
-  const page = await news.page({ force: req.query.refresh === '1', platform, query: req.query.q, event: req.query.event || 'all', page: req.query.page });
+  // What is installed decides as much as what changed in the catalogue: an
+  // item whose listed version is ahead of the installed one is an update
+  // waiting for this user, whether or not the feed saw it move.
+  const installed = new Map(installs().map((i) => [`${i.kind}:${i.store_id}`, i]));
+  const isPendingUpdate = (item) => {
+    const have = installed.get(`${item.kind}:${item.store_id || item.id}`);
+    return !!have && Number(item.version) > Number(have.version);
+  };
+  const page = await news.page({ force: req.query.refresh === '1', platform, query: req.query.q, event: req.query.event || 'all', page: req.query.page, isPendingUpdate });
   // The feed offers the same actions as the list, so it needs the same
   // answer about what is already installed.
   const profileId = activeProfileId(req.query.profileId);

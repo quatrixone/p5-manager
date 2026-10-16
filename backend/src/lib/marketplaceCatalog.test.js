@@ -161,7 +161,9 @@ test('catalog API exposes the offered categories and news shows refreshed versio
   assert.equal(listing.total, 1); assert.equal(listing.items[0].console_type, 'ps5');
   const invalid = await fetch(`${apiOrigin}/store/catalog?platform=ps4&category=bad`); assert.equal(invalid.status, 400);
   const first = await request('/store/news?platform=ps4');
-  assert.equal(first.intervalMs, 900000); assert.ok(first.items.some(i => i.source === 'fpkgi')); assert.ok(first.items.some(i => i.source === 'marketplace')); assert.equal(first.warnings.length, 0);
+  // The first look is the baseline: what the catalogues already held is not
+  // news, so the feed stays quiet until something moves.
+  assert.equal(first.intervalMs, 900000); assert.deepEqual(first.items, []); assert.equal(first.warnings.length, 0);
   revision++;
   const changed = await request('/store/news?platform=ps5&refresh=1&event=updated');
   assert.ok(changed.items.some(i => i.source === 'marketplace' && i.store_id === 'home-ps5'));
