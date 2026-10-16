@@ -1,5 +1,5 @@
 {
-  "generated": "2026-10-12T10:47:41.346Z",
+  "generated": "2026-10-16T09:38:08.386Z",
   "items": [
     {
       "kind": "template",
@@ -65,6 +65,19 @@
       "requiresProfile": true,
       "autoTrigger": "loader_down",
       "path": "templates/userguide-jailbreak-autoload.json"
+    },
+    {
+      "kind": "template",
+      "id": "wake-userguide-jailbreak-autoload",
+      "name": "PS5: Wake → Guide loader → kstuff → ShadowMount → zftpd",
+      "description": "From rest mode: wake the console over Remote Play, open the configured guide loader, wait for port 9021, send kstuff, ShadowMountPlus and zftpd, then verify FTP.",
+      "author": "P5 Manager",
+      "version": 1,
+      "builtin_id": "tpl-wake-userguide-jailbreak-autoload",
+      "console_type": "ps5",
+      "steps": 11,
+      "requiresProfile": true,
+      "path": "templates/wake-userguide-jailbreak-autoload.json"
     },
     {
       "kind": "script",
@@ -145,7 +158,7 @@
       "description": "Manage, export and import PS4 save data with Apollo Save Tool. Install through Remote Package Installer.",
       "author": "bucanero",
       "version": 1,
-      "icon": "p5enc:v1:baHG9iyvwNKdD2Op0I4yHIj1jOFDzm3QbgbR5weHQZMUc4mN_29VmbJhKvxerxX4-2foLR1AFf1Tr6vyFcPw52p_9tG9ECGlo4OuhEI_x71NtR5rJv3r0EVvWJxnoWJLOF5dK1ervak",
+      "icon": "p5enc:v1:uGbApisI-l30azb8jJVPOxI8bSQkj1-UIegFiamiJbnJfuW05gANzTMiiAoCzfnMFIBdbaftFZzvxabDU5rk97Yb0z1R8XGC2UbBjyHaS-xqxOaUfpraCVfgvHiY7StclJjkOzwRZkU",
       "homebrew_id": "APOL00004",
       "console_type": "ps4",
       "files": [
@@ -154,7 +167,7 @@
       "app_version": "2.3.2",
       "sha256": "2baf876cf5689a2fee96f7a1920ddf2f8713b92adfc6fe0e84f38707cb1e0f17",
       "size": 22675456,
-      "homepage": "p5enc:v1:Fca9kJEQARTrmQ6WvSjU4t0h6Fl4BzJyA_RP1kxisBQ01VzchjzKfN5owMs57BqLTHuRr5zNAl6GeHpIACWNrpDx",
+      "homepage": "p5enc:v1:JnT83UDxmBYJMXD1D3UhxpueN_LhskkPWaMFo6ab9VtWrrRR8yoBhqMXe14QHJrZTgfF40Wh7yKH8-Ti2RzM7vm7",
       "path": "homebrew/apollo-save-tool-ps4.json"
     },
     {
@@ -164,7 +177,7 @@
       "description": "Manage GoldHEN cheats and game patches on PS4. Install through Remote Package Installer, then launch the app from Home.",
       "author": "bucanero",
       "version": 1,
-      "icon": "p5enc:v1:QxLB7HgIwDAk7o9KvhqMrkg55B7RuXXlxR0NDDCjRnkHHOBTo8XwvO_PZeeqKn4S6Akg6eorFLDZKSM",
+      "icon": "p5enc:v1:qnd8QQaeNhbYjE4g8z6_aWsAvkKhX3DXH_1OPBbzI1pm2reqzwt-RQZ_YP_G9-Ez0idl527D0Wo55SE",
       "homebrew_id": "CHTM00777",
       "console_type": "ps4",
       "files": [
@@ -173,7 +186,7 @@
       "app_version": "1.2.2",
       "sha256": "73f93d0c8343a0c9805768b68402dbba45c87f8bb882584e6aad503d79753b82",
       "size": 19202048,
-      "homepage": "p5enc:v1:FKofXW1yUiWsc6pPzTtmseq2dQyN3sJDtZgIje-NGMy6kwYYkg_-XOW1alUV9ts7qS0dI7IepnXsEmjUcf4xPbriTo-wXlEg",
+      "homepage": "p5enc:v1:7TAfS1i4Pjr004fZHbKUxNRSptNjh1ZVNDek6pUVq6nWGNzxls44Buguhl76FAk4AJtZUcorSfQqs1oYZZoQk_4E-mFkH8QR",
       "path": "homebrew/ps4-cheats-manager.json"
     },
     {
@@ -183,7 +196,7 @@
       "description": "Browse WebDAV servers and transfer files with this PS4 homebrew client. Install through Remote Package Installer.",
       "author": "cy33hc",
       "version": 1,
-      "icon": "p5enc:v1:0DrJtYQ_2Rk9pi8pGggewzlKALzdN1KfNxqQrbXz-u_7_gyp55WtBH7F5tzRk8HvIARKHMOEjsutrvc",
+      "icon": "p5enc:v1:U7XsvWAF01MoG45EDqIvX-VRCSqQ7aF3E8dqiQiJwwUDxr14chTT8K3JWGsGYYkiZVg9HiqhhcaGphI",
       "homebrew_id": "WDVC00001",
       "console_type": "ps4",
       "files": [
@@ -192,7 +205,7 @@
       "app_version": "1.04",
       "sha256": "518182353dc6fe609bc6fc76432d13a2d7d34baa9bb839be846cdf7e058964c8",
       "size": 36044800,
-      "homepage": "p5enc:v1:P2UJHmY2N1rbRhKaqu-HfRQqy4WqHvi5HHrZdRGIR1_bfZzuL_kkk4Hv7dzIWsyMwbfEDntkFBlOelwPCZw36nllQHWrBOw",
+      "homepage": "p5enc:v1:oUz7OeJx3mO2mpHIrcvLffSYlCIiEhRKl_BNMgmn3JTL8VF14g6WYa-iUAD9KIiB_67JwtNdLz2tBd8g70_mHH_Bbc5dvIA",
       "path": "homebrew/ps4-webdav-client.json"
     },
     {
