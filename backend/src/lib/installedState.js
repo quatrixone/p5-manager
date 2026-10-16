@@ -22,7 +22,8 @@ export function titleIdsOf(library) {
 // The title id a homebrew item installs as: either declared, or the one
 // Sony's package naming puts in the file name (IV0000-CHTM00777_00-…).
 export function homebrewTitleId(item) {
-  const declared = String(item.homebrew_id || '').toUpperCase();
+  // The curated items call it homebrew_id, the catalog calls it title_id.
+  const declared = String(item.homebrew_id || item.title_id || '').toUpperCase();
   if (TITLE_ID.test(declared)) return declared;
   for (const file of item.files || []) {
     const m = /[A-Z]{2}\d{4}-([A-Z]{4}\d{5})_/i.exec(String(file?.name || ''));

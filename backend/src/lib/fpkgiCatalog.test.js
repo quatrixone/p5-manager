@@ -6,24 +6,26 @@ import path from 'node:path';
 import { catalogPath, FPKGI_CATEGORIES, createFpkgiCatalog, parseFpkgiCatalog, catalogPage } from './fpkgiCatalog.js';
 const row = { name: 'Test app', title_id: 'TEST00001', version: '1.0', region: 'EUR', size: 500, min_fw: '5.05', cover_url: 'https://example.org/icon.png' };
 const fixture = { DATA: { 'https://example.org/app.pkg': row, 'https://example.org/variant.pkg': { ...row, region: 'USA' } } };
-test('all catalog categories map to PS4 and PS5 files, including shared classics', () => {
-  assert.equal(FPKGI_CATEGORIES.length, 11);
+test('only non-retail catalog categories are offered, and they map to PS4 and PS5 files', () => {
+  assert.deepEqual(FPKGI_CATEGORIES.map(c => c.id), ['apps', 'homebrew', 'emulators']);
   for (const c of FPKGI_CATEGORIES) assert.ok(catalogPath('ps4', c.id).endsWith('.json'));
-  assert.equal(catalogPath('ps5', 'games'), 'ps5/ps5-games.json');
-  assert.equal(catalogPath('ps5', 'psp'), 'ps5/psp.json');
-  assert.equal(catalogPath('ps5', 'ps1'), 'ps4/ps1.json');
+  assert.equal(catalogPath('ps5', 'homebrew'), 'ps5/ps5-homebrew.json');
+  assert.equal(catalogPath('ps4', 'apps'), 'ps4/apps.json');
+  for (const gone of ['games', 'updates', 'dlc', 'demos', 'themes', 'ps1', 'ps2', 'psp']) {
+    assert.throws(() => catalogPath('ps4', gone), /Unknown/, `${gone} is no longer offered`);
+  }
   assert.throws(() => catalogPath('ps4', '../../bad'), /Unknown/);
-  assert.throws(() => catalogPath('ps3', 'games'), /Unknown/);
+  assert.throws(() => catalogPath('ps3', 'homebrew'), /Unknown/);
 });
 test('package variants retain distinct stable ids and unsafe links do not become actions', () => {
-  const a = parseFpkgiCatalog(fixture, 'ps4', 'games');
+  const a = parseFpkgiCatalog(fixture, 'ps4', 'homebrew');
   assert.equal(a.length, 2); assert.notEqual(a[0].id, a[1].id);
-  assert.equal(a[0].id, parseFpkgiCatalog(fixture, 'ps4', 'games')[0].id);
+  assert.equal(a[0].id, parseFpkgiCatalog(fixture, 'ps4', 'homebrew')[0].id);
   assert.equal(a[0].title_id, row.title_id); assert.equal(a[0].sha256, null);
   const unsafe = parseFpkgiCatalog({ DATA: { 'javascript:alert(1)': { ...row, cover_url: 'https://user:secret@example.org/icon.png' } } }, 'ps5', 'apps')[0];
   assert.equal(unsafe.package_url, null); assert.equal(unsafe.icon, null);
   assert.throws(() => parseFpkgiCatalog({ DATA: [] }, 'ps4', 'homebrew'), /Invalid/);
-  assert.deepEqual(parseFpkgiCatalog({ DATA: {} }, 'ps4', 'demos'), []);
+  assert.deepEqual(parseFpkgiCatalog({ DATA: {} }, 'ps4', 'emulators'), []);
 });
 test('catalog refresh coalesces, caches for 15 minutes and survives offline restarts', async t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'p5-fpkgi-')); t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
@@ -39,10 +41,10 @@ test('catalog refresh coalesces, caches for 15 minutes and survives offline rest
   const restarted = createFpkgiCatalog(options);
   const cached = await restarted.read('ps4', 'homebrew');
   assert.deepEqual(cached.items, a.items); assert.match(cached.warning, /503/);
-  const missing = await restarted.read('ps5', 'games'); assert.equal(missing.items.length, 0); assert.equal(missing.fetchedAt, null);
+  const missing = await restarted.read('ps5', 'emulators'); assert.equal(missing.items.length, 0); assert.equal(missing.fetchedAt, null);
 });
 test('search and pagination include title ids, regions and version with bounded pages', () => {
-  const catalog = { items: parseFpkgiCatalog(fixture, 'ps4', 'games') };
+  const catalog = { items: parseFpkgiCatalog(fixture, 'ps4', 'homebrew') };
   assert.equal(catalogPage(catalog, { query: 'usa' }).total, 1);
   assert.equal(catalogPage(catalog, { query: 'TEST00001' }).total, 2);
   const paged = catalogPage(catalog, { limit: 1, page: 99 });

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { actionFor, installedBadge, needsConsole, unverifiedWarning } from './marketplaceView.js';
+import { actionFor, installedBadge, needsConsole, unverifiedWarning, ownedEntries } from './marketplaceView.js';
 
 const script = { kind: 'script', id: 'home', name: 'Home', version: 2 };
 const homebrewPkg = { kind: 'homebrew', id: 'cheats', name: 'Cheats', version: 1, files: ['pkg'], console_type: 'ps4' };
@@ -70,4 +70,19 @@ test('an item already in Payloads, Scripts or Autoload reads as installed', () =
   assert.equal(installedBadge(newer).text, 'Update v1.11');
   assert.match(installedBadge(newer).title, /You have v1.09/);
   assert.equal(actionFor(newer).label, 'Update');
+});
+
+test('publishing lists the items this account owns, not the ones it is credited on', () => {
+  const entries = [
+    { kind: 'homebrew', id: 'imported', author: 'Bilawal Riaz', owner: { github_id: 7, github_login: 'quatrixone' } },
+    { kind: 'homebrew', id: 'someone-elses', author: 'quatrixone', owner: { github_id: 9, github_login: 'other' } },
+    { kind: 'homebrew', id: 'legacy', author: 'QuatrixOne' },
+    { kind: 'script', id: 'wrong-kind', owner: { github_id: 7, github_login: 'quatrixone' } },
+  ];
+  // The catalog credits the original developer in `author`; ownership is the
+  // GitHub account, so the imported item is listed and the look-alike is not.
+  assert.deepEqual(ownedEntries(entries, 'homebrew', 'quatrixone').map(i => i.id), ['imported', 'legacy']);
+  assert.deepEqual(ownedEntries(entries, 'homebrew', 'quatrixone', true).map(i => i.id), ['imported', 'someone-elses', 'legacy']);
+  assert.deepEqual(ownedEntries(entries, 'homebrew', '').map(i => i.id), []);
+  assert.deepEqual(ownedEntries(null, 'homebrew', 'quatrixone'), []);
 });

@@ -57,3 +57,18 @@ export function unverifiedWarning(item) {
 }
 
 export const sizeLabel = (n) => (n ? (n >= 1e9 ? `${(n / 1e9).toFixed(2)} GB` : `${(n / 1e6).toFixed(1)} MB`) : '');
+
+// The items an account may update: ownership is the GitHub account that
+// published the item, while `author` only credits whoever wrote the app -
+// for an imported listing the two are different people.
+export function ownedEntries(entries, kind, login, showAll = false) {
+  const name = String(login || '').toLowerCase();
+  return (entries || []).filter((i) => {
+    if (i.kind !== kind) return false;
+    if (showAll) return true;
+    if (!name) return false;
+    const owner = i.owner?.github_login;
+    if (owner) return String(owner).toLowerCase() === name;
+    return String(i.author || '').toLowerCase() === name;
+  });
+}

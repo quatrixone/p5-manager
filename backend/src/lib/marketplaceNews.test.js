@@ -35,3 +35,16 @@ test('failed sources retain activity while successful sources remove deleted ent
   assert.equal((await news.page({ query: 'alpha', event: 'new' })).total, 1);
   assert.equal((await news.page({ event: 'updated' })).total, 0);
 });
+
+test('snapshots of sources that are no longer offered disappear from New', async () => {
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'news-')), 'news.json');
+  fs.writeFileSync(file, JSON.stringify({ checkedAt: 1, warnings: [], records: {
+    'fpkgi:ps4:games:a': { sourceKey: 'fpkgi:ps4:games', fingerprint: 'x', event: 'new', detectedAt: 1, item: { id: 'a', name: 'A retail game', console_type: 'ps4' } },
+    'fpkgi:ps4:homebrew:b': { sourceKey: 'fpkgi:ps4:homebrew', fingerprint: 'y', event: 'new', detectedAt: 1, item: { id: 'b', name: 'A homebrew app', console_type: 'ps4' } },
+  } }));
+  const news = createMarketplaceNews({ file, now: () => 2, knownSource: (key) => key !== 'fpkgi:ps4:games',
+    collect: async () => [{ key: 'fpkgi:ps4:homebrew', items: [{ id: 'b', name: 'A homebrew app', console_type: 'ps4' }] }] });
+  const first = await news.page({});
+  assert.deepEqual(first.items.map(i => i.name), ['A homebrew app']);
+  assert.ok(!JSON.parse(fs.readFileSync(file, 'utf8')).records['fpkgi:ps4:games:a'], 'the snapshot is pruned on disk too');
+});
