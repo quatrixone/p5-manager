@@ -226,7 +226,9 @@ async function execWol(step, ctx) {
   //   - the warm cache holds the PS5 awake just like a live session would,
   //     so long FTP uploads / extracts don't let the PS5 fall back to rest,
   //   - if no further RP step runs in this sequence the warm cache simply
-  //     ages out (180 s TTL) and the PS5 returns to standby naturally.
+  //     ages out when its TTL passes and the PS5 returns to standby naturally.
+  //     The sidecar reports that TTL; it was 300 s on the console this was last run
+  //     against, so the 180 below is only the fallback for an older sidecar.
   //
   // The legacy `keep_session` flag predates /prewarm - back then we had to
   // open a full live session to keep PS5 awake. The warm cache fills the
