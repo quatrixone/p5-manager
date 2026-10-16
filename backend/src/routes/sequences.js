@@ -1,5 +1,5 @@
 import express from 'express';
-import { portRetry, validateSequenceSteps } from '../lib/sequenceChecks.js';
+import { portRetry, shouldAutoTrigger, validateSequenceSteps } from '../lib/sequenceChecks.js';
 import net from 'net';
 import { getRepo, log } from '../db/sqlite.js';
 import { readMarketplaceBuiltinList } from '../lib/marketplaceCatalog.js';
@@ -687,13 +687,42 @@ router.post('/:id/run', async (req, res) => {
 // console answers as switched on (not rest mode) while the watched port is
 // closed - i.e. the console was restarted and is not jailbroken any more.
 // The sequence takes over the controller through Remote Play, so the watcher
-// is deliberately slow to fire: the port has to stay closed for a while, no
-// other sequence may be running, and after a run it waits out a cooldown
-// before trying again, so a jailbreak that keeps failing does not keep
-// steering the console. How often, which port, how long and the cooldown are
-// per sequence - see AUTO_TRIGGER_DEFAULTS.
+// is deliberately slow to fire, and every rule for that lives in
+// shouldAutoTrigger(): the port has to stay closed for a while, nothing else
+// may be running, nobody may be on the controller, and any run on that console
+// - the watcher's own, a manual one, or one an external tool started - starts
+// a cooldown. So a jailbreak that keeps failing does not keep steering the
+// console, and a person's own attempt is not picked up where they left off.
+// How often, which port, how long and the cooldown are per sequence - see
+// AUTO_TRIGGER_DEFAULTS.
 const AUTO_TRIGGER_TICK_MS = 5 * 1000;
 const autoTriggerState = new Map(); // sequence id -> { nextCheckAt, downSince, lastRunAt }
+
+// The end of the most recent run on this console, whoever started it. Used as the
+// start of the cooldown, so an external bring-up that just failed holds the watcher.
+function lastRunEndedFor(profileId) {
+  let latest = 0;
+  for (const run of sequenceRuns.values()) {
+    if (profileId == null || run.profile_id !== profileId) continue;
+    const at = Date.parse(run.finished_at || '') || 0;
+    if (at > latest) latest = at;
+  }
+  return latest;
+}
+
+// Whether something is on this console's controller: a live Remote Play session, or
+// the warm session a wake step parks for its TTL. An unknown state counts as in use:
+// a run of ours would take the controller, and without Remote Play it would fail at
+// its first input script anyway.
+async function isRemotePlayBusy(ip) {
+  try {
+    const status = await apiFetch('GET', `/remoteplay/quick-status?ip=${encodeURIComponent(ip)}`);
+    return !!(status?.active || status?.warm);
+  } catch (e) {
+    log('info', `Auto-trigger: Remote Play state of ${ip} is unknown (${e.message}) - not steering it`);
+    return true;
+  }
+}
 
 async function isConsoleOn(ip) {
   try {
@@ -706,7 +735,7 @@ async function isConsoleOn(ip) {
 
 async function autoTriggerTick() {
   const sequences = getRepo().queryAll(`
-    SELECT s.id, s.name, s.auto_trigger_config, p.ip_address, p.port
+    SELECT s.id, s.name, s.profile_id, s.auto_trigger_config, p.ip_address, p.port
     FROM autoload_sequences s
     JOIN profiles p ON s.profile_id = p.id
     WHERE s.auto_trigger = ?
@@ -722,15 +751,18 @@ async function autoTriggerTick() {
     state.nextCheckAt = Date.now() + cfg.intervalS * 1000;
 
     const port = cfg.port || seq.port || 9021;
-    const cooledDown = !state.lastRunAt || Date.now() - state.lastRunAt >= cfg.cooldownMin * 60 * 1000;
-    const down = !busy && cooledDown
-      && await isConsoleOn(seq.ip_address)
-      && !(await checkPortOpen(seq.ip_address, port));
-    if (!down) { state.downSince = 0; continue; }
-    if (!state.downSince) state.downSince = Date.now();
-    if (Date.now() - state.downSince < cfg.closedForS * 1000) continue;
+    // The facts are thunks, so the console and Remote Play are asked only when the
+    // cheap ones have not already settled it.
+    const decision = await shouldAutoTrigger(state, cfg, Date.now(), {
+      busy,
+      lastRunEndedAt: () => lastRunEndedFor(seq.profile_id),
+      consoleOn: () => isConsoleOn(seq.ip_address),
+      portOpen: () => checkPortOpen(seq.ip_address, port),
+      remotePlayBusy: () => isRemotePlayBusy(seq.ip_address),
+    });
+    state.downSince = decision.downSince;
+    if (!decision.run) continue;
 
-    state.downSince = 0;
     state.lastRunAt = Date.now();
     log('info', `Auto-trigger: ${seq.ip_address} is on but port ${port} is closed - running "${seq.name}"`);
     try {

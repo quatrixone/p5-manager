@@ -1,5 +1,5 @@
 {
-  "generated": "2026-10-16T09:38:08.386Z",
+  "generated": "2026-10-16T10:23:43.068Z",
   "items": [
     {
       "kind": "template",
@@ -158,7 +158,7 @@
       "description": "Manage, export and import PS4 save data with Apollo Save Tool. Install through Remote Package Installer.",
       "author": "bucanero",
       "version": 1,
-      "icon": "p5enc:v1:uGbApisI-l30azb8jJVPOxI8bSQkj1-UIegFiamiJbnJfuW05gANzTMiiAoCzfnMFIBdbaftFZzvxabDU5rk97Yb0z1R8XGC2UbBjyHaS-xqxOaUfpraCVfgvHiY7StclJjkOzwRZkU",
+      "icon": "p5enc:v1:wo9uHisacaqGOl66XWSjU5qyQW0yqojYbV73_XHlhaC1HBWhPeN9jiW2ZUsMZB_N26cPq_hhrBQBigyEO-6QWale84byoY5Zzppq186ydsZ0QvKzEY3r1NBFpiHqC_U-lAw3lUB_OBI",
       "homebrew_id": "APOL00004",
       "console_type": "ps4",
       "files": [
@@ -167,7 +167,7 @@
       "app_version": "2.3.2",
       "sha256": "2baf876cf5689a2fee96f7a1920ddf2f8713b92adfc6fe0e84f38707cb1e0f17",
       "size": 22675456,
-      "homepage": "p5enc:v1:JnT83UDxmBYJMXD1D3UhxpueN_LhskkPWaMFo6ab9VtWrrRR8yoBhqMXe14QHJrZTgfF40Wh7yKH8-Ti2RzM7vm7",
+      "homepage": "p5enc:v1:8BZa3McyUu-wdzBKmzkp6VwQ8-KeQETnZ-gapOv3Uo-zZMdz0AgR54YWgvS4oijLmRewnfM5S2QtMEwxScL0flh_",
       "path": "homebrew/apollo-save-tool-ps4.json"
     },
     {
@@ -177,7 +177,7 @@
       "description": "Manage GoldHEN cheats and game patches on PS4. Install through Remote Package Installer, then launch the app from Home.",
       "author": "bucanero",
       "version": 1,
-      "icon": "p5enc:v1:qnd8QQaeNhbYjE4g8z6_aWsAvkKhX3DXH_1OPBbzI1pm2reqzwt-RQZ_YP_G9-Ez0idl527D0Wo55SE",
+      "icon": "p5enc:v1:KGXa5skQL0fsEbhDl7jUcN-ORWJWhNu3XEaxks6I45Dvyq-FfznAiUyDobkXgozSSEdXGtCiLzBayrY",
       "homebrew_id": "CHTM00777",
       "console_type": "ps4",
       "files": [
@@ -186,7 +186,7 @@
       "app_version": "1.2.2",
       "sha256": "73f93d0c8343a0c9805768b68402dbba45c87f8bb882584e6aad503d79753b82",
       "size": 19202048,
-      "homepage": "p5enc:v1:7TAfS1i4Pjr004fZHbKUxNRSptNjh1ZVNDek6pUVq6nWGNzxls44Buguhl76FAk4AJtZUcorSfQqs1oYZZoQk_4E-mFkH8QR",
+      "homepage": "p5enc:v1:3590_YiOxKOEn4JzfuLSwYxldbBYlyLLq2i7tdssOx_QwjdF453NXe38I9AML5xq5QPxiUvlO4iz4v6DXWlZ0qBhQbMje8bR",
       "path": "homebrew/ps4-cheats-manager.json"
     },
     {
@@ -196,7 +196,7 @@
       "description": "Browse WebDAV servers and transfer files with this PS4 homebrew client. Install through Remote Package Installer.",
       "author": "cy33hc",
       "version": 1,
-      "icon": "p5enc:v1:U7XsvWAF01MoG45EDqIvX-VRCSqQ7aF3E8dqiQiJwwUDxr14chTT8K3JWGsGYYkiZVg9HiqhhcaGphI",
+      "icon": "p5enc:v1:h2b4WisNBIN6303FFnqKYrl3uGlcA3zZspdOnBz8_4Kvpfvrmrv9nAXnZk9CkiKMMeNLnoo6D2ifp6k",
       "homebrew_id": "WDVC00001",
       "console_type": "ps4",
       "files": [
@@ -205,7 +205,7 @@
       "app_version": "1.04",
       "sha256": "518182353dc6fe609bc6fc76432d13a2d7d34baa9bb839be846cdf7e058964c8",
       "size": 36044800,
-      "homepage": "p5enc:v1:oUz7OeJx3mO2mpHIrcvLffSYlCIiEhRKl_BNMgmn3JTL8VF14g6WYa-iUAD9KIiB_67JwtNdLz2tBd8g70_mHH_Bbc5dvIA",
+      "homepage": "p5enc:v1:zrWeXhxz1I1SyYi68N2kxe2b44iNxAfCmgBdD4mIWKc1loAIh2His7yxDLDYmvfmfZdxMl294y6t3b31gmC1gGG1ZoDQrQk",
       "path": "homebrew/ps4-webdav-client.json"
     },
     {

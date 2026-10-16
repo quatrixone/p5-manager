@@ -11,7 +11,7 @@
       },
       {
         "type": "download",
-        "url": "p5enc:v1:R9ta8TCE90X_0LqbRjFzhoxgrO3W-ILekZiakeW03_Wko0jDYQczyzpzWLvCS5jiB6Xx0SxYugnY3G4",
+        "url": "p5enc:v1:29n25PEmo0mDWmXHb4XWlSAAjO42r2P4LYVVqGCsUp81Xf98uAWjFbs3D7OK7JQxMZbVNP_Tvi-_mjU",
         "dest_kind": "local",
         "dest_path": "/data/mkpfs",
         "name": "Download archive.zip"
@@ -56,7 +56,7 @@
       },
       {
         "type": "download",
-        "url": "p5enc:v1:k9gT98EvgoIp-GeUduEebpClT_wTPgJjSierYPnqNPLU2kDel7o7OuwepwOWDFTokdyaAiJI-EY",
+        "url": "p5enc:v1:zV8KIMmb1duT9_lfflQao5tEwT1f78U8RC86xCZYzqURVbZg51efemfraa3gyYbARCvXKTA_qlQ",
         "dest_kind": "local",
         "dest_path": "/data/mkpfs",
         "name": "Download game.rar"
@@ -200,7 +200,7 @@
     "console_type": "ps5",
     "requiresProfile": true,
     "autoTrigger": "loader_down",
-    "notes": "PS5 only. Configure the User Guide host and calibrate both guide scripts for its prompts and selected action first. The watcher runs only while the console is online and the loader remains closed. A failed port check reruns the guide steps at most twice, then reports failure; it never reports success merely because the button script completed.",
+    "notes": "PS5 only. Configure the User Guide host and calibrate both guide scripts for its prompts and selected action first. The watcher runs only while the console is online and the loader remains closed, and it stays quiet while another sequence runs, while someone is on the controller through Remote Play, and for the pause after any run on this console — including one you or another tool started. A failed port check reruns the guide steps at most twice, then reports failure; it never reports success merely because the button script completed.",
     "steps": [
       {
         "type": "input_script",

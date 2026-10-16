@@ -740,7 +740,7 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
 
               {autoTrigger === 'loader_down' && (
                 <>
-                  <div className="text-sm">Runs by itself when the console is on but its payload loader port is closed.</div>
+                  <div className="text-sm">Runs by itself when the console is on but its payload loader port is closed, and nothing else is using it.</div>
                   <div className="autoload-trigger-grid">
                     <label className="field-label">Check every (seconds)</label>
                     <input type="number" className="input" min={10} max={3600} placeholder="30"
@@ -756,7 +756,7 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
                       value={autoTriggerConfig.cooldownMin ?? ''} onChange={e => patchAutoTriggerConfig('cooldownMin', e.target.value)} />
                   </div>
                   <div className="text-xs text-muted">
-                    Applies to the profile above, only while the console is on (not in rest mode) and no other sequence is running. The sequence steers the console through Remote Play, so the pause keeps a failing run from repeating right away.
+                    Applies to the profile above, only while the console is on (not in rest mode), no other sequence is running and nobody is on the controller through Remote Play. The sequence steers the console through Remote Play, so the pause runs after any run on this console, including one you started yourself, and keeps a failing run from repeating right away.
                   </div>
                 </>
               )}
