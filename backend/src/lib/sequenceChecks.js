@@ -26,3 +26,40 @@ export function validateSequenceSteps(steps) {
   });
   return steps;
 }
+
+// Whether a loader_down watcher may take over its console on this tick.
+//
+// The watcher steers a real controller through Remote Play, so every rule here is a
+// reason not to: something is already running, something else recently ran on this
+// console, the console is off, its loader answers, or someone is on the controller.
+// Only a console that has been on with the loader closed for the configured time,
+// with nothing else going on, is taken over.
+//
+// A fact may be a value or a function returning one, so the console and Remote Play
+// are asked only when the cheap facts have not already settled it. The returned
+// downSince is the state to keep: a holding reason resets it, so the port has to
+// stay closed for the full time again once the reason is gone.
+export async function shouldAutoTrigger(state, cfg, now, facts) {
+  const fact = async (value) => (typeof value === 'function' ? await value() : value);
+  const hold = (reason) => ({ run: false, downSince: 0, reason });
+
+  if (await fact(facts.busy)) return hold('a sequence is already running');
+
+  // The cooldown counts any run on this console, not only the watcher's own: a
+  // manual or external run that just failed leaves exactly the state that would
+  // trigger this watcher, and it must not pick up where a person left off.
+  const quiet = Math.max(Number(state?.lastRunAt) || 0, Number(await fact(facts.lastRunEndedAt)) || 0);
+  if (quiet && now - quiet < cfg.cooldownMin * 60_000) {
+    return hold('a run on this console finished less than the cooldown ago');
+  }
+
+  if (!(await fact(facts.consoleOn))) return hold('the console is not on');
+  if (await fact(facts.portOpen)) return hold('the watched port answers');
+  if (await fact(facts.remotePlayBusy)) return hold('Remote Play is in use on this console');
+
+  const downSince = Number(state?.downSince) || now;
+  if (now - downSince < cfg.closedForS * 1000) {
+    return { run: false, downSince, reason: 'the port has not been closed for long enough' };
+  }
+  return { run: true, downSince: 0, reason: 'the console is on and the watched port is closed' };
+}
