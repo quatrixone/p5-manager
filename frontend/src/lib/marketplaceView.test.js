@@ -11,8 +11,11 @@ test('only items that end up on the console need one', () => {
   assert.equal(needsConsole({ kind: 'payload' }), false);
   assert.equal(needsConsole(homebrewPkg), true);
   assert.equal(needsConsole({ kind: 'homebrew', files: ['elf'] }), false);
+  // Installing a template saves an Autoload sequence and does not run it, so
+  // it needs no console - whether or not the sequence will want a profile.
   assert.equal(needsConsole({ kind: 'template', requiresProfile: false }), false);
-  assert.equal(needsConsole({ kind: 'template' }), true);
+  assert.equal(needsConsole({ kind: 'template' }), false);
+  assert.equal(needsConsole({ kind: 'homebrew', files: ['zip'] }), true);
   assert.equal(needsConsole(catalogPkg), true);
 });
 
@@ -85,4 +88,36 @@ test('publishing lists the items this account owns, not the ones it is credited 
   assert.deepEqual(ownedEntries(entries, 'homebrew', 'quatrixone', true).map(i => i.id), ['imported', 'someone-elses', 'legacy']);
   assert.deepEqual(ownedEntries(entries, 'homebrew', '').map(i => i.id), []);
   assert.deepEqual(ownedEntries(null, 'homebrew', 'quatrixone'), []);
+});
+
+test('only what the console has to receive is blocked while it is off', () => {
+  const off = { consoleOnline: false, hasProfile: true };
+  const on = { consoleOnline: true, hasProfile: true };
+  const pkg = { kind: 'homebrew', files: ['pkg'], console_type: 'ps5' };
+  const archive = { kind: 'homebrew', files: ['zip'], console_type: 'ps5' };
+  const payload = { kind: 'payload', files: ['bin'] };
+  const script = { kind: 'script' };
+  const template = { kind: 'template', requiresProfile: true };
+
+  // A package and a native archive both end up on the console.
+  assert.equal(needsConsole(pkg), true);
+  assert.equal(needsConsole(archive), true);
+  // These are saved here, so the console may be anywhere.
+  assert.equal(needsConsole(payload), false);
+  assert.equal(needsConsole(script), false);
+  assert.equal(needsConsole(template), false);
+
+  assert.equal(actionFor(pkg, off).disabled, true);
+  assert.match(actionFor(pkg, off).reason, /not on/);
+  assert.equal(actionFor(pkg, on).disabled, false);
+  for (const item of [payload, script, template]) assert.equal(actionFor(item, off).disabled, false, item.kind);
+  // Unknown console state must not block: the install itself says the truth.
+  assert.equal(actionFor(pkg, { consoleOnline: null, hasProfile: true }).disabled, false);
+
+  // An archive has nowhere to go yet, whatever the console is doing.
+  for (const where of [off, on]) {
+    const action = actionFor(archive, where);
+    assert.equal(action.disabled, true);
+    assert.match(action.reason, /cannot install/i);
+  }
 });

@@ -9,11 +9,22 @@ export const KIND_LABEL = {
 export const KIND_ICON = { homebrew: '🎮', payload: '📦', script: '🕹️', template: '⚡', catalog: '💿' };
 
 // Which items cannot be put anywhere without a console answering.
+// The files the console itself has to receive. Payloads, input scripts and
+// Autoload templates are saved here - installing one is a local operation,
+// so it works with the console off.
+export const CONSOLE_FILE_TYPES = ['pkg', 'zip', 'ffpfsc'];
+// A format the app lists and describes but has nowhere to put yet.
+export const UNINSTALLABLE_FILE_TYPES = ['zip', 'ffpfsc'];
+
 export function needsConsole(item) {
   if (item.kind === 'catalog') return true;
-  if (item.kind === 'homebrew') return (item.files || []).includes('pkg');
-  if (item.kind === 'template') return item.requiresProfile !== false;
+  if (item.kind === 'homebrew') return (item.files || []).some((t) => CONSOLE_FILE_TYPES.includes(t));
   return false;
+}
+
+// The files of this item the app cannot install anywhere, by type.
+export function uninstallableTypes(item) {
+  return (item.files || []).filter((t) => UNINSTALLABLE_FILE_TYPES.includes(t));
 }
 
 // The primary button: what it says, what it does, and why it cannot.
@@ -24,6 +35,10 @@ export function actionFor(item, { consoleOnline = null, hasProfile = true } = {}
   }
   const label = item.update ? 'Update' : item.installed || item.onConsole || item.inLibrary ? 'Install again' : 'Install';
   const action = item.kind === 'catalog' ? 'install-catalog' : 'install';
+  // Said before anything about the console: the answer does not change when
+  // it comes on.
+  const stuck = uninstallableTypes(item);
+  if (stuck.length) return { action, label, disabled: true, reason: `P5 Manager cannot install a .${stuck[0]} yet - get it from the app's own page` };
   if (!needsConsole(item)) return { action, label, disabled: false, reason: '' };
   if (!hasProfile) return { action, label, disabled: true, reason: `No ${(item.console_type || 'console').toUpperCase()} profile to install it on` };
   if (consoleOnline === false) return { action, label, disabled: true, reason: 'The console is not on' };

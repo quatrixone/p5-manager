@@ -79,3 +79,14 @@ export async function discoverConsole(ip, { hostType = null } = {}) {
 export function _resetConsoleStatus() {
   state.clear();
 }
+
+// A profile having an address is not the same as its console being on. An
+// install that has to reach the console asks this first, so it refuses with
+// a plain answer instead of starting a job that dies halfway.
+// `discover` is injectable for tests; it defaults to the DDP probe above.
+export async function requireConsoleReachable(profile, discover = discoverConsole) {
+  if (!profile?.ip_address) throw Object.assign(new Error('pick the console to install it on'), { status: 400 });
+  const answer = await discover(profile.ip_address, { hostType: (profile.console_type || 'ps5').toUpperCase() });
+  if (!answer) throw Object.assign(new Error(`${profile.name || profile.ip_address} is not on - turn the console on and try again`), { status: 400 });
+  return answer;
+}

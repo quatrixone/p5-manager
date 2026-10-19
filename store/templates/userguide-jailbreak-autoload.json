@@ -4,7 +4,7 @@
   "console_type": "ps5",
   "requiresProfile": true,
   "autoTrigger": "loader_down",
-  "notes": "PS5 only. Configure the User Guide host and calibrate both guide scripts for its prompts and selected action first. The watcher runs only while the console is online and the loader remains closed. A failed port check reruns the guide steps at most twice, then reports failure; it never reports success merely because the button script completed.",
+  "notes": "PS5 only. Configure the User Guide host and calibrate both guide scripts for its prompts and selected action first. The watcher runs only while the console is online and the loader remains closed, and it stays quiet while another sequence runs, while someone is on the controller through Remote Play, and for the pause after any run on this console — including one you or another tool started. A failed port check reruns the guide steps at most twice, then reports failure; it never reports success merely because the button script completed.",
   "steps": [
     {
       "type": "input_script",
