@@ -580,10 +580,10 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
           )}
         </div>
         <div className="convert-intro-hint">
-          Pack a single file or a game-dump folder into a PS5-mountable image:
+          Pack a single file or a Homebrew dump folder into a PS5-mountable image:
           {' '}<code>.ffpfsc</code> via <code>mkpfs</code> for ShadowMount+,
           or raw <code>.exfat</code> via <code>mkfs.exfat</code> +
-          loop-mount, or LZ4 asset packs for AMPR games. Pick the target format below. Sources are scanned from
+          loop-mount, or LZ4 asset packs for AMPR-compatible Homebrew titles. Pick the target format below. Sources are scanned from
           <code> {workdir || 'data/mkpfs'}</code>.
         </div>
       </section>
@@ -673,7 +673,7 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
           <div>
             <label style={styles.label}>{['lz4-folder', 'exfat-lz4', 'ffpfsc-lz4'].includes(mode) ? 'Output folder name' : 'Output filename'}</label>
             <input style={styles.input} value={outputName} onChange={e => setOutputName(e.target.value)}
-              placeholder={['lz4-folder', 'exfat-lz4', 'ffpfsc-lz4'].includes(mode) ? 'GAME1234-lz4' : (mode === 'exfat-file' || mode === 'exfat-folder') ? 'GAME1234.exfat' : 'GAME1234.ffpfsc'} />
+              placeholder={['lz4-folder', 'exfat-lz4', 'ffpfsc-lz4'].includes(mode) ? 'PPSA12345-lz4' : (mode === 'exfat-file' || mode === 'exfat-folder') ? 'PPSA12345.exfat' : 'PPSA12345.ffpfsc'} />
           </div>
 
           {['lz4-folder', 'exfat-lz4', 'ffpfsc-lz4'].includes(mode) && (
@@ -683,7 +683,7 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
                 <input type="number" min="1" max="12" style={styles.input} value={lz4Level} onChange={e => setLz4Level(e.target.value)} />
               </div>
               <div className="text-xs text-muted" style={{ alignSelf: 'end', paddingBottom: 8 }}>
-                Builds verified AMPR asset packs in a game folder. The title must support APR-EMU packed assets.
+                Builds verified AMPR asset packs in a Homebrew folder. The title must support APR-EMU packed assets.
               </div>
             </div>
           )}
@@ -731,7 +731,7 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
                         <input type="checkbox" checked={signed} onChange={e => setSigned(e.target.checked)} /> Signed (zero EKPFS)
                       </label>
                       <label style={{ ...styles.row, fontSize: '0.85rem' }}>
-                        <input type="checkbox" checked={requireGameFiles} onChange={e => setRequireGameFiles(e.target.checked)} /> Require game files
+                        <input type="checkbox" checked={requireGameFiles} onChange={e => setRequireGameFiles(e.target.checked)} /> Require Homebrew files
                       </label>
                     </div>
                   )}

@@ -52,7 +52,7 @@ function RemoteSourcesSection({ profiles = [] }) {
 
   const addNetworkFolder = async () => {
     if (!parseNetworkPath(netForm.address)) {
-      return showMsg('Paste the address from Explorer, for example \\\\nas\\games', 'error');
+      return showMsg('Paste the address from Explorer, for example \\\\nas\\homebrew', 'error');
     }
     setNetBusy(true);
     try {
@@ -185,7 +185,7 @@ function RemoteSourcesSection({ profiles = [] }) {
               value={netForm.address}
               onChange={e => setNetForm({ ...netForm, address: e.target.value })}
               onKeyDown={e => { if (e.key === 'Enter') addNetworkFolder(); }}
-              placeholder={'\\\\nas\\games\\ps5'}
+              placeholder={'\\\\nas\\homebrew\\ps5'}
             />
             <div className="grid-2">
               <div>
@@ -242,7 +242,7 @@ function RemoteSourcesSection({ profiles = [] }) {
               <div className="grid-2">
                 <div className="col-span-2">
                   <label className="text-xs text-muted mb-sm" style={{ display: 'block' }}>Address - paste it and the fields below fill in</label>
-                  <input className="input" value={smbAddress} onChange={e => onSmbAddress(e.target.value)} placeholder={'\\\\nas\\games\\ps5  or  smb://nas/games/ps5'} />
+                  <input className="input" value={smbAddress} onChange={e => onSmbAddress(e.target.value)} placeholder={'\\\\nas\\homebrew\\ps5  or  smb://nas/homebrew/ps5'} />
                 </div>
                 <div>
                   <label className="text-xs text-muted mb-sm" style={{ display: 'block' }}>Host / IP</label>
@@ -250,7 +250,7 @@ function RemoteSourcesSection({ profiles = [] }) {
                 </div>
                 <div>
                   <label className="text-xs text-muted mb-sm" style={{ display: 'block' }}>Share</label>
-                  <input className="input" value={form.smb_share} onChange={e => setForm({ ...form, smb_share: e.target.value })} placeholder="games" />
+                  <input className="input" value={form.smb_share} onChange={e => setForm({ ...form, smb_share: e.target.value })} placeholder="homebrew" />
                 </div>
                 <div>
                   <label className="text-xs text-muted mb-sm" style={{ display: 'block' }}>Sub-path (optional)</label>

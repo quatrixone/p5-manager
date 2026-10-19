@@ -458,7 +458,7 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
         <div className="comp-card-body">
           <div className="font-bold mb-sm">Remote Play fullscreen controls</div>
           <div className="text-xs text-muted mb-md">
-            Adjust how see-through the fullscreen buttons and sticks look over the game. Pressed buttons stay bright so you can see when an input is active.
+            Adjust how see-through the fullscreen buttons and sticks look over the Homebrew screen. Pressed buttons stay bright so you can see when an input is active.
           </div>
           <label className="text-sm" htmlFor="fullscreen-controller-transparency">
             Button transparency <strong>{fullscreenTransparency}%</strong>

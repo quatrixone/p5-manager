@@ -45,6 +45,6 @@
     "tag": "community",
     "console_type": "ps5",
     "port": 9021,
-    "description": "PS5 ShadowMountPlus 1.7beta3 (game mounting + Library API)"
+    "description": "PS5 ShadowMountPlus 1.7beta3 (Homebrew mounting + Library API)"
   }
 ]

@@ -421,7 +421,7 @@ function PayloadList({ payloads, profiles, onFetchUrl, onSend, onDelete, onUpdat
         <EmptyState
           icon="🧷"
           title="No built-in payloads present"
-          text="Built-in features such as logs, Remote Play pairing and the game library need these payloads. Install them from Marketplace; the ones P5 Manager builds itself can be restored here."
+          text="Built-in features such as logs, Remote Play pairing and the Homebrew library need these payloads. Install them from Marketplace; the ones P5 Manager builds itself can be restored here."
           action={onRestoreDefaults && <button className="btn btn-primary" onClick={() => onRestoreDefaults(false)}>✨ Restore app payloads</button>}
         />
       ) : visiblePayloads.length === 0 ? (

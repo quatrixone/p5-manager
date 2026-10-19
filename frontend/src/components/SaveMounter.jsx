@@ -278,7 +278,7 @@ export default function SaveMounter({ profiles = [], onNotification }) {
                 {info.users.map((u) => <option key={u.hex} value={u.hex}>👤 {u.name}</option>)}
               </select>
               <select className="select" value={title} onChange={(e) => setTitle(e.target.value)} style={{ flex: '1 1 160px', minHeight: 40 }}>
-                <option value="">Game with saves… ({titles.length})</option>
+                <option value="">Homebrew title with saves… ({titles.length})</option>
                 {titles.map((t) => <option key={t} value={t}>{t}{t.startsWith('CUSA') ? ' (PS4)' : t.startsWith('PPSA') ? ' (PS5)' : ''}</option>)}
               </select>
             </div>
@@ -333,7 +333,7 @@ export default function SaveMounter({ profiles = [], onNotification }) {
           <ol className="text-xs text-muted" style={{ paddingLeft: 18, margin: '0 0 8px' }}>
             <li>On the PS4 (GoldHEN), open <b>Apollo Save Tool</b>, pick the save and choose <b>Export decrypted save files</b> (to the internal drive or a USB drive).</li>
             <li>Pick that folder below - or a backup on this computer.</li>
-            <li>The game's PS4 title id (CUSA…) and a save name; a new save is created on the PS5 unless you replace one.</li>
+            <li>Enter the Homebrew title's PS4 title ID (CUSA…) and a save name; a new save is created on the PS5 unless you replace one.</li>
           </ol>
 
           <div className="tabs mb-sm">

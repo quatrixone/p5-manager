@@ -154,7 +154,7 @@ export default function Library({ profiles = [], onNotification }) {
   };
 
   const uninstall = (g) => {
-    if (!window.confirm(`Uninstall ${g.title_name || g.title_id}?\n\nThis removes it from the console’s home screen. The game files will stay on the drive.`)) return;
+    if (!window.confirm(`Uninstall ${g.title_name || g.title_id}?\n\nThis removes it from the console’s home screen. The Homebrew files will stay on the drive.`)) return;
     run(g, 'uninstall', {}, `Uninstalled ${g.title_name || g.title_id}`).then(ok => { if (ok) setSelected(null); });
   };
 
@@ -261,7 +261,7 @@ export default function Library({ profiles = [], onNotification }) {
           <div>
             <span className="comp-card-title screen-section-title">🎮 Library</span>
             <div className="text-xs text-muted mt-xs">
-              {isPs4Profile ? 'Installed titles read from the PS4 app database over FTP · view only' : `Games ShadowMount knows on the console${data?.version ? ` · ShadowMount ${data.version}` : ''}`}
+              {isPs4Profile ? 'Installed titles read from the PS4 app database over FTP · view only' : `Homebrew titles known to ShadowMount on the console${data?.version ? ` · ShadowMount ${data.version}` : ''}`}
             </div>
           </div>
           <div className="flex gap-xs items-center flex-wrap">
@@ -283,7 +283,7 @@ export default function Library({ profiles = [], onNotification }) {
                 return (
                   <div key={v.id} className="lib-volume">
                     <div className="flex justify-between text-xs">
-                      <span><b>{v.label}</b> <span className="text-muted">{v.path} · {counts[v.id] || 0} games</span></span>
+                      <span><b>{v.label}</b> <span className="text-muted">{v.path} · {counts[v.id] || 0} Homebrew title{counts[v.id] === 1 ? '' : 's'}</span></span>
                       <span className="text-muted">{fmtBytes(v.available_bytes)} free of {fmtBytes(v.total_bytes)}</span>
                     </div>
                     <div className="lib-bar"><div style={{ width: `${p}%` }} /></div>
@@ -316,7 +316,7 @@ export default function Library({ profiles = [], onNotification }) {
             )}
 
             <div className="flex gap-sm items-center flex-wrap">
-              <input className="input" style={{ flex: '1 1 220px' }} type="search" placeholder="Search games…" value={query} onChange={e => setQuery(e.target.value)} />
+              <input className="input" style={{ flex: '1 1 220px' }} type="search" placeholder="Search Homebrew…" value={query} onChange={e => setQuery(e.target.value)} />
               {!isPs4Profile && <div className="tabs" style={{ flex: '0 1 auto' }}>
                 <button className={`tab-item ${storage === 'all' ? 'active' : ''}`} onClick={() => setStorage('all')}>All ({games.length})</button>
                 {storages.map(s => (
@@ -360,8 +360,8 @@ export default function Library({ profiles = [], onNotification }) {
       {data && shown.length === 0 && (
         <div className="empty-state">
           <div className="empty-state-icon">🎮</div>
-          <div className="empty-state-title">{games.length === 0 ? 'No games found' : 'No games match your search'}</div>
-          <div className="empty-state-text">{games.length === 0 ? (isPs4Profile ? 'No installed games were found on this PS4.' : 'No games have been added to the library yet. Try refreshing the library.') : 'Try a different search or storage filter.'}</div>
+          <div className="empty-state-title">{games.length === 0 ? 'No Homebrew titles found' : 'No Homebrew titles match your search'}</div>
+          <div className="empty-state-text">{games.length === 0 ? (isPs4Profile ? 'No installed Homebrew titles were found on this PS4.' : 'No Homebrew titles have been added to the library yet. Try refreshing the library.') : 'Try a different search or storage filter.'}</div>
         </div>
       )}
 
@@ -420,7 +420,7 @@ export default function Library({ profiles = [], onNotification }) {
               <button className="btn btn-secondary" disabled={busy || jobActive || !game.source_available || !game.path} onClick={() => openRename(game)}>✏️ Rename</button>
               {!isPs4Profile && <>
                 <button className="btn btn-secondary" disabled={busy || !game.installed} onClick={() => uninstall(game)} title="Remove the title from the console's home screen; files stay">✖ Uninstall</button>
-                <button className="btn btn-danger" disabled={busy || jobActive} onClick={() => setDeleting(game)} title="Delete the game's files for good">🗑 Delete</button>
+                <button className="btn btn-danger" disabled={busy || jobActive} onClick={() => setDeleting(game)} title="Delete the Homebrew files for good">🗑 Delete</button>
               </>}
             </div>}
           </div>
@@ -481,7 +481,7 @@ export default function Library({ profiles = [], onNotification }) {
             ))}
             <label className="lib-dest">
               <input type="radio" name="lib-dest" checked={dest === '__custom__'} onChange={() => setDest('__custom__')} />
-              <input className="input flex-1" placeholder="/mnt/usb0/games" value={customDest}
+              <input className="input flex-1" placeholder="/mnt/usb0/homebrew" value={customDest}
                 onFocus={() => setDest('__custom__')} onChange={e => setCustomDest(e.target.value)} />
             </label>
             {picker.op === 'unpack' && (
@@ -498,7 +498,7 @@ export default function Library({ profiles = [], onNotification }) {
       <Modal
         isOpen={!!deleting}
         onClose={() => { if (!busy) setDeleting(null); }}
-        title="Delete game files"
+        title="Delete Homebrew files"
         footer={deleting && (
           <>
             <button className="btn btn-ghost" onClick={() => setDeleting(null)} disabled={busy}>No</button>
@@ -511,7 +511,7 @@ export default function Library({ profiles = [], onNotification }) {
         {deleting && (
           <div className="flex-col gap-sm">
             <div className="text-sm">
-              {isPs4Profile ? <>Permanently delete <b>{deleting.title_name || deleting.title_id}</b> ({deleting.title_id}) from this PS4? The game and its files will be removed. This can’t be undone.</>
+              {isPs4Profile ? <>Permanently delete <b>{deleting.title_name || deleting.title_id}</b> ({deleting.title_id}) from this PS4? The Homebrew title and its files will be removed. This can’t be undone.</>
                 : <>Permanently delete <b>{deleting.title_name || deleting.title_id}</b> ({fmtBytes(sizeOf(deleting))}) from this console? This can’t be undone.</>}
             </div>
             {!isPs4Profile && <div className="text-xs text-muted" style={{ wordBreak: 'break-all' }}>{deleting.path}</div>}

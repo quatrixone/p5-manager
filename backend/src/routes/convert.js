@@ -3090,7 +3090,7 @@ function resolveGameRootForPack(srcPath) {
           `Source "${path.basename(srcPath)}/" looked like a wrapper directory ` +
           `(no eboot.bin / sce_sys at root, only "${realSubdirs[0].name}/" inside). ` +
           `Auto-promoted source to "${path.basename(srcPath)}/${realSubdirs[0].name}/" ` +
-          `so the resulting .ffpfsc has game files at the image root ` +
+          `so the resulting .ffpfsc has Homebrew files at the image root ` +
           `(PS5 PFS reader requires no extra top-level folder).`
         ),
       };
@@ -3108,7 +3108,7 @@ function resolveGameRootForPack(srcPath) {
       `WARNING: source "${path.basename(srcPath)}/" does not have "eboot.bin" ` +
       `or "sce_sys/" at its root. PS5 PFS reader requires those at the image ` +
       `root with no wrapper folder. If the resulting .ffpfsc fails to mount, ` +
-      `restructure the source so game files sit directly under the chosen folder.`
+      `restructure the source so Homebrew files sit directly under the chosen folder.`
     ),
   };
 }
@@ -3235,7 +3235,7 @@ async function runImageToLz4(job, imageKind, opts) {
     job.output = originalOutput;
     job.progress = 0;
     job.phase = null;
-    appendLog(job, '[manager] Packing extracted game as LZ4…\n');
+    appendLog(job, '[manager] Packing extracted Homebrew as LZ4…\n');
     return await runLz4Folder(job);
   } finally {
     job.output = originalOutput;

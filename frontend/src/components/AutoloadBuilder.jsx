@@ -60,7 +60,7 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
   const [extractDeleteAfter, setExtractDeleteAfter] = useState(false);
   const [ftpLocalPath, setFtpLocalPath] = useState('/data/mkpfs/file.ffpfsc');
   const [ftpDestPath, setFtpDestPath] = useState('/data/homebrew');
-  const [convSourcePath, setConvSourcePath] = useState('/data/mkpfs/game.exfat');
+  const [convSourcePath, setConvSourcePath] = useState('/data/mkpfs/homebrew.exfat');
   const [convMode, setConvMode] = useState('pack-file');
   const [convOutputName, setConvOutputName] = useState('');
 
@@ -1132,7 +1132,7 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
                   </div>
                   <label className="text-sm text-muted" style={{ display: 'block' }}>Source path</label>
                   <PathField
-                    placeholder="/data/mkpfs/game.exfat or /data/mkpfs/game/"
+                    placeholder="/data/mkpfs/homebrew.exfat or /data/mkpfs/homebrew/"
                     value={convSourcePath}
                     onChange={setConvSourcePath}
                     browsePath={convSourcePath && convSourcePath.startsWith('/') ? convSourcePath.replace(/[^/]+$/, '') : '/data/mkpfs'}
@@ -1141,7 +1141,7 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
                     browseTitle={convMode === 'pack-folder' ? 'Pick source folder' : 'Pick source file (or folder)'}
                   />
                   <label className="text-sm text-muted" style={{ display: 'block' }}>Output filename (optional)</label>
-                  <input className="input" placeholder="game.ffpfsc"
+                  <input className="input" placeholder="homebrew.ffpfsc"
                     value={convOutputName} onChange={e => setConvOutputName(e.target.value)} />
                   <button className="btn btn-success" disabled={!convSourcePath.trim()}
                     onClick={() => { addConvertStep(); setShowAddStepMenu(null); }}>
@@ -1408,7 +1408,7 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
                               <>
                                 <label className="field-label">Source path</label>
                                 <PathField
-                                  placeholder="/data/mkpfs/game.exfat"
+                                  placeholder="/data/mkpfs/homebrew.exfat"
                                   value={step.source_path || ''}
                                   onChange={(p) => patchStep(index, { source_path: p })}
                                   browsePath={step.source_path && step.source_path.startsWith('/') ? step.source_path.replace(/[^/]+$/, '') : '/data/mkpfs'}
