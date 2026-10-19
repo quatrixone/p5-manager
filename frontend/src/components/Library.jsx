@@ -15,6 +15,8 @@ const fmtBytes = (n) => {
 };
 const OP_LABEL = { move: 'Move', copy: 'Copy', unpack: 'Unpack', delete: 'Delete' };
 const sizeOf = (g) => g.size_bytes || g.app_db_size_bytes || 0;
+const isFolderSource = (g) => [g?.source_type, g?.image_type, g?.type]
+  .some(type => ['folder', 'directory'].includes(String(type || '').toLowerCase()));
 
 function GameIcon({ game }) {
   const [broken, setBroken] = useState(false);
@@ -152,6 +154,23 @@ export default function Library({ profiles = [], onNotification }) {
   const uninstall = (g) => {
     if (!window.confirm(`Uninstall ${g.title_name || g.title_id}?\n\nThis removes it from the console’s home screen. The game files will stay on the drive.`)) return;
     run(g, 'uninstall', {}, `Uninstalled ${g.title_name || g.title_id}`).then(ok => { if (ok) setSelected(null); });
+  };
+
+  const fixPermissions = async (g) => {
+    setBusy(true);
+    try {
+      const result = await api.post('/convert/ftp/chmod', {
+        ip,
+        path: g.path,
+        mode: '777',
+        recursive: true,
+      });
+      onNotification?.(`Permissions set to 777 recursively (${result.count} items)`, 'success');
+    } catch (e) {
+      onNotification?.(e.message, 'error');
+    } finally {
+      setBusy(false);
+    }
   };
 
   const openPicker = (g, op) => {
@@ -364,6 +383,9 @@ export default function Library({ profiles = [], onNotification }) {
               <button className="btn btn-secondary" disabled={busy || jobActive || !game.source_available} onClick={() => openPicker(game, 'copy')}>📋 Copy to…</button>
               {game.image_backed && (
                 <button className="btn btn-secondary" disabled={busy || jobActive || !game.source_available} onClick={() => openPicker(game, 'unpack')}>📂 Unpack to…</button>
+              )}
+              {isFolderSource(game) && (
+                <button className="btn btn-secondary" disabled={busy || jobActive || !game.source_available} onClick={() => fixPermissions(game)} title="Set permissions to 777 recursively over FTP">🔓 Fix permissions (777)</button>
               )}
               {!isPs4Profile && <>
                 <button className="btn btn-secondary" disabled={busy || !game.installed} onClick={() => uninstall(game)} title="Remove the title from the console's home screen; files stay">✖ Uninstall</button>
