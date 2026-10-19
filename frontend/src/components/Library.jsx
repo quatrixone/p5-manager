@@ -42,6 +42,8 @@ export default function Library({ profiles = [], onNotification }) {
   const [customDest, setCustomDest] = useState('');
   const [deleteSource, setDeleteSource] = useState(false);
   const [deleting, setDeleting] = useState(null); // game pending delete confirmation
+  const [renaming, setRenaming] = useState(null);
+  const [renameValue, setRenameValue] = useState('');
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -168,6 +170,34 @@ export default function Library({ profiles = [], onNotification }) {
       onNotification?.(`Permissions set to 777 recursively (${result.count} items)`, 'success');
     } catch (e) {
       onNotification?.(e.message, 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const openRename = (g) => {
+    setRenaming(g);
+    setRenameValue(String(g.path || '').split('/').filter(Boolean).at(-1) || '');
+  };
+
+  const confirmRename = async () => {
+    if (!renaming) return;
+    const name = renameValue.trim();
+    const oldName = String(renaming.path || '').split('/').filter(Boolean).at(-1) || '';
+    if (!name) return onNotification?.('Name cannot be empty', 'error');
+    if (name.includes('/') || name.includes('\\')) return onNotification?.('Name cannot contain "/" or "\\"', 'error');
+    if (name === oldName) { setRenaming(null); return; }
+    const parent = String(renaming.path).slice(0, String(renaming.path).lastIndexOf('/')) || '/';
+    const dst = `${parent === '/' ? '' : parent}/${name}`;
+    setBusy(true);
+    try {
+      await api.post('/convert/ftp/move', { ip, src: renaming.path, dst });
+      onNotification?.(`Renamed to ${name}`, 'success');
+      setRenaming(null);
+      setSelected(null);
+      await load(true);
+    } catch (e) {
+      onNotification?.(`Rename failed: ${e.message}`, 'error');
     } finally {
       setBusy(false);
     }
@@ -387,12 +417,35 @@ export default function Library({ profiles = [], onNotification }) {
               {isFolderSource(game) && (
                 <button className="btn btn-secondary" disabled={busy || jobActive || !game.source_available} onClick={() => fixPermissions(game)} title="Set permissions to 777 recursively over FTP">🔓 Fix permissions (777)</button>
               )}
+              <button className="btn btn-secondary" disabled={busy || jobActive || !game.source_available || !game.path} onClick={() => openRename(game)}>✏️ Rename</button>
               {!isPs4Profile && <>
                 <button className="btn btn-secondary" disabled={busy || !game.installed} onClick={() => uninstall(game)} title="Remove the title from the console's home screen; files stay">✖ Uninstall</button>
                 <button className="btn btn-danger" disabled={busy || jobActive} onClick={() => setDeleting(game)} title="Delete the game's files for good">🗑 Delete</button>
               </>}
             </div>}
           </div>
+        )}
+      </Modal>
+
+      <Modal
+        isOpen={!!renaming}
+        onClose={() => { if (!busy) setRenaming(null); }}
+        title={`Rename ${renaming?.title_name || renaming?.title_id || 'title'}`}
+        footer={renaming && (
+          <>
+            <button className="btn btn-ghost" onClick={() => setRenaming(null)} disabled={busy}>Cancel</button>
+            <button className="btn btn-primary" onClick={confirmRename} disabled={busy || !renameValue.trim()}>
+              {busy ? '⏳ Renaming…' : 'Rename'}
+            </button>
+          </>
+        )}
+      >
+        {renaming && (
+          <form onSubmit={e => { e.preventDefault(); confirmRename(); }} className="flex-col gap-sm">
+            <div className="text-xs text-muted" style={{ wordBreak: 'break-all' }}>Current path: {renaming.path}</div>
+            <input className="input" autoFocus value={renameValue} onChange={e => setRenameValue(e.target.value)} placeholder="New name" disabled={busy} />
+            <div className="text-xs text-muted">The title is renamed in its current location over FTP.</div>
+          </form>
         )}
       </Modal>
 
