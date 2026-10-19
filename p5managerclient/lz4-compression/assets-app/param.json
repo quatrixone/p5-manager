@@ -1,0 +1,11 @@
+{
+  "applicationCategoryType": 0,
+  "titleId": "PSLZ40001",
+  "deeplinkUri": "http://127.0.0.1:5920/",
+  "localizedParameters": {
+    "defaultLanguage": "en-US",
+    "en-US": {
+      "titleName": "LZ4 Compression"
+    }
+  }
+}

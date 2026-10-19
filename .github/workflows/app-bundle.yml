@@ -16,6 +16,9 @@ on:
       - 'frontend/**'
       - 'scripts/build-app-bundle.mjs'
       - 'scripts/update-check.mjs'
+      - 'p5managerclient/lz4-compression/**'
+      - 'backend/third_party/lz4-compression/**'
+      - 'LEGAL.md'
       - '.github/workflows/app-bundle.yml'
   workflow_dispatch:
 
@@ -34,6 +37,11 @@ jobs:
           # 22 like the Windows build: the test scripts use a glob that
           # `node --test` only understands from Node 21 on.
           node-version: 22
+
+      - name: Install host LZ4 packer build dependency
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zlib1g-dev
 
       - name: Install dependencies
         run: |

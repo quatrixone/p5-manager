@@ -21,7 +21,7 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
-import { execSync } from 'child_process';
+import { execSync, execFileSync } from 'child_process';
 import { createRequire } from 'module';
 import { fileURLToPath } from 'url';
 import { depsHash, fileHash } from '../backend/deps-hash.mjs';
@@ -44,6 +44,10 @@ const version = versionOverride || pkg.version;
 const level = parseInt(fs.readFileSync(path.join(backend, 'image-level'), 'utf8'), 10);
 const deps = depsHash(path.join(backend, 'package-lock.json'));
 const pydeps = fileHash(path.join(sidecar, 'requirements.txt'));
+const hostLz4Cli = path.join(backend, 'third_party', 'lz4-compression', 'lz4-pack-cli');
+if (!fs.existsSync(hostLz4Cli)) {
+  execFileSync('sh', [path.join(backend, 'third_party', 'lz4-compression', 'build.sh'), hostLz4Cli], { stdio: 'inherit' });
+}
 
 fs.mkdirSync(out, { recursive: true });
 for (const platform of ['docker', 'windows']) {
@@ -51,7 +55,14 @@ for (const platform of ['docker', 'windows']) {
   zip.addLocalFolder(path.join(backend, 'src'), 'src', (name) => !name.endsWith('.test.js'));
   zip.addLocalFolder(path.join(backend, 'dist'), 'dist');
   // The app's own payloads (see backend/src/lib/defaultPayloads.js).
-  for (const name of ['rp-get-pin', 'offact', 'pkg-install', 'save-mounter']) zip.addLocalFile(path.join(root, 'p5managerclient', name, `${name}.elf`), 'vendored');
+  for (const name of ['rp-get-pin', 'offact', 'pkg-install', 'save-mounter', 'lz4-compression']) zip.addLocalFile(path.join(root, 'p5managerclient', name, `${name}.elf`), 'vendored');
+  // The bundled LZ4 payload and the host packer are GPL-3.0-or-later. Include
+  // their corresponding source and notices alongside the update bundle.
+  zip.addLocalFolder(path.join(root, 'p5managerclient', 'lz4-compression'), 'sources/lz4-compression', (name) =>
+    !name.startsWith('build/') && !name.startsWith('gen/') && name !== 'lz4-compression.elf' && !name.startsWith('.git/'));
+  zip.addLocalFolder(path.join(root, 'backend', 'third_party', 'lz4-compression'), 'sources/host-lz4-packer', (name) =>
+    name !== 'lz4-pack-cli' && name !== 'runtime_blob.c');
+  if (platform === 'docker') zip.addLocalFile(hostLz4Cli, 'third_party/lz4-compression');
   for (const name of ['rp-get-pin-ps4', 'offact-ps4']) zip.addLocalFile(path.join(root, 'p5managerclient', name, `${name}.bin`), 'vendored');
   zip.addFile('package.json', Buffer.from(JSON.stringify({ ...pkg, version }, null, 2)));
   const manifest = { version, platform, image_level: level, deps };

@@ -2846,14 +2846,15 @@ router.get('/extract', (req, res) => {
 
 function spawnIntoJob(job, cmd, args, opts = {}) {
   return new Promise((resolve) => {
+    const { onStdout, ...spawnOpts } = opts;
     appendLog(job, `\n[manager] $ ${maskSecretsForLog(cmd, args)}\n`);
     // No input for the tool: one that stops to ask something (7z for an
     // archive's password) gets an end of file and gives up, instead of
     // waiting for an answer nobody can type.
-    const proc = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], ...opts });
+    const proc = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], ...spawnOpts });
     job._proc = proc;
     job.pid = proc.pid;
-    proc.stdout.on('data', d => appendLog(job, d));
+    proc.stdout.on('data', d => { appendLog(job, d); onStdout?.(d); });
     proc.stderr.on('data', d => appendLog(job, d));
     proc.on('error', err => {
       appendLog(job, `[manager] error: ${err.message}\n`);
@@ -3162,6 +3163,87 @@ async function runPackFolder(job, opts) {
   return spawnPack(job, args, opts);
 }
 
+async function runLz4Folder(job) {
+  const cli = process.env.LZ4_PACK_CLI || path.resolve(__dirname, '../../third_party/lz4-compression/lz4-pack-cli');
+  if (!fs.existsSync(cli)) {
+    const buildScript = path.resolve(__dirname, '../../third_party/lz4-compression/build.sh');
+    if (!fs.existsSync(buildScript)) return { code: -1, error: 'Host LZ4 packer source is missing' };
+    appendLog(job, '[manager] Building the host LZ4 packer…\n');
+    const build = await spawnIntoJob(job, 'sh', [buildScript, cli]);
+    if (build.code !== 0) return { code: build.code, error: build.error || 'Could not build the host LZ4 packer' };
+  }
+  fs.mkdirSync(job.output, { recursive: true });
+  const level = Math.max(1, Math.min(12, Number(job._params?.lz4_level) || 9));
+  job.command = `${cli} pack ${job.source} ${job.output} ${level}`;
+  let pending = '';
+  const onStdout = (chunk) => {
+    pending += chunk.toString();
+    const lines = pending.split('\n');
+    pending = lines.pop() || '';
+    for (const line of lines) {
+      let event;
+      try { event = JSON.parse(line); } catch (_) { continue; }
+      if (event.type === 'phase') {
+        job.phase = event.phase;
+        job.phase_label = event.label;
+      } else if (event.type === 'progress' && Number(event.total) > 0) {
+        const ranges = {
+          'lz4-scan': [0, 8], 'lz4-index': [8, 13], 'lz4-plan': [13, 16],
+          'lz4-pack': [16, 78], 'lz4-finalize': [78, 80],
+          'lz4-verify': [80, 94], 'lz4-copy': [94, 99],
+        };
+        const [start, end] = ranges[job.phase] || [job.progress || 0, Math.min(99, (job.progress || 0) + 1)];
+        const fraction = Math.max(0, Math.min(1, Number(event.done) / Number(event.total)));
+        job.progress = Math.max(job.progress || 0, Math.floor(start + (end - start) * fraction));
+      }
+    }
+  };
+  return spawnIntoJob(job, cli, ['pack', job.source, job.output, String(level)], { onStdout });
+}
+
+// Convert an existing image directly to LZ4 through a per-job extraction.
+async function runImageToLz4(job, imageKind, opts) {
+  const tempRoot = path.join(path.dirname(job.output), `.lz4-convert-${job.id}`);
+  const unpacked = path.join(tempRoot, 'unpacked');
+  const originalOutput = job.output;
+  const originalSource = job.source;
+  fs.rmSync(tempRoot, { recursive: true, force: true });
+  fs.mkdirSync(tempRoot, { recursive: true });
+  try {
+    job.output = unpacked;
+    appendLog(job, `[manager] Extracting ${imageKind} image before LZ4 packing…\n`);
+    const extraction = imageKind === 'exFAT'
+      ? await unpackExfatImage(job, { appendLog, updateProgressFromText }, job.source, unpacked)
+      : await runUnpack(job, opts);
+    if (extraction.code !== 0) return extraction;
+    let resolved = resolveGameRootForPack(unpacked);
+    if (imageKind !== 'exFAT') {
+      const entries = fs.readdirSync(unpacked, { withFileTypes: true });
+      const nestedExfat = entries.length === 1 && entries[0].isFile() && EXFAT_EXT_RE.test(entries[0].name)
+        ? path.join(unpacked, entries[0].name)
+        : null;
+      if (nestedExfat) {
+        const nestedRoot = path.join(tempRoot, 'nested-exfat');
+        appendLog(job, '[manager] Found a nested exFAT image inside .ffpfsc; extracting it too…\n');
+        const nestedResult = await unpackExfatImage(job, { appendLog, updateProgressFromText }, nestedExfat, nestedRoot);
+        if (nestedResult.code !== 0) return nestedResult;
+        resolved = resolveGameRootForPack(nestedRoot);
+      }
+    }
+    if (resolved.message) appendLog(job, `[manager] ${resolved.message}\n`);
+    job.source = resolved.root;
+    job.output = originalOutput;
+    job.progress = 0;
+    job.phase = null;
+    appendLog(job, '[manager] Packing extracted game as LZ4…\n');
+    return await runLz4Folder(job);
+  } finally {
+    job.output = originalOutput;
+    job.source = originalSource;
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+}
+
 // Reverse operation — extracts a .ffpfsc / .ffpfs / .pfs / .dat / .bin image
 // back into a folder. mkpfs CLI: `mkpfs unpack [--overwrite] [--ekpfs-key K]
 // [--new-crypt] image_file output_dir`.
@@ -3197,7 +3279,10 @@ async function runUnpack(job, opts) {
 //   exfat-file    — wrap a single file       → .exfat (mkfs.exfat + loop mount)
 //   exfat-folder  — wrap a game-dump folder → .exfat
 //   exfat-unpack  — reverse: .exfat → folder (loop mount + rsync)
-const CONVERT_MODES = ['pack-file', 'pack-folder', 'unpack', 'exfat-file', 'exfat-folder', 'exfat-unpack'];
+//   lz4-folder    — pack an AMPR game folder into seekable LZ4 asset packs
+//   exfat-lz4     — unpack an exFAT image and pack its game as LZ4
+//   ffpfsc-lz4    — unpack a .ffpfsc image and pack its game as LZ4
+const CONVERT_MODES = ['pack-file', 'pack-folder', 'unpack', 'exfat-file', 'exfat-folder', 'exfat-unpack', 'lz4-folder', 'exfat-lz4', 'ffpfsc-lz4'];
 const UNPACKABLE_EXT_RE = /\.(ffpfs|ffpfsc|pfs|dat|bin)$/i;
 // .exfat is its own unpack source — kept in a separate regex so we don't
 // accidentally route .exfat into mkpfs (which would happily start and then
@@ -3212,6 +3297,12 @@ function validateConvertParams(params) {
     source_smb,
   } = params;
   if (!CONVERT_MODES.includes(mode)) return { error: 'invalid mode' };
+  if (['lz4-folder', 'exfat-lz4', 'ffpfsc-lz4'].includes(mode) && params.output_name != null) {
+    const outputName = String(params.output_name).trim();
+    if (!outputName || outputName === '.' || outputName === '..' || /[\\/]/.test(outputName)) {
+      return { error: 'LZ4 output name must be a folder name without path separators' };
+    }
+  }
   ensureMkpfsDir();
 
   // Compute a sensible default output name for the current mode.
@@ -3228,9 +3319,11 @@ function validateConvertParams(params) {
     if (mode === 'exfat-unpack') {
       return srcBase.replace(EXFAT_EXT_RE, '');
     }
+    if (mode === 'exfat-lz4' || mode === 'ffpfsc-lz4') return srcBase.replace(/\.(exfat|ffpfsc)$/i, '') + '-lz4';
     if (mode === 'exfat-file' || mode === 'exfat-folder') {
       return srcBase.replace(/\.(exfat|ffpkg|ffpfsc|iso|img|bin)$/i, '') + '.exfat';
     }
+    if (mode === 'lz4-folder') return srcBase.replace(/\.(lz4)$/i, '') + '-lz4';
     return srcBase.replace(/\.(exfat|ffpkg|ffpfsc)$/i, '') + '.ffpfsc';
   };
 
@@ -3253,6 +3346,8 @@ function validateConvertParams(params) {
     if (mode === 'exfat-unpack' && !EXFAT_EXT_RE.test(remoteBase)) {
       return { error: 'exFAT unpack expects a .exfat image' };
     }
+    if (mode === 'exfat-lz4' && !EXFAT_EXT_RE.test(remoteBase)) return { error: 'exFAT → LZ4 expects a .exfat image' };
+    if (mode === 'ffpfsc-lz4' && !/\.ffpfsc$/i.test(remoteBase)) return { error: '.ffpfsc → LZ4 expects a .ffpfsc image' };
     const baseName = params.output_name && params.output_name.trim()
       ? params.output_name.trim()
       : defaultOutName(remoteBase);
@@ -3261,7 +3356,7 @@ function validateConvertParams(params) {
     // shows something sensible.
     return {
       src: `ftp://${source_ftp.ip}${ftpPath}`,
-      src_ftp: { ip: source_ftp.ip, path: ftpPath, name: remoteBase, is_dir: mode === 'pack-folder' || mode === 'exfat-folder' },
+      src_ftp: { ip: source_ftp.ip, path: ftpPath, name: remoteBase, is_dir: mode === 'pack-folder' || mode === 'exfat-folder' || mode === 'lz4-folder' },
       out: path.join(mkpfsWorkDir, baseName),
       baseName,
       stat: null,
@@ -3288,6 +3383,8 @@ function validateConvertParams(params) {
     if (mode === 'exfat-unpack' && !EXFAT_EXT_RE.test(remoteBase)) {
       return { error: 'exFAT unpack expects a .exfat image' };
     }
+    if (mode === 'exfat-lz4' && !EXFAT_EXT_RE.test(remoteBase)) return { error: 'exFAT → LZ4 expects a .exfat image' };
+    if (mode === 'ffpfsc-lz4' && !/\.ffpfsc$/i.test(remoteBase)) return { error: '.ffpfsc → LZ4 expects a .ffpfsc image' };
     const baseName = params.output_name && params.output_name.trim()
       ? params.output_name.trim()
       : defaultOutName(remoteBase);
@@ -3298,7 +3395,7 @@ function validateConvertParams(params) {
         source_name: smbRow.name,
         path: rawPath,
         name: remoteBase,
-        is_dir: mode === 'pack-folder' || mode === 'exfat-folder',
+        is_dir: mode === 'pack-folder' || mode === 'exfat-folder' || mode === 'lz4-folder',
       },
       out: path.join(mkpfsWorkDir, baseName),
       baseName,
@@ -3323,6 +3420,7 @@ function validateConvertParams(params) {
   if (mode === 'pack-folder' && !stat.isDirectory()) return { error: 'Source must be a directory for pack-folder mode' };
   if (mode === 'exfat-file' && !stat.isFile()) return { error: 'Source must be a file for exfat-file mode' };
   if (mode === 'exfat-folder' && !stat.isDirectory()) return { error: 'Source must be a directory for exfat-folder mode' };
+  if (mode === 'lz4-folder' && !stat.isDirectory()) return { error: 'Source must be a directory for lz4-folder mode' };
   if (mode === 'unpack') {
     if (!stat.isFile()) return { error: 'Source must be a .ffpfsc file for unpack mode' };
     if (!UNPACKABLE_EXT_RE.test(src)) return { error: 'Unpack expects .ffpfsc/.ffpfs/.pfs/.dat/.bin' };
@@ -3331,10 +3429,16 @@ function validateConvertParams(params) {
     if (!stat.isFile()) return { error: 'Source must be a .exfat file for exfat-unpack mode' };
     if (!EXFAT_EXT_RE.test(src)) return { error: 'exFAT unpack expects a .exfat image' };
   }
+  if ((mode === 'exfat-lz4' || mode === 'ffpfsc-lz4') && !stat.isFile()) return { error: 'Image → LZ4 source must be a file' };
+  if (mode === 'exfat-lz4' && !EXFAT_EXT_RE.test(src)) return { error: 'exFAT → LZ4 expects a .exfat image' };
+  if (mode === 'ffpfsc-lz4' && !/\.ffpfsc$/i.test(src)) return { error: '.ffpfsc → LZ4 expects a .ffpfsc image' };
   const baseName = params.output_name && params.output_name.trim()
     ? params.output_name.trim()
     : defaultOutName(path.basename(src));
   const out = path.join(path.dirname(src), baseName);
+  if ((mode === 'exfat-lz4' || mode === 'ffpfsc-lz4') && path.resolve(out) === path.resolve(src)) {
+    return { error: 'LZ4 output folder must not replace the source image' };
+  }
   return { src, stat, out, baseName };
 }
 
@@ -3368,7 +3472,7 @@ function buildConvertJob(params, validated) {
     // the manager box), so flip push_after on by default in that case.
     // Unpack modes produce folders, not single image files — pushing folders
     // back to PS5 FTP isn't supported in this code path, so always opt out.
-    push_after: (params.mode === 'unpack' || params.mode === 'exfat-unpack') ? false
+    push_after: (params.mode === 'unpack' || params.mode === 'exfat-unpack' || params.mode === 'lz4-folder' || params.mode === 'exfat-lz4' || params.mode === 'ffpfsc-lz4') ? false
       : (fromFtp ? (params.push_after !== false) : !!params.push_after),
     push_ip: params.push_ip || defaultPushIp,
     push_dest: params.push_dest || defaultPushDest,
@@ -3397,7 +3501,7 @@ async function stageFromPs5Ftp(job) {
   const ftp = loadFtp();
   const stageDir = path.join(getDiskTmpRoot(), 'ftp-stage', job.id);
   fs.mkdirSync(stageDir, { recursive: true });
-  const isDir = !!job.source_ftp.is_dir || job.mode === 'pack-folder' || job.mode === 'exfat-folder';
+  const isDir = !!job.source_ftp.is_dir || job.mode === 'pack-folder' || job.mode === 'exfat-folder' || job.mode === 'lz4-folder';
   const localSrc = path.join(stageDir, job.source_ftp.name);
   appendLog(job, `[manager] Staging ${isDir ? 'folder' : 'file'} ${job.source_ftp.path} from ${job.source_ftp.ip} → ${localSrc}\n`);
   job.status = 'staging';
@@ -3493,7 +3597,7 @@ async function stageFromSmb(job) {
   }
   const stageDir = path.join(getDiskTmpRoot(), 'smb-stage', job.id);
   fs.mkdirSync(stageDir, { recursive: true });
-  const isDir = !!job.source_smb.is_dir || job.mode === 'pack-folder' || job.mode === 'exfat-folder';
+  const isDir = !!job.source_smb.is_dir || job.mode === 'pack-folder' || job.mode === 'exfat-folder' || job.mode === 'lz4-folder';
   const remotePath = job.source_smb.path.replace(/^\/+/, '');
   const remoteName = job.source_smb.name;
   const localSrc = path.join(stageDir, remoteName);
@@ -3662,6 +3766,11 @@ async function executeConvertJob(job) {
         job.source = resolved.root;
       }
       result = await runPackFolder(job, opts);
+    }
+    else if (job.mode === 'lz4-folder') result = await runLz4Folder(job);
+    else if (job.mode === 'exfat-lz4' || job.mode === 'ffpfsc-lz4') {
+      const unpackOpts = { ekpfs_key: params.ekpfs_key, new_crypt: !!params.new_crypt };
+      result = await runImageToLz4(job, job.mode === 'exfat-lz4' ? 'exFAT' : '.ffpfsc', unpackOpts);
     }
     else if (job.mode === 'unpack') {
       // unpack-specific options live alongside the generic pack opts.

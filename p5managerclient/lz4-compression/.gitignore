@@ -1,0 +1,5 @@
+build/
+gen/
+lz4-compression.elf
+!lz4-compression.elf
+.DS_Store

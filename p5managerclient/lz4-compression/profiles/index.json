@@ -1,0 +1,40 @@
+[
+  {
+    "id": "astrobot",
+    "file": "astrobot.toml",
+    "label": "ASTRO BOT",
+    "tested": "ASTRO BOT (PPSA21567, 01.019.000)",
+    "source": "https://github.com/danthespal/MkPFS.CSharp/issues/5",
+    "titleIds": ["PPSA21567"],
+    "names": ["astrobot"]
+  },
+  {
+    "id": "ufc6",
+    "file": "ufc6-PPSA23566.toml",
+    "label": "EA Sports UFC 6",
+    "tested": "EA SPORTS UFC 6 (PPSA23566, 01.004.000)",
+    "source": "https://github.com/danthespal/MkPFS.CSharp/issues/2",
+    "titleIds": ["PPSA23566"],
+    "names": ["ufc6"]
+  },
+  {
+    "id": "insomniac",
+    "file": "insomniac.toml",
+    "label": "Insomniac engine",
+    "tested": "Marvel's Wolverine (PPSA03671, 01.001.005)",
+    "source": "https://github.com/danthespal/MkPFS.CSharp/issues/4",
+    "titleIds": ["PPSA03671"],
+    "names": ["wolverine"],
+    "engine": "insomniac"
+  },
+  {
+    "id": "unity",
+    "file": "unity.toml",
+    "label": "Unity engine",
+    "tested": "God of War Sons of Sparta (PPSA28997, 01.008.001)",
+    "source": "https://github.com/danthespal/MkPFS.CSharp/issues/3",
+    "titleIds": ["PPSA28997"],
+    "names": ["sonsofsparta"],
+    "engine": "unity"
+  }
+]

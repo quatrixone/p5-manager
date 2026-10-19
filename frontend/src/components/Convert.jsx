@@ -92,6 +92,7 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
   const [verify, setVerify] = useState(true);
   const [version, setVersion] = useState('PS5');
   const [compressionLevel, setCompressionLevel] = useState('');
+  const [lz4Level, setLz4Level] = useState('9');
   const [caseSensitive, setCaseSensitive] = useState(false);
   const [skipExecComp, setSkipExecComp] = useState(false);
   const [signed, setSigned] = useState(false);
@@ -351,15 +352,20 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
     // picks a directory, flip to `exfat-folder` rather than yanking them
     // back into PFS land.
     const isExfatFamily = mode === 'exfat-file' || mode === 'exfat-folder';
-    const ext = isExfatFamily ? '.exfat' : '.ffpfsc';
+    const isLz4Family = ['lz4-folder', 'exfat-lz4', 'ffpfsc-lz4'].includes(mode);
+    const ext = isLz4Family ? '-lz4' : isExfatFamily ? '.exfat' : '.ffpfsc';
     if (isDir) {
       const safeName = name.replace(/[^A-Za-z0-9_.\-]/g, '_');
       setOutputName(safeName + ext);
-      const targetMode = isExfatFamily ? 'exfat-folder' : 'pack-folder';
+      const targetMode = isLz4Family ? 'lz4-folder' : isExfatFamily ? 'exfat-folder' : 'pack-folder';
       if (mode !== targetMode) setMode(targetMode);
     } else {
-      setOutputName(name.replace(/\.(exfat|ffpkg|ffpfsc)$/i, '') + ext);
-      const targetMode = isExfatFamily ? 'exfat-file' : 'pack-file';
+      const fileExt = isExfatFamily ? '.exfat' : '.ffpfsc';
+      const lz4ImageMode = mode === 'exfat-lz4' || mode === 'ffpfsc-lz4';
+      setOutputName(name.replace(/\.(exfat|ffpkg|ffpfsc)$/i, '') + (lz4ImageMode ? '-lz4' : fileExt));
+      const targetMode = lz4ImageMode
+        ? (/\.exfat$/i.test(name) ? 'exfat-lz4' : 'ffpfsc-lz4')
+        : isExfatFamily ? 'exfat-file' : 'pack-file';
       if (mode !== targetMode) setMode(targetMode);
     }
   };
@@ -377,6 +383,7 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
     output_name: outputName || undefined,
     compress, verify, version,
     compression_level: compressionLevel || undefined,
+    lz4_level: lz4Level,
     case_sensitive: caseSensitive,
     skip_executable_compression: skipExecComp,
     signed,
@@ -576,7 +583,7 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
           Pack a single file or a game-dump folder into a PS5-mountable image:
           {' '}<code>.ffpfsc</code> via <code>mkpfs</code> for ShadowMount+,
           or raw <code>.exfat</code> via <code>mkfs.exfat</code> +
-          loop-mount. Pick the target format below. Sources are scanned from
+          loop-mount, or LZ4 asset packs for AMPR games. Pick the target format below. Sources are scanned from
           <code> {workdir || 'data/mkpfs'}</code>.
         </div>
       </section>
@@ -609,13 +616,17 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
                 { id: 'pack-folder', label: 'Folder → .ffpfsc' },
                 { id: 'exfat-file', label: 'File → .exfat' },
                 { id: 'exfat-folder', label: 'Folder → .exfat' },
+                { id: 'lz4-folder', label: 'Folder → LZ4' },
+                { id: 'exfat-lz4', label: '.exfat → LZ4' },
+                { id: 'ffpfsc-lz4', label: '.ffpfsc → LZ4' },
               ].map(m => (
                 <button key={m.id} style={styles.tab(mode === m.id)} onClick={() => {
                   setMode(m.id);
                   const isExfatNew = m.id === 'exfat-file' || m.id === 'exfat-folder';
-                  const ext = isExfatNew ? '.exfat' : '.ffpfsc';
+                  const isLz4New = ['lz4-folder', 'exfat-lz4', 'ffpfsc-lz4'].includes(m.id);
+                  const ext = isLz4New ? '-lz4' : isExfatNew ? '.exfat' : '.ffpfsc';
                   if (outputName) {
-                    const base = outputName.replace(/\.(exfat|ffpfsc|ffpkg)$/i, '');
+                    const base = outputName.replace(/(-lz4|\.(exfat|ffpfsc|ffpkg))$/i, '');
                     setOutputName(base + ext);
                   }
                 }}>{m.label}</button>
@@ -625,7 +636,7 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
 
           <div>
             <label style={styles.label}>
-              {(mode === 'pack-file' || mode === 'exfat-file') ? 'Source file' : 'Source folder'}
+              {(['pack-file', 'exfat-file', 'exfat-lz4', 'ffpfsc-lz4'].includes(mode)) ? 'Source file' : 'Source folder'}
               {sourceFtp ? (
                 <span style={{ color: 'var(--blue)', fontWeight: 500 }}> · PS5 FTP (will stage locally first)</span>
               ) : scanRoot
@@ -638,15 +649,15 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
               value={selected}
               onChange={(v) => { setSelected(v); setSourceFtp(null); }}
               placeholder={scanRoot
-                  ? ((mode === 'pack-file' || mode === 'exfat-file') ? '/mnt/sda1/.../GAME1234.iso' : '/mnt/sda1/.../GAME1234/')
-                  : ((mode === 'pack-file' || mode === 'exfat-file') ? 'GAME1234.iso' : 'GAME1234/')}
+                  ? ((['pack-file', 'exfat-file', 'exfat-lz4', 'ffpfsc-lz4'].includes(mode)) ? '/mnt/sda1/.../GAME1234.exfat' : '/mnt/sda1/.../GAME1234/')
+                  : ((['pack-file', 'exfat-file', 'exfat-lz4', 'ffpfsc-lz4'].includes(mode)) ? 'GAME1234.exfat' : 'GAME1234/')}
               // *-file modes pick a single file; *-folder modes pick a directory.
-              selectFiles={mode === 'pack-file' || mode === 'exfat-file'}
+              selectFiles={['pack-file', 'exfat-file', 'exfat-lz4', 'ffpfsc-lz4'].includes(mode)}
               // PFS pack-file expects an existing exFAT / FFPKG / raw image;
               // exFAT pack-file wraps any single file, so it takes everything.
-              fileFilter={mode === 'pack-file' ? (n) => /\.(exfat|iso|img|bin|ffpkg)$/i.test(n) : undefined}
-              browseTitle={(mode === 'pack-file' || mode === 'exfat-file') ? 'Browse for a source file' : 'Browse for a source folder'}
-              pickerTitle={(mode === 'pack-file' || mode === 'exfat-file') ? 'Pick source file' : 'Pick source folder'}
+              fileFilter={mode === 'exfat-lz4' ? (n) => /\.exfat$/i.test(n) : mode === 'ffpfsc-lz4' ? (n) => /\.ffpfsc$/i.test(n) : mode === 'pack-file' ? (n) => /\.(exfat|iso|img|bin|ffpkg)$/i.test(n) : undefined}
+              browseTitle={(['pack-file', 'exfat-file', 'exfat-lz4', 'ffpfsc-lz4'].includes(mode)) ? 'Browse for a source file' : 'Browse for a source folder'}
+              pickerTitle={(['pack-file', 'exfat-file', 'exfat-lz4', 'ffpfsc-lz4'].includes(mode)) ? 'Pick source file' : 'Pick source folder'}
             />
             {sourceFtp && (
               <button
@@ -660,10 +671,22 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
             )}
           </div>
           <div>
-            <label style={styles.label}>Output filename</label>
+            <label style={styles.label}>{['lz4-folder', 'exfat-lz4', 'ffpfsc-lz4'].includes(mode) ? 'Output folder name' : 'Output filename'}</label>
             <input style={styles.input} value={outputName} onChange={e => setOutputName(e.target.value)}
-              placeholder={(mode === 'exfat-file' || mode === 'exfat-folder') ? 'GAME1234.exfat' : 'GAME1234.ffpfsc'} />
+              placeholder={['lz4-folder', 'exfat-lz4', 'ffpfsc-lz4'].includes(mode) ? 'GAME1234-lz4' : (mode === 'exfat-file' || mode === 'exfat-folder') ? 'GAME1234.exfat' : 'GAME1234.ffpfsc'} />
           </div>
+
+          {['lz4-folder', 'exfat-lz4', 'ffpfsc-lz4'].includes(mode) && (
+            <div style={styles.grid2}>
+              <div>
+                <label style={styles.label}>LZ4 level (1–12)</label>
+                <input type="number" min="1" max="12" style={styles.input} value={lz4Level} onChange={e => setLz4Level(e.target.value)} />
+              </div>
+              <div className="text-xs text-muted" style={{ alignSelf: 'end', paddingBottom: 8 }}>
+                Builds verified AMPR asset packs in a game folder. The title must support APR-EMU packed assets.
+              </div>
+            </div>
+          )}
 
           {/* PFS-specific toggles + advanced options. Hidden in exFAT mode
               because mkfs.exfat / loop-mount don't honour any of them — the
@@ -730,7 +753,7 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
             </div>
           )}
 
-          <div style={{ ...styles.card, background: C.bg, marginBottom: 0 }}>
+          {!['lz4-folder', 'exfat-lz4', 'ffpfsc-lz4'].includes(mode) && <div style={{ ...styles.card, background: C.bg, marginBottom: 0 }}>
             <label style={{ ...styles.row, fontSize: '0.85rem', marginBottom: '0.5rem' }}>
               <input type="checkbox" checked={pushAfter} onChange={e => setPushAfter(e.target.checked)} />
               {(mode === 'exfat-file' || mode === 'exfat-folder')
@@ -752,17 +775,20 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
                 <span style={{ opacity: 0.7 }}>· change in Settings → Config</span>
               </div>
             )}
+          {!['lz4-folder', 'exfat-lz4', 'ffpfsc-lz4'].includes(mode) && (
             <label style={{ ...styles.row, fontSize: '0.85rem', marginTop: '0.5rem' }}>
               <input type="checkbox" checked={deleteSource} onChange={e => setDeleteSource(e.target.checked)} /> Delete source after success
             </label>
-          </div>
+          )}
+          </div>}
 
           {(() => {
             // exFAT modes don't depend on mkpfs being installed (they go
             // through mkfs.exfat + loop-mount instead), so the "mkpfs missing"
             // gate only applies when a PFS mode is selected.
             const isExfat = mode === 'exfat-file' || mode === 'exfat-folder';
-            const blocked = (!selected && !sourceFtp) || (!isExfat && !mkpfsStatus?.installed) || running;
+            const isLz4 = ['lz4-folder', 'exfat-lz4', 'ffpfsc-lz4'].includes(mode);
+            const blocked = (!selected && !sourceFtp) || (!isExfat && !isLz4 && !mkpfsStatus?.installed) || running;
             return (
           <div style={{ ...styles.row, gap: '0.5rem' }}>
             <button
@@ -770,11 +796,11 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
               className="btn btn-primary"
               disabled={blocked}
               onClick={() => submitConvert(true)}
-              title={isExfat
-                ? 'Build this exFAT image now and resume the convert queue'
+              title={isExfat || isLz4
+                ? `Build this ${isLz4 ? 'LZ4 pack' : 'exFAT image'} now and resume the convert queue`
                 : 'Enqueue this conversion and resume the convert queue so it starts immediately'}
             >
-              🚀 {isExfat ? 'Build now' : 'Convert now'}
+              🚀 {isExfat || isLz4 ? 'Build now' : 'Convert now'}
             </button>
             <button
               type="button"

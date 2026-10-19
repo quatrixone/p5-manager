@@ -1557,6 +1557,8 @@ router.get('/quick-status', async (req, res) => {
             ip,
             session_id: cached.sid,
             state: s.state,
+            input_idle_s: Number.isFinite(Number(s.last_input))
+              ? Math.max(0, Date.now() / 1000 - Number(s.last_input)) : null,
             video: !!s.video,
             resolution: s.resolution || cached.resolution || null,
             fps: s.fps || cached.fps || null,
@@ -1578,6 +1580,7 @@ router.get('/quick-status', async (req, res) => {
             ip,
             session_id: cached.sid,
             transient: true,
+            input_idle_s: null,
             video: !!cached.video,
             resolution: cached.resolution || null,
           });
@@ -1606,6 +1609,8 @@ router.get('/quick-status', async (req, res) => {
           warm: false,
           ip,
           session_id: w.session_id,
+          input_idle_s: Number.isFinite(Number(w.last_input))
+            ? Math.max(0, Date.now() / 1000 - Number(w.last_input)) : null,
           video: !!w.video,
           resolution: w.resolution || null,
           fps: w.fps || null,

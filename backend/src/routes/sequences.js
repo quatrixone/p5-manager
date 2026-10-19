@@ -719,7 +719,11 @@ function lastRunEndedFor(profileId) {
 async function isRemotePlayBusy(ip) {
   try {
     const status = await apiFetch('GET', `/remoteplay/quick-status?ip=${encodeURIComponent(ip)}`);
-    return !!(status?.active || status?.warm);
+    if (!status?.active) return false; // parked sessions are safe to resume
+    const idleSeconds = status.input_idle_s;
+    // Let autoload take over an idle video session, but do not steer while
+    // someone has recently sent controller input through Remote Play.
+    return typeof idleSeconds !== 'number' || !Number.isFinite(idleSeconds) || idleSeconds < 60;
   } catch (e) {
     log('info', `Auto-trigger: Remote Play state of ${ip} is unknown (${e.message}) - not steering it`);
     return true;
@@ -763,8 +767,15 @@ async function autoTriggerTick() {
       remotePlayBusy: () => isRemotePlayBusy(seq.ip_address),
     });
     state.downSince = decision.downSince;
-    if (!decision.run) continue;
+    if (!decision.run) {
+      if (state.lastReason !== decision.reason) {
+        log('info', `Auto-trigger waiting for ${seq.ip_address}: ${decision.reason}`);
+        state.lastReason = decision.reason;
+      }
+      continue;
+    }
 
+    state.lastReason = null;
     state.lastRunAt = Date.now();
     log('info', `Auto-trigger: ${seq.ip_address} is on but port ${port} is closed - running "${seq.name}"`);
     try {

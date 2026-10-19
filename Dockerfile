@@ -32,6 +32,7 @@ ARG MKPFS_MIN_VERSION=0.0.7
 # the install directory and can do live upgrades via the UI's "Update
 # mkpfs" button. No docker socket exposure, no root-in-container.
 ENV MKPFS_VENV=/app/.venv \
+    LZ4_PACK_CLI=/usr/local/bin/lz4-pack-cli \
     MKPFS_BIN=/app/.venv/bin/mkpfs \
     MKPFS_PIP=/app/.venv/bin/pip \
     PKG_TOOL_VENV=/app/.venv-pkg \
@@ -59,7 +60,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     #     mount (no drop, no fstab restriction). The accompanying sudoers
     #     entry locks the allowlist to exactly the binaries the convert
     #     worker needs.
-    exfatprogs util-linux mount \
+    exfatprogs util-linux mount build-essential zlib1g-dev \
     && rm -rf /var/lib/apt/lists/* \
     # Give uid 1000 a real /etc/passwd entry. Required by sudo (which
     # otherwise prints "you do not exist in the passwd database") and by
@@ -129,6 +130,10 @@ COPY backend/package*.json ./
 RUN npm ci --only=production && npm cache clean --force
 
 COPY backend/ ./
+RUN sh ./third_party/lz4-compression/build.sh /usr/local/bin/lz4-pack-cli \
+    && chmod 0755 /usr/local/bin/lz4-pack-cli \
+    && chown 1000:1000 /usr/local/bin/lz4-pack-cli
+COPY p5managerclient/lz4-compression/ ./sources/lz4-compression/
 # Vite outputs to ../backend/dist in the frontend-builder stage,
 # i.e. /app/backend/dist. Copy that into /app/dist so the production
 # server can serve `__dirname/../dist` (matches local dev layout).
@@ -140,7 +145,7 @@ COPY frontend/builtin/payloads.json ./builtin/payloads.json
 
 # The app's own payloads, copied into the payloads folder on start when they
 # are not there (backend/src/lib/defaultPayloads.js).
-COPY p5managerclient/rp-get-pin/rp-get-pin.elf p5managerclient/offact/offact.elf p5managerclient/pkg-install/pkg-install.elf p5managerclient/save-mounter/save-mounter.elf ./vendored/
+COPY p5managerclient/rp-get-pin/rp-get-pin.elf p5managerclient/offact/offact.elf p5managerclient/pkg-install/pkg-install.elf p5managerclient/save-mounter/save-mounter.elf p5managerclient/lz4-compression/lz4-compression.elf ./vendored/
 COPY p5managerclient/rp-get-pin-ps4/rp-get-pin-ps4.bin p5managerclient/offact-ps4/offact-ps4.bin ./vendored/
 
 RUN mkdir -p /app/data/payloads

@@ -386,7 +386,9 @@ def _resume_paused(req: StartSessionReq) -> Optional[Dict[str, Any]]:
     PAUSED_SESSIONS.pop(req.ip, None)
     sid = _new_session_id()
     entry = {k: v for k, v in paused.items() if k not in ("sid", "paused_at")}
-    entry.update(user=req.user_profile, created=time.time(), last_used=time.time())
+    now = time.time()
+    entry.update(user=req.user_profile, created=now, last_used=now)
+    entry.setdefault("last_input", now)
     entry["video"] = bool(entry.get("video") or req.enable_video)
     if entry["video"] and entry.get("receiver") is None:
         entry["receiver"] = chiaki_engine.ChiakiReceiver(entry["session"])
@@ -477,6 +479,7 @@ async def _session_open(req: StartSessionReq) -> Dict[str, Any]:
         "fps": fps,
         "created": time.time(),
         "last_used": time.time(),
+        "last_input": time.time(),
     }
     log.info("session %s started -> %s (%s/%d, video=%s, %.1fs)",
              sid, req.ip, res, fps, bool(req.enable_video), time.monotonic() - session.started_at)
@@ -528,6 +531,7 @@ async def session_status(session_id: str):
         "stats": s["session"].stats,
         "created": s["created"],
         "last_used": s["last_used"],
+        "last_input": s.get("last_input", s["created"]),
     }
 
 
@@ -578,7 +582,8 @@ async def session_retry_status(ip: str):
 async def session_warm_status(ip: str):
     sid, s = _live_for(ip)
     if s is not None:
-        return {"ip": ip, "live": True, "warm": False, "session_id": sid, "video": bool(s.get("video")),
+        return {"ip": ip, "live": True, "warm": False, "session_id": sid,
+                "last_input": s.get("last_input", s["created"]), "video": bool(s.get("video")),
                 "resolution": s.get("resolution"), "fps": s.get("fps")}
     p = PAUSED_SESSIONS.get(ip)
     if not p or not _alive(p):
@@ -612,6 +617,7 @@ def _controller(session_id: str):
     if not _alive(s):
         raise HTTPException(410, "the session has ended")
     s["last_used"] = time.time()
+    s["last_input"] = s["last_used"]
     return s["controller"]
 
 

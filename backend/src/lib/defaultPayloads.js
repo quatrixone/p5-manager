@@ -6,7 +6,7 @@ import { readMarketplaceBuiltinList } from './marketplaceCatalog.js';
 import { payloadsDir } from './paths.js';
 import { fileURLToPath } from 'url';
 
-// The app's own payloads (p5managerclient/). They are not downloaded from
+// The app's bundled payloads (p5managerclient/). They are not downloaded from
 // anywhere: the built files ship with the app - in vendored/ next to src/ in
 // the Docker image, the Windows package and an update bundle, in
 // p5managerclient/ in a checkout - and are copied into the payloads folder
@@ -19,6 +19,7 @@ export const VENDORED_PAYLOADS = [
   { filename: 'offact.elf', dir: 'offact', console_type: 'ps5', version: '2' },
   { filename: 'pkg-install.elf', dir: 'pkg-install', console_type: 'ps5' },
   { filename: 'save-mounter.elf', dir: 'save-mounter', console_type: 'ps5' },
+  { filename: 'lz4-compression.elf', dir: 'lz4-compression', console_type: 'ps5', version: '1.6.2-p5manager' },
 ];
 // Same bytes on both sides? Used to tell a payload that only needs its
 // version recorded from one that really has to be rewritten. Reads both

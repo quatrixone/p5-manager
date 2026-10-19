@@ -16,7 +16,7 @@ They are used here only to describe what the software works with.
 
 - Original source code written for this project, under the MIT licence
   (see [LICENSE](LICENSE)).
-- Four small payloads under `p5managerclient/`, as source and as compiled
+- Payloads under `p5managerclient/`, as source and as compiled
   `.elf`, built with the open-source
   [ps5-payload-dev SDK](https://github.com/ps5-payload-dev/sdk). They are
   not all original work and not all under the MIT licence:
@@ -29,6 +29,13 @@ They are used here only to describe what the software works with.
     [ps5-payload-dev/offact](https://github.com/ps5-payload-dev/offact) by
     John Törnblom and is under the GNU GPL version 3 or later (see
     [p5managerclient/offact/LICENSE](p5managerclient/offact/LICENSE)).
+  - `lz4-compression/` is a P5 Manager build of
+    [theghostonline/PS5-LZ4-Compression](https://theghostonline.dev/theghostonline/PS5-LZ4-Compression),
+    including its `.ffpfsc`, exFAT, LZ4 asset pack, validation, repair and
+    unpack operations. It and the separately built host AMPR packer are under
+    GNU GPL version 3 or later. Their source and notices are included in
+    release bundles under `sources/` and in the container image under
+    `/app/sources/`.
   - `rp-get-pin/` is a patched copy of
     [idlesauce/ps5-remoteplay-get-pin](https://github.com/idlesauce/ps5-remoteplay-get-pin),
     whose repository states no licence. It is included with attribution

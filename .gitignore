@@ -17,3 +17,7 @@ p5managerclient/sdk/
 
 # Output of the Windows portable build (.github/workflows/windows-portable.yml)
 dist-portable/
+
+# Generated host-side C array for the pinned LZ4 PackedStdio runtime.
+backend/third_party/lz4-compression/runtime_blob.c
+backend/third_party/lz4-compression/lz4-pack-cli

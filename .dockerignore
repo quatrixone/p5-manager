@@ -1,0 +1,4 @@
+p5managerclient/lz4-compression/build/
+p5managerclient/lz4-compression/gen/
+backend/third_party/lz4-compression/runtime_blob.c
+backend/third_party/lz4-compression/lz4-pack-cli

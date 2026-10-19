@@ -2,11 +2,8 @@ import { useCallback, useEffect, useState } from 'react';
 import useVisiblePolling from '../hooks/useVisiblePolling';
 import { api, apiSafe } from '../lib/api.js';
 
-// "Convert on console": starts PS5 Game Compressor (a payload by Juma Sayeh
-// that compresses / unpacks / validates ShadowMountPlus titles on the PS5
-// itself) and shows its own web UI inside the Convert tab. P5 Manager only
-// installs, starts and stops it; every operation happens in its UI, on the
-// console, and keeps running when this page is closed.
+// Starts the LZ4 Compression engine on the PS5. Its own web UI exposes the
+// console-side LZ4, PFSC and exFAT workflows; P5 Manager handles its lifecycle.
 export default function GameCompressor({ profiles = [], onNotification }) {
   const ps5Profiles = profiles.filter(p => String(p.console_type || 'ps5').toLowerCase() !== 'ps4');
   const [ip, setIp] = useState('');
@@ -35,17 +32,17 @@ export default function GameCompressor({ profiles = [], onNotification }) {
     setBusy('start');
     try {
       await api.post(`/gamecompressor/${ip}/start`);
-      onNotification?.('Game Compressor is running on the console', 'success');
+      onNotification?.('LZ4 Compression is running on the console', 'success');
     } catch (e) { onNotification?.(e.message, 'error'); }
     setBusy(null);
     refresh();
   };
   const stop = async () => {
-    if (!window.confirm('Stop Game Compressor on the console?\n\nStop it only when no compression or move is running.')) return;
+    if (!window.confirm('Stop LZ4 Compression on the console?\n\nStop it only when no compression or move is running.')) return;
     setBusy('stop');
     try {
       await api.post(`/gamecompressor/${ip}/stop`);
-      onNotification?.('Game Compressor stopped', 'success');
+      onNotification?.('LZ4 Compression stopped', 'success');
     } catch (e) { onNotification?.(e.message, 'error'); }
     setBusy(null);
     // It answers at once but needs several seconds to wind down.
@@ -59,7 +56,7 @@ export default function GameCompressor({ profiles = [], onNotification }) {
         <div>
           <span className="comp-card-title">🗜️ Convert on console</span>
           <div className="text-xs text-muted mt-xs">
-            Compress, unpack, validate and repair games on the PS5 itself with PS5 Game Compressor - no copying to this server.
+            On the PS5, pack AMPR-supported games directly from mounted `.exfat` or `.ffpfsc` images as LZ4. You can also compress or unpack `.ffpfsc`, build exFAT/PFS images, and validate or repair titles. Jobs continue if you close this page.
           </div>
         </div>
         <span style={{ color: 'var(--muted)' }}>{open ? '▲' : '▼'}</span>
@@ -79,7 +76,7 @@ export default function GameCompressor({ profiles = [], onNotification }) {
             )}
             {st && !st.running && (
               <button className="btn btn-primary btn-sm" onClick={start} disabled={!!busy || !st.loader}>
-                {busy === 'start' ? '⏳ Starting…' : `▶ Start Game Compressor ${st.version}`}
+                {busy === 'start' ? '⏳ Starting…' : `▶ Start LZ4 Compression ${st.version}`}
               </button>
             )}
             {st?.running && (
@@ -98,15 +95,15 @@ export default function GameCompressor({ profiles = [], onNotification }) {
               {!st.loader
                 ? 'The console\'s ELF loader is not reachable - turn the console on and run the jailbreak first.'
                 : !st.shadowmount
-                  ? 'ShadowMountPlus does not answer on the console. Game Compressor works on titles ShadowMountPlus manages, so start that first.'
+                  ? 'ShadowMountPlus does not answer on the console. Start ShadowMountPlus and kstuff-lite before using the console compression engine.'
                   : st.installed
                     ? 'Ready to start. Needs ShadowMountPlus and kstuff-lite 1.07 or newer on the console.'
-                    : `First start downloads game-compressor.elf ${st.version} from its author's release page and checks its SHA-256.`}
+                    : `Built-in LZ4 payload ${st.version} will be installed and checksum-checked before it is sent.`}
             </div>
           )}
 
           {st?.running && canEmbed && embed && (
-            <iframe className="gc-frame" src={st.url} title="PS5 Game Compressor" />
+            <iframe className="gc-frame" src={st.url} title="LZ4 Compression on console" />
           )}
           {st?.running && !canEmbed && (
             <div className="text-xs text-muted">
@@ -115,8 +112,8 @@ export default function GameCompressor({ profiles = [], onNotification }) {
           )}
 
           <div className="text-xs text-muted">
-            PS5 Game Compressor is made by Juma Sayeh:{' '}
-            <a href="https://github.com/juma-sayeh/PS5-Game-Compressor" target="_blank" rel="noreferrer">github.com/juma-sayeh/PS5-Game-Compressor</a>.
+            LZ4 Compression is by theghostonline, licensed GPL-3.0-or-later:{' '}
+            <a href="https://theghostonline.dev/theghostonline/PS5-LZ4-Compression" target="_blank" rel="noreferrer">project source and license</a>.
             Jobs run on the console and continue when this page is closed. Stop it when you are done.
           </div>
         </div>

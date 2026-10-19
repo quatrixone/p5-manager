@@ -5,25 +5,17 @@ import net from 'net';
 import path from 'path';
 import { log } from '../db/sqlite.js';
 import { payloadsDir } from '../lib/paths.js';
+import { placeVendoredPayload, vendoredSource } from '../lib/defaultPayloads.js';
 import { tcpPortOpen, sendElfPayload, ELF_LOADER_PORT } from './convert.js';
 
-// "Convert on console": PS5 Game Compressor by Juma Sayeh
-// (https://github.com/juma-sayeh/PS5-Game-Compressor) - a payload that
-// compresses, unpacks, validates and repairs ShadowMountPlus titles on the
-// console itself and brings its own web UI on port 5910.
-//
-// We do not redistribute it: the pinned release is downloaded from the
-// author's GitHub release into the payload library on first use and its
-// SHA-256 is checked every time before it is sent to a console. This module
-// only installs, starts and stops it - the operations themselves are driven
-// from its own UI, which the Convert tab embeds.
+// Convert on console: a pinned, locally bundled build of the LZ4 Compression
+// engine. Its GPL component and source are kept separate from the MIT manager.
 const RELEASE = {
-  version: 'v1.0.4',
-  filename: 'game-compressor.elf',
-  url: 'https://github.com/juma-sayeh/PS5-Game-Compressor/releases/download/v1.0.4/game-compressor.elf',
-  sha256: 'e55e90aaade13b6e0d4316c1597ef90a21b67a06475c3e25de054224bc1e941b',
+  version: '1.6.2-p5manager',
+  filename: 'lz4-compression.elf',
+  sha256: '92b1ba5413f45864c2c2e97953d2cfa88cce65dc96b5148cfca4840b28524e07',
 };
-const UI_PORT = 5910;
+const UI_PORT = 5920;
 const SHADOWMOUNT_PORT = 10101;
 const START_TIMEOUT_MS = 40_000;
 
@@ -36,18 +28,15 @@ const installedOk = () => {
 
 async function install() {
   if (installedOk()) return;
-  const r = await fetch(RELEASE.url, { signal: AbortSignal.timeout(120_000) });
-  if (!r.ok) throw new Error(`Download failed: HTTP ${r.status} from ${RELEASE.url}`);
-  const buf = Buffer.from(await r.arrayBuffer());
-  const got = crypto.createHash('sha256').update(buf).digest('hex');
+  const source = vendoredSource(RELEASE);
+  if (!source) throw new Error('The built-in LZ4 Compression payload is missing from this P5 Manager installation');
+  const got = sha256Of(source);
   if (got !== RELEASE.sha256) {
-    throw new Error(`Downloaded ${RELEASE.filename} does not match the pinned checksum (got ${got.slice(0, 12)}...) - not installing it`);
+    throw new Error(`Built-in ${RELEASE.filename} does not match its pinned checksum (got ${got.slice(0, 12)}...)`);
   }
   fs.mkdirSync(payloadsDir, { recursive: true });
-  const tmp = `${elfPath()}.part`;
-  fs.writeFileSync(tmp, buf);
-  fs.renameSync(tmp, elfPath());
-  log('info', `game compressor ${RELEASE.version} installed into the payload library`);
+  placeVendoredPayload(source, elfPath());
+  log('info', `LZ4 Compression engine ${RELEASE.version} installed into the payload library`);
 }
 
 router.param('ip', (req, res, next, ip) => {
@@ -69,7 +58,7 @@ router.get('/:ip/status', async (req, res) => {
     loader,
     shadowmount,
     url: `http://${ip}:${UI_PORT}/`,
-    source: 'https://github.com/juma-sayeh/PS5-Game-Compressor',
+    source: 'https://theghostonline.dev/theghostonline/PS5-LZ4-Compression',
   });
 });
 
@@ -81,7 +70,7 @@ router.post('/:ip/start', async (req, res) => {
       return res.status(409).json({ error: `The ELF loader (port ${ELF_LOADER_PORT}) is not reachable on ${ip} - the console is off, asleep or not jailbroken yet` });
     }
     await install();
-    if (!installedOk()) return res.status(500).json({ error: 'Game Compressor file failed its checksum - not sending it' });
+    if (!installedOk()) return res.status(500).json({ error: 'Built-in LZ4 payload failed its checksum - not sending it' });
     log('info', `sending ${RELEASE.filename} ${RELEASE.version} to ${ip}`);
     await sendElfPayload(ip, ELF_LOADER_PORT, elfPath());
     const deadline = Date.now() + START_TIMEOUT_MS;
@@ -89,9 +78,9 @@ router.post('/:ip/start', async (req, res) => {
       if (await tcpPortOpen(ip, UI_PORT, 1000)) return res.json({ success: true });
       await new Promise(r => setTimeout(r, 700));
     }
-    res.status(504).json({ error: `Sent Game Compressor but its web UI did not come up on port ${UI_PORT} within ${START_TIMEOUT_MS / 1000} s. It needs ShadowMountPlus and kstuff-lite 1.07+ running on the console.` });
+    res.status(504).json({ error: `Sent LZ4 Compression but its web UI did not come up on port ${UI_PORT} within ${START_TIMEOUT_MS / 1000} s. It needs ShadowMountPlus and kstuff-lite 1.07+ running on the console.` });
   } catch (e) {
-    log('error', `game compressor start failed: ${e.message}`);
+    log('error', `LZ4 Compression start failed: ${e.message}`);
     res.status(500).json({ error: e.message });
   }
 });
@@ -101,17 +90,16 @@ router.post('/:ip/start', async (req, res) => {
 router.post('/:ip/stop', async (req, res) => {
   try {
     const { ip } = req.params;
-    // removeTile=1 also takes its launcher tile off the home screen, like
-    // the terminate button of its own UI does.
+    // removeTile=1 also asks the upstream engine to remove its launcher tile.
     const r = await fetch(`http://${ip}:${UI_PORT}/api/control/shutdown?removeTile=1`, {
       method: 'POST', signal: AbortSignal.timeout(10_000),
     });
     const text = await r.text();
-    if (!r.ok) return res.status(409).json({ error: `Game Compressor refused to stop: ${text.slice(0, 200) || `HTTP ${r.status}`}` });
-    log('info', `game compressor stopped on ${ip}`);
+    if (!r.ok) return res.status(409).json({ error: `LZ4 Compression refused to stop: ${text.slice(0, 200) || `HTTP ${r.status}`}` });
+    log('info', `LZ4 Compression stopped on ${ip}`);
     res.json({ success: true });
   } catch (e) {
-    res.status(502).json({ error: `Game Compressor is not reachable on ${req.params.ip}:${UI_PORT}` });
+    res.status(502).json({ error: `LZ4 Compression is not reachable on ${req.params.ip}:${UI_PORT}` });
   }
 });
 

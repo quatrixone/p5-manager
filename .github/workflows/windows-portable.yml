@@ -15,6 +15,9 @@ on:
       - 'rpnative/**'
       - 'packaging/**'
       - 'scripts/smoke.mjs'
+      - 'p5managerclient/lz4-compression/**'
+      - 'backend/third_party/lz4-compression/**'
+      - 'LEGAL.md'
       - '.github/workflows/windows-portable.yml'
     tags: ['v*']
   workflow_dispatch:
@@ -72,7 +75,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $out = "dist-portable/P5Manager"
-          New-Item -ItemType Directory -Force "$out/app/backend", "$out/app/remoteplay", "$out/runtime/node", "$out/runtime/python" | Out-Null
+          New-Item -ItemType Directory -Force "$out/app/backend", "$out/app/remoteplay", "$out/app/sources", "$out/runtime/node", "$out/runtime/python" | Out-Null
 
           # Backend: sources, built UI, production dependencies only.
           Copy-Item backend/src "$out/app/backend/src" -Recurse
@@ -83,7 +86,9 @@ jobs:
           Copy-Item frontend/builtin "$out/app/builtin" -Recurse
           # The app's own payloads, put into data\payloads on the first start.
           New-Item -ItemType Directory -Force "$out/app/backend/vendored" | Out-Null
-          Copy-Item p5managerclient/rp-get-pin/rp-get-pin.elf, p5managerclient/offact/offact.elf, p5managerclient/pkg-install/pkg-install.elf, p5managerclient/save-mounter/save-mounter.elf "$out/app/backend/vendored/"
+          Copy-Item p5managerclient/rp-get-pin/rp-get-pin.elf, p5managerclient/offact/offact.elf, p5managerclient/pkg-install/pkg-install.elf, p5managerclient/save-mounter/save-mounter.elf, p5managerclient/lz4-compression/lz4-compression.elf "$out/app/backend/vendored/"
+          Copy-Item p5managerclient/lz4-compression "$out/app/sources/lz4-compression" -Recurse
+          Copy-Item backend/third_party/lz4-compression "$out/app/sources/host-lz4-packer" -Recurse
           Copy-Item p5managerclient/rp-get-pin-ps4/rp-get-pin-ps4.bin, p5managerclient/offact-ps4/offact-ps4.bin "$out/app/backend/vendored/"
 
           # 7-Zip, for the archives the app extracts (7z, zip, rar): the launcher

@@ -103,6 +103,11 @@ export default function FileBrowser({
     }
   }, [profiles, ps4InstallIp]);
   useEffect(() => {
+    if (kind === 'ftp' && ftpIp && ftpPlatform === 'PS4') {
+      setPs4InstallIp(ftpIp);
+    }
+  }, [kind, ftpIp, ftpPlatform]);
+  useEffect(() => {
     onConsolePlatformChange?.(kind === 'ftp' && ftpIp ? ftpProfile?.console_type || 'ps5' : null);
   }, [kind, ftpIp, ftpProfile?.console_type, onConsolePlatformChange]);
   // Folder to reopen for the store `initialLocation` points at; dropped as
@@ -1453,13 +1458,6 @@ export default function FileBrowser({
           <select className="select" value={ftpIp} onChange={e => setFtpIp(e.target.value)}>
             <option value="">— Select a console —</option>
             {profiles.map(p => <option key={p.id} value={p.ip_address}>{String(p.console_type || '').toLowerCase() === 'ps4' ? 'PS4' : 'PS5'} · {p.name} ({p.ip_address})</option>)}
-          </select>
-        )}
-
-        {kind === 'local' && ps4Profiles.length > 0 && (
-          <select className="select" value={ps4InstallIp} onChange={e => setPs4InstallIp(e.target.value)} aria-label="PS4 install target">
-            <option value="">— Select a PS4 —</option>
-            {ps4Profiles.map(p => <option key={p.id} value={p.ip_address}>PS4 · {p.name} ({p.ip_address})</option>)}
           </select>
         )}
 

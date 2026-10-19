@@ -756,7 +756,7 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
                       value={autoTriggerConfig.cooldownMin ?? ''} onChange={e => patchAutoTriggerConfig('cooldownMin', e.target.value)} />
                   </div>
                   <div className="text-xs text-muted">
-                    Applies to the profile above, only while the console is on (not in rest mode), no other sequence is running and nobody is on the controller through Remote Play. The sequence steers the console through Remote Play, so the pause runs after any run on this console, including one you started yourself, and keeps a failing run from repeating right away.
+                    Applies to the profile above while the console is on (not in rest mode), no other sequence is running, and Remote Play has had no controller input for 60 seconds. Parked Remote Play sessions do not block startup. The sequence steers the console through Remote Play, so the pause runs after any run on this console and keeps a failing run from repeating right away.
                   </div>
                 </>
               )}

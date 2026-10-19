@@ -110,6 +110,6 @@ Open the frontend at `http://localhost:3000`. Vite forwards API requests to the 
 
 ## Credits and licences
 
-P5 Manager builds on work from [chiaki-ng](https://github.com/streetpea/chiaki-ng), [ShadowMountPlus](https://github.com/drakmor/ShadowMountPlus), [zftpd](https://github.com/seregonwar/zftpd), [kstuff-lite](https://github.com/EchoStretch/kstuff-lite), and other homebrew developers. The Remote Play helper in [`rpnative/`](rpnative/) is licensed under AGPL-3.0. See [LEGAL.md](LEGAL.md) for third-party notices and intended use.
+P5 Manager builds on work from [chiaki-ng](https://github.com/streetpea/chiaki-ng), [ShadowMountPlus](https://github.com/drakmor/ShadowMountPlus), [zftpd](https://github.com/seregonwar/zftpd), [kstuff-lite](https://github.com/EchoStretch/kstuff-lite), [LZ4 Compression](https://theghostonline.dev/theghostonline/PS5-LZ4-Compression), and other homebrew developers. The Remote Play helper in [`rpnative/`](rpnative/) is licensed under AGPL-3.0. See [LEGAL.md](LEGAL.md) for third-party notices and intended use.
 
 The application is MIT-licensed; some bundled components have separate licences. See [LICENSE](LICENSE) and [LEGAL.md](LEGAL.md).
