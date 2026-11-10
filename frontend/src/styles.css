@@ -2825,29 +2825,34 @@ button, input, select, textarea { font: inherit; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 @media (max-width: 768px) {
+  :root { --topbar-h: 52px; --bottom-nav-h: 60px; }
+  html { font-size: 15px; }
+  .app-topbar { padding-inline: 10px; }
+  .app-brand-mark { width: 28px; height: 28px; border-radius: 8px; }
+  .app-main { padding: 10px 10px calc(var(--bottom-nav-h) + env(safe-area-inset-bottom, 0) + 10px); }
+  .bottom-nav { padding: 3px 6px env(safe-area-inset-bottom, 0); }
+  .bottom-nav-inner { gap: 3px; }
+  .bottom-nav-item { padding: 4px 2px 5px; border-radius: 10px; }
+  .bottom-nav-item .bottom-nav-icon { font-size: 1.15rem; }
+  .page-title h1 { font-size: clamp(1.2rem, 5.5vw, 1.6rem); }
+  .comp-card-header, .comp-card-body, .comp-card-footer, .card { padding: 12px; }
+  .input, .select, textarea.input { font-size: 16px; }
+  .screen-heading { gap: 10px; margin-bottom: 12px; }
+  .screen-title, .page-title h1, .page-title h2 { font-size: 1.25rem; }
   .app-main--fileops {
     display: flex;
     height: calc(100dvh - var(--topbar-h));
     min-height: 0;
     flex-direction: column;
     overflow: hidden;
-    padding: 10px 0 calc(var(--bottom-nav-h) + env(safe-area-inset-bottom, 0) + 8px);
+    padding: 8px 0 calc(var(--bottom-nav-h) + env(safe-area-inset-bottom, 0) + 4px);
   }
   .app-main--fileops > .screen-fileops { flex: 1; min-height: 0; }
-  .fileops--files { gap: 8px; }
-  .fileops--files .fileops-header {
-    display: flex;
-    flex: 0 0 auto;
-    margin-inline: 12px;
-    padding: 0 0 2px;
-    border: 0;
-    background: none;
-  }
-  .fileops--files .fileops-title { gap: 8px; }
-  .fileops--files .fileops-title-icon { font-size: 1.25rem; }
-  .fileops--files .fileops-title-h { font-size: 1rem; }
-  .fileops--files .fileops-title-sub { display: none; }
-  .fileops-tabs { flex: 0 0 auto; margin-inline: 12px; }
+  .fileops--files { gap: 4px; }
+  .fileops--files .fileops-header { display: none; }
+  .fileops-tabs { flex: 0 0 auto; margin-inline: 10px; gap: 1px; padding: 2px; }
+  .fileops-tab { min-height: 42px; padding: 3px 2px; font-size: 0.72rem; }
+  .fileops-tab-icon { font-size: 0.9rem; }
   .fileops-body { flex: 1; min-height: 0; }
   .fileops--files .fileops-body > .fb,
   .fileops--files .fileops-body > .dual-pane {
@@ -2865,6 +2870,16 @@ button, input, select, textarea { font: inherit; }
     min-height: 0;
     flex-direction: column;
     overflow: hidden;
+  }
+  .fileops--files .fb > .fb-header { padding: 0 10px 4px; }
+  .fileops--files .fb-header .btn { padding-inline: 7px; font-size: 0.78rem; }
+  .fileops--files .fb .fb-nav { padding: 2px 10px; }
+  .fileops--files .fb .fb-crumb { padding: 6px 4px; font-size: 0.82rem; }
+  .fileops--files .fb .file-card-content {
+    box-sizing: border-box;
+    min-height: 44px;
+    gap: 6px !important;
+    padding: 5px 8px !important;
   }
   .fileops--files .fb .fb-list {
     flex: 1;
