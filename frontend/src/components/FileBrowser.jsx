@@ -687,6 +687,9 @@ export default function FileBrowser({
   };
 
   const extractBody = (filename, password = '') => {
+    if (kind === 'ftp') {
+      return { source: 'ftp', ip: ftpIp, remote_path: childPath(filename), dest_kind: 'ftp-back', password };
+    }
     if (kind === 'local') {
       const fullPath = path === '/' ? `/${filename}` : `${path.replace(/\/$/, '')}/${filename}`;
       return {
@@ -702,15 +705,12 @@ export default function FileBrowser({
   };
 
   const startExtract = async (filename, password = '') => {
-    if (kind === 'ftp') {
-      onNotification?.('Extract from FTP not supported (download via Downloader first)', 'info');
-      return;
-    }
     try {
       // Always go through the queue; user controls Start/Pause from the Queue tab.
       await api.post('/convert/extract/queue', extractBody(filename, password));
       onNotification?.(`Extract added to queue: ${filename}`, 'success');
-    } catch (e) { onNotification?.(e.message, 'error'); }
+      return true;
+    } catch (e) { onNotification?.(e.message, 'error'); return false; }
   };
 
   // Extract now / Extract queue. A protected archive is asked about first:
@@ -719,7 +719,7 @@ export default function FileBrowser({
   // password can still be given.
   const [passwordAsk, setPasswordAsk] = useState(null);
   const queueExtract = async (filename, auto, password = '') => {
-    await startExtract(filename, password);
+    if (!await startExtract(filename, password)) return;
     await setQueueRunning('extract', auto);
     if (!auto) onNotification?.(`Extract queued for ${filename} — press ▶ in Queue to start`, 'info');
   };
@@ -1126,7 +1126,7 @@ export default function FileBrowser({
     const canDownload = kind !== 'local';                        // local files don't need a "download to your device" round-trip
     const isPs4Console = kind === 'ftp' && ftpPlatform === 'PS4';
     const canConvert  = enableConvertActions && kind !== 'smb' && !isPs4Console;   // Convert tools are PS5-only.
-    const canExtract  = enableExtract && kind !== 'ftp' && !f.isDir && archiveFile;
+    const canExtract  = enableExtract && (kind !== 'ftp' || !!ftpIp) && !f.isDir && archiveFile;
     const pfsImage    = !f.isDir && isPfsImage(f.name);
     // Unpack works on local, PS5 FTP, and SMB (backend stages SMB → local
     // temp dir via smbclient before mkpfs runs). SMB only requires that an

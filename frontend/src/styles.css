@@ -1348,6 +1348,8 @@ pre { padding: 12px; overflow-x: auto; }
   display: flex;
   flex-direction: column;
   gap: var(--space-md);
+  min-width: 0;
+  width: 100%;
 }
 
 .fileops-header {
@@ -2643,6 +2645,9 @@ button, input, select, textarea { -webkit-tap-highlight-color: transparent; }
   html, body { overflow-x: clip; }
   .app-shell { grid-template-columns: minmax(0, 1fr); }
   .app-main { min-width: 0; }
+  .screen-fileops,
+  .screen-fileops .fileops-body,
+  .screen-fileops .fileops-body > * { min-width: 0; max-width: 100%; }
   .app-topbar { gap: 8px; padding-inline: 12px; }
   .app-brand { gap: 7px; font-size: 0.9rem; }
   .app-brand-mark { width: 30px; height: 30px; border-radius: 9px; }

@@ -96,6 +96,10 @@ export default function FileOps({ profiles, onNotification }) {
     if (subTab === 'convert' && !showConvert) switchTab('files');
   }, [subTab, showConvert, switchTab]);
 
+  useEffect(() => {
+    if (subTab === 'extract') switchTab('files');
+  }, [subTab, switchTab]);
+
   const onConsolePlatformChange = useCallback((platform) => {
     setBrowsedConsoleType(String(platform || '').toLowerCase() || null);
   }, []);
