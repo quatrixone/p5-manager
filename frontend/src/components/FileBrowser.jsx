@@ -687,6 +687,9 @@ export default function FileBrowser({
   };
 
   const extractBody = (filename, password = '') => {
+    if (kind === 'ftp') {
+      return { source: 'ftp', ip: ftpIp, remote_path: childPath(filename), dest_kind: 'ftp-back', password };
+    }
     if (kind === 'local') {
       const fullPath = path === '/' ? `/${filename}` : `${path.replace(/\/$/, '')}/${filename}`;
       return {
@@ -702,15 +705,12 @@ export default function FileBrowser({
   };
 
   const startExtract = async (filename, password = '') => {
-    if (kind === 'ftp') {
-      onNotification?.('Extract from FTP not supported (download via Downloader first)', 'info');
-      return;
-    }
     try {
       // Always go through the queue; user controls Start/Pause from the Queue tab.
       await api.post('/convert/extract/queue', extractBody(filename, password));
       onNotification?.(`Extract added to queue: ${filename}`, 'success');
-    } catch (e) { onNotification?.(e.message, 'error'); }
+      return true;
+    } catch (e) { onNotification?.(e.message, 'error'); return false; }
   };
 
   // Extract now / Extract queue. A protected archive is asked about first:
@@ -719,7 +719,7 @@ export default function FileBrowser({
   // password can still be given.
   const [passwordAsk, setPasswordAsk] = useState(null);
   const queueExtract = async (filename, auto, password = '') => {
-    await startExtract(filename, password);
+    if (!await startExtract(filename, password)) return;
     await setQueueRunning('extract', auto);
     if (!auto) onNotification?.(`Extract queued for ${filename} — press ▶ in Queue to start`, 'info');
   };
@@ -1126,7 +1126,7 @@ export default function FileBrowser({
     const canDownload = kind !== 'local';                        // local files don't need a "download to your device" round-trip
     const isPs4Console = kind === 'ftp' && ftpPlatform === 'PS4';
     const canConvert  = enableConvertActions && kind !== 'smb' && !isPs4Console;   // Convert tools are PS5-only.
-    const canExtract  = enableExtract && kind !== 'ftp' && !f.isDir && archiveFile;
+    const canExtract  = enableExtract && (kind !== 'ftp' || !!ftpIp) && !f.isDir && archiveFile;
     const pfsImage    = !f.isDir && isPfsImage(f.name);
     // Unpack works on local, PS5 FTP, and SMB (backend stages SMB → local
     // temp dir via smbclient before mkpfs runs). SMB only requires that an
@@ -1272,29 +1272,44 @@ export default function FileBrowser({
         }}
         style={{ position: 'relative', cursor: (multiSelect || f.isDir) ? 'pointer' : 'default' }}
       >
-        <div className="file-card-content" style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-sm)', padding: 'var(--space-sm) var(--space-md)' }}>
+        <div className="file-card-content">
           {multiSelect && (
-            <input
-              type="checkbox"
-              checked={isSelected}
-              readOnly
-              tabIndex={-1}
-              // The row's own click handler does the toggling.
-              style={{ width: 20, height: 20, pointerEvents: 'none', accentColor: 'var(--accent)' }}
-            />
+            <span className="file-card-check" aria-hidden="true">{isSelected ? '☑' : '□'}</span>
           )}
 
-          <span style={{ fontSize: '1.5rem' }}>{f.isDir ? '📁' : archiveFile ? '📦' : '📄'}</span>
-
-          <div className="flex-1" style={{ minWidth: 0 }}>
-            <div className="text-sm truncate" style={{ color: f.isDir ? 'var(--blue)' : 'var(--text)' }}>{f.name}</div>
-            <div className="text-xs text-muted">{f.isDir ? (f.size ? fmtSize(f.size) : '—') : fmtSize(f.size)}</div>
-          </div>
+          {f.isDir || multiSelect ? (
+            <button
+              type="button"
+              className="file-card-main"
+              aria-label={multiSelect ? `${isSelected ? 'Deselect' : 'Select'} ${f.name}` : `Open folder ${f.name}`}
+              aria-pressed={multiSelect ? isSelected : undefined}
+              onClick={e => {
+                e.stopPropagation();
+                if (multiSelect) toggleSelect(f.name);
+                else if (f.isDir) open(f);
+              }}
+            >
+              <span className="file-card-icon" aria-hidden="true">{f.isDir ? '📁' : archiveFile ? '📦' : '📄'}</span>
+              <span className="file-card-name-wrap">
+                <span className={`text-sm truncate ${f.isDir ? 'file-card-folder-name' : ''}`}>{f.name}</span>
+                <span className="text-xs text-muted">{f.isDir ? (f.size ? fmtSize(f.size) : '—') : fmtSize(f.size)}</span>
+              </span>
+            </button>
+          ) : (
+            <div className="file-card-main">
+              <span className="file-card-icon" aria-hidden="true">{archiveFile ? '📦' : '📄'}</span>
+              <span className="file-card-name-wrap">
+                <span className="text-sm truncate">{f.name}</span>
+                <span className="text-xs text-muted">{fmtSize(f.size)}</span>
+              </span>
+            </div>
+          )}
 
           {secondaryActions.length > 0 && !multiSelect && (
             <div onClick={(e) => e.stopPropagation()}>
               <button
                 className="btn btn-ghost btn-sm file-card-kebab"
+                aria-label={`Open actions for ${f.name}`}
                 onClick={(e) => openMenu(e, f.name)}
                 style={{ minWidth: 36 }}
               >
@@ -1433,10 +1448,10 @@ export default function FileBrowser({
       )}
 
       <div className="comp-card-body flex-col gap-md">
-        <div className="tabs">
-          <button className={`tab-item ${kind === 'local' ? 'active' : ''}`} onClick={() => setKind('local')}>💾 Local</button>
-          {enableFtp && <button className={`tab-item ${kind === 'ftp' ? 'active' : ''}`} onClick={() => setKind('ftp')}>🎮 Console</button>}
-          <button className={`tab-item ${kind === 'smb' ? 'active' : ''}`} onClick={() => setKind('smb')}>📡 Remote</button>
+        <div className="tabs fb-source-tabs" role="group" aria-label="File source">
+          <button type="button" aria-pressed={kind === 'local'} className={`tab-item ${kind === 'local' ? 'active' : ''}`} onClick={() => setKind('local')}>💾 Local</button>
+          {enableFtp && <button type="button" aria-pressed={kind === 'ftp'} className={`tab-item ${kind === 'ftp' ? 'active' : ''}`} onClick={() => setKind('ftp')}>🎮 Console</button>}
+          <button type="button" aria-pressed={kind === 'smb'} className={`tab-item ${kind === 'smb' ? 'active' : ''}`} onClick={() => setKind('smb')}>📡 Remote</button>
         </div>
 
         {kind === 'smb' && (

@@ -28,6 +28,7 @@ import { createExfatImage, unpackExfatImage } from '../lib/exfat.js';
 import { JobQueue, mountQueueRoutes } from '../lib/JobQueue.js';
 import { cleanDir, joinPath, isSameOrInside, destDirFor } from '../lib/transferPaths.js';
 import { parseNetworkPath, toUncPath } from '../lib/networkPath.js';
+import { consoleArchiveLocation, downloadConsoleArchive, uploadConsoleArchive } from '../lib/consoleArchive.js';
 import { isWindows, toClientPath, mapPosixDefault, isFsRoot, listLocalRoots, isLocalPathAllowed } from '../lib/platform.js';
 
 const router = express.Router();
@@ -2400,17 +2401,22 @@ function validateExtractParams(body) {
     dest_local_path,
   } = body || {};
 
-  if (source !== 'smb' && source !== 'local' && source !== 'local-fs') {
-    return { error: 'source must be smb, local, or local-fs' };
+  if (!['smb', 'local', 'local-fs', 'ftp'].includes(source)) {
+    return { error: 'source must be smb, local, local-fs, or ftp' };
   }
 
   let archivePath;
   let smbSource = null;
   let smbRemoteDir = '';
+  let consoleArchive = null;
 
   ensureMkpfsDir();
 
-  if (source === 'smb') {
+  if (source === 'ftp') {
+    try { consoleArchive = consoleArchiveLocation(body.ip, body.remote_path); }
+    catch (e) { return { error: e.message }; }
+    if (destKindRaw && destKindRaw !== 'ftp-back') return { error: 'Console archives must extract back to the console' };
+  } else if (source === 'smb') {
     if (!source_id || !filename) return { error: 'source_id and filename required' };
     smbSource = getSource(parseInt(source_id));
     if (!smbSource || smbSource.type !== 'smb') return { error: 'SMB source not found' };
@@ -2427,7 +2433,7 @@ function validateExtractParams(body) {
     if (!fs.existsSync(archivePath)) return { error: 'Archive not found' };
   }
 
-  const archiveName = source === 'smb' ? filename : path.basename(archivePath);
+  const archiveName = consoleArchive ? consoleArchive.name : source === 'smb' ? filename : path.basename(archivePath);
   const archiveType = detectArchiveType(archiveName);
   if (!archiveType) return { error: `Unsupported archive type: ${archiveName}` };
 
@@ -2435,14 +2441,18 @@ function validateExtractParams(body) {
 
   let destKind = destKindRaw;
   if (!destKind) {
-    if (source === 'smb') destKind = 'smb-back';
+    if (source === 'ftp') destKind = 'ftp-back';
+    else if (source === 'smb') destKind = 'smb-back';
     else if (source === 'local-fs') destKind = 'local-fs';
     else destKind = 'workdir';
   }
 
   let destLabel;
   let plannedDestBase = null;
-  if (destKind === 'smb-back') {
+  if (destKind === 'ftp-back') {
+    if (!consoleArchive) return { error: 'ftp-back destination requires source=ftp' };
+    destLabel = `ftp://${consoleArchive.ip}${consoleArchive.dest}`;
+  } else if (destKind === 'smb-back') {
     if (source !== 'smb') return { error: 'smb-back destination requires source=smb' };
     destLabel = `smb://${smbSource.smb_host}/${smbSource.smb_share}${smbRemoteDir ? '/' + smbRemoteDir : ''}`;
   } else if (destKind === 'local-fs') {
@@ -2460,7 +2470,7 @@ function validateExtractParams(body) {
     destLabel = plannedDestBase;
   }
 
-  return { source, smbSource, smbRemoteDir, archivePath, archiveName, archiveType, destKind, destLabel, plannedDestBase };
+  return { source, smbSource, smbRemoteDir, consoleArchive, archivePath, archiveName, archiveType, destKind, destLabel, plannedDestBase };
 }
 
 function buildExtractJob(body, prep) {
@@ -2486,7 +2496,7 @@ function buildExtractJob(body, prep) {
 
 async function executeExtractJob(job) {
   const { source, smbSource, smbRemoteDir, archivePath: prepArchivePath, archiveName,
-    archiveType, destKind, plannedDestBase } = job._prep;
+    archiveType, destKind, plannedDestBase, consoleArchive } = job._prep;
   const { filename, password = '', delete_archive_after = false } = job._params || {};
 
   let workingArchive = prepArchivePath;
@@ -2494,9 +2504,21 @@ async function executeExtractJob(job) {
   let smbBackTmpDir = null;
   let destBase = plannedDestBase;
   let smbFiles = source === 'smb' ? [filename] : [];
+  const checkCancelled = () => {
+    if (job.status === 'cancelled') throw new Error('Extraction cancelled');
+  };
+  const consoleTransfer = fn => withFtp(consoleArchive.ip, loadFtp(), async client => {
+    Object.defineProperty(job, '_ftpClient', { value: client, writable: true, configurable: true });
+    try {
+      checkCancelled();
+      client.trackProgress(info => { job.bytes_done = info.bytesOverall; });
+      return await fn(client);
+    } finally { delete job._ftpClient; }
+  });
 
   try {
-    if (destKind === 'smb-back') {
+    checkCancelled();
+    if (destKind === 'smb-back' || destKind === 'ftp-back') {
       smbBackTmpDir = fs.mkdtempSync(path.join(getDiskTmpRoot(), 'mm-extract-out-'));
       destBase = smbBackTmpDir;
     } else {
@@ -2508,6 +2530,13 @@ async function executeExtractJob(job) {
         appendLog(job, `[manager] ERROR: ${job.error}\n`);
         return;
       }
+    }
+
+    if (source === 'ftp') {
+      smbDownloadDir = fs.mkdtempSync(path.join(getDiskTmpRoot(), 'mm-extract-'));
+      job.phase = 'downloading';
+      appendLog(job, `[manager] Downloading archive from ${consoleArchive.ip}${consoleArchive.path}\n`);
+      workingArchive = await consoleTransfer(client => downloadConsoleArchive(client, consoleArchive, smbDownloadDir, checkCancelled));
     }
 
     if (source === 'smb') {
@@ -2547,6 +2576,8 @@ async function executeExtractJob(job) {
       workingArchive = path.join(smbDownloadDir, filename);
     }
 
+    checkCancelled();
+    job.phase = 'extracting';
     appendLog(job, `[manager] Extracting ${path.basename(workingArchive)} (${archiveType}) → ${destBase}\n`);
 
     let cmd, args;
@@ -2556,16 +2587,17 @@ async function executeExtractJob(job) {
       args = ['x', workingArchive, `-o${destBase}`, '-y', '-bb1', '-bsp1'];
       if (password) args.splice(2, 0, `-p${password}`);
     } else if (archiveType === 'rar') {
-      if (await hasBin('unrar')) {
+      // Debian's unrar-free does not accept the proprietary unrar switches.
+      if (await hasBin('unar')) {
+        cmd = 'unar';
+        args = ['-o', destBase, '-f', '-D'];
+        if (password) args.push('-p', password);
+        args.push(workingArchive);
+      } else if (await hasBin('unrar')) {
         cmd = 'unrar';
         args = ['x', '-o+', '-y'];
         if (password) args.push(`-p${password}`); else args.push('-p-');
         args.push(workingArchive, destBase + '/');
-      } else if (await hasBin('unar')) {
-        cmd = 'unar';
-        args = ['-o', destBase, '-f'];
-        if (password) args.push('-p', password);
-        args.push(workingArchive);
       } else {
         // The Windows package has no unrar; 7-Zip reads rar as well.
         cmd = '7z';
@@ -2584,7 +2616,14 @@ async function executeExtractJob(job) {
     job.exit_code = result.code;
     job.finished_at = new Date().toISOString();
 
+    checkCancelled();
     if (result.code === 0) {
+      if (destKind === 'ftp-back') {
+        job.phase = 'uploading';
+        job.progress = 0;
+        appendLog(job, `[manager] Uploading extracted contents to ${consoleArchive.ip}${consoleArchive.dest}\n`);
+        await consoleTransfer(client => uploadConsoleArchive(client, consoleArchive, destBase, checkCancelled));
+      }
       if (destKind === 'smb-back') {
         appendLog(job, `[manager] Uploading extracted contents back to SMB...\n`);
         const upRes = await uploadDirToSmb(job, smbSource, destBase, smbRemoteDir);
@@ -2599,6 +2638,8 @@ async function executeExtractJob(job) {
       // The tools' own percentage stops short of the end (7z's last line
       // says 99 %).
       job.progress = 100;
+      job.phase = 'completed';
+      job.finished_at = new Date().toISOString();
       appendLog(job, `[manager] Done.\n`);
 
       if (delete_archive_after) {
@@ -2638,7 +2679,7 @@ async function executeExtractJob(job) {
       }
     }
   } catch (e) {
-    job.status = 'failed';
+    if (job.status !== 'cancelled') job.status = 'failed';
     job.error = e.message;
     job.finished_at = new Date().toISOString();
     appendLog(job, `[manager] ERROR: ${e.message}\n`);
@@ -2690,7 +2731,7 @@ router.post('/extract/check', async (req, res) => {
   try {
     const prep = validateExtractParams(req.body);
     if (prep.error) return res.status(400).json({ error: prep.error });
-    const needs = prep.source === 'smb' ? null : await archiveNeedsPassword(prep.archivePath);
+    const needs = ['smb', 'ftp'].includes(prep.source) ? null : await archiveNeedsPassword(prep.archivePath);
     res.json({ needs_password: needs });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -2759,10 +2800,11 @@ const extractQ = new JobQueue({
   itemPublic: extractQueueItemPublic,
   cancelHook: (item) => {
     const job = item._job || (item.job_id ? extractJobs.get(item.job_id) : null);
-    if (job && job._proc) {
-      try { job._proc.kill('SIGTERM'); } catch (_) {}
+    if (job) {
       job.status = 'cancelled';
       job.finished_at = new Date().toISOString();
+      try { job._proc?.kill('SIGTERM'); } catch (_) {}
+      try { job._ftpClient?.close(); } catch (_) {}
     }
   },
   retryReset: (item) => {
@@ -3090,7 +3132,7 @@ function resolveGameRootForPack(srcPath) {
           `Source "${path.basename(srcPath)}/" looked like a wrapper directory ` +
           `(no eboot.bin / sce_sys at root, only "${realSubdirs[0].name}/" inside). ` +
           `Auto-promoted source to "${path.basename(srcPath)}/${realSubdirs[0].name}/" ` +
-          `so the resulting .ffpfsc has game files at the image root ` +
+          `so the resulting .ffpfsc has Homebrew files at the image root ` +
           `(PS5 PFS reader requires no extra top-level folder).`
         ),
       };
@@ -3108,7 +3150,7 @@ function resolveGameRootForPack(srcPath) {
       `WARNING: source "${path.basename(srcPath)}/" does not have "eboot.bin" ` +
       `or "sce_sys/" at its root. PS5 PFS reader requires those at the image ` +
       `root with no wrapper folder. If the resulting .ffpfsc fails to mount, ` +
-      `restructure the source so game files sit directly under the chosen folder.`
+      `restructure the source so Homebrew files sit directly under the chosen folder.`
     ),
   };
 }
@@ -3235,7 +3277,7 @@ async function runImageToLz4(job, imageKind, opts) {
     job.output = originalOutput;
     job.progress = 0;
     job.phase = null;
-    appendLog(job, '[manager] Packing extracted game as LZ4…\n');
+    appendLog(job, '[manager] Packing extracted Homebrew as LZ4…\n');
     return await runLz4Folder(job);
   } finally {
     job.output = originalOutput;

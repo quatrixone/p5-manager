@@ -278,7 +278,7 @@ export default function SaveMounter({ profiles = [], onNotification }) {
                 {info.users.map((u) => <option key={u.hex} value={u.hex}>👤 {u.name}</option>)}
               </select>
               <select className="select" value={title} onChange={(e) => setTitle(e.target.value)} style={{ flex: '1 1 160px', minHeight: 40 }}>
-                <option value="">Game with saves… ({titles.length})</option>
+                <option value="">Homebrew title with saves… ({titles.length})</option>
                 {titles.map((t) => <option key={t} value={t}>{t}{t.startsWith('CUSA') ? ' (PS4)' : t.startsWith('PPSA') ? ' (PS5)' : ''}</option>)}
               </select>
             </div>
@@ -330,15 +330,16 @@ export default function SaveMounter({ profiles = [], onNotification }) {
       <div className="comp-card mt-md" id="save-transfer">
         <div className="comp-card-body">
           <div className="font-bold mb-sm">➡️ PS4 save to PS5</div>
-          <ol className="text-xs text-muted" style={{ paddingLeft: 18, margin: '0 0 8px' }}>
-            <li>On the PS4 (GoldHEN), open <b>Apollo Save Tool</b>, pick the save and choose <b>Export decrypted save files</b> (to the internal drive or a USB drive).</li>
-            <li>Pick that folder below - or a backup on this computer.</li>
-            <li>The game's PS4 title id (CUSA…) and a save name; a new save is created on the PS5 unless you replace one.</li>
+          <ol className="text-sm text-muted save-transfer-steps">
+            <li><b>Export from PS4.</b> In Apollo Save Tool, choose “Export decrypted save files”.</li>
+            <li><b>Choose the source.</b> Select the exported folder or a backup below.</li>
+            <li><b>Set the destination.</b> Enter the PS4 title ID and save name for the new PS5 save.</li>
           </ol>
 
+          <h3 className="save-transfer-stage-title">Step 2 · Choose the source</h3>
           <div className="tabs mb-sm">
-            <button className={`tab-item ${srcKind === 'ps4' ? 'active' : ''}`} onClick={() => setSrcKind('ps4')}>From a PS4</button>
-            <button className={`tab-item ${srcKind === 'backup' ? 'active' : ''}`} onClick={() => setSrcKind('backup')}>From a backup</button>
+            <button className={`tab-item ${srcKind === 'ps4' ? 'active' : ''}`} aria-pressed={srcKind === 'ps4'} onClick={() => setSrcKind('ps4')}>From a PS4</button>
+            <button className={`tab-item ${srcKind === 'backup' ? 'active' : ''}`} aria-pressed={srcKind === 'backup'} onClick={() => setSrcKind('backup')}>From a backup</button>
           </div>
 
           {srcKind === 'ps4' && (
@@ -346,7 +347,7 @@ export default function SaveMounter({ profiles = [], onNotification }) {
               ? <div className="text-sm text-muted">No PS4 profile - add one under Settings → Profiles (console type PS4).</div>
               : (
                 <div>
-                  <select className="select mb-sm" value={srcPid} onChange={(e) => { setSrcPid(e.target.value); setSrcFolder(''); }} style={{ width: '100%', minHeight: 40 }}>
+                  <select className="select mb-sm save-transfer-select" value={srcPid} onChange={(e) => { setSrcPid(e.target.value); setSrcFolder(''); }}>
                     {ps4s.map((p) => <option key={p.id} value={p.id}>{p.name} ({p.ip_address})</option>)}
                   </select>
                   <FtpPicker pid={srcPid} value={srcFolder} onPick={pickFolder} />
@@ -368,21 +369,22 @@ export default function SaveMounter({ profiles = [], onNotification }) {
               )
           )}
 
-          <div className="flex gap-sm flex-wrap mt-sm">
-            <input className="input" placeholder="Title id, e.g. CUSA12345" value={dstTitle} onChange={(e) => setDstTitle(e.target.value.toUpperCase())} style={{ flex: '1 1 150px', minHeight: 40 }} />
-            <input className="input" placeholder="Save name, e.g. SAVEDATA00" value={dstDir} onChange={(e) => setDstDir(e.target.value)} style={{ flex: '1 1 150px', minHeight: 40 }} />
+          <h3 className="save-transfer-stage-title">Step 3 · Set the destination</h3>
+          <div className="flex gap-sm flex-wrap mt-sm save-transfer-destination">
+            <input className="input" aria-label="PS4 title ID" placeholder="Title ID, e.g. CUSA12345" value={dstTitle} onChange={(e) => setDstTitle(e.target.value.toUpperCase())} />
+            <input className="input" aria-label="Save name" placeholder="Save name, e.g. SAVEDATA00" value={dstDir} onChange={(e) => setDstDir(e.target.value)} />
           </div>
           <div className="flex gap-sm flex-wrap items-center mt-sm text-sm">
-            <label className="flex items-center gap-xs" style={{ minHeight: 40 }}>
+            <label className="flex items-center gap-xs save-transfer-option">
               <input type="radio" checked={dstNew} onChange={() => setDstNew(true)} /> New save of
-              <input className="input" type="number" min={1} max={8192} value={dstSize} onChange={(e) => setDstSize(Number(e.target.value))} style={{ width: 80 }} /> MB
+              <input className="input save-transfer-size" type="number" min={1} max={8192} value={dstSize} onChange={(e) => setDstSize(Number(e.target.value))} /> MB
             </label>
-            <label className="flex items-center gap-xs" style={{ minHeight: 40 }}>
+            <label className="flex items-center gap-xs save-transfer-option">
               <input type="radio" checked={!dstNew} onChange={() => setDstNew(false)} /> Replace the files of an existing save
             </label>
           </div>
           {!ready && <div className="text-xs text-muted mt-xs">Connect to the PS5 above first.</div>}
-          <button className="btn btn-primary mt-sm" onClick={transfer} disabled={!canTransfer} style={{ width: '100%', minHeight: 44 }}>
+          <button className="btn btn-primary mt-sm save-transfer-submit" onClick={transfer} disabled={!canTransfer}>
             Copy into the PS5 save
           </button>
           <div className="text-xs text-muted mt-xs">The save's sce_sys folder is left as the PS5 made it.</div>

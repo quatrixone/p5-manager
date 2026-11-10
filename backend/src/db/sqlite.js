@@ -451,9 +451,12 @@ export function log(level, message) {
   saveDatabaseDebounced();
 }
 
-export function getLogs(limit = 100) {
+export function getLogs(limit = 100, offset = 0, beforeId = null) {
   if (!db) return [];
-  return getRepo().queryAll('SELECT * FROM logs ORDER BY timestamp DESC LIMIT ?', [limit]);
+  if (Number.isSafeInteger(beforeId) && beforeId > 0) {
+    return getRepo().queryAll('SELECT * FROM logs WHERE id < ? ORDER BY timestamp DESC, id DESC LIMIT ?', [beforeId, limit]);
+  }
+  return getRepo().queryAll('SELECT * FROM logs ORDER BY timestamp DESC LIMIT ? OFFSET ?', [limit, offset]);
 }
 
 export function clearLogs() {

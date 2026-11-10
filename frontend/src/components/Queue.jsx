@@ -357,6 +357,8 @@ export default function Queue() {
   const [downloaderPaused, setDownloaderPaused] = useState(true);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('all');
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [query, setQuery] = useState('');
 
   const fetchQueue = useCallback(async () => {
     try {
@@ -517,12 +519,21 @@ export default function Queue() {
 
   const totalActive = counts.download + counts.extract + counts.convert + counts.upload + counts.install;
 
-  const filtered = filter === 'all' ? allItems
+  const byType = filter === 'all' ? allItems
     : filter === 'download' ? downloads
     : filter === 'extract' ? extractItems
     : filter === 'convert' ? convertItems
     : filter === 'install' ? installItems
     : uploadItems;
+  const activeStatuses = ['queued', 'running', 'starting', 'staging', 'pushing', 'sending', 'installing', 'unpacking'];
+  const filtered = byType.filter(item => {
+    const failed = ['failed', 'push_failed'].includes(item.status);
+    const active = activeStatuses.includes(item.status);
+    const statusMatches = statusFilter === 'all' || (statusFilter === 'active' && active)
+      || (statusFilter === 'failed' && failed) || (statusFilter === 'finished' && !active && !failed);
+    const textMatches = !query.trim() || `${itemTitle(item)} ${item.status} ${item.type}`.toLowerCase().includes(query.trim().toLowerCase());
+    return statusMatches && textMatches;
+  });
 
   const anyPaused = pausedByType.download || pausedByType.extract || pausedByType.convert || pausedByType.upload || pausedByType.install;
 
@@ -548,7 +559,7 @@ export default function Queue() {
           Each task has its own ▶ Start / ⏸ Pause / ▶ Resume / ✕ Stop controls. Items added from Upload / Convert / Download / Extract sit idle until you press ▶ on them.
         </div>
 
-        <div style={{ display: 'flex', gap: 'var(--space-xs)', marginBottom: 'var(--space-md)', flexWrap: 'wrap' }}>
+        <div className="queue-type-filters">
           {[
             { key: 'all', label: `All (${counts.all})` },
             { key: 'download', label: `⬇️ Download (${counts.download})` },
@@ -560,6 +571,7 @@ export default function Queue() {
             <button
               key={f.key}
               className={`btn btn-sm ${filter === f.key ? 'btn-primary' : 'btn-ghost'}`}
+              aria-pressed={filter === f.key}
               onClick={() => setFilter(f.key)}
             >
               {f.label}
@@ -567,13 +579,23 @@ export default function Queue() {
           ))}
         </div>
 
+        <div className="queue-list-tools">
+          <input className="input" type="search" aria-label="Search tasks" placeholder="Search tasks…" value={query} onChange={e => setQuery(e.target.value)} />
+          <div className="queue-status-filters" role="group" aria-label="Filter tasks by status">
+            {[
+              ['all', 'All status'], ['active', 'Active'], ['failed', 'Failed'], ['finished', 'Finished'],
+            ].map(([key, label]) => <button key={key} className={`btn btn-sm ${statusFilter === key ? 'btn-primary' : 'btn-ghost'}`} aria-pressed={statusFilter === key} onClick={() => setStatusFilter(key)}>{label}</button>)}
+          </div>
+        </div>
+
         {filtered.length === 0 ? (
           <div className="empty-state">
             <div className="empty-state-icon">📋</div>
-            <div className="empty-state-title">You’re all caught up</div>
+            <div className="empty-state-title">{allItems.length ? 'No tasks match these filters' : 'You’re all caught up'}</div>
             <div className="empty-state-text">
-              Tasks you add from Files, Convert or Downloads will appear here.
+              {allItems.length ? 'Try another search or status filter.' : 'Tasks you add from Files, Convert or Downloads will appear here.'}
             </div>
+            {allItems.length > 0 && <button className="btn btn-secondary" onClick={() => { setQuery(''); setStatusFilter('all'); setFilter('all'); }}>Clear filters</button>}
           </div>
         ) : (
           filtered.map(item => (

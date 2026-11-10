@@ -60,7 +60,7 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
   const [extractDeleteAfter, setExtractDeleteAfter] = useState(false);
   const [ftpLocalPath, setFtpLocalPath] = useState('/data/mkpfs/file.ffpfsc');
   const [ftpDestPath, setFtpDestPath] = useState('/data/homebrew');
-  const [convSourcePath, setConvSourcePath] = useState('/data/mkpfs/game.exfat');
+  const [convSourcePath, setConvSourcePath] = useState('/data/mkpfs/homebrew.exfat');
   const [convMode, setConvMode] = useState('pack-file');
   const [convOutputName, setConvOutputName] = useState('');
 
@@ -550,29 +550,27 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
                   {hiddenTemplateCount > 0 && ` · ${hiddenTemplateCount} hidden by ${mode.toUpperCase()} filter`}
                 </span>
               </div>
-              <div className="comp-card-body flex-col" style={{ padding: '6px 8px', gap: 6 }}>
+              <div className="comp-card-body flex-col autoload-template-list">
                 {visibleTemplates.map(tpl => (
                   <div
                     key={tpl.id}
-                    className="flex items-center gap-sm flex-wrap"
-                    style={{
-                      background: 'var(--panel2)',
-                      borderRadius: 6,
-                      padding: '6px 10px',
-                    }}
+                    className="flex items-center gap-sm flex-wrap autoload-template-card"
                   >
-                    <div style={{ minWidth: 0, flex: 1 }}>
-                      <div className="font-medium" style={{ wordBreak: 'break-word', fontSize: '0.88rem' }}>{tpl.name}</div>
-                      <div className="text-muted" style={{ fontSize: '0.72rem', wordBreak: 'break-word', lineHeight: 1.3 }}>{tpl.description}</div>
-                      <div className="text-muted" style={{ fontSize: '0.7rem', lineHeight: 1.3 }}>
+                    <div className="autoload-template-copy">
+                      <div className="font-medium autoload-template-name">{tpl.name}</div>
+                      <details className="autoload-template-description">
+                        <summary>What this template does</summary>
+                        <div>{tpl.description}</div>
+                      </details>
+                      <div className="text-muted autoload-template-steps">
                         {tpl.steps.map(s => getStepIcon(s.type)).join(' ')} ({tpl.steps.length} steps)
                       </div>
                     </div>
                     {/* Badge above the button: next to the name it was squeezed
                         into a one-letter-wide column on a phone. */}
-                    <div className="flex-col" style={{ flexShrink: 0, alignItems: 'flex-end', gap: 6 }}>
+                    <div className="flex-col autoload-template-actions">
                       {tpl.console_type && (
-                        <span className="console-type-badge" style={{ whiteSpace: 'nowrap' }}>{tpl.console_type.toUpperCase()}</span>
+                        <span className="console-type-badge">{tpl.console_type.toUpperCase()}</span>
                       )}
                       <button className="btn btn-primary btn-sm" onClick={() => loadTemplate(tpl)}>
                         Use template
@@ -595,17 +593,17 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
               </div>
             </div>
           ) : (
-            <div className="flex-col" style={{ gap: 6 }}>
+            <div className="flex-col autoload-sequence-list">
               {sequences.map(seq => (
                 <div key={seq.id} className="comp-card">
-                  <div className="comp-card-body flex-col" style={{ padding: '6px 10px', gap: 6 }}>
-                    <div className="flex-1" style={{ minWidth: 0 }}>
-                      <div className="font-medium" style={{ wordBreak: 'break-word', fontSize: '0.88rem' }}>{seq.name}</div>
-                      <div className="text-muted" style={{ fontSize: '0.72rem', lineHeight: 1.3 }}>
+                  <div className="comp-card-body flex-col autoload-sequence-card-body">
+                    <div className="autoload-sequence-copy">
+                      <div className="font-medium autoload-sequence-name">{seq.name}</div>
+                      <div className="text-muted autoload-sequence-meta">
                         {seq.profile_name || 'Unknown'} • {(() => { try { return JSON.parse(seq.steps || '[]').length; } catch (_) { return 0; } })()} steps
                       </div>
                       {seq.auto_trigger === 'loader_down' && (
-                        <div style={{ fontSize: '0.7rem', lineHeight: 1.3, color: 'var(--green)' }}>
+                        <div className="autoload-sequence-trigger">
                           ⚡ Runs by itself when the console is on and the loader port is closed
                         </div>
                       )}
@@ -1132,7 +1130,7 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
                   </div>
                   <label className="text-sm text-muted" style={{ display: 'block' }}>Source path</label>
                   <PathField
-                    placeholder="/data/mkpfs/game.exfat or /data/mkpfs/game/"
+                    placeholder="/data/mkpfs/homebrew.exfat or /data/mkpfs/homebrew/"
                     value={convSourcePath}
                     onChange={setConvSourcePath}
                     browsePath={convSourcePath && convSourcePath.startsWith('/') ? convSourcePath.replace(/[^/]+$/, '') : '/data/mkpfs'}
@@ -1141,7 +1139,7 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
                     browseTitle={convMode === 'pack-folder' ? 'Pick source folder' : 'Pick source file (or folder)'}
                   />
                   <label className="text-sm text-muted" style={{ display: 'block' }}>Output filename (optional)</label>
-                  <input className="input" placeholder="game.ffpfsc"
+                  <input className="input" placeholder="homebrew.ffpfsc"
                     value={convOutputName} onChange={e => setConvOutputName(e.target.value)} />
                   <button className="btn btn-success" disabled={!convSourcePath.trim()}
                     onClick={() => { addConvertStep(); setShowAddStepMenu(null); }}>
@@ -1408,7 +1406,7 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
                               <>
                                 <label className="field-label">Source path</label>
                                 <PathField
-                                  placeholder="/data/mkpfs/game.exfat"
+                                  placeholder="/data/mkpfs/homebrew.exfat"
                                   value={step.source_path || ''}
                                   onChange={(p) => patchStep(index, { source_path: p })}
                                   browsePath={step.source_path && step.source_path.startsWith('/') ? step.source_path.replace(/[^/]+$/, '') : '/data/mkpfs'}

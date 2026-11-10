@@ -2596,7 +2596,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
 
       {showMainBlock && (<>
       <Section
-        title={liveSession ? '🟢 Live session' : '3 · Start session'}
+        title={liveSession ? '🎮 Remote Play session' : '3 · Start session'}
         status={paired
           ? liveSession
             ? (liveStream ? `${liveStream.resolution}${liveStream.fps ? ` · ${liveStream.fps} fps` : ''}` : sessionState)
@@ -2730,7 +2730,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
           covers that path. */}
       {liveSession && (
         <Section
-          title={sessionHasVideo && sessionId ? '📺 Live session' : '🎮 Controller'}
+          title={sessionHasVideo && sessionId ? '📺 Stream & controls' : '🎮 Controller'}
           status={sessionHasVideo && sessionId && liveStream ? `${liveStream.resolution}${liveStream.fps ? ` · ${liveStream.fps} fps` : ''}` : null}
           hint={
             sessionHasVideo && sessionId

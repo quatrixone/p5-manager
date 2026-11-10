@@ -56,7 +56,7 @@ export default function GameCompressor({ profiles = [], onNotification }) {
         <div>
           <span className="comp-card-title">🗜️ Convert on console</span>
           <div className="text-xs text-muted mt-xs">
-            On the PS5, pack AMPR-supported games directly from mounted `.exfat` or `.ffpfsc` images as LZ4. You can also compress or unpack `.ffpfsc`, build exFAT/PFS images, and validate or repair titles. Jobs continue if you close this page.
+            On the PS5, pack AMPR-supported Homebrew titles directly from mounted `.exfat` or `.ffpfsc` images as LZ4. You can also compress or unpack `.ffpfsc`, build exFAT/PFS images, and validate or repair titles. Jobs continue if you close this page.
           </div>
         </div>
         <span style={{ color: 'var(--muted)' }}>{open ? '▲' : '▼'}</span>
