@@ -114,8 +114,8 @@ export default function FileBrowser({
   // soon as the user switches to another store.
   const initialRef = useRef(initialLocation?.path ? initialLocation : null);
 
-  const [pathInput, setPathInput] = useState('/mnt');
-  const [path, setPath] = useState('/mnt');
+  const [pathInput, setPathInput] = useState(initialLocation?.path || '/mnt');
+  const [path, setPath] = useState(initialLocation?.path || '/mnt');
   const [files, setFiles] = useState([]);
   const [parent, setParent] = useState(null);
   const [loading, setLoading] = useState(false);
