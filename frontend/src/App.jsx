@@ -455,7 +455,7 @@ function App() {
       <div className="app-shell">
         {sidebar}
 
-        <main className="app-main">
+        <main className={`app-main ${activeTab === 'files' ? 'app-main--fileops' : ''}`}>
           <UpdateBanner onNotification={showNotification} />
           {showBuiltinEditor && (
             <BuiltinEditor onClose={closeBuiltinEditor} onNotification={showNotification} />

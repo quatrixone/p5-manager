@@ -1433,10 +1433,10 @@ export default function FileBrowser({
       )}
 
       <div className="comp-card-body flex-col gap-md">
-        <div className="tabs">
-          <button className={`tab-item ${kind === 'local' ? 'active' : ''}`} onClick={() => setKind('local')}>💾 Local</button>
-          {enableFtp && <button className={`tab-item ${kind === 'ftp' ? 'active' : ''}`} onClick={() => setKind('ftp')}>🎮 Console</button>}
-          <button className={`tab-item ${kind === 'smb' ? 'active' : ''}`} onClick={() => setKind('smb')}>📡 Remote</button>
+        <div className="tabs fb-source-tabs" role="group" aria-label="File source">
+          <button type="button" aria-pressed={kind === 'local'} className={`tab-item ${kind === 'local' ? 'active' : ''}`} onClick={() => setKind('local')}>💾 Local</button>
+          {enableFtp && <button type="button" aria-pressed={kind === 'ftp'} className={`tab-item ${kind === 'ftp' ? 'active' : ''}`} onClick={() => setKind('ftp')}>🎮 Console</button>}
+          <button type="button" aria-pressed={kind === 'smb'} className={`tab-item ${kind === 'smb' ? 'active' : ''}`} onClick={() => setKind('smb')}>📡 Remote</button>
         </div>
 
         {kind === 'smb' && (
