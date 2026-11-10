@@ -18,12 +18,12 @@ import { api, apiSafe } from './lib/api.js';
 import './styles.css';
 
 const tabs = [
-  { id: 'payloads', label: 'Payloads', icon: '📦' },
-  { id: 'autoload', label: 'Autoload', icon: '⚡' },
   { id: 'files', label: 'File Ops', icon: '📁' },
   { id: 'library', label: 'Library', icon: '🕹️' },
   { id: 'remote', label: 'P5 Control', icon: '🎮' },
+  { id: 'payloads', label: 'Payloads', icon: '📦' },
   { id: 'store', label: 'Marketplace', icon: '🛒' },
+  { id: 'autoload', label: 'Autoload', icon: '⚡' },
   { id: 'logs', label: 'Logs', icon: '📋' },
   { id: 'settings', label: 'Settings', icon: '⚙️' }
 ];
@@ -52,6 +52,7 @@ function App() {
     if (saved === 'tools') return 'store';
     return saved;
   });
+  const previousTab = useRef(activeTab);
   const [showBuiltinEditor, setShowBuiltinEditor] = useState(readHashRoute);
 
   // Sync state with hash changes (browser back/forward, manual edits).
@@ -71,14 +72,21 @@ function App() {
   const [profiles, setProfiles] = useState([]);
   const [logs, setLogs] = useState([]);
   const [notification, setNotification] = useState(null);
+  const notificationTimer = useRef(null);
   // Set when /fetch-url resolves a bare repo URL to a release with more
   // than one matching asset - PayloadList renders a picker modal off this
   // instead of the backend silently downloading everything.
   const [assetPicker, setAssetPicker] = useState(null);
 
   const showNotification = (message, type = 'info') => {
+    clearTimeout(notificationTimer.current);
     setNotification({ message, type });
-    setTimeout(() => setNotification(null), 3000);
+    if (type !== 'error') notificationTimer.current = setTimeout(() => setNotification(null), 5000);
+  };
+
+  const dismissNotification = () => {
+    clearTimeout(notificationTimer.current);
+    setNotification(null);
   };
 
   const fetchPayloads = useCallback(async () => {
@@ -92,8 +100,13 @@ function App() {
   }, []);
 
   const fetchLogs = useCallback(async () => {
-    const data = await apiSafe.get('/logs?limit=50');
+    const data = await apiSafe.get('/logs?limit=200');
     if (Array.isArray(data)) setLogs(data);
+  }, []);
+
+  const loadOlderLogs = useCallback(async (beforeId) => {
+    const data = await apiSafe.get(`/logs?limit=200&before=${beforeId}`);
+    return Array.isArray(data) ? data : [];
   }, []);
 
   // One-shot loads on first mount (payloads + profiles); logs use the
@@ -113,6 +126,20 @@ function App() {
 
   useEffect(() => {
     localStorage.setItem('activeTab', activeTab);
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (previousTab.current === activeTab) return undefined;
+    previousTab.current = activeTab;
+    const title = tabs.find(tab => tab.id === activeTab)?.label || 'P5 Manager';
+    document.title = `${title} · P5 Manager`;
+    const timer = setTimeout(() => {
+      const target = document.querySelector('.app-main .screen-title, .app-main h1, .app-main .fileops-title-h') || document.querySelector('.app-main');
+      if (!target) return;
+      target.tabIndex = -1;
+      target.focus({ preventScroll: true });
+    }, 0);
+    return () => clearTimeout(timer);
   }, [activeTab]);
 
   const fetchFromGitHub = async (repo, filePath) => {
@@ -438,9 +465,16 @@ function App() {
         )}
       </header>
 
+      <div className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+        {notification && notification.type !== 'error' ? notification.message : ''}
+      </div>
+      <div className="sr-only" role="alert" aria-live="assertive" aria-atomic="true">
+        {notification?.type === 'error' ? notification.message : ''}
+      </div>
       {notification && (
-        <div className={`app-toast ${notification.type || 'info'}`}>
-          {notification.message}
+        <div className={`app-toast ${notification.type || 'info'}`} role="group" aria-label="Notification">
+          <span>{notification.message}</span>
+          <button type="button" className="app-toast-dismiss" onClick={dismissNotification} aria-label="Dismiss notification">×</button>
         </div>
       )}
 
@@ -455,7 +489,7 @@ function App() {
       <div className="app-shell">
         {sidebar}
 
-        <main className={`app-main ${activeTab === 'files' ? 'app-main--fileops' : ''}`}>
+        <main tabIndex={-1} className={`app-main ${activeTab === 'files' ? 'app-main--fileops' : ''}`}>
           <UpdateBanner onNotification={showNotification} />
           {showBuiltinEditor && (
             <BuiltinEditor onClose={closeBuiltinEditor} onNotification={showNotification} />
@@ -500,7 +534,7 @@ function App() {
             <Marketplace profiles={profiles} onNotification={showNotification} />
           )}
           {!showBuiltinEditor && activeTab === 'logs' && (
-            <LogViewer logs={logs} onRefresh={fetchLogs} profiles={profiles} />
+            <LogViewer logs={logs} onRefresh={fetchLogs} onLoadOlder={loadOlderLogs} profiles={profiles} />
           )}
         </main>
       </div>
@@ -546,7 +580,8 @@ function TopbarPs5Status({ profile, profiles = [], onSwitch, onManage }) {
         aria-expanded={open}
         onClick={() => setOpen(o => !o)}
       >
-        <span className={`dot ${state}`} />
+        <span className={`dot ${state}`} aria-hidden="true" />
+        <span className="app-status-state">{{ online: 'Online', waking: 'Waking', standby: 'Rest mode', offline: 'Offline' }[state]}</span>
         <span className="truncate">{profile.name}</span>
         <ConsoleTypeBadge consoleType={portStatus?.console_type || profile.console_type} />
         <span className="ip">{profile.ip_address}</span>
@@ -636,6 +671,10 @@ function MobileNav({ activeTab, setActiveTab }) {
   const { mode } = usePlatform();
   const { total: updates } = useMarketplaceUpdates();
   const [moreOpen, setMoreOpen] = useState(false);
+  const triggerRef = useRef(null);
+  const closeRef = useRef(null);
+  const sheetRef = useRef(null);
+  const restoreFocus = useRef(true);
   // The bar holds the daily sections and the Marketplace, in `tabs`
   // order, so Marketplace is the last button before More; the logs and
   // the settings are one tap further, inside the More sheet.
@@ -643,18 +682,36 @@ function MobileNav({ activeTab, setActiveTab }) {
   const primaryTabs = tabs.filter(tab => primaryIds.includes(tab.id));
   const moreTabs = tabs.filter(tab => !primaryIds.includes(tab.id));
   const selectTab = (id) => {
+    restoreFocus.current = false;
     setActiveTab(id);
     setMoreOpen(false);
   };
   useEffect(() => {
     if (!moreOpen) return undefined;
     const previousOverflow = document.body.style.overflow;
-    const closeOnEscape = (event) => { if (event.key === 'Escape') setMoreOpen(false); };
+    const root = document.getElementById('root');
+    const closeOnEscape = (event) => {
+      if (event.key === 'Escape') setMoreOpen(false);
+      if (event.key !== 'Tab') return;
+      const focusable = [...(sheetRef.current?.querySelectorAll('button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex="0"]') || [])];
+      if (!focusable.length) return;
+      if (event.shiftKey && document.activeElement === focusable[0]) {
+        event.preventDefault();
+        focusable[focusable.length - 1].focus();
+      } else if (!event.shiftKey && document.activeElement === focusable[focusable.length - 1]) {
+        event.preventDefault();
+        focusable[0].focus();
+      }
+    };
     document.body.style.overflow = 'hidden';
+    if (root) root.inert = true;
+    closeRef.current?.focus();
     window.addEventListener('keydown', closeOnEscape);
     return () => {
       document.body.style.overflow = previousOverflow;
+      if (root) root.inert = false;
       window.removeEventListener('keydown', closeOnEscape);
+      if (restoreFocus.current) triggerRef.current?.focus();
     };
   }, [moreOpen]);
   return (
@@ -673,8 +730,9 @@ function MobileNav({ activeTab, setActiveTab }) {
             </button>
           ))}
           <button
+            ref={triggerRef}
             className={`bottom-nav-item bottom-nav-more ${moreOpen || moreTabs.some(tab => tab.id === activeTab) ? 'active' : ''}`}
-            onClick={() => setMoreOpen(open => !open)}
+            onClick={() => setMoreOpen(open => { if (!open) restoreFocus.current = true; return !open; })}
             aria-expanded={moreOpen}
             aria-haspopup="dialog"
           >
@@ -685,14 +743,14 @@ function MobileNav({ activeTab, setActiveTab }) {
       </nav>
       {moreOpen && createPortal(
         <>
-          <button className="mobile-more-backdrop" aria-label="Close more navigation" onClick={() => setMoreOpen(false)} />
-          <section className="mobile-more-sheet" role="dialog" aria-modal="true" aria-label="More sections">
+          <div className="mobile-more-backdrop" aria-hidden="true" onClick={() => setMoreOpen(false)} />
+          <section ref={sheetRef} className="mobile-more-sheet" role="dialog" aria-modal="true" aria-label="More sections">
             <div className="mobile-more-sheet-head">
               <div>
                 <strong>More</strong>
-                <div className="text-xs text-muted">Logs and settings</div>
+                <div className="text-xs text-muted">Autoload, logs and settings</div>
               </div>
-              <button className="btn btn-icon btn-ghost" onClick={() => setMoreOpen(false)} aria-label="Close">×</button>
+              <button ref={closeRef} className="btn btn-icon btn-ghost" onClick={() => setMoreOpen(false)} aria-label="Close more sections">×</button>
             </div>
             <div className="mobile-more-grid">
               {moreTabs.map(tab => (

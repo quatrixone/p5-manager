@@ -7,8 +7,10 @@ const router = express.Router();
 
 router.get('/', (req, res) => {
   try {
-    const limit = parseInt(req.query.limit) || 100;
-    const logs = getLogs(limit);
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 100, 1), 500);
+    const offset = Math.min(Math.max(parseInt(req.query.offset, 10) || 0, 0), 10000000);
+    const beforeId = Number.parseInt(req.query.before, 10);
+    const logs = getLogs(limit, offset, Number.isSafeInteger(beforeId) ? beforeId : null);
     res.json(logs);
   } catch (error) {
     res.status(500).json({ error: error.message });

@@ -247,6 +247,7 @@ export default function Marketplace({ profiles = [], onNotification }) {
   const [kind, setKind] = useState('all');
   const [query, setQuery] = useState('');
   const [updatesOnly, setUpdatesOnly] = useState(false);
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const [page, setPage] = useState(1);
   const [data, setData] = useState(null);
   const [error, setError] = useState('');
@@ -305,6 +306,7 @@ export default function Marketplace({ profiles = [], onNotification }) {
 
   const items = data?.items || [];
   const openItem = open && items.find((i) => i.origin === open.origin && i.kind === open.kind && String(i.id) === String(open.id));
+  const activeFilterCount = [source !== 'all', category !== 'all', kind !== 'all', updatesOnly].filter(Boolean).length;
 
   return (
     <div>
@@ -328,6 +330,7 @@ export default function Marketplace({ profiles = [], onNotification }) {
           profiles={profiles}
           consoleOnline={consoleOnline}
           onNotification={onNotification}
+          onBrowse={() => { setSection('browse'); setQuery(''); }}
           onOpen={(item) => {
             setSection('browse');
             setSource(item.origin || 'all');
@@ -338,23 +341,30 @@ export default function Marketplace({ profiles = [], onNotification }) {
         />
       ) : (
         <>
-          <div className="flex gap-sm flex-wrap mb-sm">
-            <input className="input" aria-label="Search the marketplace" placeholder="🔍 Search name, title ID or author" value={query} onChange={(e) => setQuery(e.target.value)} maxLength={200} style={{ flex: '2 1 200px', minHeight: 40 }} />
-            <select className="select" aria-label="Source" value={source} onChange={(e) => setSource(e.target.value)} style={{ flex: '1 1 160px', minHeight: 40 }}>
-              <option value="all">All sources</option>
-              {(data?.sources || []).map((srv) => <option key={srv.id} value={srv.id}>{srv.label}</option>)}
-            </select>
-            <select className="select" aria-label="Catalog category" value={category} onChange={(e) => setCategory(e.target.value)} style={{ flex: '1 1 140px', minHeight: 40 }}>
-              <option value="all">All categories</option>
-              {(data?.categories || []).map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
-            </select>
-            <button className="btn btn-secondary" onClick={checkUpdates} disabled={refreshing} style={{ minHeight: 40 }}>{refreshing ? 'Checking…' : '↻ Check updates'}</button>
-            <button className={`btn ${updatesOnly ? 'btn-primary' : 'btn-secondary'}`} aria-pressed={updatesOnly} onClick={() => setUpdatesOnly((v) => !v)} style={{ minHeight: 40 }}>Updates</button>
+          <div className="marketplace-search-row">
+            <input className="input" aria-label="Search the marketplace" placeholder="Search name, title ID or author" value={query} onChange={(e) => setQuery(e.target.value)} maxLength={200} />
+            <button className="btn btn-secondary marketplace-filter-toggle" aria-expanded={filtersOpen} aria-controls="marketplace-filter-options" onClick={() => setFiltersOpen(v => !v)}>
+              Filters{activeFilterCount ? ` (${activeFilterCount})` : ''}
+            </button>
           </div>
-          <div className="flex gap-xs flex-wrap mb-sm">
-            {KINDS.map((k) => (
-              <button key={k.id} className={`btn btn-sm ${kind === k.id ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setKind(k.id)} style={{ minHeight: 36 }}>{k.label}</button>
-            ))}
+          <div id="marketplace-filter-options" className={`marketplace-filter-options ${filtersOpen ? 'is-open' : ''}`}>
+            <div className="marketplace-filter-selects">
+              <select className="select" aria-label="Source" value={source} onChange={(e) => setSource(e.target.value)}>
+                <option value="all">All sources</option>
+                {(data?.sources || []).map((srv) => <option key={srv.id} value={srv.id}>{srv.label}</option>)}
+              </select>
+              <select className="select" aria-label="Catalog category" value={category} onChange={(e) => setCategory(e.target.value)}>
+                <option value="all">All categories</option>
+                {(data?.categories || []).map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
+              </select>
+              <button className="btn btn-secondary" onClick={checkUpdates} disabled={refreshing}>{refreshing ? 'Checking…' : '↻ Check updates'}</button>
+              <button className={`btn ${updatesOnly ? 'btn-primary' : 'btn-secondary'}`} aria-pressed={updatesOnly} onClick={() => setUpdatesOnly(v => !v)}>Updates</button>
+            </div>
+            <div className="marketplace-kind-filters">
+              {KINDS.map(k => (
+                <button key={k.id} className={`btn btn-sm ${kind === k.id ? 'btn-primary' : 'btn-secondary'}`} aria-pressed={kind === k.id} onClick={() => setKind(k.id)}>{k.label}</button>
+              ))}
+            </div>
           </div>
 
           {loading && <div className="text-xs text-muted mb-sm">Loading the {platform.toUpperCase()} list…</div>}

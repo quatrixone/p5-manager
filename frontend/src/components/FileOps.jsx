@@ -134,10 +134,24 @@ export default function FileOps({ profiles, onNotification }) {
           return (
             <button
               key={t.key}
+              id={`fileops-tab-${t.key}`}
               role="tab"
               aria-selected={active}
+              aria-controls="fileops-panel"
+              tabIndex={active ? 0 : -1}
               className={`fileops-tab ${active ? 'is-active' : ''}`}
               onClick={() => switchTab(t.key)}
+              onKeyDown={e => {
+                const index = visibleTabs.findIndex(tab => tab.key === t.key);
+                const next = e.key === 'ArrowRight' ? (index + 1) % visibleTabs.length
+                  : e.key === 'ArrowLeft' ? (index - 1 + visibleTabs.length) % visibleTabs.length
+                    : e.key === 'Home' ? 0 : e.key === 'End' ? visibleTabs.length - 1 : -1;
+                if (next < 0) return;
+                e.preventDefault();
+                const nextKey = visibleTabs[next].key;
+                switchTab(nextKey);
+                requestAnimationFrame(() => document.getElementById(`fileops-tab-${nextKey}`)?.focus());
+              }}
             >
               <span className="fileops-tab-icon" aria-hidden>{t.icon}</span>
               <span className="fileops-tab-label">{t.label}</span>
@@ -147,7 +161,7 @@ export default function FileOps({ profiles, onNotification }) {
         })}
       </nav>
 
-      <div className="fileops-body">
+      <div id="fileops-panel" className="fileops-body" role="tabpanel" aria-labelledby={`fileops-tab-${subTab}`} tabIndex={0}>
         {subTab === 'files' && (
           <>
             <div className="fileops-pane-toggle">
@@ -158,11 +172,9 @@ export default function FileOps({ profiles, onNotification }) {
                 onClick={toggleDualPane}
                 title="Show two browsers side by side and drag files between them"
               >
-                ◫ Two panes
+                ◫ Compare folders
               </button>
-              {dualPane && (
-                <span className="text-xs text-muted">Drag files between panels, then choose Copy or Move. On a phone or tablet, tap Select and choose Copy or Move.</span>
-              )}
+              <span className="text-xs text-muted fileops-pane-toggle-hint">Compare two locations, then copy or move files between them.</span>
             </div>
             {dualPane ? (
               <DualPane

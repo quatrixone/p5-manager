@@ -54,6 +54,8 @@ function PayloadList({ payloads, profiles, onFetchUrl, onSend, onDelete, onUpdat
   const [selected, setSelected] = useState(new Set());
   const [showAddModal, setShowAddModal] = useState(false);
   const [activeTab, setActiveTab] = useState('all'); // 'all' | 'builtin'
+  const [query, setQuery] = useState('');
+  const [sortBy, setSortBy] = useState('name');
   const [requiredFilenames, setRequiredFilenames] = useState(new Set(VENDORED_REQUIRED_FILENAMES));
 
   useEffect(() => {
@@ -203,7 +205,14 @@ function PayloadList({ payloads, profiles, onFetchUrl, onSend, onDelete, onUpdat
     () => platformFiltered.filter(p => !requiredFilenames.has(p.filename)),
     [platformFiltered, requiredFilenames]
   );
-  const visiblePayloads = activeTab === 'builtin' ? builtinPayloads : nonBuiltinPayloads;
+  const visiblePayloads = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return (activeTab === 'builtin' ? builtinPayloads : nonBuiltinPayloads)
+      .filter(p => !q || `${p.name} ${p.filename} ${p.version || ''}`.toLowerCase().includes(q))
+      .sort((a, b) => sortBy === 'size'
+        ? Number(b.size || 0) - Number(a.size || 0) || a.name.localeCompare(b.name)
+        : a.name.localeCompare(b.name));
+  }, [activeTab, builtinPayloads, nonBuiltinPayloads, query, sortBy]);
   const hiddenCount = payloads.length - platformFiltered.length;
 
   const renderPayloadCard = (payload) => {
@@ -268,7 +277,7 @@ function PayloadList({ payloads, profiles, onFetchUrl, onSend, onDelete, onUpdat
             </div>
             <div className="text-muted" style={{ fontSize: '0.76rem', lineHeight: 1.4 }}>
               {formatSize(payload.size)}
-              {payload.version && <span> • v{payload.version}</span>}
+              {payload.version && <span> • v{String(payload.version).replace(/^v/i, '')}</span>}
             </div>
           </div>
           <span style={{ color: 'var(--muted)', fontSize: '0.85rem' }}>{isExpanded ? '▲' : '▼'}</span>
@@ -330,7 +339,9 @@ function PayloadList({ payloads, profiles, onFetchUrl, onSend, onDelete, onUpdat
             <button className="btn btn-sm btn-primary" onClick={() => onSend(payload.id)}>
               📤 Send
             </button>
-            <button className="btn btn-sm btn-danger" onClick={() => onDelete(payload.id)}>
+            <button className="btn btn-sm btn-danger" onClick={() => {
+              if (window.confirm(`Delete payload “${payload.name}”? This cannot be undone.`)) onDelete(payload.id);
+            }}>
               🗑️ Delete
             </button>
           </div>
@@ -345,6 +356,7 @@ function PayloadList({ payloads, profiles, onFetchUrl, onSend, onDelete, onUpdat
       <div className="action-bar">
         <span className="text-sm">{selected.size} selected</span>
         <button className="btn btn-sm btn-danger" onClick={() => {
+          if (!window.confirm(`Delete ${selected.size} selected payloads? This cannot be undone.`)) return;
           selected.forEach(id => onDelete(id));
           clearSelection();
         }}>
@@ -367,9 +379,9 @@ function PayloadList({ payloads, profiles, onFetchUrl, onSend, onDelete, onUpdat
         <div className="screen-heading-copy">
           <h1 className="screen-title">Payloads</h1>
           <span className="screen-subtitle">
-            {visiblePayloads.length} loaded
+            {visiblePayloads.length} shown
             {hiddenCount > 0 && (
-              <> · <span title={`${hiddenCount} payload(s) hidden by the ${mode.toUpperCase()} platform filter`}>{hiddenCount} hidden</span></>
+              <> · <span>{hiddenCount} hidden for {mode.toUpperCase()}</span></>
             )}
           </span>
         </div>
@@ -409,6 +421,16 @@ function PayloadList({ payloads, profiles, onFetchUrl, onSend, onDelete, onUpdat
           🧷 Built-in{builtinPayloads.length > 0 ? ` (${builtinPayloads.length})` : ''}
         </button>
       </div>
+
+      {payloads.length > 0 && (
+        <div className="list-tools payload-list-tools">
+          <input className="input" type="search" aria-label="Search payloads" placeholder="Search payloads…" value={query} onChange={e => setQuery(e.target.value)} />
+          <select className="select" aria-label="Sort payloads" value={sortBy} onChange={e => setSortBy(e.target.value)}>
+            <option value="name">Name</option>
+            <option value="size">Largest first</option>
+          </select>
+        </div>
+      )}
 
       {payloads.length === 0 ? (
         <EmptyState

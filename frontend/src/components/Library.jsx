@@ -35,6 +35,7 @@ export default function Library({ profiles = [], onNotification }) {
   const [starting, setStarting] = useState(false);
   const [loading, setLoading] = useState(false);
   const [query, setQuery] = useState('');
+  const [sortBy, setSortBy] = useState('name');
   const [storage, setStorage] = useState('all');
   const [selected, setSelected] = useState(null); // title_id shown in the details modal
   const [picker, setPicker] = useState(null); // { game, op } - destination dialog
@@ -121,8 +122,10 @@ export default function Library({ profiles = [], onNotification }) {
     return games
       .filter(g => storage === 'all' || g.storage?.id === storage)
       .filter(g => !q || `${g.title_name} ${g.title_id}`.toLowerCase().includes(q))
-      .sort((a, b) => (a.title_name || a.title_id).localeCompare(b.title_name || b.title_id));
-  }, [games, query, storage]);
+      .sort((a, b) => sortBy === 'size'
+        ? sizeOf(b) - sizeOf(a) || (a.title_name || a.title_id).localeCompare(b.title_name || b.title_id)
+        : (a.title_name || a.title_id).localeCompare(b.title_name || b.title_id));
+  }, [games, query, storage, sortBy]);
   const game = selected ? games.find(g => g.title_id === selected) : null;
 
   const run = async (g, op, body, okText) => {
@@ -315,8 +318,12 @@ export default function Library({ profiles = [], onNotification }) {
               </div>
             )}
 
-            <div className="flex gap-sm items-center flex-wrap">
-              <input className="input" style={{ flex: '1 1 220px' }} type="search" placeholder="Search Homebrew…" value={query} onChange={e => setQuery(e.target.value)} />
+            <div className="flex gap-sm items-center flex-wrap library-list-tools">
+              <input className="input" type="search" aria-label="Search Homebrew titles" placeholder="Search Homebrew…" value={query} onChange={e => setQuery(e.target.value)} />
+              <select className="select" aria-label="Sort Homebrew titles" value={sortBy} onChange={e => setSortBy(e.target.value)}>
+                <option value="name">Name</option>
+                <option value="size">Largest first</option>
+              </select>
               {!isPs4Profile && <div className="tabs" style={{ flex: '0 1 auto' }}>
                 <button className={`tab-item ${storage === 'all' ? 'active' : ''}`} onClick={() => setStorage('all')}>All ({games.length})</button>
                 {storages.map(s => (

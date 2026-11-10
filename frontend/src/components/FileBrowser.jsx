@@ -1272,29 +1272,44 @@ export default function FileBrowser({
         }}
         style={{ position: 'relative', cursor: (multiSelect || f.isDir) ? 'pointer' : 'default' }}
       >
-        <div className="file-card-content" style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-sm)', padding: 'var(--space-sm) var(--space-md)' }}>
+        <div className="file-card-content">
           {multiSelect && (
-            <input
-              type="checkbox"
-              checked={isSelected}
-              readOnly
-              tabIndex={-1}
-              // The row's own click handler does the toggling.
-              style={{ width: 20, height: 20, pointerEvents: 'none', accentColor: 'var(--accent)' }}
-            />
+            <span className="file-card-check" aria-hidden="true">{isSelected ? '☑' : '□'}</span>
           )}
 
-          <span style={{ fontSize: '1.5rem' }}>{f.isDir ? '📁' : archiveFile ? '📦' : '📄'}</span>
-
-          <div className="flex-1" style={{ minWidth: 0 }}>
-            <div className="text-sm truncate" style={{ color: f.isDir ? 'var(--blue)' : 'var(--text)' }}>{f.name}</div>
-            <div className="text-xs text-muted">{f.isDir ? (f.size ? fmtSize(f.size) : '—') : fmtSize(f.size)}</div>
-          </div>
+          {f.isDir || multiSelect ? (
+            <button
+              type="button"
+              className="file-card-main"
+              aria-label={multiSelect ? `${isSelected ? 'Deselect' : 'Select'} ${f.name}` : `Open folder ${f.name}`}
+              aria-pressed={multiSelect ? isSelected : undefined}
+              onClick={e => {
+                e.stopPropagation();
+                if (multiSelect) toggleSelect(f.name);
+                else if (f.isDir) open(f);
+              }}
+            >
+              <span className="file-card-icon" aria-hidden="true">{f.isDir ? '📁' : archiveFile ? '📦' : '📄'}</span>
+              <span className="file-card-name-wrap">
+                <span className={`text-sm truncate ${f.isDir ? 'file-card-folder-name' : ''}`}>{f.name}</span>
+                <span className="text-xs text-muted">{f.isDir ? (f.size ? fmtSize(f.size) : '—') : fmtSize(f.size)}</span>
+              </span>
+            </button>
+          ) : (
+            <div className="file-card-main">
+              <span className="file-card-icon" aria-hidden="true">{archiveFile ? '📦' : '📄'}</span>
+              <span className="file-card-name-wrap">
+                <span className="text-sm truncate">{f.name}</span>
+                <span className="text-xs text-muted">{fmtSize(f.size)}</span>
+              </span>
+            </div>
+          )}
 
           {secondaryActions.length > 0 && !multiSelect && (
             <div onClick={(e) => e.stopPropagation()}>
               <button
                 className="btn btn-ghost btn-sm file-card-kebab"
+                aria-label={`Open actions for ${f.name}`}
                 onClick={(e) => openMenu(e, f.name)}
                 style={{ minWidth: 36 }}
               >

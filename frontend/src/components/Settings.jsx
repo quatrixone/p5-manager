@@ -192,6 +192,7 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
 
   const handleRestore = async () => {
     if (!restoreFile) return;
+    if (!window.confirm(`Restore “${restoreFile.name}” and replace all profiles, payloads and settings? This cannot be undone.`)) return;
     try {
       setBackupStatus('Restoring...');
       const arrayBuffer = await restoreFile.arrayBuffer();
@@ -323,10 +324,12 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
               </div>
               <div className="flex gap-sm settings-profile-actions">
                 {!profile.is_default && (
-                  <button className="btn btn-sm btn-ghost" onClick={() => onProfileSetDefault(profile.id)}>⭐</button>
+                  <button className="btn btn-sm btn-ghost" aria-label={`Make ${profile.name} the default console`} onClick={() => onProfileSetDefault(profile.id)}>⭐</button>
                 )}
                 <button className="btn btn-sm btn-secondary" onClick={() => openEditProfile(profile)}>Edit</button>
-                <button className="btn btn-sm btn-danger" onClick={() => onProfileDelete(profile.id)}>🗑</button>
+                <button className="btn btn-sm btn-danger" aria-label={`Delete ${profile.name}`} onClick={() => {
+                  if (window.confirm(`Delete console profile “${profile.name}”?`)) onProfileDelete(profile.id);
+                }}>🗑</button>
               </div>
             </div>
           </div>
@@ -396,7 +399,7 @@ function Settings({ profiles, onProfileCreate, onProfileUpdate, onProfileDelete,
             <div className="mt-sm text-sm text-muted">Selected: {restoreFile.name}</div>
           )}
           <button className="btn btn-primary btn-block mt-sm" onClick={handleRestore} disabled={!restoreFile}>
-            Restore
+            Restore all data
           </button>
         </div>
       </div>

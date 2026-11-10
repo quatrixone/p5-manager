@@ -3,7 +3,7 @@ import Badge from './UI/Badge';
 import useVisiblePolling from '../hooks/useVisiblePolling';
 import { api, apiSafe } from '../lib/api.js';
 
-function LogViewer({ logs: systemLogs, onRefresh, profiles }) {
+function LogViewer({ logs: systemLogs, onRefresh, onLoadOlder, profiles }) {
   const [activeTab, setActiveTab] = useState('system');
   const [luaLogs, setLuaLogs] = useState([]);
   const [luaServerStatus, setLuaServerStatus] = useState({ running: false, port: 8080 });
@@ -13,6 +13,11 @@ function LogViewer({ logs: systemLogs, onRefresh, profiles }) {
   const [port, setPort] = useState('8080');
   const [payloadsSent, setPayloadsSent] = useState({ lua: false, kernel: false });
   const [logFilter, setLogFilter] = useState('all');
+  const [logQuery, setLogQuery] = useState('');
+  const [logDate, setLogDate] = useState('');
+  const [olderLogs, setOlderLogs] = useState([]);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const [hasOlder, setHasOlder] = useState(false);
   const [autoScroll, setAutoScroll] = useState(true);
   const logContainerRef = useRef(null);
 
@@ -55,14 +60,9 @@ function LogViewer({ logs: systemLogs, onRefresh, profiles }) {
     }
   }, [ps5Logs, autoScroll]);
 
-  const getLevelColor = (level) => {
-    switch (level) {
-      case 'error': return 'var(--red)';
-      case 'warning': return 'var(--warning)';
-      case 'success': return 'var(--green)';
-      default: return 'var(--blue)';
-    }
-  };
+  useEffect(() => {
+    if (systemLogs.length >= 200) setHasOlder(true);
+  }, [systemLogs.length]);
 
   const getProfileIp = () => {
     if (!profiles || profiles.length === 0) return null;
@@ -156,9 +156,30 @@ function LogViewer({ logs: systemLogs, onRefresh, profiles }) {
     fetchKernelStatus();
   };
 
-  const filteredSystemLogs = logFilter === 'all'
-    ? systemLogs
-    : systemLogs?.filter(log => log.level === logFilter) || [];
+  const allSystemLogs = [...new Map([...systemLogs, ...olderLogs].map(log => [log.id, log])).values()]
+    .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+  const query = logQuery.trim().toLowerCase();
+  const filteredSystemLogs = allSystemLogs.filter(log => {
+    const timestamp = new Date(log.timestamp);
+    const localDay = `${timestamp.getFullYear()}-${String(timestamp.getMonth() + 1).padStart(2, '0')}-${String(timestamp.getDate()).padStart(2, '0')}`;
+    return (
+      (logFilter === 'all' || log.level === logFilter)
+      && (!query || `${log.level} ${log.message}`.toLowerCase().includes(query))
+      && (!logDate || localDay === logDate)
+    );
+  });
+
+  const loadOlder = async () => {
+    const ids = allSystemLogs.map(log => Number(log.id)).filter(Number.isFinite);
+    if (!ids.length || !onLoadOlder) return;
+    const beforeId = Math.min(...ids);
+    setLoadingOlder(true);
+    try {
+      const page = await onLoadOlder(beforeId);
+      setOlderLogs(previous => [...new Map([...previous, ...(page || [])].map(log => [log.id, log])).values()]);
+      if (!page || page.length < 200) setHasOlder(false);
+    } finally { setLoadingOlder(false); }
+  };
 
   const renderSystemLogs = () => (
     <div>
@@ -170,6 +191,7 @@ function LogViewer({ logs: systemLogs, onRefresh, profiles }) {
               <button
                 key={f}
                 onClick={() => setLogFilter(f)}
+                aria-pressed={logFilter === f}
                 className={`btn btn-sm ${logFilter === f ? 'btn-primary' : 'btn-ghost'}`}
                 style={{ padding: '0.25rem 0.5rem', fontSize: '0.75rem' }}
               >
@@ -189,37 +211,38 @@ function LogViewer({ logs: systemLogs, onRefresh, profiles }) {
         </div>
       </div>
 
+      <div className="log-search-tools">
+        <input className="input" type="search" aria-label="Search system logs" placeholder="Search logs…" value={logQuery} onChange={e => setLogQuery(e.target.value)} />
+        <input className="input" type="date" aria-label="Filter logs by date" value={logDate} onChange={e => setLogDate(e.target.value)} />
+      </div>
+
       {filteredSystemLogs.length === 0 ? (
         <div className="comp-card">
           <div className="comp-card-body">
             <div className="empty-state">
               <div className="empty-state-icon">📋</div>
-              <div className="empty-state-title">No logs yet</div>
-              <div className="empty-state-text">Activity will appear here</div>
+              <div className="empty-state-title">{allSystemLogs.length ? 'No logs match these filters' : 'No logs yet'}</div>
+              <div className="empty-state-text">{allSystemLogs.length ? 'Change the search, date or severity filter.' : 'Activity will appear here'}</div>
+              {allSystemLogs.length > 0 && <button className="btn btn-secondary" onClick={() => { setLogQuery(''); setLogDate(''); setLogFilter('all'); }}>Clear filters</button>}
             </div>
           </div>
         </div>
       ) : (
         <div className="comp-card">
-          <div className="system-log-entries" style={{ maxHeight: 500, overflow: 'auto', fontFamily: 'monospace', fontSize: '0.8rem' }}>
+          <div className="system-log-entries">
             {filteredSystemLogs.map(log => (
-              <div key={log.id} style={{
-                padding: 'var(--space-sm) var(--space-md)',
-                borderBottom: '1px solid var(--border)',
-                display: 'flex',
-                gap: 'var(--space-sm)',
-                flexWrap: 'wrap'
-              }}>
-                <span style={{ color: 'var(--muted)', whiteSpace: 'nowrap', fontSize: '0.7rem' }}>
+              <div key={log.id} className="system-log-entry">
+                <span className="system-log-time">
                   {new Date(log.timestamp).toLocaleTimeString()}
                 </span>
-                <span style={{ color: getLevelColor(log.level), fontWeight: 600, textTransform: 'uppercase', minWidth: 50, fontSize: '0.7rem' }}>
+                <span className={`system-log-level ${log.level}`}>
                   {log.level}
                 </span>
-                <span style={{ wordBreak: 'break-word', flex: 1 }}>{log.message}</span>
+                <span className="system-log-message">{log.message}</span>
               </div>
             ))}
           </div>
+          {hasOlder && <button className="btn btn-secondary load-older-logs" onClick={loadOlder} disabled={loadingOlder}>{loadingOlder ? 'Loading…' : 'Load older logs'}</button>}
         </div>
       )}
     </div>

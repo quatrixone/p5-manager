@@ -550,29 +550,27 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
                   {hiddenTemplateCount > 0 && ` · ${hiddenTemplateCount} hidden by ${mode.toUpperCase()} filter`}
                 </span>
               </div>
-              <div className="comp-card-body flex-col" style={{ padding: '6px 8px', gap: 6 }}>
+              <div className="comp-card-body flex-col autoload-template-list">
                 {visibleTemplates.map(tpl => (
                   <div
                     key={tpl.id}
-                    className="flex items-center gap-sm flex-wrap"
-                    style={{
-                      background: 'var(--panel2)',
-                      borderRadius: 6,
-                      padding: '6px 10px',
-                    }}
+                    className="flex items-center gap-sm flex-wrap autoload-template-card"
                   >
-                    <div style={{ minWidth: 0, flex: 1 }}>
-                      <div className="font-medium" style={{ wordBreak: 'break-word', fontSize: '0.88rem' }}>{tpl.name}</div>
-                      <div className="text-muted" style={{ fontSize: '0.72rem', wordBreak: 'break-word', lineHeight: 1.3 }}>{tpl.description}</div>
-                      <div className="text-muted" style={{ fontSize: '0.7rem', lineHeight: 1.3 }}>
+                    <div className="autoload-template-copy">
+                      <div className="font-medium autoload-template-name">{tpl.name}</div>
+                      <details className="autoload-template-description">
+                        <summary>What this template does</summary>
+                        <div>{tpl.description}</div>
+                      </details>
+                      <div className="text-muted autoload-template-steps">
                         {tpl.steps.map(s => getStepIcon(s.type)).join(' ')} ({tpl.steps.length} steps)
                       </div>
                     </div>
                     {/* Badge above the button: next to the name it was squeezed
                         into a one-letter-wide column on a phone. */}
-                    <div className="flex-col" style={{ flexShrink: 0, alignItems: 'flex-end', gap: 6 }}>
+                    <div className="flex-col autoload-template-actions">
                       {tpl.console_type && (
-                        <span className="console-type-badge" style={{ whiteSpace: 'nowrap' }}>{tpl.console_type.toUpperCase()}</span>
+                        <span className="console-type-badge">{tpl.console_type.toUpperCase()}</span>
                       )}
                       <button className="btn btn-primary btn-sm" onClick={() => loadTemplate(tpl)}>
                         Use template
@@ -595,17 +593,17 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
               </div>
             </div>
           ) : (
-            <div className="flex-col" style={{ gap: 6 }}>
+            <div className="flex-col autoload-sequence-list">
               {sequences.map(seq => (
                 <div key={seq.id} className="comp-card">
-                  <div className="comp-card-body flex-col" style={{ padding: '6px 10px', gap: 6 }}>
-                    <div className="flex-1" style={{ minWidth: 0 }}>
-                      <div className="font-medium" style={{ wordBreak: 'break-word', fontSize: '0.88rem' }}>{seq.name}</div>
-                      <div className="text-muted" style={{ fontSize: '0.72rem', lineHeight: 1.3 }}>
+                  <div className="comp-card-body flex-col autoload-sequence-card-body">
+                    <div className="autoload-sequence-copy">
+                      <div className="font-medium autoload-sequence-name">{seq.name}</div>
+                      <div className="text-muted autoload-sequence-meta">
                         {seq.profile_name || 'Unknown'} • {(() => { try { return JSON.parse(seq.steps || '[]').length; } catch (_) { return 0; } })()} steps
                       </div>
                       {seq.auto_trigger === 'loader_down' && (
-                        <div style={{ fontSize: '0.7rem', lineHeight: 1.3, color: 'var(--green)' }}>
+                        <div className="autoload-sequence-trigger">
                           ⚡ Runs by itself when the console is on and the loader port is closed
                         </div>
                       )}
