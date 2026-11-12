@@ -16,6 +16,7 @@ import { userDataDir } from '../lib/paths.js';
 import { getFtpPort } from '../lib/ftpPort.js';
 import { VENDORED_PAYLOADS, vendoredSource } from '../lib/defaultPayloads.js';
 import * as mounter from '../lib/saveMounter.js';
+import { PS4_EXPORT_PAYLOAD, listPs4Saves, mountPs4Save, unmountPs4Save, validPs4User } from '../lib/ps4SaveExport.js';
 import { loadFtp, startZftpd, tcpPortOpen, sendElfPayload, ELF_LOADER_PORT } from './convert.js';
 
 const router = express.Router();
@@ -216,6 +217,69 @@ function countFiles(dir, top = true) {
   return n;
 }
 
+// ── PS4: its own saves, exported by our payload ─────────────────────────
+
+// The payload is not vendored with the app; it comes from the payload
+// library, where the PS4 tab puts it.
+function ps4ExportPayload() {
+  const entry = VENDORED_PAYLOADS.find((e) => e.filename === PS4_EXPORT_PAYLOAD);
+  const vendored = entry && vendoredSource(entry);
+  if (vendored && fs.existsSync(vendored)) return fs.readFileSync(vendored);
+  const row = getRepo().queryOne('SELECT filepath FROM payloads WHERE filename = ? ORDER BY id DESC LIMIT 1', [PS4_EXPORT_PAYLOAD]);
+  if (row?.filepath && fs.existsSync(row.filepath)) return fs.readFileSync(row.filepath);
+  throw Object.assign(new Error(`${PS4_EXPORT_PAYLOAD} is not in the payload library - add it under Payloads first`), { status: 409 });
+}
+
+// One export at a time per console: the payload keeps a single mount, and a
+// second MOUNT or UMOUNT would pull it out from under the first.
+const ps4Busy = new Set();
+
+// Every save on the PS4, read off its drive - no payload, nothing to run on
+// the console, and nothing on it is changed.
+router.get('/ps4/:pid/saves', handle(async (req) => {
+  const p = profileById(req.params.pid);
+  return { saves: await withFtp(p.ip_address, (c) => listPs4Saves(c)) };
+}));
+
+// Mounts a save on the PS4, copies it off decrypted and unmounts again.
+// The folder it writes is the backup of that save: nothing else on this
+// computer can read the console's own copy.
+async function exportPs4Save(job, say, profile, payload, save, dest) {
+  const ip = profile.ip_address;
+  if (ps4Busy.has(ip)) throw Object.assign(new Error(`${profile.name} is already exporting a save`), { status: 409 });
+  ps4Busy.add(ip);
+  try {
+    await withFtp(ip, async (c) => {
+      say(`Mounting ${save.title}/${save.dir} on ${profile.name}`);
+      const m = await mountPs4Save(c, ip, payload, save);
+      try {
+        say(`Copying the decrypted save off ${profile.name}`);
+        await downloadTree(c, m.mountPoint, dest, () => { job.files++; job.step = `Copied ${job.files} files from ${profile.name}`; });
+      } finally {
+        say(`Unmounting on ${profile.name}`);
+        await unmountPs4Save(c, ip, payload).catch((e) => say(`Could not unmount: ${e.message}`));
+      }
+    });
+  } finally {
+    ps4Busy.delete(ip);
+  }
+  if (job.files === 0) throw new Error('the mounted PS4 save had no files in it');
+  return dest;
+}
+
+// Copies a PS4 save to this computer, decrypted, with no PS5 involved.
+router.post('/ps4/:pid/export', handle(async (req) => {
+  const p = profileById(req.params.pid);
+  const b = req.body || {};
+  if (!validPs4User(b.user)) throw Object.assign(new Error('pick the PS4 user the save belongs to'), { status: 400 });
+  const save = { user: String(b.user).toLowerCase(), title: needTitle(b.title), dir: needDir(b.dir) };
+  const payload = ps4ExportPayload();
+  const job = newJob('export', async (j, say) => ({
+    folder: await exportPs4Save(j, say, p, payload, save, backupFolder(save.title, `${save.dir}-from-ps4`)),
+  }));
+  return { job: publicJob(job) };
+}));
+
 // ── PS4: the decrypted saves Apollo has exported ────────────────────────
 
 // Where Apollo Save Tool writes "export decrypted save files": a USB drive,
@@ -340,7 +404,17 @@ router.post('/transfer', handle(async (req) => {
   const title = needTitle(b.title);
   const dir = needDir(b.dir);
   let source;
-  if (b.fromPid) {
+  if (b.fromSave) {
+    // The PS4's own save: our payload mounts it decrypted, no Apollo run.
+    const from = profileById(b.fromSave.pid);
+    if (!validPs4User(b.fromSave.user)) throw Object.assign(new Error('pick the PS4 user the save belongs to'), { status: 400 });
+    source = {
+      kind: 'ps4save',
+      profile: from,
+      save: { user: String(b.fromSave.user).toLowerCase(), title: needTitle(b.fromSave.title), dir: needDir(b.fromSave.dir) },
+      payload: ps4ExportPayload(),
+    };
+  } else if (b.fromPid) {
     const from = profileById(b.fromPid);
     const remote = String(b.fromPath || '');
     if (!remote.startsWith('/') || remote.includes('..')) throw Object.assign(new Error('pick the folder of the decrypted save'), { status: 400 });
@@ -357,7 +431,13 @@ router.post('/transfer', handle(async (req) => {
   const job = newJob('transfer', async (j, say) => {
     let local = source.local;
     let ps4Backup = null;
-    if (source.kind === 'console') {
+    if (source.kind === 'ps4save') {
+      // The decrypted copy is kept, exactly as an Apollo export would be:
+      // it is the only readable copy of that save on this computer.
+      ps4Backup = await exportPs4Save(j, say, source.profile, source.payload, source.save,
+        backupFolder(title, `${dir}-from-ps4`));
+      local = ps4Backup;
+    } else if (source.kind === 'console') {
       // The PS4's export is backed up here, not staged in a temp dir: it is
       // the only decrypted copy of that save, and the transfer overwrites
       // nothing on this computer by keeping it.

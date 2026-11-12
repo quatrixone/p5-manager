@@ -24,6 +24,12 @@ function send(ip, port, data) {
   });
 }
 
+// GoldHEN's BinLoader listens on 9090 on current builds, 9020 on older ones.
+export async function sendPs4Payload(ip, data) {
+  try { await send(ip, 9090, data); }
+  catch (e) { if (e.code !== 'ECONNREFUSED') throw e; await send(ip, 9020, data); }
+}
+
 // GoldHEN closes the upload socket; payload output is retrieved through FTP.
 export async function runPs4RemotePlay({ ip, ftpPort, data, operation, prepare }) {
   const lock = ps4PayloadLock(ip);
@@ -51,8 +57,7 @@ export async function runPs4RemotePlay({ ip, ftpPort, data, operation, prepare }
     if (prepare) await prepare();
     await ftp.access({ host: ip, port: ftpPort, user: 'anonymous', password: '', secure: false });
     try { await ftp.remove(remote); } catch (e) { if (e.code !== 550) throw e; }
-    try { await send(ip, 9090, data); }
-    catch (e) { if (e.code !== 'ECONNREFUSED') throw e; await send(ip, 9020, data); }
+    await sendPs4Payload(ip, data);
     sent = true;
     let result = { log: [] };
     const deadline = Date.now() + 60000;
