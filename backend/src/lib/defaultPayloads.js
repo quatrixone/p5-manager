@@ -19,6 +19,7 @@ export const VENDORED_PAYLOADS = [
   { filename: 'offact.elf', dir: 'offact', console_type: 'ps5', version: '2' },
   { filename: 'pkg-install.elf', dir: 'pkg-install', console_type: 'ps5' },
   { filename: 'save-mounter.elf', dir: 'save-mounter', console_type: 'ps5' },
+  { filename: 'save-mounter-ps4.bin', dir: 'save-mounter-ps4', console_type: 'ps4' },
   { filename: 'lz4-compression.elf', dir: 'lz4-compression', console_type: 'ps5', version: '1.6.2-p5manager' },
 ];
 // Same bytes on both sides? Used to tell a payload that only needs its
