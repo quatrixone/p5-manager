@@ -5,12 +5,12 @@ name: App bundle
 # from one as a check, and for a version tag publishes them in the `updates`
 # release, where the app looks for them. They are kept out of the version's
 # own release so that its page lists only what people download.
-# A manual run or a push to main does everything but the publishing.
+# A pull request or a manual run does everything but the publishing.
 
 on:
   push:
     tags: ['v*']
-    branches: [main]
+  pull_request:
     paths:
       - 'backend/**'
       - 'frontend/**'

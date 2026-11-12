@@ -3,8 +3,7 @@ name: Remote Play helper
 # Builds p5rp (rpnative/, AGPL, on libchiaki) for Linux and Windows.
 
 on:
-  push:
-    branches: [main, 'feat/rp-**']
+  pull_request:
     paths:
       - 'rpnative/**'
       - '.github/workflows/rp-native.yml'

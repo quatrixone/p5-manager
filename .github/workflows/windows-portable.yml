@@ -7,7 +7,8 @@ name: Windows portable
 
 on:
   push:
-    branches: [main]
+    tags: ['v*']
+  pull_request:
     paths:
       - 'backend/**'
       - 'frontend/**'
@@ -19,7 +20,6 @@ on:
       - 'backend/third_party/lz4-compression/**'
       - 'LEGAL.md'
       - '.github/workflows/windows-portable.yml'
-    tags: ['v*']
   workflow_dispatch:
 
 # The release step uploads the zip to the GitHub Release of a version tag.

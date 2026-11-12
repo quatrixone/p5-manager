@@ -1,14 +1,10 @@
-# Builds the Android app. Every push that touches it gets an APK as a
+# Builds the Android app. A pull request that touches it gets an APK as a
 # workflow artifact; a version tag also attaches one to the release, beside
 # the Windows package.
 name: Android APK
 
 on:
   push:
-    branches: [main]
-    paths:
-      - 'android/**'
-      - '.github/workflows/android-apk.yml'
     tags:
       - 'v*'
   pull_request:

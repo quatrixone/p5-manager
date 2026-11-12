@@ -1,13 +1,11 @@
 name: Marketplace
 
 # store/ holds the in-app marketplace (see store/README.md).
-#  - Every change to it is checked: each item valid, store/index.json current.
+#  - Every pull request touching it is checked: each item valid, index current.
 #  - A submission issue labelled `store-accepted` by a maintainer becomes a
 #    pull request that adds the item (homebrew checksums filled in).
 
 on:
-  push:
-    paths: ['store/**', 'scripts/build-store-index.mjs', 'backend/src/lib/storeItem.js', 'backend/src/lib/catalogLinks.js', 'scripts/store-accept.mjs', 'backend/src/lib/storeOwnership.js']
   pull_request:
     paths: ['store/**', 'scripts/build-store-index.mjs', 'backend/src/lib/storeItem.js', 'backend/src/lib/catalogLinks.js', 'scripts/store-accept.mjs', 'backend/src/lib/storeOwnership.js']
   issues:
