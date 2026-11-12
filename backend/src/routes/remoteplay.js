@@ -581,11 +581,9 @@ router.post('/wake', async (req, res) => {
     if (profile.rp_user_profile) {
       try { userProfile = JSON.parse(profile.rp_user_profile); } catch (_) {}
     }
-    // /wake is intentionally fast: it sends UDP wakeup + DDP LAUNCH packets
-    // synchronously and then kicks off a background "warm cache an RP
-    // session" task on the sidecar (returns `warming: true` when active).
-    // The sync part stays well under 5 s; we keep a 20 s ceiling so a deep-
-    // standby PS5 with packet loss still has time to respond.
+    // Wake only: UDP wakeup packets and the DDP LAUNCH, no session. It
+    // stays well under 5 s; the 20 s ceiling is there so a console in deep
+    // standby behind packet loss still has time to answer.
     const wakeHostType = profile.console_type === 'ps4' ? 'PS4'
       : profile.console_type === 'ps5' ? 'PS5'
       : null;

@@ -56,9 +56,8 @@ function PS5Control({ profiles, onNotification, onProfilesChanged }) {
   // (legacy port status + RP session) without having to scroll to either
   // sub-card.
   //   live → sidecar has an active SESSIONS pool entry (Start session done)
-  //   warm → sidecar has a PAUSED entry (Wake or recent soft-stop)
   //   idle → nothing on the sidecar for this IP
-  const [rpSession, setRpSession] = useState({ state: 'idle', sessionId: null, warmTtl: null, video: false });
+  const [rpSession, setRpSession] = useState({ state: 'idle', sessionId: null, video: false });
 
   const defaultProfile = profiles.find(p => p.is_default) || profiles[0];
   const consoleLabel = defaultProfile?.console_type === 'ps4' ? 'PS4' : 'PS5';
@@ -113,16 +112,9 @@ function PS5Control({ profiles, onNotification, onProfilesChanged }) {
     const r = await apiSafe.get(`/remoteplay/quick-status?ip=${encodeURIComponent(defaultProfile.ip_address)}`);
     if (!r?.success) return;
     if (r.active) {
-      setRpSession({ state: 'live', sessionId: r.session_id || null, warmTtl: null, video: !!r.video });
-    } else if (r.warm) {
-      setRpSession({
-        state: 'warm',
-        sessionId: r.warm_session_id || null,
-        warmTtl: Math.round(r.warm_ttl_remaining_s || 0),
-        video: !!r.video,
-      });
+      setRpSession({ state: 'live', sessionId: r.session_id || null, video: !!r.video });
     } else {
-      setRpSession({ state: 'idle', sessionId: null, warmTtl: null, video: false });
+      setRpSession({ state: 'idle', sessionId: null, video: false });
     }
   }, [defaultProfile?.ip_address]);
 
@@ -134,16 +126,8 @@ function PS5Control({ profiles, onNotification, onProfilesChanged }) {
     [defaultProfile?.ip_address],
   );
 
-  // Wake = full pre-warm flow:
-  //   1) start a real Remote Play session (wake from rest + DDP LAUNCH +
-  //      RP auth handshake + slot claim);
-  //   2) immediately park the session in the sidecar warm cache.
-  // Effect: the PS5 is genuinely ready (account is logged in, RP service
-  // primed), and the next "Start session" in the Remote Play tab resumes
-  // from warm cache in milliseconds. This replaces the old bare DDP WAKEUP
-  // (which only got the console out of standby but left RP unreachable)
-  // AND the previous quick-start variant (which left a live session
-  // dangling that the user had to remember to stop).
+  // Wake = the DDP WAKEUP and LAUNCH packets, nothing else. No Remote Play
+  // session is opened, so none is left behind holding the console's RP slot.
   const handleWake = async () => {
     if (!defaultProfile) return;
     // Optimistic "waking" on the shared status - the topbar dot and this
@@ -154,13 +138,9 @@ function PS5Control({ profiles, onNotification, onProfilesChanged }) {
     ps5Status.markWaking();
     setWaking(true);
     try {
-      const data = await api.post('/remoteplay/prewarm', { profile_id: defaultProfile.id });
+      const data = await api.post('/remoteplay/wake', { profile_id: defaultProfile.id });
       if (data.success) {
-        let msg;
-        if (data.already_live) msg = 'Remote Play session is already live';
-        else if (data.resumed) msg = `Pre-warmed (resumed from cache, ${data.warm_cache_ttl_s}s ready)`;
-        else msg = `Pre-warmed (${data.warm_cache_ttl_s}s ready) — Start session will resume instantly`;
-        showToast(msg, 'success');
+        showToast(`Wake sent to the ${consoleLabel}`, 'success');
         setTimeout(() => ps5Status.refresh(true), 1500);
       } else {
         showToast('Wake failed: ' + (data.error || 'Unknown error'), 'error');
@@ -227,52 +207,29 @@ function PS5Control({ profiles, onNotification, onProfilesChanged }) {
   //   getStatusBadge   → "is a payload server listening?"
   //   getRpBadge       → "can I send a controller input / open MJPEG?"
   const getRpBadge = () => {
-    const { state, warmTtl, video } = rpSession;
+    const { state, video } = rpSession;
     if (state === 'live') {
       return <Badge variant="success" title={video ? 'Video MJPEG endpoint available.' : 'Input-only RP session.'}>
         RP live{video ? ' · video' : ''}
       </Badge>;
     }
-    if (state === 'warm') {
-      return <Badge variant="info" title="Sidecar warm cache - next Start session is instant (~20 ms).">
-        RP warm · {warmTtl}s{video ? ' · video' : ''}
-      </Badge>;
-    }
     return <Badge variant="muted">RP idle</Badge>;
   };
 
-  // Stop the current Remote Play session for the default profile. The exact
-  // behaviour depends on which state we're in:
-  //
-  //   live → soft stop (no `all:true`). Sidecar parks the session in the
-  //          warm cache so the next Start (anywhere in the app) is ~20 ms.
-  //
-  //   warm → hard stop (`all:true`). The user explicitly wants the warm
-  //          cache gone, which means disconnecting from the PS5 entirely.
-  //          That triggers the PS5's ~60 s post-disconnect session lock on
-  //          our regist-key, so the next Start will have to wait it out -
-  //          but the user opted into this by clicking Stop on a warm-only
-  //          state. The toast message warns about it.
-  //
-  // Soft-stop on a warm-only state would be a no-op (sidecar's quick-stop
-  // only touches Node's local SID cache when `all:false`), which is why we
-  // route the warm path through stop-all here.
+  // Stop ends the session for good (`all: true`), leaving nothing parked on
+  // the sidecar. The console holds its ~60 s post-disconnect lock on our
+  // regist key afterwards, so the next Start waits that out.
   const handleStopSession = async () => {
     if (!defaultProfile) return;
     if (rpSession.state === 'idle') return;
     setStoppingSession(true);
-    const wasWarm = rpSession.state === 'warm';
     try {
-      const data = await api.post('/remoteplay/quick-stop', { ip: defaultProfile.ip_address, all: wasWarm });
+      const data = await api.post('/remoteplay/quick-stop', { ip: defaultProfile.ip_address, all: true });
       if (data.success) {
-        showToast(wasWarm
-          ? `Warm cache cleared — next Start may wait for the ${consoleLabel} session lock`
-          : 'Session soft-stopped — parked in warm cache for instant re-start', 'success');
-        // Snap the badge so the user sees feedback before the 3 s poll
+        showToast('Remote Play session stopped', 'success');
+        // Snap the badge so the user sees feedback before the 4 s poll
         // catches up.
-        setRpSession((s) => wasWarm
-          ? { state: 'idle', sessionId: null, warmTtl: null, video: false }
-          : { ...s, state: 'warm' });
+        setRpSession({ state: 'idle', sessionId: null, video: false });
       } else {
         showToast('Stop failed: ' + (data.error || 'Unknown error'), 'error');
       }
@@ -355,13 +312,11 @@ function PS5Control({ profiles, onNotification, onProfilesChanged }) {
               disabled={waking || standbyBusy || stoppingSession}
               title={
                 rpSession.state === 'live' ? 'A Remote Play session is already active.'
-                : rpSession.state === 'warm' ? 'Refresh the ready-to-use Remote Play session.'
                 : 'Wake the console and prepare a Remote Play session for a faster start.'
               }
             >
               {waking ? '⏳ Waking…'
                 : rpSession.state === 'live' ? '✓ Live'
-                : rpSession.state === 'warm' ? `✓ Warm ${rpSession.warmTtl}s`
                 : '📡 Wake console'}
             </button>
             <button
@@ -383,24 +338,18 @@ function PS5Control({ profiles, onNotification, onProfilesChanged }) {
         </div>
       </div>
 
-      {/* Stop / Clear-warm only appears when there's something to stop -
-          a full-width single button so it doesn't compete for attention
-          with the always-visible Wake/Standby pair above. */}
-      {rpSession.state !== 'idle' && (
+      {/* Only shown when there is a live session to stop, so it never
+          competes for attention with the Wake/Standby pair above. */}
+      {rpSession.state === 'live' && (
         <div className="mb-md">
           <button
             className="btn btn-secondary"
-            onClick={handleStopSession}
+            onClick={() => handleStopSession()}
             disabled={stoppingSession || waking || standbyBusy}
             style={{ width: '100%' }}
-            title={
-              rpSession.state === 'live'
-                ? 'Soft stop the live RP session - parks it in the warm cache for instant restart.'
-                : 'Clear the warm cache for this console.'
-            }
+            title="Stop the live Remote Play session."
           >
-            {stoppingSession ? '⏳' : '⏹'}{' '}
-            {rpSession.state === 'live' ? 'Stop session' : 'Clear warm'}
+            {stoppingSession ? '⏳' : '⏹'} Stop session
           </button>
         </div>
       )}

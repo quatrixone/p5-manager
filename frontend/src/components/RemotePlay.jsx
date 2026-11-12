@@ -385,10 +385,9 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
   const [rpFps, setRpFpsState] = useState(() => Number(readPref('rp.fps', RP_FPS.map(String), '30')));
   const setRpResolution = (r) => { setRpResolutionState(r); writePref('rp.resolution', r); };
   const setRpFps = (f) => { setRpFpsState(f); writePref('rp.fps', String(f)); };
-  // Once a session is live, report what the sidecar actually negotiated.
-  // Warm-cached resume may differ from the picker if the warm session was
-  // started with different params; we keep the picker value as the user
-  // *intent* for the next fresh start, and `liveStream` as the *truth*.
+  // Once a session is live, report what the sidecar actually negotiated:
+  // the picker holds the user's *intent* for the next start, `liveStream`
+  // the *truth* of the session that is running.
   const [liveStream, setLiveStream] = useState(null); // { resolution, fps } | null
   // MJPEG output FPS (sidecar → browser). Separate from the RP stream FPS
   // above: this throttles how fast we re-encode JPEGs so a Pi-class CPU
@@ -755,11 +754,6 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
     }
   };
 
-  // Sidecar-reported warm cache state for the current profile's IP. Updated
-  // by the watchdog tick. When set, the "Start session" button can promise
-  // a near-instant resume instead of a 60-150 s cold start, and the Wake
-  // button can be greyed out (pre-warm is a no-op when already warm).
-  const [warmCache, setWarmCache] = useState(null); // { ttl_s, video } | null
   const [wakeBusy, setWakeBusy] = useState(false);
 
   // Shared status (see Ps5StatusContext.jsx): the topbar and PS5 Control
@@ -821,7 +815,6 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
     setSessionState('idle');
     setSessionHasVideo(false);
     setLiveStream(null);
-    setWarmCache(null);
     setRetryStatus(null);
     setLocalPs5State(null);
     setPs5Busy(false);
@@ -1262,7 +1255,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
         fps: r.fps || rpFps,
       });
       setVideoNonce(n => n + 1);
-      const resumeTag = r.resumed ? ' (resumed from warm cache)' : r.reused ? ' (reused existing)' : '';
+      const resumeTag = r.reused ? ' (reused existing)' : '';
       const mediaBits = r.video ? 'video' : '';
       const streamTag = r.resolution ? ` @ ${r.resolution}` : '';
       onNotification?.(
@@ -1289,17 +1282,9 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
 
   const stopSession = async () => {
     const generation = targetGeneration.current.value;
-    // Soft-stop preference: we want the sidecar to park the session in its
-    // warm cache so the next Start resumes in O(ms) instead of fighting the
-    // 60s PS5 post-disconnect lock.
-    //
-    // We use EXACTLY ONE endpoint:
-    //   - /sessions/:sid/stop  when we know the local session id (normal case);
-    //     this soft-stops on the sidecar and KEEPS the warm cache populated.
-    //   - /quick-stop          only as a fallback when sessionId is empty
-    //     (failed Start, page reload). Calling both used to wipe the warm
-    //     cache because /quick-stop's "no local cache → stop-all" fallback
-    //     fires right after /sessions/:sid/stop emptied the Node cache.
+    // Stop means stop: the session ends on the console and nothing stays
+    // parked on the sidecar. The console then holds its ~60 s
+    // post-disconnect lock on our regist key, which the next Start waits out.
     userStoppedRef.current = true;
     // Set BEFORE the await so even a tick() already in flight when Stop
     // was clicked (racing the soft-stop call itself) discards its stale
@@ -1307,10 +1292,10 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
     // middle of stopping.
     stoppedUntilRef.current = Date.now() + 5000;
     try {
-      if (sessionId) {
+      if (profile?.ip_address) {
+        await apiSafe.post(`${RP}/quick-stop`, { ip: profile.ip_address, all: true });
+      } else if (sessionId) {
         await apiSafe.post(`${RP}/sessions/${encodeURIComponent(sessionId)}/stop`);
-      } else if (profile?.ip_address) {
-        await apiSafe.post(`${RP}/quick-stop`, { ip: profile.ip_address });
       }
       if (generation !== targetGeneration.current.value) return;
       onNotification?.('Session stopped', 'info');
@@ -1324,14 +1309,9 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
     refreshPs5State(true);
   };
 
-  // Wake = full pre-warm cycle: open a real RP session, then immediately
-  // park it in the sidecar's warm cache. The PS5 ends up genuinely ready
-  // (out of standby, account logged in, RP slot claimed) and the *next*
-  // "Start session" click resumes from warm cache in milliseconds.
-  //
-  // Replaces the previous bare DDP WAKEUP packet which only got the
-  // console out of standby and left RP unreachable - users then hit Start
-  // and burned 60-90 s on the post-disconnect lock anyway.
+  // Wake only: the DDP WAKEUP and LAUNCH packets, for a PS4 as for a PS5.
+  // No Remote Play session is opened, so none is left parked on the console
+  // holding its RP slot - "Start session" opens one when it is wanted.
   const wakePs5 = async () => {
     const generation = targetGeneration.current.value;
     if (!profile?.ip_address) return;
@@ -1342,33 +1322,13 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
     if (usingSharedStatus) ps5StatusCtx.markWaking();
     setWakeBusy(true);
     try {
-      const r = await api.post(`${RP}/prewarm`, {
+      const r = await api.post(`${RP}/wake`, {
         ip: profile.ip_address,
         profile_id: profile.id,
-        // Pre-warm with the same defaults the Start button will use, so
-        // the warm cache and a fresh start match — otherwise resuming
-        // from a 360p warm cache while the picker says 1080p surprises
-        // the user. Wake is always input-only — no video decoder
-        // attached so the receiver doesn't burn CPU while parked.
-        resolution: rpResolution,
-        fps: rpFps,
       });
       if (generation !== targetGeneration.current.value) return;
       if (!r.success) throw new Error(r.error);
-      if (r.already_live) {
-        onNotification?.('Session is already live — open it from Start session', 'info');
-      } else if (r.warm_cached) {
-        const ttl = Math.round(r.warm_cache_ttl_s || 0);
-        onNotification?.(
-          r.resumed
-            ? `Pre-warmed (resumed from cache, ${ttl}s ready)`
-            : `Pre-warmed (${ttl}s ready) — Start session resumes instantly`,
-          'success',
-        );
-        setWarmCache({ ttl_s: ttl, video: !!r.video });
-      } else {
-        onNotification?.('Wake completed', 'success');
-      }
+      onNotification?.('Wake sent', 'success');
     } catch (e) {
       if (generation !== targetGeneration.current.value) return;
       const hint = explainStartError(e.message);
@@ -1487,20 +1447,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
               return next;
             });
           }
-          setWarmCache(null);
           return;
-        }
-
-        // r.active === false. Surface warm cache state so the UI can promise
-        // an instant Start.
-        if (r.warm) {
-          setWarmCache({
-            ttl_s: r.warm_ttl_remaining_s,
-            video: !!r.video,
-            resolution: r.resolution || null,
-          });
-        } else if (warmCache) {
-          setWarmCache(null);
         }
 
         if (state === 'connected' && !userStoppedRef.current) {
@@ -2600,18 +2547,14 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
         status={paired
           ? liveSession
             ? (liveStream ? `${liveStream.resolution}${liveStream.fps ? ` · ${liveStream.fps} fps` : ''}` : sessionState)
-            : warmCache
-              ? `warm · ${Math.round(warmCache.ttl_s)}s${warmCache.resolution ? ` · ${warmCache.resolution}` : ''}`
-              : sessionState
+            : sessionState
           : 'pair first'}
         hint={
           !paired
             ? 'Pair the console in Remote Play Settings first.'
             : liveSession
               ? null
-                : warmCache
-                  ? `⚡ Warm cache ready (${Math.round(warmCache.ttl_s)}s left${warmCache.resolution ? `, ${warmCache.resolution}` : ''}) — Start session will resume in milliseconds.`
-                : ps5State?.error
+              : ps5State?.error
                   ? `⚠ ${pairConsoleLabel} is offline or unreachable. Check its power and network connection.`
                   : (ps5State?.code === 620 || /standby/i.test(ps5State?.status || ''))
                     ? `🌙 ${pairConsoleLabel} is in rest mode. Starting a session will wake it. Use Wake ${pairConsoleLabel} to prepare it in advance.`
@@ -2700,7 +2643,7 @@ export default function RemotePlay({ profiles, onNotification, onProfilesChanged
             className="btn btn-ghost"
             disabled={!paired || wakeBusy || liveSession}
             onClick={wakePs5}
-            title={`Pre-warm: opens a full Remote Play session (waking the ${pairConsoleLabel} from rest mode if needed) and parks it in the warm cache so the next Start session resumes immediately.`}
+            title={`Sends the wake packets to the ${pairConsoleLabel} so it comes out of rest mode. No session is opened.`}
           >
             {wakeBusy ? '⏳ Waking…' : `📡 Wake ${pairConsoleLabel}`}
           </button>

@@ -128,6 +128,8 @@ class ChiakiSession:
         self.quit_error: bool = False
         # The console's own code for refusing a session, as libchiaki logs it.
         self.quit_app_reason: str = ""
+        # The console answered the ctrl request with RP-Prohibit.
+        self.rp_prohibited: bool = False
         self.stats: Dict[str, Any] = {}
         self.audio_format: Optional[bytes] = None  # the 'H' record's text
         self._subscribers: list = []
@@ -209,7 +211,7 @@ class ChiakiSession:
             # console waiting on a system message answers the same way however
             # often it is asked, so that one is reported at once too.
             in_use = "in use" in (self.quit_reason or "").lower()
-            settled = self.quit_app_reason in self._APP_REASONS
+            settled = self.rp_prohibited or self.quit_app_reason in self._APP_REASONS
             if in_use or settled or not self.quit_error or deadline - time.monotonic() <= _RETRY_PAUSE:
                 raise ChiakiError(self._describe_quit(), self.quit_reason)
             log.info("rp %s: %s - asking again (attempt %d)", self.ip, self._describe_quit(), attempt + 1)
@@ -231,8 +233,13 @@ class ChiakiSession:
         m = re.search(r"Reported Application Reason:\s*(0x[0-9a-fA-F]+)", msg)
         if m:
             self.quit_app_reason = m.group(1).lower()
+        if "RP-Prohibit" in msg:
+            self.rp_prohibited = True
 
     def _describe_quit(self) -> str:
+        if self.rp_prohibited:
+            return ("The console refuses Remote Play (RP-Prohibit). Sign in to PlayStation Network on the "
+                    "console and check Settings - Remote Play Connection Settings - Enable Remote Play.")
         reason = self.quit_reason or "the session ended"
         known = self._APP_REASONS.get(self.quit_app_reason)
         if known:

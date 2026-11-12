@@ -140,11 +140,9 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
   };
 
   const addWolStep = () => {
-    // keep_session defaults OFF: pre-warm already parks the session in the
-    // warm cache, which holds the PS5 awake for the full TTL (180s) without
-    // promoting it to the live SESSIONS pool. The next input_script /
-    // rp_session step transparently resumes from the warm cache.
-    appendStep({ type: 'wol', name: 'Wake / Pre-warm', keep_session: false });
+    // keep_session defaults OFF: the step holds the console awake on its
+    // own, and the next input_script / rp_session step picks up from there.
+    appendStep({ type: 'wol', name: 'Wake', keep_session: false });
   };
 
   const addCheckPortStep = () => {
@@ -816,19 +814,19 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
               {showAddStepMenu === 'wol' && (
                 <div className="p-md" style={{ background: 'var(--panel2)', borderRadius: 8 }}>
                   <p className="text-sm text-muted mb-sm">
-                    Pre-warm Remote Play: wakes the PS5 from rest mode, logs the user in
-                    (dismisses the "Press PS button" picker) and parks the session in the
-                    sidecar's warm cache so the next input_script / rp_session step resumes
-                    in ~17 ms instead of re-running the full handshake.
+                    Wakes the console from rest mode over Remote Play, logs the user in
+                    (dismisses the "Press PS button" picker) and holds it awake, so the next
+                    input_script / rp_session step starts at once instead of re-running the
+                    full handshake.
                   </p>
                   <p className="text-xs text-muted mb-md">
-                    Falls back to plain DDP wake if pre-warm fails (e.g. no RP credentials saved).
+                    Falls back to plain DDP wake if that fails (e.g. no RP credentials saved).
                   </p>
                   <button
                     className="btn btn-success"
                     onClick={() => { addWolStep(); setShowAddStepMenu(null); }}
                   >
-                    + Add Wake / Pre-warm
+                    + Add Wake
                   </button>
                 </div>
               )}
@@ -994,7 +992,7 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
                 <div className="p-md flex-col gap-sm" style={{ background: 'var(--panel2)', borderRadius: 8 }}>
                   <p className="text-sm text-muted">
                     Opens (or closes) a Remote Play session for the selected profile so subsequent
-                    input scripts execute against a warm session. Pair the PS5 in P5 Control first.
+                    input scripts execute against a ready session. Pair the PS5 in P5 Control first.
                     Rest mode uses the same RP session to put the console to sleep — typically the
                     last step in an end-to-end sequence.
                   </p>
@@ -1350,13 +1348,13 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
                                     checked={!!step.keep_session}
                                     onChange={e => patchStep(index, { keep_session: e.target.checked })}
                                   />
-                                  <span>Promote warm cache to a live RP session</span>
+                                  <span>Keep a live Remote Play session open</span>
                                 </label>
                                 <div className="text-xs text-muted" style={{ marginTop: 4 }}>
-                                  Pre-warm already holds the PS5 awake via the sidecar warm cache, so
-                                  this is only needed if a downstream tool (e.g. another script poking
-                                  the sidecar directly) expects a session in the live SESSIONS pool
-                                  rather than PAUSED_SESSIONS. Leave off for most sequences.
+                                  The step holds the console awake by itself, so this is only needed
+                                  when a downstream tool (another script talking to the sidecar
+                                  directly) expects a session in the live pool. Leave off for most
+                                  sequences.
                                 </div>
                               </>
                             )}

@@ -68,6 +68,8 @@ export default function FileOps({ profiles, onNotification }) {
   // When a file is "Convert now"-d from a different sub-tab, we stash it and
   // bounce to the Convert tab which picks it up via `initialPick`.
   const [pendingConvertPick, setPendingConvertPick] = useState(null);
+  // Same bounce for "Send to PS5 save": the Saves tab picks it up.
+  const [pendingSavePick, setPendingSavePick] = useState(null);
   const [browsedConsoleType, setBrowsedConsoleType] = useState(null);
 
   // Browse tab: one browser, or two side by side with drag & drop between them.
@@ -108,6 +110,10 @@ export default function FileOps({ profiles, onNotification }) {
   const sendToConvert = useCallback((pick) => {
     setPendingConvertPick(pick);
     switchTab('convert');
+  }, [switchTab]);
+  const sendToSave = useCallback((pick) => {
+    setPendingSavePick(pick);
+    switchTab('saves');
   }, [switchTab]);
 
   return (
@@ -184,6 +190,7 @@ export default function FileOps({ profiles, onNotification }) {
                 onConsolePlatformChange={onConsolePlatformChange}
                 onOpenQueue={openQueue}
                 onPickConvert={sendToConvert}
+                onPickSave={sendToSave}
               />
             ) : (
               <FileBrowser
@@ -194,6 +201,7 @@ export default function FileOps({ profiles, onNotification }) {
                 enableFtp enableExtract enableDelete enableFtpUpload enableDeviceUpload
                 onOpenQueue={openQueue}
                 onPickConvert={sendToConvert}
+                onPickSave={sendToSave}
               />
             )}
           </>
@@ -217,7 +225,14 @@ export default function FileOps({ profiles, onNotification }) {
             onOpenQueue={openQueue}
           />
         )}
-        {subTab === 'saves' && <SaveMounter profiles={profiles} onNotification={onNotification} />}
+        {subTab === 'saves' && (
+          <SaveMounter
+            profiles={profiles}
+            onNotification={onNotification}
+            initialPick={pendingSavePick}
+            onPickConsumed={() => setPendingSavePick(null)}
+          />
+        )}
         {subTab === 'queue' && <Queue />}
       </div>
     </div>

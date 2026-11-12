@@ -4,8 +4,13 @@ import TransferMenu from './TransferMenu';
 import { api, apiSafe } from '../lib/api.js';
 import { planTransfer } from '../lib/transferPlan.js';
 
+const LEFT_KEY = 'fileops.dualPane.left';
 const RIGHT_KEY = 'fileops.dualPane.right';
 const MOVES_KEY = 'fileops.dualPane.consoleMoves';
+
+const readLocation = (key) => {
+  try { return JSON.parse(localStorage.getItem(key) || 'null'); } catch (_) { return null; }
+};
 
 const fmtGB = (n) => (n >= 1e9 ? `${(n / 1e9).toFixed(1)} GB` : `${Math.max(1, Math.round(n / 1e6))} MB`);
 const fmtEta = (sec) => (sec >= 90 ? `~${Math.round(sec / 60)} min left` : `~${Math.max(1, Math.round(sec))} s left`);
@@ -18,7 +23,7 @@ const joinPath = (loc, name) => (loc.kind === 'local'
 // other (or onto a folder in it) asks Copy / Move / Cancel and then runs the
 // route planTransfer() picks: an instant rename, a direct copy/move on the
 // server disk, or the server-side transfer queue.
-export default function DualPane({ profiles, onNotification, onOpenQueue, onPickConvert, enableConvertActions, onConsolePlatformChange }) {
+export default function DualPane({ profiles, onNotification, onOpenQueue, onPickConvert, onPickSave, enableConvertActions, onConsolePlatformChange }) {
   const [locs, setLocs] = useState({ left: null, right: null });
   const [reload, setReload] = useState(0);
   const [pending, setPending] = useState(null); // { src, dst, items, point, op?, conflicts?, busy? }
@@ -68,10 +73,12 @@ export default function DualPane({ profiles, onNotification, onOpenQueue, onPick
     return () => clearInterval(t);
   }, [onNotification]);
 
-  const rightInitial = useMemo(() => {
-    try { return JSON.parse(localStorage.getItem(RIGHT_KEY) || 'null'); } catch (_) { return null; }
+  const leftInitial = useMemo(() => readLocation(LEFT_KEY), []);
+  const rightInitial = useMemo(() => readLocation(RIGHT_KEY), []);
+  const onLeftLoc = useCallback((loc) => {
+    setLocs(l => ({ ...l, left: loc }));
+    try { localStorage.setItem(LEFT_KEY, JSON.stringify(loc)); } catch (_) {}
   }, []);
-  const onLeftLoc = useCallback((loc) => setLocs(l => ({ ...l, left: loc })), []);
   const onRightLoc = useCallback((loc) => {
     setLocs(l => ({ ...l, right: loc }));
     try { localStorage.setItem(RIGHT_KEY, JSON.stringify(loc)); } catch (_) {}
@@ -225,6 +232,7 @@ export default function DualPane({ profiles, onNotification, onOpenQueue, onPick
     enableConvertActions,
     onOpenQueue,
     onPickConvert,
+    onPickSave,
     reloadSignal: reload,
   };
 
@@ -252,6 +260,7 @@ export default function DualPane({ profiles, onNotification, onOpenQueue, onPick
         {...paneProps}
         paneId="left"
         title="Pane 1"
+        initialLocation={leftInitial}
         onLocationChange={onLeftLoc}
         onConsolePlatformChange={onLeftPlatform}
         onDropItems={handleDrop('left')}

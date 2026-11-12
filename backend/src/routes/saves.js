@@ -8,7 +8,6 @@
 // folder is copied into a save of the same game on the PS5.
 import express from 'express';
 import fs from 'fs';
-import os from 'os';
 import path from 'path';
 import crypto from 'crypto';
 import { Client as FtpClient } from 'basic-ftp';
@@ -217,6 +216,39 @@ function countFiles(dir, top = true) {
   return n;
 }
 
+// ── PS4: the decrypted saves Apollo has exported ────────────────────────
+
+// Where Apollo Save Tool writes "export decrypted save files": a USB drive,
+// the external-HDD fakeusb, or its own data folder.
+const APOLLO_DIRS = ['/mnt/usb0/PS4/APOLLO/', '/mnt/usb1/PS4/APOLLO/', '/data/fakeusb/PS4/APOLLO/', '/data/apollo/'];
+
+// An export folder is named after the game and the save and nothing inside
+// says which game it is, so the name is all there is to go on.
+export function parseApolloFolder(name) {
+  const m = /^([A-Z]{4}\d{5})[-_ ]?(.*)$/i.exec(String(name || ''));
+  if (!m) return null;
+  return {
+    title: m[1].toUpperCase(),
+    dir: (m[2] || '').replace(/[^A-Za-z0-9_.-]/g, '').slice(0, 31) || 'SAVEDATA00',
+  };
+}
+
+router.get('/ps4/:pid/exports', handle(async (req) => {
+  const p = profileById(req.params.pid);
+  const out = [];
+  await withFtp(p.ip_address, async (c) => {
+    for (const base of APOLLO_DIRS) {
+      let entries;
+      try { entries = await c.list(base); } catch (_) { continue; } // no such drive
+      for (const e of entries) {
+        const parsed = e.isDirectory && parseApolloFolder(e.name);
+        if (parsed) out.push({ ...parsed, name: e.name, path: base + e.name });
+      }
+    }
+  });
+  return { dirs: APOLLO_DIRS, exports: out };
+}));
+
 // ── jobs: transfer and backup ───────────────────────────────────────────
 
 const jobs = new Map(); // id -> { id, kind, state, step, log[], error, result }
@@ -298,6 +330,9 @@ router.get('/backups', handle(async () => {
 // PS4's Apollo export, over FTP) or a backup on this computer. The PS5 save
 // is mounted - or created first, when `create` gives its size - the files
 // go in (not sce_sys), and it is unmounted, which writes it back.
+// Both sides are backed up to this computer first, always: the PS4 export
+// because it is the only decrypted copy, the PS5 save because the files
+// going in replace it.
 router.post('/transfer', handle(async (req) => {
   const b = req.body || {};
   const target = profileById(b.toPid);
@@ -321,31 +356,37 @@ router.post('/transfer', handle(async (req) => {
 
   const job = newJob('transfer', async (j, say) => {
     let local = source.local;
-    let temp = null;
+    let ps4Backup = null;
     if (source.kind === 'console') {
-      temp = fs.mkdtempSync(path.join(os.tmpdir(), 'p5m-save-'));
-      local = temp;
-      say(`Downloading ${source.remote} from ${source.profile.name}`);
-      await withFtp(source.profile.ip_address, (c) => downloadTree(c, source.remote, temp, () => { j.files++; j.step = `Downloaded ${j.files} files from ${source.profile.name}`; }));
+      // The PS4's export is backed up here, not staged in a temp dir: it is
+      // the only decrypted copy of that save, and the transfer overwrites
+      // nothing on this computer by keeping it.
+      ps4Backup = backupFolder(title, `${dir}-from-ps4`);
+      local = ps4Backup;
+      say(`Backing up ${source.remote} from ${source.profile.name}`);
+      await withFtp(source.profile.ip_address, (c) => downloadTree(c, source.remote, ps4Backup, () => { j.files++; j.step = `Copied ${j.files} files from ${source.profile.name}`; }));
       if (j.files === 0) throw new Error(`${source.remote} has no files - is it the folder of the decrypted save?`);
     }
+    const total = countFiles(local);
+    say(createMb ? `Creating ${title}/${dir} (${createMb} MB) on ${target.name}` : `Mounting ${title}/${dir} on ${target.name}`);
+    const mp = createMb ? await createSave(target, user, title, dir, createMb) : await mountSave(target, user, title, dir);
+    let sent = 0;
+    let ps5Backup = null;
     try {
-      const total = countFiles(local);
-      say(createMb ? `Creating ${title}/${dir} (${createMb} MB) on ${target.name}` : `Mounting ${title}/${dir} on ${target.name}`);
-      const mp = createMb ? await createSave(target, user, title, dir, createMb) : await mountSave(target, user, title, dir);
-      let sent = 0;
-      try {
-        say(`Copying ${total} files into the save`);
-        await withFtp(target.ip_address, (c) => uploadTree(c, local, mp, () => { sent++; j.step = `Copied ${sent} of ${total} files`; }));
-      } finally {
-        say('Unmounting (writes the save back)');
-        await unmountSave(target);
+      if (!createMb) {
+        // Never overwrite a save without a copy of what was in it.
+        ps5Backup = backupFolder(title, dir);
+        say('Backing up the PS5 save it replaces');
+        await withFtp(target.ip_address, (c) => downloadTree(c, mp, ps5Backup));
       }
-      log('info', `save ${title}/${dir} on ${target.name} filled with ${sent} files`);
-      return { files: sent };
+      say(`Copying ${total} files into the save`);
+      await withFtp(target.ip_address, (c) => uploadTree(c, local, mp, () => { sent++; j.step = `Copied ${sent} of ${total} files`; }));
     } finally {
-      if (temp) fs.rmSync(temp, { recursive: true, force: true });
+      say('Unmounting (writes the save back)');
+      await unmountSave(target);
     }
+    log('info', `save ${title}/${dir} on ${target.name} filled with ${sent} files`);
+    return { files: sent, ps4Backup, ps5Backup };
   });
   return { job: publicJob(job) };
 }));
