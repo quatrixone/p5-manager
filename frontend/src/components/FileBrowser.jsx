@@ -55,6 +55,8 @@ export default function FileBrowser({
   onImported,
   onPickDir,
   onPickConvert,
+  // Hands a decrypted PS4 save folder to the Saves tab. ({ ip, path, name })
+  onPickSave,
   enableConvertActions = true,
   onConsolePlatformChange,
   // Invoked when the user picks "Upload/Download/Convert queue" from the
@@ -1197,6 +1199,15 @@ export default function FileBrowser({
         label: '🕒 Unpack queue',
         action: () => runUnpack(false),
         title: 'Unpack the image back into a folder and pause — press ▶ in Queue when ready',
+      },
+      f.isDir && isPs4Console && onPickSave && {
+        label: '💾 Send to PS5 save',
+        action: () => onPickSave({
+          ip: ftpIp,
+          name: f.name,
+          path: path === '/' ? `/${f.name}` : `${path.replace(/\/$/, '')}/${f.name}`,
+        }),
+        title: 'Copy this decrypted PS4 save into a PS5 save - opens Saves with it filled in',
       },
       canInstallPs4 && {
         label: '🎮 Install on PS4 via RPI',

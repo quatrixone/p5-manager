@@ -4,7 +4,8 @@ import { api } from '../lib/api.js';
 const API = '/saves';
 // Where Apollo Save Tool on a PS4 puts "export decrypted save files": on
 // the internal drive or on a USB drive.
-const PS4_PLACES = ['/data/apollo/', '/mnt/usb0/PS4/APOLLO/', '/mnt/usb0/', '/mnt/usb1/'];
+// Kept in step with APOLLO_DIRS in backend/src/routes/saves.js.
+const PS4_PLACES = ['/data/apollo/', '/mnt/usb0/PS4/APOLLO/', '/mnt/usb1/PS4/APOLLO/', '/data/fakeusb/PS4/APOLLO/', '/mnt/usb0/', '/mnt/usb1/'];
 
 const fmtTime = (iso) => (iso ? new Date(iso).toLocaleString() : '');
 
@@ -38,6 +39,8 @@ function JobBox({ job, onClose }) {
           {job.state !== 'running' && <button className="btn btn-sm btn-secondary" onClick={onClose}>Close</button>}
         </div>
         {job.result?.folder && <div className="text-xs text-muted mt-xs" style={{ wordBreak: 'break-all' }}>Saved in {job.result.folder}</div>}
+        {job.result?.ps4Backup && <div className="text-xs text-muted mt-xs" style={{ wordBreak: 'break-all' }}>PS4 export kept in {job.result.ps4Backup}</div>}
+        {job.result?.ps5Backup && <div className="text-xs text-muted mt-xs" style={{ wordBreak: 'break-all' }}>The PS5 save it replaced is in {job.result.ps5Backup}</div>}
         <details className="mt-xs">
           <summary className="text-xs text-muted" style={{ cursor: 'pointer' }}>Steps</summary>
           <pre className="text-xs" style={{ whiteSpace: 'pre-wrap', margin: 0 }}>{job.log.join('\n')}</pre>
@@ -129,7 +132,7 @@ function guessFromFolder(folder) {
   return { title: m[1], dir: dir || undefined };
 }
 
-export default function SaveMounter({ profiles = [], onNotification }) {
+export default function SaveMounter({ profiles = [], onNotification, initialPick, onPickConsumed }) {
   const ps5s = useMemo(() => profiles.filter((p) => p.console_type !== 'ps4'), [profiles]);
   const ps4s = useMemo(() => profiles.filter((p) => p.console_type === 'ps4'), [profiles]);
   const [pid, setPid] = useState('');
@@ -151,6 +154,11 @@ export default function SaveMounter({ profiles = [], onNotification }) {
   const [dstDir, setDstDir] = useState('');
   const [dstNew, setDstNew] = useState(true);
   const [dstSize, setDstSize] = useState(32);
+
+  // "Games on both consoles": what the PS4 and the PS5 both have installed,
+  // crossed with the decrypted saves Apollo has exported on the PS4.
+  const [match, setMatch] = useState(null);
+  const [matchBusy, setMatchBusy] = useState(false);
 
   const notifyErr = (e) => onNotification?.(e.message, 'error');
   const refreshBackups = useCallback(async () => {
@@ -227,6 +235,112 @@ export default function SaveMounter({ profiles = [], onNotification }) {
     if (g.dir) setDstDir(g.dir);
   };
 
+  const loadMatch = useCallback(async () => {
+    const ps4 = ps4s.find((p) => String(p.id) === String(srcPid));
+    const ps5 = ps5s.find((p) => String(p.id) === String(pid));
+    if (!ps4 || !ps5) return;
+    setMatchBusy(true);
+    try {
+      const [lib4, lib5, exp] = await Promise.all([
+        api.get(`/library/${ps4.ip_address}/ps4`),
+        api.get(`/library/${ps5.ip_address}/overview`),
+        api.get(`${API}/ps4/${srcPid}/exports`),
+      ]);
+      const id = (g) => String(g?.title_id || '').toUpperCase();
+      const norm = (v) => String(v || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+      const onPs5 = new Set((lib5.games || []).map(id));
+      // A game can be on both consoles as two different builds - Red Dead
+      // Redemption is CUSA… on the PS4 and PPSA… on the PS5. Same name, other
+      // save format, so it is matched only to be able to say why it can't move.
+      const ps5ByName = new Map();
+      for (const g of lib5.games || []) {
+        const n = norm(g.title_name || g.name);
+        if (n && !ps5ByName.has(n)) ps5ByName.set(n, id(g));
+      }
+      // One export per game is enough to offer the transfer; the rest are
+      // reachable through the picker below.
+      const exports = new Map();
+      for (const e of exp.exports || []) if (!exports.has(e.title)) exports.set(e.title, e);
+      const rows = (lib4.games || []).filter((g) => id(g)).map((g) => ({
+        title: id(g), name: g.title_name || id(g), icon: g.icon,
+        onPs5: onPs5.has(id(g)),
+        ps5Other: onPs5.has(id(g)) ? null : ps5ByName.get(norm(g.title_name)) || null,
+        ps4Ip: ps4.ip_address, save: exports.get(id(g)) || null,
+      }));
+      // An export whose game is no longer installed on the PS4 still works.
+      const known = new Set(rows.map((r) => r.title));
+      for (const [title, e] of exports) {
+        if (!known.has(title)) rows.push({ title, name: title, icon: null, onPs5: onPs5.has(title), ps5Other: null, ps4Ip: ps4.ip_address, save: e });
+      }
+      rows.sort((a, b) => a.name.localeCompare(b.name));
+      setMatch({
+        both: rows.filter((r) => r.onPs5),
+        otherVersion: rows.filter((r) => r.ps5Other),
+        exportOnly: rows.filter((r) => !r.onPs5 && !r.ps5Other && r.save),
+      });
+    } catch (e) { notifyErr(e); }
+    setMatchBusy(false);
+  }, [pid, srcPid, ps4s, ps5s]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Arms the form below with an exported PS4 save. Both sides are backed up
+  // by the transfer itself, so there is nothing to do here but fill it in.
+  const armTransfer = (row) => {
+    setSrcKind('ps4');
+    setSrcFolder(row.save.path);
+    setDstTitle(row.title);
+    setDstDir(row.save.dir);
+    setDstNew(!titles.includes(row.title));
+    document.getElementById('save-transfer')?.scrollIntoView({ behavior: 'smooth' });
+  };
+
+  const exportUrl = (row) => `/api/convert/ftp/download?ip=${encodeURIComponent(row.ps4Ip)}&path=${encodeURIComponent(row.save.path)}&isDir=1`;
+
+  // A folder handed over from the file browser ("Send to PS5 save").
+  useEffect(() => {
+    if (!initialPick) return;
+    const from = ps4s.find((p) => p.ip_address === initialPick.ip);
+    setSrcKind('ps4');
+    if (from) setSrcPid(String(from.id));
+    pickFolder(initialPick.path);
+    onPickConsumed?.();
+    document.getElementById('save-transfer')?.scrollIntoView({ behavior: 'smooth' });
+  }, [initialPick]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const matchRow = (r) => (
+    <div key={r.title} className="comp-card mt-xs">
+      <div className="comp-card-body p-sm flex items-center justify-between gap-sm flex-wrap">
+        <div className="flex items-center gap-sm" style={{ minWidth: 0, flex: '1 1 200px' }}>
+          {r.icon && <img src={r.icon} alt="" width={40} height={40} style={{ borderRadius: 6 }} onError={(e) => { e.currentTarget.style.display = 'none'; }} />}
+          <div style={{ minWidth: 0 }}>
+            <div className="font-bold truncate" title={r.name}>{r.name}</div>
+            <div className="text-xs text-muted" style={{ wordBreak: 'break-all' }}>
+              {r.title}{r.save ? ` · export: ${r.save.name}` : ' · no decrypted export on the PS4 yet'}
+            </div>
+          </div>
+        </div>
+        <div className="flex gap-xs flex-wrap items-center">
+          {r.ps5Other && (
+            <span className="text-xs text-muted" style={{ maxWidth: 280 }}>
+              The PS5 has {r.ps5Other}, its own build - that save is not a PS4 one, so only the export is of any use.
+            </span>
+          )}
+          {r.save ? (
+            <>
+              {r.onPs5 && (
+                <button className="btn btn-sm btn-primary" onClick={() => armTransfer(r)} disabled={job?.state === 'running'}>
+                  → Transfer to PS5
+                </button>
+              )}
+              <a className="btn btn-sm btn-secondary" href={exportUrl(r)} download={`${r.save.name}.zip`} rel="noopener">⬇ Save export</a>
+            </>
+          ) : (
+            <span className="text-xs text-muted">Export it in Apollo Save Tool on the PS4 first</span>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+
   const transfer = async () => {
     try {
       const body = {
@@ -255,6 +369,43 @@ export default function SaveMounter({ profiles = [], onNotification }) {
   return (
     <div>
       <JobBox job={job} onClose={() => setJob(null)} />
+      <div className="comp-card mt-sm">
+        <div className="comp-card-body">
+          <div className="flex items-center justify-between gap-sm flex-wrap mb-sm">
+            <span className="font-bold">🎮 Games on both consoles</span>
+            <button className="btn btn-sm btn-secondary" onClick={loadMatch} disabled={matchBusy || !srcPid || !pid}>
+              {matchBusy ? 'Looking…' : match ? '↻ Refresh' : 'Show'}
+            </button>
+          </div>
+          <div className="text-xs text-muted mb-sm">
+            The PS4's list comes from its app.db, the PS5's from ShadowMountPlus, so both consoles have to be on.
+            A save can only move once Apollo Save Tool on the PS4 has exported it decrypted - the encrypted one is
+            tied to that console. The transfer backs up both sides to this computer first.
+          </div>
+          {ps4s.length === 0 && <div className="text-sm text-muted">No PS4 profile - add one under Settings → Profiles (console type PS4).</div>}
+          {ps4s.length > 1 && (
+            <select className="select mb-sm" value={srcPid} onChange={(e) => { setSrcPid(e.target.value); setMatch(null); }} style={{ width: '100%', minHeight: 40 }}>
+              {ps4s.map((p) => <option key={p.id} value={p.id}>{p.name} ({p.ip_address})</option>)}
+            </select>
+          )}
+          {match && match.both.length === 0 && <div className="text-sm text-muted">No game is installed on both consoles.</div>}
+          {match?.both.map(matchRow)}
+          {match && match.otherVersion.length > 0 && (
+            <>
+              <div className="font-bold mt-md">On both consoles, but not the same version</div>
+              <div className="text-xs text-muted">The PS5 runs its own build of these, which keeps its saves in its own format.</div>
+              {match.otherVersion.map(matchRow)}
+            </>
+          )}
+          {match && match.exportOnly.length > 0 && (
+            <>
+              <div className="font-bold mt-md">Exported saves of games the PS5 does not have</div>
+              <div className="text-xs text-muted">Nothing to transfer them into - you can still keep the export.</div>
+              {match.exportOnly.map(matchRow)}
+            </>
+          )}
+        </div>
+      </div>
       <div className="comp-card mt-sm">
         <div className="comp-card-body">
           <div className="font-bold mb-sm">💾 PS5 saves</div>

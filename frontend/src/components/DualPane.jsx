@@ -23,7 +23,7 @@ const joinPath = (loc, name) => (loc.kind === 'local'
 // other (or onto a folder in it) asks Copy / Move / Cancel and then runs the
 // route planTransfer() picks: an instant rename, a direct copy/move on the
 // server disk, or the server-side transfer queue.
-export default function DualPane({ profiles, onNotification, onOpenQueue, onPickConvert, enableConvertActions, onConsolePlatformChange }) {
+export default function DualPane({ profiles, onNotification, onOpenQueue, onPickConvert, onPickSave, enableConvertActions, onConsolePlatformChange }) {
   const [locs, setLocs] = useState({ left: null, right: null });
   const [reload, setReload] = useState(0);
   const [pending, setPending] = useState(null); // { src, dst, items, point, op?, conflicts?, busy? }
@@ -232,6 +232,7 @@ export default function DualPane({ profiles, onNotification, onOpenQueue, onPick
     enableConvertActions,
     onOpenQueue,
     onPickConvert,
+    onPickSave,
     reloadSignal: reload,
   };
 

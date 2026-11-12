@@ -224,6 +224,18 @@ static void audio_frame_cb(uint8_t *buf, size_t size, void *user)
 	record('A', 0, buf, size);
 }
 
+// chiaki-ng v1.10.0 calls display_sink.cantdisplay_cb without checking that
+// one was set (lib/src/ctrl.c), so a console that answers the ctrl request
+// with RP-Prohibit - a PS4 signed out of PSN does - crashes the session
+// before it starts. The sink has to exist; what it reports is ours to say.
+static void cantdisplay_cb(void *user, bool cant_display)
+{
+	(void)user;
+	if(cant_display)
+		event_line("msg", "RP-Prohibit: the console refuses to show a Remote Play session",
+			"{\"event\":\"log\",\"level\":\"error\"");
+}
+
 static void event_cb(ChiakiEvent *event, void *user)
 {
 	(void)user;
@@ -509,6 +521,10 @@ int main(int argc, char **argv)
 	chiaki_controller_state_set_idle(&controller);
 	chiaki_session_set_event_cb(&session, event_cb, NULL);
 	chiaki_session_set_video_sample_cb(&session, video_cb, NULL);
+	static ChiakiCtrlDisplaySink display_sink;
+	display_sink.user = NULL;
+	display_sink.cantdisplay_cb = cantdisplay_cb;
+	chiaki_session_ctrl_set_display_sink(&session, &display_sink);
 	static ChiakiAudioSink audio_sink;
 	if(arg_flag(argc, argv, "--audio"))
 	{
