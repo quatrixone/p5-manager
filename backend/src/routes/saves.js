@@ -9,7 +9,6 @@
 import express from 'express';
 import fs from 'fs';
 import path from 'path';
-import crypto from 'crypto';
 import { Readable } from 'node:stream';
 import { Client as FtpClient } from 'basic-ftp';
 import { getRepo, log } from '../db/sqlite.js';
@@ -20,6 +19,7 @@ import * as mounter from '../lib/saveMounter.js';
 import { PS4_EXPORT_PAYLOAD, listPs4Saves, mountPs4Save, unmountPs4Save, validPs4User } from '../lib/ps4SaveExport.js';
 import { parseSfo, registerPs4Save } from '../lib/ps5SaveIndex.js';
 import { pathSizeBytes } from '../lib/exfat.js';
+import { createJobs, publicJob } from '../lib/jobLog.js';
 import { hasConsoleIdentity, resignSfo } from '../lib/ps4SaveResign.js';
 import { loadFtp, startZftpd, tcpPortOpen, sendElfPayload, ELF_LOADER_PORT } from './convert.js';
 
@@ -384,33 +384,10 @@ router.get('/ps4/:pid/exports', handle(async (req) => {
 
 // ── jobs: transfer and backup ───────────────────────────────────────────
 
-const jobs = new Map(); // id -> { id, kind, state, step, log[], error, result }
-
-function newJob(kind, run) {
-  const job = { id: crypto.randomBytes(6).toString('hex'), kind, state: 'running', step: '', log: [], files: 0, bytes: 0, error: null, result: null, started: Date.now() };
-  const say = (step) => { job.step = step; job.log.push(step); if (job.log.length > 200) job.log.shift(); };
-  job.say = say;
-  jobs.set(job.id, job);
-  (async () => {
-    try {
-      job.result = await run(job, say);
-      job.state = 'done';
-      say('Done');
-    } catch (e) {
-      job.state = 'failed';
-      job.error = e.message;
-      say(`Failed: ${e.message}`);
-      log('error', `save ${kind} failed: ${e.message}`);
-    }
-    setTimeout(() => jobs.delete(job.id), 60 * 60 * 1000).unref?.();
-  })();
-  return job;
-}
-
-const publicJob = ({ say, ...j }) => j;
+const { start: newJob, get: getJob } = createJobs((kind, e) => log('error', `save ${kind} failed: ${e.message}`));
 
 router.get('/jobs/:id', (req, res) => {
-  const job = jobs.get(req.params.id);
+  const job = getJob(req.params.id);
   if (!job) return res.status(404).json({ success: false, error: 'no such job' });
   res.json({ success: true, job: publicJob(job) });
 });

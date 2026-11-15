@@ -7,7 +7,7 @@ import { Writable } from 'node:stream';
 import { Client as FtpClient } from 'basic-ftp';
 import { getRepo, log } from '../db/sqlite.js';
 import { isLocalPathAllowed } from '../lib/platform.js';
-import { tcpPortOpen, sendElfPayload, ELF_LOADER_PORT } from './convert.js';
+import { tcpPortOpen, sendElfPayload, ELF_LOADER_PORT, startZftpd } from './convert.js';
 import { getFtpPort } from '../lib/ftpPort.js';
 import { parsePs4Library } from '../lib/ps4Library.js';
 import {
@@ -19,6 +19,7 @@ import {
 // `status: 0` means OK). The browser never talks to the console directly:
 // no CORS / mixed-content trouble, and destructive calls are validated here.
 import { librarySnapshots } from '../lib/installedState.js';
+import { createJobs, publicJob } from '../lib/jobLog.js';
 
 const router = express.Router();
 
@@ -406,6 +407,139 @@ router.post('/:ip/games/:titleId/:op', async (req, res) => {
     log('info', `library ${ip}: ${op} ${titleId}${payload.destination_dir ? ` -> ${payload.destination_dir}` : ''}`);
     res.json(await sm(ip, `/games/${op}`, payload, 60_000));
   } catch (e) { fail(res, e); }
+});
+
+
+// ── A PS4 game on the PS5, without installing it ────────────────────────
+//
+// An installed PS4 game keeps its own package at /user/app/<title>/app.pkg
+// (its update at /user/patch/<title>/patch.pkg), so there is nothing to
+// dump: the package is copied straight to a folder the user picks on the
+// PS5 and ShadowMount is told to scan that folder. The game then shows up
+// on the home screen and is played from where it lies - the console's own
+// storage gets nothing, and removing it is removing the folder.
+
+const games = createJobs((kind, e) => log('error', `game ${kind} failed: ${e.message}`));
+
+router.get('/games-jobs/:id', (req, res) => {
+  const job = games.get(req.params.id);
+  if (!job) return res.status(404).json({ error: 'no such job' });
+  res.json({ job: publicJob(job) });
+});
+
+async function ftpConnect(ip) {
+  const client = new FtpClient(30_000);
+  client.ftp.verbose = false;
+  const port = getFtpPort(ip);
+  const open = () => client.access({ host: ip, port, user: 'anonymous', password: '', secure: false });
+  try {
+    await open();
+  } catch (e) {
+    // A PS5 that has been restarted has no FTP until the payload is sent;
+    // startZftpd refuses politely for a PS4, which has to start its own.
+    if (!/ECONNREFUSED/.test(e.message || '')) throw e;
+    await startZftpd(ip, port);
+    await open();
+  }
+  return client;
+}
+
+const packageSize = async (client, remote) => {
+  try { return await client.size(remote); } catch (_) { return 0; }
+};
+
+// The PS4 packages that can be carried over, with their sizes.
+router.get('/:ip/ps4/packages', async (req, res) => {
+  const client = await ftpConnect(req.params.ip).catch(() => null);
+  if (!client) return res.status(502).json({ error: `No FTP on the PS4 at ${req.params.ip} - start it on the console.` });
+  try {
+    await client.send('TYPE I'); // SIZE is refused in text mode
+    const out = [];
+    for (const entry of await client.list('/user/app')) {
+      if (!entry.isDirectory || !isValidTitleId(entry.name)) continue;
+      const app = await packageSize(client, `/user/app/${entry.name}/app.pkg`);
+      if (!app) continue; // a disc game keeps no package of its own
+      out.push({
+        title_id: entry.name,
+        app_bytes: app,
+        patch_bytes: await packageSize(client, `/user/patch/${entry.name}/patch.pkg`),
+      });
+    }
+    res.json({ packages: out.sort((a, b) => a.title_id.localeCompare(b.title_id)) });
+  } catch (e) {
+    res.status(502).json({ error: e.message });
+  } finally {
+    client.close();
+  }
+});
+
+// Straight from one console to the other: what comes down the PS4's
+// connection goes up the PS5's, so nothing is parked on this computer.
+async function copyPackage(from, to, src, dst, job, say, label) {
+  const total = await packageSize(from, src);
+  if (!total) throw new Error(`${src} is not on the PS4`);
+  const { PassThrough } = await import('node:stream');
+  const pass = new PassThrough();
+  let done = 0;
+  pass.on('data', (c) => {
+    done += c.length;
+    job.bytes = done;
+    job.step = `${label}: ${Math.round((done / total) * 100)}% of ${(total / 1e9).toFixed(2)} GB`;
+  });
+  const upload = to.uploadFrom(pass, dst);
+  await from.downloadTo(pass, src);
+  pass.end();
+  await upload;
+  say(`${label}: ${(total / 1e9).toFixed(2)} GB copied`);
+  return total;
+}
+
+router.post('/:ip/ps4-game', async (req, res) => {
+  try {
+    const ps5 = req.params.ip;
+    const { from_ip: ps4, title, folder } = req.body || {};
+    if (!ps4) return res.status(400).json({ error: 'from_ip (the PS4) is required' });
+    if (!isValidTitleId(title)) return res.status(400).json({ error: 'a title id like CUSA12345 is required' });
+    if (!isSafeConsoleDir(folder)) return res.status(400).json({ error: 'folder must be an absolute path on the PS5' });
+    const dir = `${folder.replace(/\/+$/, '')}/${title}`;
+
+    const job = games.start('transfer', async (j, say) => {
+      const from = await ftpConnect(ps4);
+      const to = await ftpConnect(ps5);
+      try {
+        await from.send('TYPE I');
+        await to.ensureDir(dir);
+        say(`Copying ${title} to ${dir}`);
+        const bytes = await copyPackage(from, to, `/user/app/${title}/app.pkg`, `${dir}/app.pkg`, j, say, 'Game');
+        let patch = 0;
+        if (await packageSize(from, `/user/patch/${title}/patch.pkg`)) {
+          patch = await copyPackage(from, to, `/user/patch/${title}/patch.pkg`, `${dir}/patch.pkg`, j, say, 'Update');
+        }
+        j.files = patch ? 2 : 1;
+
+        // ShadowMount plays what it finds in the folders it scans; the game
+        // is only listed once its folder is one of them.
+        say('Telling ShadowMount to scan the folder');
+        // ShadowMount checks every field it knows, so the settings go back
+        // whole - only the scan paths differ. What it derives itself is left out.
+        const { status: _s, scan_path_count: _n, ...settings } = await sm(ps5, '/settings');
+        const paths = Array.isArray(settings.scan_paths) ? settings.scan_paths : [];
+        const added = !paths.includes(folder);
+        if (added) await sm(ps5, '/settings/update', { ...settings, scan_paths: [...paths, folder] }, 60_000);
+
+        const listed = (await sm(ps5, '/games').catch(() => ({}))).games || [];
+        const found = listed.some((g) => String(g.title_id || '').toUpperCase() === title.toUpperCase());
+        say(found ? `${title} is in the library` : 'Copied, but ShadowMount does not list it yet - rescan on the console');
+        return { folder: dir, bytes, patch_bytes: patch, scan_path: folder, scan_path_added: added, listed: found };
+      } finally {
+        from.close();
+        to.close();
+      }
+    });
+    res.json({ job: publicJob(job) });
+  } catch (e) {
+    fail(res, e);
+  }
 });
 
 export default router;
