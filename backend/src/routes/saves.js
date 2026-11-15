@@ -24,9 +24,14 @@ import { loadFtp, startZftpd, tcpPortOpen, sendElfPayload, ELF_LOADER_PORT } fro
 const router = express.Router();
 
 export const savesBackupDir = path.join(userDataDir, 'saves');
-// What the PS5 makes of a save's sce_sys is its own; a PS4's would carry
-// the other console's account and keys.
+// A save the console made already holds its own sce_sys - the param.sfo
+// and keystone in it belong to this console and this account, and the
+// PS4's would put another console's there. A save we had to create is
+// empty: the mounter's CREATE writes the image and the sealed key and
+// nothing else, so without the source's sce_sys it has no metadata at
+// all, and a save without metadata is one the console will not take.
 const SKIP_DIRS = new Set(['sce_sys']);
+const KEEP_ALL = new Set();
 
 function profileById(id) {
   const p = getRepo().queryOne('SELECT id, name, ip_address, console_type FROM profiles WHERE id = ?', [parseInt(id, 10)]);
@@ -194,14 +199,14 @@ async function downloadTree(client, remote, local, onFile) {
   }
 }
 
-async function uploadTree(client, local, remote, onFile, top = true) {
+async function uploadTree(client, local, remote, onFile, skip = SKIP_DIRS, top = true) {
   await client.ensureDir(remote);
   for (const name of fs.readdirSync(local)) {
     const l = path.join(local, name);
     const r = path.posix.join(remote, name);
     if (fs.statSync(l).isDirectory()) {
-      if (top && SKIP_DIRS.has(name)) continue;
-      await uploadTree(client, l, r, onFile, false);
+      if (top && skip.has(name)) continue;
+      await uploadTree(client, l, r, onFile, skip, false);
     } else {
       await client.uploadFrom(l, r);
       onFile?.(r, fs.statSync(l).size);
@@ -209,12 +214,12 @@ async function uploadTree(client, local, remote, onFile, top = true) {
   }
 }
 
-function countFiles(dir, top = true) {
+function countFiles(dir, skip = SKIP_DIRS, top = true) {
   let n = 0;
   for (const name of fs.readdirSync(dir)) {
     const f = path.join(dir, name);
     if (!fs.statSync(f).isDirectory()) n += 1;
-    else if (!(top && SKIP_DIRS.has(name))) n += countFiles(f, false);
+    else if (!(top && skip.has(name))) n += countFiles(f, skip, false);
   }
   return n;
 }
@@ -449,7 +454,9 @@ router.post('/transfer', handle(async (req) => {
       await withFtp(source.profile.ip_address, (c) => downloadTree(c, source.remote, ps4Backup, () => { j.files++; j.step = `Copied ${j.files} files from ${source.profile.name}`; }));
       if (j.files === 0) throw new Error(`${source.remote} has no files - is it the folder of the decrypted save?`);
     }
-    const total = countFiles(local);
+    // Only a save the console made brings metadata of its own.
+    const skip = createMb ? KEEP_ALL : SKIP_DIRS;
+    const total = countFiles(local, skip);
     say(createMb ? `Creating ${title}/${dir} (${createMb} MB) on ${target.name}` : `Mounting ${title}/${dir} on ${target.name}`);
     const mp = createMb ? await createSave(target, user, title, dir, createMb) : await mountSave(target, user, title, dir);
     let sent = 0;
@@ -462,7 +469,7 @@ router.post('/transfer', handle(async (req) => {
         await withFtp(target.ip_address, (c) => downloadTree(c, mp, ps5Backup));
       }
       say(`Copying ${total} files into the save`);
-      await withFtp(target.ip_address, (c) => uploadTree(c, local, mp, () => { sent++; j.step = `Copied ${sent} of ${total} files`; }));
+      await withFtp(target.ip_address, (c) => uploadTree(c, local, mp, () => { sent++; j.step = `Copied ${sent} of ${total} files`; }, skip));
     } finally {
       say('Unmounting (writes the save back)');
       await unmountSave(target);
