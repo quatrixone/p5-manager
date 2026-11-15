@@ -79,6 +79,27 @@ export function saveRow({ title, dir, sizeBytes = 0, usedBytes = 0, sfo = {}, ac
   };
 }
 
+// Writes the row into an open index. The account id is a 64-bit number the
+// console signs its saves with - larger than JavaScript can hold exactly -
+// so it is copied from a row the console wrote itself, inside SQL, without
+// ever becoming a JS number.
+export function writeRow(db, row) {
+  const columns = Object.keys(row);
+  db.run('DELETE FROM savedata WHERE title_id = ? AND dir_name = ?', [row.title_id, row.dir_name]);
+  db.run(
+    `INSERT INTO savedata (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`,
+    columns.map((c) => row[c]),
+  );
+  db.run(
+    `UPDATE savedata SET account_id = COALESCE((SELECT account_id FROM savedata
+       WHERE account_id IS NOT NULL AND typeof(account_id) = 'integer'
+         AND NOT (title_id = ? AND dir_name = ?) LIMIT 1), account_id)
+     WHERE title_id = ? AND dir_name = ?`,
+    [row.title_id, row.dir_name, row.title_id, row.dir_name],
+  );
+  return row;
+}
+
 // Adds (or refreshes) the row for one save. `ftp` is an open client for the
 // PS5. Returns what it wrote, or null when the console has no such database.
 export async function registerPs4Save(ftp, user, save) {
@@ -92,20 +113,12 @@ export async function registerPs4Save(ftp, user, save) {
   }
   const db = openSqliteBuffer(buffer);
   try {
-    // The console's own rows carry the account this user signs in with;
-    // copying it from one of them beats guessing it.
-    const existing = db.exec('SELECT user_id, account_id FROM savedata WHERE user_id IS NOT NULL LIMIT 1')[0]?.values?.[0];
-    const row = saveRow({
+    // The user id is small enough to read; the account id is not (see writeRow).
+    const existingUser = db.exec('SELECT user_id FROM savedata WHERE user_id IS NOT NULL LIMIT 1')[0]?.values?.[0]?.[0];
+    const row = writeRow(db, saveRow({
       ...save,
-      userId: save.userId || existing?.[0] || parseInt(String(user), 16),
-      accountId: save.accountId ?? existing?.[1] ?? 0,
-    });
-    db.run('DELETE FROM savedata WHERE title_id = ? AND dir_name = ?', [row.title_id, row.dir_name]);
-    const columns = Object.keys(row);
-    db.run(
-      `INSERT INTO savedata (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`,
-      columns.map((c) => row[c]),
-    );
+      userId: save.userId || existingUser || parseInt(String(user), 16),
+    }));
     await ftp.uploadFrom(Readable.from([Buffer.from(db.export())]), remote);
     return row;
   } finally {
