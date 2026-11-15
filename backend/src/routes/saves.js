@@ -17,6 +17,8 @@ import { getFtpPort } from '../lib/ftpPort.js';
 import { VENDORED_PAYLOADS, vendoredSource } from '../lib/defaultPayloads.js';
 import * as mounter from '../lib/saveMounter.js';
 import { PS4_EXPORT_PAYLOAD, listPs4Saves, mountPs4Save, unmountPs4Save, validPs4User } from '../lib/ps4SaveExport.js';
+import { parseSfo, registerPs4Save } from '../lib/ps5SaveIndex.js';
+import { pathSizeBytes } from '../lib/exfat.js';
 import { loadFtp, startZftpd, tcpPortOpen, sendElfPayload, ELF_LOADER_PORT } from './convert.js';
 
 const router = express.Router();
@@ -465,8 +467,23 @@ router.post('/transfer', handle(async (req) => {
       say('Unmounting (writes the save back)');
       await unmountSave(target);
     }
+    // A PS4 save the console does not have in its index is invisible to it,
+    // however complete the files are - that is what the Saved Data (PS4)
+    // list and a game's "import a PS4 save" read.
+    let listed = null;
+    if (/^CUSA/i.test(title)) {
+      say('Listing the save in the PS5 index');
+      const sfoFile = path.join(local, 'sce_sys', 'param.sfo');
+      const sfo = fs.existsSync(sfoFile) ? parseSfo(fs.readFileSync(sfoFile)) : {};
+      await withFtp(target.ip_address, async (c) => {
+        const image = `/user/home/${user}/savedata/${title}/sdimg_${dir}`;
+        const sizeBytes = await c.size(image).catch(() => 0);
+        listed = await registerPs4Save(c, user, { title, dir, sizeBytes, usedBytes: pathSizeBytes(local), sfo });
+      });
+      say(listed ? `Listed as "${listed.main_title}"` : 'This PS5 user has no PS4 save index - nothing listed');
+    }
     log('info', `save ${title}/${dir} on ${target.name} filled with ${sent} files`);
-    return { files: sent, ps4Backup, ps5Backup };
+    return { files: sent, ps4Backup, ps5Backup, listed: listed?.main_title || null };
   });
   return { job: publicJob(job) };
 }));
