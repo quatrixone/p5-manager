@@ -294,22 +294,24 @@ export default function SaveMounter({ profiles = [], onNotification, initialPick
   // into the PS5's save - which is created when the game has none there yet.
   const transferGame = async (row) => {
     try {
-      // A game the PS5 has as its own build takes the save under *its* title
-      // id. Whether that build reads a PS4 save is the game's business, not
-      // ours - the PS5 save it replaces is backed up either way.
+      // A game the PS5 has as its own build keeps its save under *its* title
+      // id, which is where the files have to go.
       const toTitle = row.ps5Other || row.title;
       const conn = info || await connect();
       const who = user || conn?.users?.[0]?.hex;
       if (!who) throw new Error('No PS5 user to put the save under - connect to the PS5 first.');
       if (!user) setUser(who);
       const existing = (await api.get(`${API}/ps5/${pid}/saves?user=${who}&title=${toTitle}`)).saves || [];
+      // The PS5 has to have made the save itself: its sce_sys carries the
+      // account and the signature this console checks, and a save we create
+      // from nothing has neither. So the game writes one, we fill it.
       const target = existing.find((x) => x.dir === row.save.dir) || existing[0];
+      if (!target) {
+        throw new Error(`${row.name} has no save on the PS5 yet. Start the game there, let it save once (a new game or the first autosave is enough), close it, then press Refresh here.`);
+      }
       setJob((await api.post(`${API}/transfer`, {
-        toPid: pid, user: who, title: toTitle, dir: target?.dir || row.save.dir,
+        toPid: pid, user: who, title: toTitle, dir: target.dir,
         fromSave: { pid: srcPid, user: row.save.user, title: row.title, dir: row.save.dir },
-        // A PS5 save has to be big enough for the PS4 one, with room for
-        // what the game writes next.
-        ...(target ? {} : { create: { sizeMb: Math.min(8192, Math.max(32, Math.ceil((row.save.size || 0) / (1024 * 1024)) + 16)) } }),
       })).job);
     } catch (e) { notifyErr(e); }
   };
@@ -338,6 +340,9 @@ export default function SaveMounter({ profiles = [], onNotification, initialPick
             <div className="font-bold truncate" title={r.name}>{r.name}</div>
             <div className="text-xs text-muted" style={{ wordBreak: 'break-all' }}>
               {r.title}{r.save ? ` · save: ${r.save.dir}` : ' · no save on the PS4'}
+              {r.save && titles.length > 0 && !titles.includes(r.ps5Other || r.title)
+                ? ' · the PS5 has no save of it yet - play it there once first'
+                : ''}
             </div>
           </div>
         </div>
@@ -407,11 +412,20 @@ export default function SaveMounter({ profiles = [], onNotification, initialPick
               {matchBusy ? 'Looking…' : match ? '↻ Refresh' : 'Show'}
             </button>
           </div>
+          <ol className="text-xs text-muted mb-sm save-transfer-steps">
+            <li>
+              <b>Let the PS5 make the save first.</b> Start the game there, play until it saves once - a new game
+              or the first autosave is enough - and close it. Only a save the console wrote itself carries the
+              account and the signature it checks; one made from nothing is refused.
+            </li>
+            <li>
+              <b>Then press Transfer here.</b> A payload mounts the PS4's save decrypted (nothing to start on
+              that console, its own copy is untouched), both sides are backed up to this computer, and the files
+              go into the PS5's save while its own sce_sys stays put.
+            </li>
+          </ol>
           <div className="text-xs text-muted mb-sm">
             The PS4's list comes from its app.db, the PS5's from ShadowMountPlus, so both consoles have to be on.
-            Transfer does the whole move by itself: a payload on the PS4 mounts that save decrypted (nothing to
-            start on the console, its own copy is left alone), both sides are backed up here, and the files go
-            into the PS5's save.
           </div>
           {ps4s.length === 0 && <div className="text-sm text-muted">No PS4 profile - add one under Settings → Profiles (console type PS4).</div>}
           {ps4s.length > 1 && (
@@ -567,6 +581,11 @@ export default function SaveMounter({ profiles = [], onNotification, initialPick
             <label className="flex items-center gap-xs save-transfer-option">
               <input type="radio" checked={!dstNew} onChange={() => setDstNew(false)} /> Replace the files of an existing save
             </label>
+          </div>
+          <div className="text-xs text-muted mt-xs">
+            Replacing is the one that works: a save the console made carries the account and signature it checks.
+            A new save is built from the PS4's own metadata and signed with what this console uses elsewhere -
+            worth a try where the game has no save at all, but most games refuse it.
           </div>
           {!ready && <div className="text-xs text-muted mt-xs">Connect to the PS5 above first.</div>}
           <button className="btn btn-primary mt-sm save-transfer-submit" onClick={transfer} disabled={!canTransfer}>

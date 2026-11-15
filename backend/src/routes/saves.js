@@ -10,6 +10,7 @@ import express from 'express';
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import { Readable } from 'node:stream';
 import { Client as FtpClient } from 'basic-ftp';
 import { getRepo, log } from '../db/sqlite.js';
 import { userDataDir } from '../lib/paths.js';
@@ -19,6 +20,7 @@ import * as mounter from '../lib/saveMounter.js';
 import { PS4_EXPORT_PAYLOAD, listPs4Saves, mountPs4Save, unmountPs4Save, validPs4User } from '../lib/ps4SaveExport.js';
 import { parseSfo, registerPs4Save } from '../lib/ps5SaveIndex.js';
 import { pathSizeBytes } from '../lib/exfat.js';
+import { hasConsoleIdentity, resignSfo } from '../lib/ps4SaveResign.js';
 import { loadFtp, startZftpd, tcpPortOpen, sendElfPayload, ELF_LOADER_PORT } from './convert.js';
 
 const router = express.Router();
@@ -241,6 +243,31 @@ function ps4ExportPayload() {
 // second MOUNT or UMOUNT would pull it out from under the first.
 const ps4Busy = new Set();
 
+// A param.sfo this console wrote itself, which a save brought from a PS4
+// is signed against (see lib/ps4SaveResign.js). Any PS4 save of the same
+// user will do - the signature is the console's, not the game's - so the
+// first one that has it is kept for as long as the app runs.
+const identities = new Map(); // ip:user -> param.sfo
+async function consoleIdentity(p, user, skipTitle) {
+  const key = `${p.ip_address}:${user}`;
+  if (identities.has(key)) return identities.get(key);
+  const c = await connection(p);
+  const titles = (await mounter.titles(c, user)).filter((t) => t !== skipTitle && /^CUSA/i.test(t));
+  for (const title of titles) {
+    for (const save of await mounter.saves(c, user, title)) {
+      try {
+        const mp = await mountSave(p, user, title, save.dir);
+        const sfo = await mounter.readFile(await connection(p), `${mp}/sce_sys/param.sfo`, 256 * 1024);
+        await unmountSave(p);
+        if (hasConsoleIdentity(sfo)) { identities.set(key, sfo); return sfo; }
+      } catch (_) {
+        await unmountSave(p).catch(() => {});
+      }
+    }
+  }
+  return null;
+}
+
 // Every save on the PS4, read off its drive - no payload, nothing to run on
 // the console, and nothing on it is changed.
 router.get('/ps4/:pid/saves', handle(async (req) => {
@@ -454,9 +481,16 @@ router.post('/transfer', handle(async (req) => {
       await withFtp(source.profile.ip_address, (c) => downloadTree(c, source.remote, ps4Backup, () => { j.files++; j.step = `Copied ${j.files} files from ${source.profile.name}`; }));
       if (j.files === 0) throw new Error(`${source.remote} has no files - is it the folder of the decrypted save?`);
     }
-    // Only a save the console made brings metadata of its own.
+    // Only a save the console made brings metadata of its own; one we
+    // create takes the PS4's, which has to be signed for this console.
     const skip = createMb ? KEEP_ALL : SKIP_DIRS;
     const total = countFiles(local, skip);
+    let donor = null;
+    if (createMb) {
+      say(`Reading what ${target.name} signs its own saves with`);
+      donor = await consoleIdentity(target, user, title);
+      if (!donor) say('No save of this console to sign against - the game may refuse the copy');
+    }
     say(createMb ? `Creating ${title}/${dir} (${createMb} MB) on ${target.name}` : `Mounting ${title}/${dir} on ${target.name}`);
     const mp = createMb ? await createSave(target, user, title, dir, createMb) : await mountSave(target, user, title, dir);
     let sent = 0;
@@ -470,6 +504,12 @@ router.post('/transfer', handle(async (req) => {
       }
       say(`Copying ${total} files into the save`);
       await withFtp(target.ip_address, (c) => uploadTree(c, local, mp, () => { sent++; j.step = `Copied ${sent} of ${total} files`; }, skip));
+      const sfoFile = path.join(local, 'sce_sys', 'param.sfo');
+      if (donor && fs.existsSync(sfoFile)) {
+        say('Signing the save for this console');
+        const signed = resignSfo(fs.readFileSync(sfoFile), donor, title);
+        await withFtp(target.ip_address, (c) => c.uploadFrom(Readable.from([signed]), `${mp}/sce_sys/param.sfo`));
+      }
     } finally {
       say('Unmounting (writes the save back)');
       await unmountSave(target);

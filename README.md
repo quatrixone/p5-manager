@@ -19,7 +19,7 @@ P5 Manager is an independent hobby project and is not affiliated with Sony Inter
 - **Library:** view and manage titles detected by ShadowMountPlus. Available actions depend on the console.
 - **Marketplace:** payloads, homebrew apps, Autoload templates and input scripts, shared between users. See [store/README.md](store/README.md).
 - **Logs:** console and kernel logs, with filters.
-- **Saves:** mount, back up and restore PS5 saves in File Ops. The save mounter payload has its own GPL-3.0 licence.
+- **Saves:** in File Ops - mount, back up and restore PS5 saves, and move a PS4 save to the PS5. Nothing has to be started on either console: a payload mounts the PS4 save decrypted and the files go into the PS5's own save. **Let the PS5 make that save first** - start the game there, let it save once and close it; a save the console wrote itself carries the account and signature it checks, and one made from nothing is refused. Both sides are backed up before anything is written. The save mounter payloads have their own GPL-3.0 licence.
 - **Mobile-ready:** responsive layout and installable PWA.
 
 ## Screenshots
