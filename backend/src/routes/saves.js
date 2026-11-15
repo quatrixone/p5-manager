@@ -125,8 +125,13 @@ async function createSave(p, user, title, dir, sizeMb) {
 
 async function unmountSave(p) {
   const c = await connection(p);
-  await mounter.unmount(c);
-  mounted.delete(p.ip_address);
+  try {
+    await mounter.unmount(c);
+  } finally {
+    // Whatever the console answered, keeping a note of a mount we could not
+    // undo would block every mount after this one.
+    mounted.delete(p.ip_address);
+  }
   log('info', `save unmounted on ${p.ip_address}`);
 }
 
@@ -280,6 +285,7 @@ router.get('/ps4/:pid/saves', handle(async (req) => {
 // computer can read the console's own copy.
 async function exportPs4Save(job, say, profile, payload, save, dest) {
   const ip = profile.ip_address;
+  const before = job.files;
   if (ps4Busy.has(ip)) throw Object.assign(new Error(`${profile.name} is already exporting a save`), { status: 409 });
   ps4Busy.add(ip);
   try {
@@ -297,9 +303,38 @@ async function exportPs4Save(job, say, profile, payload, save, dest) {
   } finally {
     ps4Busy.delete(ip);
   }
-  if (job.files === 0) throw new Error('the mounted PS4 save had no files in it');
+  if (job.files === before) throw new Error('the mounted PS4 save had no files in it');
   return dest;
 }
+
+// Every save on the PS4, or every save of one game when `title` says so.
+// The payload mounts one save at a time, so this is a long job - the step
+// says where it is.
+router.post('/ps4/:pid/backup-all', handle(async (req) => {
+  const p = profileById(req.params.pid);
+  const only = req.body?.title ? needTitle(req.body.title) : null;
+  const payload = ps4ExportPayload();
+  const job = newJob('export', async (j, say) => {
+    const all = (await withFtp(p.ip_address, (c) => listPs4Saves(c)))
+      .filter((s) => !s.dir.startsWith('sce_bu_')) // the console's own backup copies
+      .filter((s) => !only || s.title === only);
+    if (all.length === 0) throw new Error(only ? `${only} has no save on ${p.name}` : `no saves on ${p.name}`);
+    let done = 0;
+    const failed = [];
+    for (const save of all) {
+      say(`${done + 1} of ${all.length}: ${save.title}/${save.dir}`);
+      try {
+        await exportPs4Save(j, say, p, payload, save, backupFolder(save.title, `${save.dir}-from-ps4`));
+        done += 1;
+      } catch (e) {
+        failed.push(`${save.title}/${save.dir}: ${e.message}`);
+        say(`  skipped ${save.title}/${save.dir} - ${e.message}`);
+      }
+    }
+    return { saves: all.length, backedUp: done, failed };
+  });
+  return { job: publicJob(job) };
+}));
 
 // Copies a PS4 save to this computer, decrypted, with no PS5 involved.
 router.post('/ps4/:pid/export', handle(async (req) => {
@@ -403,6 +438,40 @@ router.post('/backup', handle(async (req) => {
       await unmountSave(p);
     }
     return { folder: dest };
+  });
+  return { job: publicJob(job) };
+}));
+
+// Every save a PS5 user has, or every save of one game when `title` says so.
+router.post('/ps5/:pid/backup-all', handle(async (req) => {
+  const p = profileById(req.params.pid);
+  const user = needUser(req.body?.user);
+  const only = req.body?.title ? needTitle(req.body.title) : null;
+  const job = newJob('backup', async (j, say) => {
+    const titles = only ? [only] : await mounter.titles(await connection(p), user);
+    let done = 0;
+    let total = 0;
+    const failed = [];
+    for (const title of titles) {
+      const saves = await mounter.saves(await connection(p), user, title);
+      total += saves.length;
+      for (const save of saves) {
+        say(`${title}/${save.dir}`);
+        try {
+          const mp = await mountSave(p, user, title, save.dir);
+          await withFtp(p.ip_address, (c) => downloadTree(c, mp, backupFolder(title, save.dir), (_f, size) => {
+            j.files += 1; j.bytes += size || 0;
+          }));
+          await unmountSave(p);
+          done += 1;
+        } catch (e) {
+          failed.push(`${title}/${save.dir}: ${e.message}`);
+          say(`  skipped ${title}/${save.dir} - ${e.message}`);
+          await unmountSave(p).catch(() => {});
+        }
+      }
+    }
+    return { saves: total, backedUp: done, failed };
   });
   return { job: publicJob(job) };
 }));

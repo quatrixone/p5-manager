@@ -316,8 +316,16 @@ export default function SaveMounter({ profiles = [], onNotification, initialPick
     } catch (e) { notifyErr(e); }
   };
 
-  const exportGame = async (row) => {
-    try { setJob((await api.post(`${API}/ps4/${srcPid}/export`, row.save)).job); } catch (e) { notifyErr(e); }
+  // Saves onto this computer: one game's, or a whole console's. Each save
+  // is mounted in turn, so a whole console takes a while - the job box says
+  // where it is.
+  const backupPs4 = async (title) => {
+    if (!title && !confirm('Copy every save on the PS4 to this computer? Each one is mounted in turn, so this takes a while.')) return;
+    try { setJob((await api.post(`${API}/ps4/${srcPid}/backup-all`, title ? { title } : {})).job); } catch (e) { notifyErr(e); }
+  };
+  const backupPs5 = async (title) => {
+    if (!title && !confirm('Copy every save of this PS5 user to this computer? Each one is mounted in turn, so this takes a while.')) return;
+    try { setJob((await api.post(`${API}/ps5/${pid}/backup-all`, { user, ...(title ? { title } : {}) })).job); } catch (e) { notifyErr(e); }
   };
 
   // A folder handed over from the file browser ("Send to PS5 save").
@@ -364,8 +372,9 @@ export default function SaveMounter({ profiles = [], onNotification, initialPick
                   {r.ps5Other ? `→ Try it on ${r.ps5Other}` : '→ Transfer to PS5'}
                 </button>
               )}
-              <button className="btn btn-sm btn-secondary" onClick={() => exportGame(r)} disabled={job?.state === 'running'}>
-                ⬇ Save a copy
+              <button className="btn btn-sm btn-secondary" onClick={() => backupPs4(r.title)} disabled={job?.state === 'running'}
+                title="Copy every save this game has on the PS4 to this computer, decrypted">
+                ⬇ Back up this game
               </button>
             </>
           ) : (
@@ -408,9 +417,15 @@ export default function SaveMounter({ profiles = [], onNotification, initialPick
         <div className="comp-card-body">
           <div className="flex items-center justify-between gap-sm flex-wrap mb-sm">
             <span className="font-bold">🎮 Games on both consoles</span>
-            <button className="btn btn-sm btn-secondary" onClick={loadMatch} disabled={matchBusy || !srcPid || !pid}>
-              {matchBusy ? 'Looking…' : match ? '↻ Refresh' : 'Show'}
-            </button>
+            <div className="flex gap-xs flex-wrap">
+              <button className="btn btn-sm btn-secondary" onClick={() => backupPs4()} disabled={!srcPid || job?.state === 'running'}
+                title="Copy every save on the PS4 to this computer, decrypted">
+                ⬇ Back up all PS4 saves
+              </button>
+              <button className="btn btn-sm btn-secondary" onClick={loadMatch} disabled={matchBusy || !srcPid || !pid}>
+                {matchBusy ? 'Looking…' : match ? '↻ Refresh' : 'Show'}
+              </button>
+            </div>
           </div>
           <ol className="text-xs text-muted mb-sm save-transfer-steps">
             <li>
@@ -468,6 +483,12 @@ export default function SaveMounter({ profiles = [], onNotification, initialPick
             <button className="btn btn-primary" onClick={connect} disabled={busy === 'connect'} style={{ minHeight: 40 }}>
               {busy === 'connect' ? 'Connecting…' : info ? 'Reconnect' : 'Connect'}
             </button>
+            {info && user && (
+              <button className="btn btn-secondary" onClick={() => backupPs5()} disabled={job?.state === 'running' || !!busy} style={{ minHeight: 40 }}
+                title="Copy every save of the selected user to this computer">
+                ⬇ Back up all
+              </button>
+            )}
             {info && <span className="text-xs text-muted">firmware {info.firmware}</span>}
           </div>
 
@@ -480,6 +501,12 @@ export default function SaveMounter({ profiles = [], onNotification, initialPick
                 <option value="">Homebrew title with saves… ({titles.length})</option>
                 {titles.map((t) => <option key={t} value={t}>{t}{t.startsWith('CUSA') ? ' (PS4)' : t.startsWith('PPSA') ? ' (PS5)' : ''}</option>)}
               </select>
+              {title && (
+                <button className="btn btn-secondary" onClick={() => backupPs5(title)} disabled={job?.state === 'running' || !!busy} style={{ minHeight: 40 }}
+                  title="Copy every save this game has on the PS5 to this computer">
+                  ⬇ Back up this game
+                </button>
+              )}
             </div>
           )}
 

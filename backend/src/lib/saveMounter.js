@@ -83,12 +83,35 @@ class MounterConnection {
   }
 
   async ok(command) {
+    // Each command is answered before the next is sent, so nothing should
+    // be waiting here. When something is, it is the tail of an answer we
+    // mis-counted - a save whose title or subtitle holds a newline makes
+    // the payload send more lines than it announced - and reading it as
+    // this command's answer would break every command after it.
+    if (this.buffer.length) {
+      this.buffer = Buffer.alloc(0);
+    }
     this.socket.write(`${command}\n`);
     const line = await this.read('line');
     if (line.startsWith('ERR ')) throw new Error(line.slice(4));
     if (line === 'OK') return '';
     if (line.startsWith('OK ')) return line.slice(3);
     throw new Error(`unexpected answer from the save mounter: ${line}`);
+  }
+
+  // A save listing is one record a line - unless the game put a newline in
+  // the text it shows with the save, and then the record goes on over the
+  // next lines. Reading those as records of their own turns the rest of
+  // the answer into nonsense, so they are joined back on.
+  async records(command, fields) {
+    const count = parseInt(await this.ok(command), 10) || 0;
+    const out = [];
+    // Not just `count` records: the last one may still be waiting for the
+    // rest of its fields, and leaving those unread would make them the
+    // answer to the next command.
+    const whole = () => out.length >= count && (!count || out[out.length - 1].split('\t').length >= fields);
+    while (!whole()) out.push(...addLine(out, await this.read('line'), fields));
+    return out;
   }
 
   async lines(command) {
@@ -102,6 +125,18 @@ class MounterConnection {
     this.closed = true;
     try { this.socket?.destroy(); } catch (_) {}
   }
+}
+
+// Appends `line` to the records read so far: its own record, or the rest
+// of the last one when that is still short of its fields. Returns what to
+// push - empty when the line went onto the previous record.
+export function addLine(records, line, fields) {
+  const last = records[records.length - 1];
+  if (last !== undefined && last.split('\t').length < fields) {
+    records[records.length - 1] = `${last}\n${line}`;
+    return [];
+  }
+  return [line];
 }
 
 function withTimeout(promise, ms, onTimeout) {
@@ -153,7 +188,7 @@ export const users = (c) => c.exclusive(async () => (await c.lines('GET_USERS'))
 // Title ids with saves for a user (CUSA… PS4, PPSA… PS5, and the classics).
 export const titles = (c, userHex) => c.exclusive(async () => (await c.lines(`LIST_SAVES ${userHex}`)).sort());
 
-export const saves = (c, userHex, titleId) => c.exclusive(async () => (await c.lines(`SEARCH ${userHex} ${titleId}`)).map((line) => {
+export const saves = (c, userHex, titleId) => c.exclusive(async () => (await c.records(`SEARCH ${userHex} ${titleId}`, 5)).map((line) => {
   const [dir = '', title = '', subtitle = '', detail = '', time = ''] = line.split('\t');
   const t = parseInt(time, 10);
   return { dir, title, subtitle, detail, modified: t > 0 ? new Date(t * 1000).toISOString() : null };
