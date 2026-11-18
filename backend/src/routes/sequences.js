@@ -217,50 +217,28 @@ async function execCheckPort(step, ctx) {
 
 async function execWol(step, ctx) {
   if (!ctx.profile) throw new Error('wol needs a profile');
-  // /prewarm establishes a full Remote Play handshake (which wakes the
-  // console from rest mode, logs the user in *and* dismisses the "Press
-  // PS button" account picker) and then parks the session in the sidecar's
-  // PAUSED_SESSIONS warm cache. From there:
-  //   - subsequent input_script / rp_session steps resume from warm cache
-  //     in O(ms) instead of redoing the 5-10 s handshake,
-  //   - the warm cache holds the PS5 awake just like a live session would,
-  //     so long FTP uploads / extracts don't let the PS5 fall back to rest,
-  //   - if no further RP step runs in this sequence the warm cache simply
-  //     ages out when its TTL passes and the PS5 returns to standby naturally.
-  //     The sidecar reports that TTL; it was 300 s on the console this was last run
-  //     against, so the 180 below is only the fallback for an older sidecar.
-  //
-  // The legacy `keep_session` flag predates /prewarm - back then we had to
-  // open a full live session to keep PS5 awake. The warm cache fills the
-  // same role now, so the flag becomes a no-op for new sequences. We keep
-  // honouring it for backwards compatibility with saved sequences that
-  // expect an explicit live session: in that case we promote the warm
-  // cache to a live session via /quick-start (which resumes from the warm
-  // entry created by /prewarm above - still O(ms), no second handshake).
+  // Wake powers the console on and nothing else: the DDP WAKEUP packets,
+  // no account sign-in and no Remote Play session. So the step waits for
+  // the console to actually answer (a deep rest mode takes a while to
+  // boot) and leaves it at that. Anything that needs the controller opens
+  // its own session - `keep_session` here, or the first input_script /
+  // rp_session step, both of which sign the account in on their way.
+  // /remoteplay/wake only answers once discovery says the console is on
+  // (or raises after 90 s of trying), so there is nothing to poll here.
+  const ip = ctx.profile.ip_address;
+  let r;
   try {
-    const r = await apiFetch('POST', '/remoteplay/prewarm', {
-      profile_id: ctx.profile.id,
-    }, ctx.signal);
-    if (r?.already_live) {
-      runLog(ctx.run, `  · Console ${ctx.profile.ip_address} already had a live session - reusing`);
-    } else if (r?.warm_cached) {
-      runLog(ctx.run, `  · pre-warmed RP session for ${ctx.profile.ip_address} (warm cache TTL ${r.warm_cache_ttl_s || 180}s)`);
-    } else if (r?.resumed) {
-      runLog(ctx.run, `  · resumed warm-cached RP session for ${ctx.profile.ip_address}`);
-    }
+    r = await apiFetch('POST', '/remoteplay/wake', { profile_id: ctx.profile.id }, ctx.signal);
   } catch (e) {
-    // Fall back to the bare DDP WAKEUP+LAUNCH path so callers without a
-    // paired Remote Play profile (or with a corrupted one) still get the
-    // PS5 woken up. The error is logged but doesn't fail the step - if
-    // the next step actually needs a session it'll raise on its own.
-    runLog(ctx.run, `  · prewarm failed: ${e.message} - falling back to DDP wake`);
-    try {
-      await apiFetch('POST', '/remoteplay/wake', { profile_id: ctx.profile.id }, ctx.signal);
-    } catch (e2) {
-      throw new Error(`wake failed: ${e2.message}`);
-    }
+    throw new Error(`wake failed: ${e.message}`);
   }
+  runLog(ctx.run, r?.already_on
+    ? `  · console ${ip} was already on`
+    : `  · console ${ip} is on (woken in ${r?.waited_s ?? '?'}s)`);
 
+  // Only when the sequence asked for it: a live session holds the console
+  // awake through long steps (FTP uploads, extracts) that would otherwise
+  // let it drop back into rest mode.
   if (step.keep_session) {
     try {
       await sleep(step.keep_session_delay_ms || 1000, ctx.signal);
@@ -269,10 +247,10 @@ async function execWol(step, ctx) {
       }, ctx.signal);
       if (r?.session_id) {
         ctx.openedSessions.push({ ip: ctx.profile.ip_address, session_id: r.session_id });
-        runLog(ctx.run, `  · promoted warm cache to live keep-awake session ${r.session_id.slice(0, 8)}`);
+        runLog(ctx.run, `  · keep-awake RP session ${r.session_id.slice(0, 8)} open`);
       }
     } catch (e) {
-      runLog(ctx.run, `  · keep_session promote failed: ${e.message} (warm cache still holds PS5 awake)`);
+      runLog(ctx.run, `  · keep_session failed: ${e.message} - the console may fall back to rest mode`);
     }
   }
 }
@@ -399,7 +377,7 @@ async function execConvert(step, ctx) {
 // `run-script` already calls ensureSessionForIp() internally as a safety
 // net, but doing the probe here gives us:
 //   - a clear log entry so users can see WHY a script step was instant
-//     (resumed from warm) vs slow (cold start),
+//     (a session was already live) vs slow (cold start),
 //   - a chance to surface "PS5 offline" *before* the input handshake spends
 //     60-90 s discovering the same thing the hard way.
 async function ensureSessionForStep(ctx, label) {
@@ -413,12 +391,6 @@ async function ensureSessionForStep(ctx, label) {
     runLog(ctx.run, `  · ${label}: reusing live RP session ${(status.session_id || '').slice(0, 8)}`);
     return 'live';
   }
-  if (status?.warm) {
-    const age = Math.round(status.warm_age_s || 0);
-    runLog(ctx.run, `  · ${label}: resuming from warm cache (age ${age}s, TTL ${Math.round(status.warm_ttl_remaining_s || 0)}s)`);
-    return 'warm';
-  }
-
   // Cold path: fail fast if PS5 is unreachable so we don't burn the full
   // 60 s post-disconnect lock waiting on a console that's truly offline.
   try {
@@ -442,7 +414,7 @@ async function execInputScript(step, ctx) {
   const body = {
     ip: ctx.profile.ip_address,
     profile_id: ctx.profile.id,
-    keep_session: true, // leave session in warm cache for the next step
+    keep_session: true, // leave the session open for the next step
   };
   if (step.script) body.script = step.script;
   else if (typeof step.scriptId === 'string' && step.scriptId.startsWith('builtin:')) {
@@ -474,7 +446,7 @@ async function execRpSession(step, ctx) {
   if (action === 'start') {
     // /quick-start ensures (and caches) a Remote Play session for this IP
     // using stored pair credentials. Subsequent input_script steps reuse it.
-    // Logs the path it took (live/warm/cold) so timing is debuggable.
+    // Logs the path it took (live/cold) so timing is debuggable.
     const path = await ensureSessionForStep(ctx, 'rp_session start');
     if (path === 'cold') {
       // Surface DDP state up front and let the caller see what the first
@@ -483,21 +455,18 @@ async function execRpSession(step, ctx) {
     }
     const r = await apiFetch('POST', '/remoteplay/quick-start', { ip: ctx.profile.ip_address, profile_id: ctx.profile.id }, ctx.signal);
     if (r?.session_id) {
-      runLog(ctx.run, `  · RP session ${r.session_id.slice(0, 8)} ready (${r.resumed ? 'warm-resumed' : r.reused ? 'reused' : 'fresh'})`);
+      runLog(ctx.run, `  · RP session ${r.session_id.slice(0, 8)} ready (${r.reused ? 'reused' : 'fresh'})`);
     }
   } else if (action === 'stop') {
-    // Soft stop: sidecar parks the session in the warm cache so it can be
-    // resumed cheaply by anything that runs after this step (next sequence
-    // iteration, scheduled rerun, the user clicking Start in the UI...).
     await apiFetch('POST', '/remoteplay/quick-stop', { ip: ctx.profile.ip_address }, ctx.signal);
-    runLog(ctx.run, '  · soft-stopped RP session (parked in warm cache for next start)');
+    runLog(ctx.run, '  · stopped the RP session');
   } else if (action === 'standby') {
     // Hard "go to sleep" — sends the PS5 standby command through the RP
     // session (the same path the P5 Control "Standby" button uses).
     // Requires the profile to be PSN-linked + RP-paired; /remoteplay/standby
     // surfaces a 400 with a readable message when either is missing.
-    // We also drop the warm cache first so the next sequence start doesn't
-    // try to resume into a now-asleep console.
+    // The session goes first: standby through a session we then leave
+    // open would have the next start resume into a sleeping console.
     try { await apiFetch('POST', '/remoteplay/quick-stop', { ip: ctx.profile.ip_address }, ctx.signal); } catch (_) {}
     await apiFetch('POST', '/remoteplay/standby', { ip: ctx.profile.ip_address, profile_id: ctx.profile.id }, ctx.signal);
     runLog(ctx.run, '  · console rest mode command sent');
@@ -712,14 +681,13 @@ function lastRunEndedFor(profileId) {
   return latest;
 }
 
-// Whether something is on this console's controller: a live Remote Play session, or
-// the warm session a wake step parks for its TTL. An unknown state counts as in use:
-// a run of ours would take the controller, and without Remote Play it would fail at
-// its first input script anyway.
+// Whether something is on this console's controller: a live Remote Play session. An
+// unknown state counts as in use: a run of ours would take the controller, and
+// without Remote Play it would fail at its first input script anyway.
 async function isRemotePlayBusy(ip) {
   try {
     const status = await apiFetch('GET', `/remoteplay/quick-status?ip=${encodeURIComponent(ip)}`);
-    if (!status?.active) return false; // parked sessions are safe to resume
+    if (!status?.active) return false;
     const idleSeconds = status.input_idle_s;
     // Let autoload take over an idle video session, but do not steer while
     // someone has recently sent controller input through Remote Play.

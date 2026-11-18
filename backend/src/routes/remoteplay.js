@@ -323,8 +323,6 @@ async function ensureSessionForIp(ip, opts = {}) {
     resolution: data.resolution || resolution,
     fps: data.fps || fps,
   });
-  // `resumed:true` means the sidecar handed us a warm-cached session that
-  // was never actually disconnected on the PS5 side - reconnect was O(ms).
   // `reused:true` means a sibling caller's Start completed first and we
   // got handed its session_id back without firing a second handshake.
   const mediaBits = data.video ? 'video' : '';
@@ -559,9 +557,9 @@ router.get('/retry-status', async (req, res) => {
 
 // ─── Wake (no session) --------------------------------------------------------
 //
-// Send wakeup UDP packets to the PS5 without trying to open a session. Helps
-// recover the RP slot when something else kicked the previous session (e.g.
-// a physical DualSense booted our Remote Play stream off the console).
+// Power the console on, nothing else: the DDP WAKEUP packets and no more. No
+// session, and no LAUNCH either - signing the account in past the "Press the
+// PS button" picker belongs to starting a session.
 router.post('/wake', async (req, res) => {
   try {
     const { ip: rawIp, profile_id } = req.body || {};
@@ -571,29 +569,28 @@ router.post('/wake', async (req, res) => {
     if (!ip && profile) ip = profile.ip_address;
     if (!ip) return res.status(400).json({ success: false, error: 'ip or profile_id required' });
     if (!profile) profile = loadProfileByIp(ip);
-    // The pairing holds what waking needs (the regist key, and the account
-    // id LAUNCH is made from), so a paired console wakes without more.
-    if (!profile?.psn_account_id && !profile?.rp_user_profile) {
+    // The wakeup packet is signed with the pairing's regist key, so a
+    // console that was never paired cannot be woken over the network.
+    if (!profile?.rp_user_profile) {
       return res.status(400).json({ success: false, error: 'The console must be paired first (Remote Play tab)' });
     }
 
     let userProfile = null;
-    if (profile.rp_user_profile) {
-      try { userProfile = JSON.parse(profile.rp_user_profile); } catch (_) {}
+    try { userProfile = JSON.parse(profile.rp_user_profile); } catch (_) {}
+    if (!userProfile) {
+      return res.status(400).json({ success: false, error: 'Stored Remote Play profile is corrupt - re-pair the console' });
     }
-    // Wake only: UDP wakeup packets and the DDP LAUNCH, no session. It
-    // stays well under 5 s; the 20 s ceiling is there so a console in deep
-    // standby behind packet loss still has time to answer.
+    // The sidecar keeps nudging the console until discovery answers "Ok",
+    // for up to 90 s, so this answer means it is really on. The ceiling is
+    // that 90 s plus room for the last probe.
     const wakeHostType = profile.console_type === 'ps4' ? 'PS4'
       : profile.console_type === 'ps5' ? 'PS5'
       : null;
     const data = await sidecar('POST', '/wake', {
       ip,
-      account_id: profile.psn_account_id,
-      online_id: profile.psn_online_id || null,
       user_profile: userProfile,
       ...(wakeHostType ? { host_type: wakeHostType } : {}),
-    }, { timeout: 20000 });
+    }, { timeout: 100000 });
     res.json({ success: true, ...data });
   } catch (err) {
     res.status(err.status || 502).json({ success: false, error: err.message });
@@ -1391,59 +1388,8 @@ router.post('/sessions/:sid/stop', async (req, res) => {
 
 // ─── Direct session control (used by ScriptRunner + autoload rp_session step)
 
-// Open (or reuse) the cached Remote Play session for an IP. Returns the
-// session id and current cached state without requiring the caller to know
-// anything about the sidecar.
-// Pre-warm: open a full Remote Play session, then immediately park it in
-// the sidecar's warm cache. Used by the "Wake PS5" buttons everywhere - the
-// user gets a console that is genuinely ready (RP auth handshake done, slot
-// claimed), and the *next* Start session resumes from warm cache in O(ms)
-// instead of fighting the PS5 post-disconnect lock.
-//
-// Resolves credentials the same way ensureSessionForIp() does, so the
-// caller only needs ip or profile_id.
-router.post('/prewarm', async (req, res) => {
-  try {
-    const { ip: rawIp, profile_id } = req.body || {};
-    let ip = rawIp;
-    let profile = null;
-    if (profile_id) profile = loadProfileById(profile_id);
-    if (!ip && profile) ip = profile.ip_address;
-    if (!ip) return res.status(400).json({ success: false, error: 'ip or profile_id required' });
-    if (!profile) profile = loadProfileByIp(ip);
-    if (!profile?.rp_user_profile) {
-      return res.status(400).json({ success: false, error: 'No Remote Play credentials for this PS5 - pair first in the Remote Play tab' });
-    }
-    let userProfile;
-    try { userProfile = JSON.parse(profile.rp_user_profile); }
-    catch (_) { return res.status(400).json({ success: false, error: 'Stored Remote Play profile is corrupt - re-pair the PS5' }); }
-
-    const prewarmStream = normalizeStreamParams({
-      resolution: req.body?.resolution,
-      fps: req.body?.fps,
-    });
-    const data = await sidecar('POST', '/sessions/prewarm', {
-      ip,
-      user_profile: userProfile,
-      account_id: profile.psn_account_id || null,
-      enable_video: !!req.body?.enable_video,
-      resolution: prewarmStream.resolution,
-      fps: prewarmStream.fps,
-    }, { timeout: 180000 });
-
-    // Drop the local cache - the session is now in the sidecar's warm
-    // cache, not the live SESSIONS pool, so a subsequent quick-input or
-    // /sessions/start needs to go through ensureSessionForIp() again
-    // (which will resume from warm cache for free).
-    ipToSession.delete(ip);
-    log('info', `Pre-warmed Remote Play session ${data.session_id} for ${ip}`
-      + (data.warm_cached ? ` (warm-cached ${data.warm_cache_ttl_s}s)` : ' (already live)'));
-    res.json({ success: true, ...data });
-  } catch (err) {
-    res.status(err.status || 502).json({ success: false, error: err.message });
-  }
-});
-
+// Open (or reuse) the Remote Play session for an IP: the session id and its
+// state, without the caller having to know anything about the sidecar.
 // Alias of /sessions/start kept for backwards compatibility with ScriptRunner
 // and Autoload's rp_session step. Goes through the same ensureSessionForIp()
 // helper so callers can't accidentally diverge.
@@ -1481,32 +1427,21 @@ router.post('/quick-stop', async (req, res) => {
     // button (quick-status keeps reporting it as active on every poll).
     if (!sidToStop) {
       try {
-        const w = await sidecar('GET', `/warm-status?ip=${encodeURIComponent(ip)}`, undefined, { timeout: 5000 });
-        if (w.live || w.warm) sidToStop = w.session_id;
+        const w = await sidecar('GET', `/live-status?ip=${encodeURIComponent(ip)}`, undefined, { timeout: 5000 });
+        if (w.live) sidToStop = w.session_id;
       } catch (_) {}
     }
 
     if (sidToStop) {
-      // Soft stop (no force=true) - the sidecar parks the session in its
-      // PAUSED_SESSIONS warm cache so the next Start resumes instantly
-      // instead of fighting the PS5 post-disconnect session lock.
       try { await sidecar('POST', `/sessions/${encodeURIComponent(sidToStop)}/stop`, {}, { timeout: 20000 }); } catch (_) {}
       ipToSession.delete(ip);
       cachedStopped = true;
     }
 
-    // /sessions/stop-all is a HARD reset: it tears down BOTH the live
-    // SESSIONS pool and the PAUSED_SESSIONS warm cache, and stamps
-    // RECENT_DISCONNECTS so the next Start sleeps out the 60s PS5 lock.
-    // That is exactly what we want for `force reset`, but it's the wrong
-    // thing to do on a normal Stop - it would wipe the warm cache we just
-    // populated via /sessions/:sid/stop a few lines up.
-    //
-    // So: only call stop-all when the caller explicitly asks for it via
-    // `all:true`. The previous "also call it when we had nothing cached"
-    // fallback turned out to be hostile to warm-cache reuse: a fresh
-    // /quick-stop call right after /sessions/:sid/stop (the Node cache
-    // gets cleared there too) would still trigger stop-all.
+    // /sessions/stop-all is the wide reset: every session the sidecar
+    // holds for this console, not just the one we know about. Only on an
+    // explicit `all:true` - a normal Stop has already ended its own
+    // session a few lines up.
     let sidecarStopped = [];
     if (all) {
       try {
@@ -1527,10 +1462,9 @@ router.post('/quick-stop', async (req, res) => {
 });
 
 // Report the state of any Remote Play session resources we have for an IP.
-// The response covers three cases:
+// The response covers two cases:
 //   - active live session  → { active: true, session_id, video }
-//   - warm-cached session  → { active: false, warm: true, warm_ttl_s, video }
-//   - nothing              → { active: false, warm: false }
+//   - nothing              → { active: false }
 //
 // We always consult the sidecar (it's the source of truth, especially after
 // a Node restart that loses ipToSession). Local cache is only used as a
@@ -1551,7 +1485,6 @@ router.get('/quick-status', async (req, res) => {
           return res.json({
             success: true,
             active: true,
-            warm: false,
             ip,
             session_id: cached.sid,
             state: s.state,
@@ -1563,7 +1496,7 @@ router.get('/quick-status', async (req, res) => {
           });
         }
         // Session exists but isn't connected - drop the stale local cache
-        // and fall through to the sidecar-wide warm-status lookup below.
+        // and fall through to the sidecar-wide lookup below.
         ipToSession.delete(ip);
       } catch (e) {
         // Treat sidecar timeouts as transient - keep the cached entry and
@@ -1574,7 +1507,6 @@ router.get('/quick-status', async (req, res) => {
           return res.json({
             success: true,
             active: true,
-            warm: false,
             ip,
             session_id: cached.sid,
             transient: true,
@@ -1588,10 +1520,10 @@ router.get('/quick-status', async (req, res) => {
     }
 
     // No local session_id (or it was stale) - ask the sidecar what it knows
-    // about this IP. Covers warm cache (pre-warmed by Wake button) and
-    // sessions opened by other clients between Node restarts.
+    // about this IP. Covers sessions opened by other clients, and any that
+    // outlived a Node restart.
     try {
-      const w = await sidecar('GET', `/warm-status?ip=${encodeURIComponent(ip)}`, undefined, { timeout: 5000 });
+      const w = await sidecar('GET', `/live-status?ip=${encodeURIComponent(ip)}`, undefined, { timeout: 5000 });
       if (w.live) {
         // Re-populate Node's cache so subsequent calls hit the fast path.
         ipToSession.set(ip, {
@@ -1604,7 +1536,6 @@ router.get('/quick-status', async (req, res) => {
         return res.json({
           success: true,
           active: true,
-          warm: false,
           ip,
           session_id: w.session_id,
           input_idle_s: Number.isFinite(Number(w.last_input))
@@ -1614,23 +1545,9 @@ router.get('/quick-status', async (req, res) => {
           fps: w.fps || null,
         });
       }
-      if (w.warm) {
-        return res.json({
-          success: true,
-          active: false,
-          warm: true,
-          ip,
-          warm_session_id: w.session_id,
-          warm_age_s: w.age_s,
-          warm_ttl_remaining_s: w.ttl_remaining_s,
-          video: !!w.video,
-          resolution: w.resolution || null,
-          fps: w.fps || null,
-        });
-      }
     } catch (_) { /* sidecar transient - report as "nothing" */ }
 
-    return res.json({ success: true, active: false, warm: false, ip });
+    return res.json({ success: true, active: false, ip });
   } catch (err) {
     res.status(err.status || 502).json({ success: false, error: err.message });
   }

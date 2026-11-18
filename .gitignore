@@ -21,3 +21,6 @@ dist-portable/
 # Generated host-side C array for the pinned LZ4 PackedStdio runtime.
 backend/third_party/lz4-compression/runtime_blob.c
 backend/third_party/lz4-compression/lz4-pack-cli
+
+# Local deploy/test scratch (real console data - never commit).
+deploy-local/

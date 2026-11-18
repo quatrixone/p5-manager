@@ -126,8 +126,8 @@ function PS5Control({ profiles, onNotification, onProfilesChanged }) {
     [defaultProfile?.ip_address],
   );
 
-  // Wake = the DDP WAKEUP and LAUNCH packets, nothing else. No Remote Play
-  // session is opened, so none is left behind holding the console's RP slot.
+  // Wake = the DDP WAKEUP packets, nothing else: no account sign-in and no
+  // Remote Play session, so nothing is left behind holding the RP slot.
   const handleWake = async () => {
     if (!defaultProfile) return;
     // Optimistic "waking" on the shared status - the topbar dot and this
@@ -312,7 +312,7 @@ function PS5Control({ profiles, onNotification, onProfilesChanged }) {
               disabled={waking || standbyBusy || stoppingSession}
               title={
                 rpSession.state === 'live' ? 'A Remote Play session is already active.'
-                : 'Wake the console and prepare a Remote Play session for a faster start.'
+                : 'Power the console on. Nothing else - no Remote Play session is opened.'
               }
             >
               {waking ? '⏳ Waking…'

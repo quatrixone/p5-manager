@@ -814,13 +814,14 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
               {showAddStepMenu === 'wol' && (
                 <div className="p-md" style={{ background: 'var(--panel2)', borderRadius: 8 }}>
                   <p className="text-sm text-muted mb-sm">
-                    Wakes the console from rest mode over Remote Play, logs the user in
-                    (dismisses the "Press PS button" picker) and holds it awake, so the next
-                    input_script / rp_session step starts at once instead of re-running the
-                    full handshake.
+                    Powers the console on from rest mode and waits until it answers.
+                    Nothing else: no account sign-in and no Remote Play session, so the
+                    console is left alone. A later input_script / rp_session step opens
+                    its own session and signs the account in on the way.
                   </p>
                   <p className="text-xs text-muted mb-md">
-                    Falls back to plain DDP wake if that fails (e.g. no RP credentials saved).
+                    The console must be paired in the Remote Play tab - the wake packet is
+                    signed with that pairing.
                   </p>
                   <button
                     className="btn btn-success"
@@ -1351,10 +1352,10 @@ function AutoloadBuilder({ profiles, payloads, onNotification }) {
                                   <span>Keep a live Remote Play session open</span>
                                 </label>
                                 <div className="text-xs text-muted" style={{ marginTop: 4 }}>
-                                  The step holds the console awake by itself, so this is only needed
-                                  when a downstream tool (another script talking to the sidecar
-                                  directly) expects a session in the live pool. Leave off for most
-                                  sequences.
+                                  Turn this on when long steps follow (big uploads, an extract)
+                                  and the console must not drop back into rest mode: the session
+                                  holds it awake. It also claims the Remote Play slot, so leave it
+                                  off otherwise.
                                 </div>
                               </>
                             )}

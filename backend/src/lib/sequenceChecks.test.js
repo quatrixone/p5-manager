@@ -49,7 +49,7 @@ test('a run of any sequence on the same console holds the watcher for the cooldo
 test('the watcher never takes a controller something else is holding', async () => {
   const held = (over) => shouldAutoTrigger({ downSince: NOW - minutes(60) }, CFG, NOW, ready(over));
   assert.equal((await held({ busy: true })).run, false);
-  // A live session, and the warm session the wake step parks for 180 s, both count.
+  // A live Remote Play session counts.
   assert.equal((await held({ remotePlayBusy: true })).run, false);
   // An unknown Remote Play state is treated as in use by the caller, so the same.
   assert.equal((await held({ remotePlayBusy: () => Promise.resolve(true) })).run, false);

@@ -9,11 +9,6 @@ browsers that cannot take that).
 A session is one p5rp process, the helper built on libchiaki (rpnative/);
 chiaki_engine.py talks to it. ddp.py finds and wakes consoles, psn_oauth.py
 does the PSN sign-in.
-
-Sessions survive a stop for a while: a soft stop parks the session (the
-"warm cache") instead of ending it, so the next start for the same console
-takes milliseconds and never meets the console's "Remote Play is in use"
-that follows a real disconnect.
 """
 from __future__ import annotations
 
@@ -53,9 +48,6 @@ app = FastAPI(title="p5-manager-remoteplay", version="1.0.0")
 
 # session_id -> {session, controller, receiver, ip, user, video, resolution, fps, created, last_used}
 SESSIONS: Dict[str, Dict[str, Any]] = {}
-# ip -> a parked session (same fields plus sid, paused_at)
-PAUSED_SESSIONS: Dict[str, Dict[str, Any]] = {}
-WARM_CACHE_TTL_S = float(os.environ.get("RP_WARM_CACHE_TTL_S", "300"))
 # ip -> {reason, wait_started, wait_s}: a start waiting for the console to
 # let go of a previous session, for /retry-status.
 RETRY_STATUS: Dict[str, Dict[str, Any]] = {}
@@ -137,11 +129,6 @@ async def health():
             {"id": sid, "ip": s.get("ip"), "video": bool(s.get("video")), "resolution": s.get("resolution"),
              "fps": s.get("fps"), "stats": s["session"].stats}
             for sid, s in SESSIONS.items()
-        ],
-        "warm": [
-            {"ip": ip, "id": p.get("sid"), "age_s": round(time.monotonic() - p["paused_at"], 1),
-             "resolution": p.get("resolution")}
-            for ip, p in PAUSED_SESSIONS.items()
         ],
     }
 
@@ -282,33 +269,40 @@ def _decimal_account_id(account_id: Optional[str], user_profile: Optional[Dict[s
     return aid
 
 
-async def _bring_up(ip: str, regist_key: str, host_type: Optional[str], account_id: str) -> None:
-    """Make sure the console is on and logged in before a session.
+async def _power_on(ip: str, regist_key: str, host_type: Optional[str]) -> int:
+    """Power the console on and wait until it answers discovery with "Ok".
 
-    On: nothing to do. In rest mode (or silent): WAKEUP, wait until it
-    answers "Ok" - up to 90 s, nudging every 30 s, since a deep rest takes
-    long to boot - then LAUNCH, which logs the account in past the "press
-    the PS button" screen a freshly woken console shows.
+    Returns how many WAKEUP packets that took, 0 when it was already on. A
+    console that has just gone into rest mode ignores the first packet (it
+    is still winding its services down), and UDP loses packets anyway, so
+    this nudges it every 30 s for up to 90 s before giving up.
     """
     st = await ddp.status(ip, host_type, timeout=1.5, tries=3)
     if st and st.get("status-code") == ddp.STATUS_OK:
-        return
+        return 0
     log.info("console %s is %s - waking it (up to 90 s)", ip, (st or {}).get("status") or "silent")
-    woke = False
-    for _ in range(3):
+    for sent in range(1, 4):
         ddp.wakeup(ip, regist_key, host_type)
         deadline = time.monotonic() + 30.0
         while time.monotonic() < deadline:
             await asyncio.sleep(2.0)
             st = await ddp.status(ip, host_type, timeout=1.0, tries=1)
             if st and st.get("status-code") == ddp.STATUS_OK:
-                woke = True
-                break
-        if woke:
-            break
+                log.info("console %s is on (%d wakeup packet(s))", ip, sent)
+                return sent
         log.info("console %s still asleep - another wakeup", ip)
-    if not woke:
-        raise HTTPException(502, "The console did not wake within 90 s - wake it with the PS button, then try again.")
+    raise HTTPException(502, "The console did not wake within 90 s - wake it with the PS button, then try again.")
+
+
+async def _bring_up(ip: str, regist_key: str, host_type: Optional[str], account_id: str) -> None:
+    """Make sure the console is on and logged in before a session.
+
+    On: nothing to do. Otherwise power it on and then LAUNCH, which logs
+    the account in past the "press the PS button" screen a freshly woken
+    console shows.
+    """
+    if await _power_on(ip, regist_key, host_type) == 0:
+        return
     await asyncio.sleep(2.0)
     if account_id and ddp.launch(ip, account_id, host_type):
         log.info("LAUNCH sent to %s", ip)
@@ -341,24 +335,26 @@ async def _require_rp_service(ip: str, account_id: str, host_type: Optional[str]
 
 class WakeReq(BaseModel):
     ip: str
-    account_id: Optional[str] = None
-    online_id: Optional[str] = None
     user_profile: Optional[Dict[str, Any]] = None
     host_type: Optional[str] = None
 
 
 @app.post("/wake")
 async def wake(req: WakeReq):
-    """WAKEUP (three times, a UDP packet can get lost) and LAUNCH, without a session."""
+    """Power the console on, and answer once it is really on.
+
+    Nothing else. No LAUNCH, no session - signing the account in and taking
+    the Remote Play slot belong to starting a session, not to waking. Can
+    take most of a minute: see _power_on.
+    """
     if not req.user_profile:
         raise HTTPException(400, "user_profile required - pair the console first")
     regist, _, is_ps4 = _keys(req.user_profile)
     host_type = req.host_type or ("PS4" if is_ps4 else "PS5")
-    for _ in range(3):
-        ddp.wakeup(req.ip, regist, host_type)
-        await asyncio.sleep(0.4)
-    launched = ddp.launch(req.ip, _decimal_account_id(req.account_id, req.user_profile), host_type)
-    return {"ok": True, "packets_sent": 3, "ddp_launch_sent": launched}
+    started = time.monotonic()
+    sent = await _power_on(req.ip, regist, host_type)
+    return {"ok": True, "on": True, "already_on": sent == 0, "packets_sent": sent,
+            "waited_s": round(time.monotonic() - started, 1)}
 
 
 # ─── Sessions ────────────────────────────────────────────────────────────────
@@ -374,31 +370,6 @@ class StartSessionReq(BaseModel):
     resolution: Optional[str] = "720p"
     fps: Optional[int] = 30
     host_type: Optional[str] = None  # "PS5" | "PS4"
-
-
-def _resume_paused(req: StartSessionReq) -> Optional[Dict[str, Any]]:
-    paused = PAUSED_SESSIONS.get(req.ip)
-    if paused is None:
-        return None
-    age = time.monotonic() - paused["paused_at"]
-    if not _alive(paused) or age >= WARM_CACHE_TTL_S:
-        return None
-    PAUSED_SESSIONS.pop(req.ip, None)
-    sid = _new_session_id()
-    entry = {k: v for k, v in paused.items() if k not in ("sid", "paused_at")}
-    now = time.time()
-    entry.update(user=req.user_profile, created=now, last_used=now)
-    entry.setdefault("last_input", now)
-    entry["video"] = bool(entry.get("video") or req.enable_video)
-    if entry["video"] and entry.get("receiver") is None:
-        entry["receiver"] = chiaki_engine.ChiakiReceiver(entry["session"])
-    SESSIONS[sid] = entry
-    res, fps = _normalize_stream(req.resolution, req.fps)
-    note = ""
-    if (entry.get("resolution"), entry.get("fps")) != (res, fps):
-        note = f" (runs at {entry.get('resolution')}/{entry.get('fps')}, {res}/{fps} was asked for)"
-    log.info("session %s resumed from warm cache for %s (age %.1fs)%s", sid, req.ip, age, note)
-    return _describe(sid, entry, resumed=True)
 
 
 @app.post("/sessions/start")
@@ -417,13 +388,6 @@ async def session_start(req: StartSessionReq):
                     s["receiver"] = chiaki_engine.ChiakiReceiver(s["session"])
             log.info("session %s already live for %s - reusing", sid, req.ip)
             return _describe(sid, s, reused=True)
-        resumed = _resume_paused(req)
-        if resumed is not None:
-            return resumed
-        stale = PAUSED_SESSIONS.pop(req.ip, None)
-        if stale is not None:
-            log.info("warm cache for %s is stale - discarding", req.ip)
-            await _close_entry(stale)
         return await _session_open(req)
 
 
@@ -486,36 +450,6 @@ async def _session_open(req: StartSessionReq) -> Dict[str, Any]:
     return _describe(sid, SESSIONS[sid])
 
 
-@app.post("/sessions/prewarm")
-async def session_prewarm(req: StartSessionReq):
-    """Open a session and park it at once: the console is woken, logged in
-    and its Remote Play slot held, so the next start takes milliseconds."""
-    result = await session_start(req)
-    sid = result.get("session_id")
-    if result.get("reused"):
-        return {"ok": True, "ip": req.ip, "session_id": sid, "warm_cached": False, "already_live": True,
-                "video": result.get("video", False), "resolution": result.get("resolution"), "fps": result.get("fps")}
-    s = SESSIONS.pop(sid, None) if sid else None
-    if s is None:
-        return {"ok": True, "ip": req.ip, "session_id": sid, "warm_cached": False,
-                "video": result.get("video", False), "resolution": result.get("resolution"), "fps": result.get("fps")}
-    await _park(sid, s)
-    log.info("session %s PRE-WARMED for %s (TTL %ds)", sid, req.ip, int(WARM_CACHE_TTL_S))
-    return {"ok": True, "ip": req.ip, "session_id": sid, "warm_cached": True,
-            "warm_cache_ttl_s": int(WARM_CACHE_TTL_S), "video": bool(s.get("video")),
-            "resolution": s.get("resolution"), "fps": s.get("fps"), "resumed": result.get("resumed", False)}
-
-
-async def _park(sid: str, s: Dict[str, Any]) -> None:
-    ip = s["ip"]
-    prev = PAUSED_SESSIONS.pop(ip, None)
-    if prev is not None and prev["session"] is not s["session"]:
-        await _close_entry(prev)
-    # Everything let go, so nothing stays pressed on the console meanwhile.
-    s["session"].send("idle")
-    PAUSED_SESSIONS[ip] = {**s, "sid": sid, "paused_at": time.monotonic()}
-
-
 @app.get("/sessions/{session_id}")
 async def session_status(session_id: str):
     s = SESSIONS.get(session_id)
@@ -536,23 +470,19 @@ async def session_status(session_id: str):
 
 
 @app.post("/sessions/{session_id}/stop")
-async def session_stop(session_id: str, force: bool = False):
-    """Soft stop (default): park the session in the warm cache. force=true
-    ends it."""
+async def session_stop(session_id: str):
+    """End the session."""
     s = SESSIONS.pop(session_id, None)
     if not s:
         raise HTTPException(404, "session not found")
-    if not force and _alive(s):
-        await _park(session_id, s)
-        log.info("session %s warm-cached for %s (TTL %ds)", session_id, s["ip"], int(WARM_CACHE_TTL_S))
-        return {"ok": True, "soft": True}
     await _close_entry(s)
-    return {"ok": True, "soft": False}
+    log.info("session %s stopped for %s", session_id, s.get("ip"))
+    return {"ok": True}
 
 
 @app.post("/sessions/stop-all")
 async def session_stop_all(ip: Optional[str] = None):
-    """End every session, live and parked, optionally only for one console."""
+    """End every session, optionally only for one console."""
     stopped = []
     for sid, s in list(SESSIONS.items()):
         if ip and s.get("ip") != ip:
@@ -560,12 +490,6 @@ async def session_stop_all(ip: Optional[str] = None):
         SESSIONS.pop(sid, None)
         await _close_entry(s)
         stopped.append(sid)
-    for pip, p in list(PAUSED_SESSIONS.items()):
-        if ip and pip != ip:
-            continue
-        PAUSED_SESSIONS.pop(pip, None)
-        await _close_entry(p)
-        stopped.append(p.get("sid"))
     return {"ok": True, "stopped": stopped}
 
 
@@ -578,20 +502,15 @@ async def session_retry_status(ip: str):
     return {"waiting": True, "reason": r["reason"], "remaining_s": round(remaining, 1), "total_s": r["wait_s"]}
 
 
-@app.get("/warm-status")
-async def session_warm_status(ip: str):
+@app.get("/live-status")
+async def session_live_status(ip: str):
+    """The live session for a console, if there is one."""
     sid, s = _live_for(ip)
-    if s is not None:
-        return {"ip": ip, "live": True, "warm": False, "session_id": sid,
-                "last_input": s.get("last_input", s["created"]), "video": bool(s.get("video")),
-                "resolution": s.get("resolution"), "fps": s.get("fps")}
-    p = PAUSED_SESSIONS.get(ip)
-    if not p or not _alive(p):
-        return {"ip": ip, "live": False, "warm": False}
-    age_s = time.monotonic() - p["paused_at"]
-    return {"ip": ip, "live": False, "warm": True, "session_id": p["sid"], "age_s": round(age_s, 1),
-            "ttl_remaining_s": round(max(0.0, WARM_CACHE_TTL_S - age_s), 1),
-            "video": bool(p.get("video")), "resolution": p.get("resolution"), "fps": p.get("fps")}
+    if s is None:
+        return {"ip": ip, "live": False}
+    return {"ip": ip, "live": True, "session_id": sid,
+            "last_input": s.get("last_input", s["created"]), "video": bool(s.get("video")),
+            "resolution": s.get("resolution"), "fps": s.get("fps")}
 
 
 # ─── Input ───────────────────────────────────────────────────────────────────
@@ -768,9 +687,9 @@ async def session_video_mjpeg(session_id: str, fps: int = 12):
 
 @app.post("/standby")
 async def standby(req: StartSessionReq):
-    """Put the console into rest mode, through a session: a live or parked
-    one when there is one (a second session would be turned away as "in
-    use"), a short one of its own otherwise."""
+    """Put the console into rest mode, through a session: the live one when
+    there is one (a second session would be turned away as "in use"), a
+    short one of its own otherwise."""
     for sid, s in list(SESSIONS.items()):
         if s.get("ip") == req.ip and _alive(s):
             SESSIONS.pop(sid, None)
@@ -778,15 +697,6 @@ async def standby(req: StartSessionReq):
             await _close_entry(s)
             log.info("standby: through live session %s for %s (ok=%s)", sid, req.ip, ok)
             return {"ok": True, "via": "existing_session"}
-    paused = PAUSED_SESSIONS.pop(req.ip, None)
-    if paused is not None:
-        if _alive(paused):
-            ok = await paused["session"].async_standby(timeout=8.0)
-            await _close_entry(paused)
-            log.info("standby: through warm-cached session %s for %s (ok=%s)", paused.get("sid"), req.ip, ok)
-            return {"ok": True, "via": "warm_cached_session"}
-        await _close_entry(paused)
-
     regist, morning, is_ps4 = _keys(req.user_profile)
     if req.host_type:
         is_ps4 = str(req.host_type).upper() == "PS4"
@@ -810,17 +720,11 @@ async def standby(req: StartSessionReq):
 # ─── Upkeep ──────────────────────────────────────────────────────────────────
 
 async def _upkeep_task():
-    """Every 15 s: end parked sessions past their time, and forget sessions
-    the console has ended by itself (rest mode, network gone)."""
+    """Every 15 s: forget sessions the console has ended by itself (rest
+    mode, network gone)."""
     while True:
         try:
             await asyncio.sleep(15.0)
-            now = time.monotonic()
-            for ip, p in list(PAUSED_SESSIONS.items()):
-                if now - p["paused_at"] >= WARM_CACHE_TTL_S or not _alive(p):
-                    PAUSED_SESSIONS.pop(ip, None)
-                    await _close_entry(p)
-                    log.info("warm cache for %s ended", ip)
             for sid, s in list(SESSIONS.items()):
                 if s["session"].is_stopped:
                     SESSIONS.pop(sid, None)
@@ -845,9 +749,6 @@ async def _shutdown():
     for s in list(SESSIONS.values()):
         await _close_entry(s)
     SESSIONS.clear()
-    for p in list(PAUSED_SESSIONS.values()):
-        await _close_entry(p)
-    PAUSED_SESSIONS.clear()
 
 
 def main():
