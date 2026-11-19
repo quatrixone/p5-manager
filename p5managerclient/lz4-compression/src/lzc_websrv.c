@@ -328,6 +328,7 @@ dispatch_request(const http_request_t *req) {
 	       !strcmp(req->path, "/api/lzc/ampr/upload") ||
 	       !strcmp(req->path, "/api/lzc/update-ampr") ||
 	       !strcmp(req->path, "/api/lzc/restore-ampr-original") ||
+	       !strcmp(req->path, "/api/lzc/zstd-pack") ||
 	       !strcmp(req->path, "/api/lzc/lz4-pack") ||
 	       !strcmp(req->path, "/api/lzc/lz4-unpack") ||
 	       !strcmp(req->path, "/api/lzc/lz4-verify") ||

@@ -91,6 +91,9 @@ walk(const char *root, const char *rel, ap_scan_t *scan) {
     struct stat st;
     if(lstat(path, &st) != 0) { rc = -1; break; }
     if(S_ISDIR(st.st_mode)) {
+      /* The automatic profile builds its rules from the folder names, so a
+       * scan without them keeps every file loose. */
+      if(ap_strlist_add(&scan->dirs, child) != 0) { rc = -1; break; }
       rc = walk(root, child, scan);
     } else if(S_ISREG(st.st_mode)) {
       if(scan->file_count == scan->file_cap) {

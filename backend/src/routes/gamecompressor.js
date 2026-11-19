@@ -9,14 +9,15 @@ import { placeVendoredPayload, vendoredSource } from '../lib/defaultPayloads.js'
 import { tcpPortOpen, sendElfPayload, ELF_LOADER_PORT } from './convert.js';
 import { engineUrl, ENGINE_PORT } from '../lib/engineProxy.js';
 
-// P5 Converter: converting on the console itself. A pinned, locally bundled
-// build of theghostonline's LZ4 Compression engine (GPL), kept separate from
-// the MIT manager. "P5 Converter" is what the user sees; the payload file keeps
-// its upstream name so an existing payload library does not grow a duplicate.
+// P5 Converter: converting on the console itself. Our build of
+// theghostonline's LZ4 Compression engine (GPL), with zstd asset packs added,
+// kept separate from the MIT manager. `dir` is where the source tree lives,
+// which is how the payload is found when it is not in vendored/.
 const RELEASE = {
-  version: '1.6.2-p5manager',
-  filename: 'lz4-compression.elf',
-  sha256: '92b1ba5413f45864c2c2e97953d2cfa88cce65dc96b5148cfca4840b28524e07',
+  version: '1.6.2-p5manager-zstd',
+  filename: 'p5-converter.elf',
+  dir: 'lz4-compression',
+  sha256: 'd240178db72e097d91331417d91f264dbec62745960897e4099a72532922710d',
 };
 const UI_PORT = ENGINE_PORT;
 const SHADOWMOUNT_PORT = 10101;

@@ -13,7 +13,7 @@ LLVM_BINDIR ?= $(shell dirname "$$(command -v clang-18 2>/dev/null || command -v
 export LLVM_BINDIR
 export LLVM_CONFIG
 
-BIN := lz4-compression.elf
+BIN := p5-converter.elf
 BUILD_VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
 C_SRCS := src/lzc_main.c
@@ -29,6 +29,8 @@ C_SRCS += src/lzc_size_cache.c
 C_SRCS += src/lzc_icon_thumb.c
 C_SRCS += src/lzc_image_mount.c
 C_SRCS += src/lzc_boot_files.c
+C_SRCS += src/lzc_zstd_pack.c
+C_SRCS += src/lzc_zstd_build.c
 C_SRCS += src/ampr_index.c
 C_SRCS += src/asset.c
 C_SRCS += src/pfs_compress.c
@@ -75,7 +77,7 @@ CFLAGS_COMMON := -Os -Wall -Werror -Wno-unused-command-line-argument -Wno-unused
 CFLAGS_COMMON += -ffunction-sections -fdata-sections -flto
 CFLAGS_COMMON += -DLZC_VERSION=\"$(BUILD_VERSION)\"
 CFLAGS_COMMON += -DLZC_PORT=5920
-CFLAGS_COMMON += -DVERSION_TAG=\"lz4-compression\"
+CFLAGS_COMMON += -DVERSION_TAG=\"p5-converter\"
 CFLAGS_COMMON += -DBUILD_VERSION=\"$(BUILD_VERSION)\"
 CFLAGS_COMMON += -DMINIZ_USE_UNALIGNED_LOADS_AND_STORES=1
 CFLAGS_COMMON += -Ithird_party/lz4

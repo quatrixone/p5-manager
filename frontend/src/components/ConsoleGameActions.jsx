@@ -13,6 +13,10 @@ const FORMATS = [
     supports: g => g.lz4Supported === true && g.lz4Packed !== true,
     label: 'LZ4 packs — smallest, the game reads them while it runs',
     policies: ['keep', 'after', 'replace'] },
+  { id: 'zstd', action: 'zstd-pack', args: {}, level: 'zstd',
+    supports: g => g.lz4Supported === true && g.lz4Packed !== true,
+    label: 'zstd packs — smaller than LZ4, read on the fly too',
+    policies: ['keep', 'after'] },
   { id: 'ffpfsc', action: 'compress', args: { format: 'exfat' },
     supports: g => ['folder', 'image'].includes(kindOf(g)),
     label: '.ffpfsc compressed image (exFAT inside)',
@@ -71,6 +75,7 @@ async function failureFor(ip, id) {
 export default function ConsoleGameActions({ ip, game, busy, onStarted, onError }) {
   const [format, setFormat] = useState('lz4');
   const [level, setLevel] = useState('9');
+  const [zstdLevel, setZstdLevel] = useState('9');
   const [dest, setDest] = useState('keep');
   const [policy, setPolicy] = useState('keep');
   const [usb, setUsb] = useState([]);
@@ -101,7 +106,8 @@ export default function ConsoleGameActions({ ip, game, busy, onStarted, onError 
     setRefusal('');
     const q = new URLSearchParams({ titleId: game.titleId || '', ...chosen.args });
     if (game.sourcePath) q.set('sourcePath', game.sourcePath);
-    if (chosen.level) { q.set('level', level); q.set('profile', 'auto'); }
+    if (chosen.level === 'zstd') q.set('level', zstdLevel);
+    else if (chosen.level) { q.set('level', level); q.set('profile', 'auto'); }
     if (dest.startsWith('usb:')) { q.set('destination', 'usb'); q.set('usbId', dest.slice(4)); }
     else q.set('destination', dest === 'keep' ? (chosen.here || 'keep') : dest);
     q.set('deletePolicy', policy);
@@ -138,14 +144,21 @@ export default function ConsoleGameActions({ ip, game, busy, onStarted, onError 
         </label>
       )}
 
-      {chosen?.level && (
+      {chosen?.level === 'zstd' ? (
+        <label className="text-xs text-muted">zstd level (1 to 22; higher is smaller and slower)
+          <select className="select mt-xs" value={zstdLevel} disabled={disabled}
+                  onChange={e => setZstdLevel(e.target.value)}>
+            {Array.from({ length: 22 }, (_, i) => String(i + 1)).map(l => <option key={l} value={l}>{l}</option>)}
+          </select>
+        </label>
+      ) : chosen?.level ? (
         <label className="text-xs text-muted">LZ4 level (9 is the engine's default; higher is smaller and slower)
           <select className="select mt-xs" value={level} disabled={disabled}
                   onChange={e => setLevel(e.target.value)}>
             {Array.from({ length: 12 }, (_, i) => String(i + 1)).map(l => <option key={l} value={l}>{l}</option>)}
           </select>
         </label>
-      )}
+      ) : null}
 
       <label className="text-xs text-muted">Where it lands
         <select className="select mt-xs" value={dest} disabled={disabled}
