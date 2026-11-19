@@ -17,7 +17,7 @@ const RELEASE = {
   version: '1.6.2-p5manager-zstd',
   filename: 'p5-converter.elf',
   dir: 'p5converter',
-  sha256: '12839a242162eb90375d070450acd6eeeaeae91cf966ddcc3e50cf4961b49506',
+  sha256: '65cd58642a6ea432d67fcab4798d63e4ff02de3d26b2831e07a2a176ad129f22',
 };
 const UI_PORT = ENGINE_PORT;
 const SHADOWMOUNT_PORT = 10101;

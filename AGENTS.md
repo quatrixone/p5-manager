@@ -63,3 +63,50 @@ read it as a hang.
   FTP port: a `curl` there fails with "Received HTTP/0.9 when not allowed".
   The on-console downloader (`routes/downloader.js`) needs the 1.6.0+
   "zhttp" build.
+
+## P5 Converter and zstd asset packs
+
+The console engine is `p5managerclient/p5converter/` (it was called
+lz4-compression until the zstd work). Build it with the in-tree SDK:
+
+```bash
+cd p5managerclient/p5converter
+PS5_PAYLOAD_SDK=$(cd ../sdk && pwd) make -j"$(nproc)"
+```
+
+The SDK must be v0.43 or newer or the build refuses it: firmware 13.60 has
+no case in older CRTs (`tools/check_sdk_fw1360.py`). After a build, re-pin
+the checksum in **two** places - `RELEASE.sha256` in
+`backend/src/routes/gamecompressor.js` and the `VENDORED_PAYLOADS` entry in
+`backend/src/lib/defaultPayloads.js` - then rebuild the image, or the
+container keeps sending the old ELF. `docker compose build` can fail while
+`docker compose up -d` happily keeps the old container running, so check
+the build's exit status, not its last line.
+
+zstd packs (`AMPRZPK1`, `lzc_zstd_pack.c`) are read by ampr-emu-ng, which
+the pack installs into `fakelib/libSceAmpr.sprx`; the pinned PackedStdio
+runtime reads only the LZ4 packs. Three things a packed tree must get right,
+each learned from a game that would not boot:
+
+- **`ampr_emu.index` must be rebuilt**, never copied. The runtime turns a
+  fileId into a path through it, so an index numbering another set of files
+  makes it read the wrong one (`pack-read` EIO).
+- **Every file needs its execute bit.** Without it the module loader refuses
+  the runtime and the game dies with "failed to open descriptor file".
+- **Empty folders count.** Copying only files silently drops them.
+
+Verified working: a homebrew title with 1901 small files packed to 737 KB
+boots and the runtime reports `pack_format zstd` with `open_hit 60`.
+
+**Known limit:** a game that reads a large Unreal IoStore container
+(`.ucas`) with kernel AIO does not boot - every pack read returns EIO and it
+ends on `aio-completion-nonretryable`. Not a data problem (the archive
+unpacks byte for byte and no chunk fails); it is ampr-emu-ng's AIO path, and
+upstream has open work there. `pread`/`loose_pread` make no difference.
+
+Diagnosing a packed game: put ampr-emu-ng's `libSceAmpr-debug.sprx` in
+`fakelib/` (chmod 777). It writes `/data/ampr_emu_trace.txt` - truncated at
+each launch, so copy it off - and serves `/metrics`, `/fsfail` and
+`/modules` on port 9090 while the game runs. In the trace, `Z` events mean a
+zstd chunk failed and point at us; `pack-read` errors without them point at
+the runtime.
