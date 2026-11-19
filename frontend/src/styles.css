@@ -2527,15 +2527,6 @@ pre { padding: 12px; overflow-x: auto; }
 }
 .lib-dest-off { opacity: 0.5; cursor: not-allowed; }
 
-/* PS5 Game Compressor's own UI, embedded in Convert (GameCompressor.jsx) */
-.gc-frame {
-  width: 100%;
-  height: min(78vh, 820px);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: #fff;
-}
-
 /* PS5 Control while an Autoload sequence steers the console (PS5Control.jsx) */
 .ps5control-locked { opacity: 0.45; pointer-events: none; user-select: none; }
 

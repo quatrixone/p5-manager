@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import Modal from './UI/Modal';
 import useVisiblePolling from '../hooks/useVisiblePolling';
 import { api, apiSafe } from '../lib/api.js';
+import ConsoleGameActions from './ConsoleGameActions';
 
 // PS5 library comes from ShadowMountPlus and supports storage operations.
 // PS4 library is an informational view read from app.db over FTP.
@@ -44,6 +45,10 @@ export default function Library({ profiles = [], onNotification }) {
   const [deleteSource, setDeleteSource] = useState(false);
   const [deleting, setDeleting] = useState(null); // game pending delete confirmation
   const [renaming, setRenaming] = useState(null);
+  // "Convert to…": the title the P5 Converter dialog is open for, and what
+  // the engine on that console says it is doing right now.
+  const [converting, setConverting] = useState(null);
+  const [engine, setEngine] = useState(null); // { job } | { off: true } | null while loading
   const [renameValue, setRenameValue] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -176,6 +181,23 @@ export default function Library({ profiles = [], onNotification }) {
     } finally {
       setBusy(false);
     }
+  };
+
+  const openConvert = async (game) => {
+    setConverting(game);
+    setEngine(null);
+    // The engine runs one job at a time, and reading never starts it, so an
+    // answer of "not running" is a real state to show, not an error.
+    try { setEngine({ job: await api.get(`/gamecompressor/${ip}/engine/lzc/job`) }); }
+    catch (e) { setEngine({ off: true, message: e.message }); }
+  };
+
+  const startConverter = async () => {
+    setEngine(null);
+    try {
+      await api.post(`/gamecompressor/${ip}/start`);
+      setEngine({ job: await api.get(`/gamecompressor/${ip}/engine/lzc/job`) });
+    } catch (e) { setEngine({ off: true, message: e.message }); }
   };
 
   const openRename = (g) => {
@@ -424,6 +446,7 @@ export default function Library({ profiles = [], onNotification }) {
               {isFolderSource(game) && (
                 <button className="btn btn-secondary" disabled={busy || jobActive || !game.source_available} onClick={() => fixPermissions(game)} title="Set permissions to 777 recursively over FTP">🔓 Fix permissions (777)</button>
               )}
+              <button className="btn btn-secondary" disabled={busy || jobActive || !game.source_available} onClick={() => openConvert(game)} title="Convert this title on the console itself - LZ4, .ffpfsc, .exfat or back to a folder">🗜 Convert to…</button>
               <button className="btn btn-secondary" disabled={busy || jobActive || !game.source_available || !game.path} onClick={() => openRename(game)}>✏️ Rename</button>
               {!isPs4Profile && <>
                 <button className="btn btn-secondary" disabled={busy || !game.installed} onClick={() => uninstall(game)} title="Remove the title from the console's home screen; files stay">✖ Uninstall</button>
@@ -431,6 +454,37 @@ export default function Library({ profiles = [], onNotification }) {
               </>}
             </div>}
           </div>
+        )}
+      </Modal>
+
+      <Modal
+        isOpen={!!converting}
+        onClose={() => setConverting(null)}
+        title={`Convert ${converting?.title_name || converting?.title_id || 'title'}`}
+      >
+        {converting && (
+          engine === null ? <div className="text-xs text-muted">Asking the console…</div>
+          : engine.off ? (
+            <div className="flex-col gap-sm">
+              <div className="text-xs text-muted">P5 Converter is not running on this console, so there is nothing to convert with yet. {engine.message}</div>
+              <button className="btn btn-primary btn-sm" onClick={startConverter}>▶ Start P5 Converter</button>
+            </div>
+          ) : (
+            <div className="flex-col gap-sm">
+              {engine.job?.busy && (
+                <div className="text-xs text-muted">
+                  The console is already working on {engine.job.current || 'another title'} ({engine.job.verb || 'running'}) - it runs one job at a time.
+                </div>
+              )}
+              <ConsoleGameActions
+                ip={ip}
+                game={{ titleId: converting.title_id, sourcePath: converting.path, name: converting.title_name }}
+                busy={!!engine.job?.busy}
+                onStarted={() => { onNotification?.('Conversion started on the console', 'success'); setConverting(null); }}
+                onError={m => onNotification?.(m, 'error')}
+              />
+            </div>
+          )
         )}
       </Modal>
 

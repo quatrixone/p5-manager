@@ -43,7 +43,7 @@ What comes back by itself after a wake, and what does not:
 | 2120 | FTP (zftpd) | up |
 | 10101 | ShadowMountPlus | up |
 | 3232 / 2323 | klog / shsrv | down — send the payload |
-| 5920 | LZ4 Compression engine | down — `POST /api/gamecompressor/<ip>/start` |
+| 5920 | P5 Converter engine | down — `POST /api/gamecompressor/<ip>/start` |
 
 Rest mode is the safe way back: `POST /api/remoteplay/standby` (it reported
 `Server Standby` within 5 s on this console). Don't reboot without asking.
