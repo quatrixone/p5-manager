@@ -119,7 +119,7 @@ export default function ConsoleGameActions({ ip, game, busy, onStarted, onError 
       // without looking.
       const failed = await failureFor(ip, started?.id);
       if (failed) setRefusal(failed);
-      else onStarted?.(chosen);
+      else onStarted?.(chosen, started);
     } catch (e) {
       // 409 is the engine saying no (busy, wrong source kind, no room). Show
       // its own words and leave the form alone - retrying by itself helps nobody.

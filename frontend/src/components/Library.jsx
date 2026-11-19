@@ -3,6 +3,7 @@ import Modal from './UI/Modal';
 import useVisiblePolling from '../hooks/useVisiblePolling';
 import { api, apiSafe } from '../lib/api.js';
 import ConsoleGameActions from './ConsoleGameActions';
+import ProgressBar from './UI/ProgressBar';
 
 // PS5 library comes from ShadowMountPlus and supports storage operations.
 // PS4 library is an informational view read from app.db over FTP.
@@ -49,6 +50,9 @@ export default function Library({ profiles = [], onNotification }) {
   // the engine on that console says it is doing right now.
   const [converting, setConverting] = useState(null);
   const [engine, setEngine] = useState(null); // { job } | { off: true } | null while loading
+  // Once a conversion starts here the dialog stays open and follows it,
+  // because the console keeps the job and the Library is where it was asked for.
+  const [convertJob, setConvertJob] = useState(null); // { id, job, done }
   const [renameValue, setRenameValue] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -185,11 +189,33 @@ export default function Library({ profiles = [], onNotification }) {
 
   const openConvert = async (game) => {
     setConverting(game);
+    setConvertJob(null);
     setEngine(null);
     // The engine runs one job at a time, and reading never starts it, so an
     // answer of "not running" is a real state to show, not an error.
     try { setEngine({ job: await api.get(`/gamecompressor/${ip}/engine/lzc/job`) }); }
     catch (e) { setEngine({ off: true, message: e.message }); }
+  };
+
+  useEffect(() => {
+    if (!convertJob?.id || convertJob.done) return undefined;
+    let live = true;
+    const tick = async () => {
+      const job = await apiSafe.get(`/gamecompressor/${ip}/engine/lzc/job`);
+      if (!live) return;
+      if (job?.busy) { setConvertJob(c => (c ? { ...c, job } : c)); return; }
+      const h = await apiSafe.get(`/gamecompressor/${ip}/engine/lzc/history`);
+      const mine = (h?.history || []).find(e => e.id === convertJob.id);
+      if (live && mine && mine.status !== 'running') setConvertJob(c => (c ? { ...c, done: mine } : c));
+    };
+    tick();
+    const t = setInterval(tick, 2000);
+    return () => { live = false; clearInterval(t); };
+  }, [convertJob?.id, convertJob?.done, ip]);
+
+  const cancelConvert = async () => {
+    try { await api.post(`/gamecompressor/${ip}/engine/lzc/job/cancel`); }
+    catch (e) { onNotification?.(e.message, 'error'); }
   };
 
   const startConverter = async () => {
@@ -470,6 +496,43 @@ export default function Library({ profiles = [], onNotification }) {
               <button className="btn btn-primary btn-sm" onClick={startConverter}>▶ Start P5 Converter</button>
             </div>
           ) : (
+            convertJob ? (
+              <div className="flex-col gap-sm">
+                {convertJob.done ? (
+                  <>
+                    <div className="text-sm" style={{ color: convertJob.done.status === 'failed' ? 'var(--danger)' : 'var(--success)' }}>
+                      {convertJob.done.status === 'success' ? '✓ Converted on the console'
+                        : convertJob.done.status === 'cancelled' ? 'Cancelled'
+                        : `Failed: ${convertJob.done.error || 'the console did not say why'}`}
+                    </div>
+                    {convertJob.done.outputPath && (
+                      <div className="text-xs text-muted" style={{ wordBreak: 'break-all' }}>{convertJob.done.outputPath}</div>
+                    )}
+                    <button className="btn btn-secondary btn-sm" onClick={() => { setConverting(null); load(); }}>Close</button>
+                  </>
+                ) : (
+                  <>
+                    <ProgressBar
+                      value={Number(convertJob.job?.copiedBytes) || 0}
+                      max={Number(convertJob.job?.totalBytes) || 1}
+                      label={`${convertJob.job?.verb || 'Converting'} · ${convertJob.job?.phase || 'starting'}`}
+                    />
+                    <div className="text-xs text-muted">
+                      {fmtBytes(Number(convertJob.job?.copiedBytes) || 0)} of {fmtBytes(Number(convertJob.job?.totalBytes) || 0)}
+                      {convertJob.job?.speedBytesPerSec ? ` · ${fmtBytes(convertJob.job.speedBytesPerSec)}/s` : ''}
+                    </div>
+                    <div className="flex gap-sm">
+                      <button className="btn btn-ghost btn-sm" onClick={cancelConvert}
+                              disabled={!!convertJob.job?.cancelDisabled}
+                              title={convertJob.job?.cancelDisabledReason || ''}>✖ Cancel</button>
+                      <button className="btn btn-secondary btn-sm" onClick={() => setConverting(null)}>
+                        Close — it keeps running
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            ) : (
             <div className="flex-col gap-sm">
               {engine.job?.busy && (
                 <div className="text-xs text-muted">
@@ -480,10 +543,11 @@ export default function Library({ profiles = [], onNotification }) {
                 ip={ip}
                 game={{ titleId: converting.title_id, sourcePath: converting.path, name: converting.title_name }}
                 busy={!!engine.job?.busy}
-                onStarted={() => { onNotification?.('Conversion started on the console', 'success'); setConverting(null); }}
+                onStarted={(fmt, started) => setConvertJob({ id: started?.id, job: null })}
                 onError={m => onNotification?.(m, 'error')}
               />
             </div>
+            )
           )
         )}
       </Modal>
