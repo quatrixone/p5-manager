@@ -13,6 +13,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "ampr_index.h"
 #include "ampr_pack.h"
 #include "ampr_pack_internal.h"
 #include "lzc_zstd_build.h"
@@ -139,6 +140,42 @@ is_pack_artifact(const char *rel) {
   return 0;
 }
 
+/* The APR resolver index is rebuilt for the tree we write, never copied: the
+ * runtime turns a fileId into a path through it, and the source's own index
+ * numbers a different set of files, so a copy makes it read the wrong one
+ * (EIO on a pack read, then the game dies on the AIO completion). These are
+ * the root files ampr_pack.c keeps out of it. */
+static int
+is_apr_index_file(const char *rel) {
+  if(strchr(rel, '/')) return 0;
+  return !strcmp(rel, "ampr_emu.index") || !strcmp(rel, "ampr_emu.index.tmp") ||
+         !strcmp(rel, "ampr_commands.bin") || !strcmp(rel, "apr_emu.log");
+}
+
+static int
+build_apr_index(const char *output_root, const ap_scan_t *scan, char *err,
+                size_t err_size) {
+  ampr_index_entry_t *entries = calloc(scan->file_count, sizeof(*entries));
+  if(!entries) {
+    if(err && err_size) snprintf(err, err_size, "out of memory");
+    return -1;
+  }
+  size_t n = 0;
+  for(size_t i = 0; i < scan->file_count; i++) {
+    if(is_apr_index_file(scan->files[i].rel)) continue;
+    entries[n].rel = scan->files[i].rel;
+    entries[n].size = scan->files[i].size;
+    entries[n].mtime = scan->files[i].mtime;
+    n++;
+  }
+  int rc = n ? ampr_index_build_from_entries(output_root, entries, n, 0, NULL,
+                                             err, err_size)
+             : -1;
+  if(!n && err && err_size) snprintf(err, err_size, "no files to index");
+  free(entries);
+  return rc;
+}
+
 int
 lzc_zstd_build(const lzc_zstd_build_opts_t *opts, lzc_zstd_build_stats_t *stats,
                char *err, size_t err_size) {
@@ -171,6 +208,15 @@ lzc_zstd_build(const lzc_zstd_build_opts_t *opts, lzc_zstd_build_stats_t *stats,
   if(mkdir(opts->output_root, 0777) != 0 && errno != EEXIST) {
     FAIL("cannot create %s: %s", opts->output_root, strerror(errno));
   }
+  /* Every folder, not just the ones a copied file creates: a game can need a
+   * directory that happens to be empty, and losing it is not a copy. */
+  for(size_t i = 0; i < scan.dirs.count; i++) {
+    char dir[2048];
+    if(snprintf(dir, sizeof(dir), "%s/%s/.", opts->output_root, scan.dirs.items[i]) >= (int)sizeof(dir)) {
+      FAIL("path is too long: %s", scan.dirs.items[i]);
+    }
+    if(mkdirs_for(dir) != 0) FAIL("cannot create %s: %s", scan.dirs.items[i], strerror(errno));
+  }
 
   for(size_t i = 0; i < scan.file_count; i++) {
     const ap_scan_file_t *f = &scan.files[i];
@@ -180,6 +226,7 @@ lzc_zstd_build(const lzc_zstd_build_opts_t *opts, lzc_zstd_build_stats_t *stats,
                 || ap_glob_matches(f->rel, &cfg.force_loose)
                 || ampr_pack_keep_on_disk(f->rel, f->size)
                 || is_pack_artifact(f->rel)
+                || is_apr_index_file(f->rel)
                 || f->size == 0;
     if(loose) {
       char from[2048], to[2048];
@@ -189,6 +236,7 @@ lzc_zstd_build(const lzc_zstd_build_opts_t *opts, lzc_zstd_build_stats_t *stats,
       }
       uint64_t copied = 0;
       if(copy_file(from, to, &copied) != 0) FAIL("cannot copy %s: %s", f->rel, strerror(errno));
+      if(chmod(to, 0777) != 0) FAIL("cannot set the mode of %s: %s", f->rel, strerror(errno));
       if(stats) { stats->files_loose++; stats->loose_bytes += copied; }
     } else {
       packed[packed_count].rel = f->rel;
@@ -204,6 +252,9 @@ lzc_zstd_build(const lzc_zstd_build_opts_t *opts, lzc_zstd_build_stats_t *stats,
     goto done;
   }
 
+  /* The resolver index for the tree we just wrote, not the source's. */
+  if(build_apr_index(opts->output_root, &scan, err, err_size) != 0) goto done;
+
   /* Without this runtime the game cannot read what we just wrote. */
   {
     char to[2048];
@@ -217,6 +268,10 @@ lzc_zstd_build(const lzc_zstd_build_opts_t *opts, lzc_zstd_build_stats_t *stats,
     if(!fp) FAIL("cannot write the ampr-emu-ng runtime: %s", strerror(errno));
     int bad = fwrite(blob, 1, size, fp) != size;
     if(fclose(fp) != 0 || bad) FAIL("cannot write the ampr-emu-ng runtime: %s", strerror(errno));
+    /* The module loader refuses a runtime without the execute bit, and the
+     * game then dies with "failed to open descriptor file" - so set the mode
+     * here rather than leaving it to a later pass over the tree. */
+    if(chmod(to, 0777) != 0) FAIL("cannot set the runtime's mode: %s", strerror(errno));
     if(stats) stats->runtime_installed = 1;
   }
   rc = 0;
