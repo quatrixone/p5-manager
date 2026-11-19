@@ -2,7 +2,7 @@
   "$schema": "../../../ps5-react/app.schema.json",
   "titleId": "PPSA99420",
   "contentId": "UP9000-PPSA99420_00-LZ4COMPRESSION00",
-  "name": "LZ4 Compression",
+  "name": "P5-Converter",
   "version": "01.062.000",
   "render": {
     "width": 1920,

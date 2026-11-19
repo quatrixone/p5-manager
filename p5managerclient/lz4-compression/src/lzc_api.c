@@ -14530,7 +14530,7 @@ lzc_api_handoff_state_request(const http_request_t *req) {
   }
   pthread_mutex_unlock(&g_lzc_lock);
 
-  if(json_append(&b, "{\"ok\":true,\"name\":\"LZ4 Compression\",") != 0 ||
+  if(json_append(&b, "{\"ok\":true,\"name\":\"P5-Converter\",") != 0 ||
      json_appendf(&b,
                   "\"pid\":%ld,\"busy\":%s,\"jobBusy\":%s,"
                   "\"pendingCount\":%d,\"resumable\":%s,"

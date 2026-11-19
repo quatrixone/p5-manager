@@ -12,7 +12,7 @@
 #include "lzc_json_escape.h"
 #include "lzc_notify.h"
 
-#define LZC_NOTIFY_APP_TITLE "LZ4 Compression"
+#define LZC_NOTIFY_APP_TITLE "P5-Converter"
 
 typedef struct notify_request {
   char reserved[45];

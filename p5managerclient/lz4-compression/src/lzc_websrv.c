@@ -180,7 +180,7 @@ status_request(const http_request_t *req) {
   time_t now = time(NULL);
   long uptime = g_started_at ? (long)(now - g_started_at) : 0;
   int n = snprintf(body, sizeof(body),
-                   "{\"ok\":true,\"name\":\"LZ4 Compression\","
+                   "{\"ok\":true,\"name\":\"P5-Converter\","
                    "\"version\":\"%s\",\"pid\":%ld,\"uptime\":%ld,"
                    "\"port\":%d}",
 #ifdef LZC_VERSION
