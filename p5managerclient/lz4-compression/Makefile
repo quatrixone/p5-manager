@@ -55,6 +55,13 @@ AMPR_RUNTIME_SHA256 := 69e6c4d5e4f5fb83c9e01815db5861c4c75734acbf4595cafa50d4c21
 AMPR_RUNTIME_GEN := gen/ampr_runtime_blob.c
 OBJS += build/gen/ampr_runtime_blob.o
 
+# Pinned ampr-emu-ng runtime installed into zstd-packed games. It reads both
+# containers; the PackedStdio one above reads only the LZ4 packs.
+AMPR_NG_RUNTIME := third_party/ampr_emu_ng/libSceAmpr.sprx
+AMPR_NG_RUNTIME_SHA256 := 9c7c41b3216bc4f877d67e3c2e5c9c8f9ffabdd5065f4f3fe0dd98fa7228386f
+AMPR_NG_RUNTIME_GEN := gen/ampr_ng_runtime_blob.c
+OBJS += build/gen/ampr_ng_runtime_blob.o
+
 # ampr_pack TOML profiles picked automatically for matching games.
 PROFILES := profiles/index.json $(wildcard profiles/*.toml)
 PROFILES_GEN := gen/lz4_profiles.c
@@ -83,7 +90,7 @@ ZSTD_HEADERS := $(wildcard third_party/zstd/*.h) $(wildcard third_party/zstd/*/*
 ZSTD_OBJS := $(patsubst third_party/zstd/%.c,build/zstd/%.o,$(ZSTD_SRCS))
 ZSTD_CFLAGS := -O2 -ffunction-sections -fdata-sections -DZSTD_DISABLE_ASM=1 -DZSTD_MULTITHREAD=0 -I$(ZSTD_INCLUDE) -I$(ZSTD_INCLUDE)/common
 
-FAST_SRCS := src/lzc_zstd_pack.c src/pfs_compress.c src/pfs_decompress.c src/pfs_repair.c src/pfs_ampr_hotswap.c src/pfs_block_pipeline.c src/pfs_validate_hash.c src/miniz_tinfl.c src/ampr_pack.c
+FAST_SRCS := src/lzc_zstd_pack.c src/lzc_zstd_build.c src/pfs_compress.c src/pfs_decompress.c src/pfs_repair.c src/pfs_ampr_hotswap.c src/pfs_block_pipeline.c src/pfs_validate_hash.c src/miniz_tinfl.c src/ampr_pack.c
 FAST_OBJS := $(patsubst %.c,build/%.o,$(FAST_SRCS))
 
 PFSC_ENCODER ?= runtime
@@ -134,6 +141,15 @@ $(AMPR_RUNTIME_GEN): $(AMPR_RUNTIME) tools/gen_binary_c.py
 	mv $@.tmp $@
 
 build/gen/ampr_runtime_blob.o: $(AMPR_RUNTIME_GEN)
+	mkdir -p $(dir $@)
+	"$(CC)" -O2 -c $< -o $@
+
+$(AMPR_NG_RUNTIME_GEN): $(AMPR_NG_RUNTIME) tools/gen_binary_c.py
+	mkdir -p $(dir $@)
+	$(PYTHON) tools/gen_binary_c.py --symbol lzc_ampr_ng_runtime_blob --sha256 $(AMPR_NG_RUNTIME_SHA256) $< > $@.tmp
+	mv $@.tmp $@
+
+build/gen/ampr_ng_runtime_blob.o: $(AMPR_NG_RUNTIME_GEN)
 	mkdir -p $(dir $@)
 	"$(CC)" -O2 -c $< -o $@
 
