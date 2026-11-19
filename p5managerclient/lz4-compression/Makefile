@@ -72,8 +72,18 @@ CFLAGS_COMMON += -DVERSION_TAG=\"lz4-compression\"
 CFLAGS_COMMON += -DBUILD_VERSION=\"$(BUILD_VERSION)\"
 CFLAGS_COMMON += -DMINIZ_USE_UNALIGNED_LOADS_AND_STORES=1
 CFLAGS_COMMON += -Ithird_party/lz4
+CFLAGS_COMMON += -Ithird_party/zstd
 
-FAST_SRCS := src/pfs_compress.c src/pfs_decompress.c src/pfs_repair.c src/pfs_ampr_hotswap.c src/pfs_block_pipeline.c src/pfs_validate_hash.c src/miniz_tinfl.c src/ampr_pack.c
+# zstd asset packs (AMPRZPK1). Built like lz4 and zlib: vendored C, our
+# toolchain, no assembler (ZSTD_DISABLE_ASM) and no threads in the payload.
+ZSTD_INCLUDE := third_party/zstd
+ZSTD_LIB := build/zstd/libzstd.a
+ZSTD_SRCS := $(wildcard third_party/zstd/common/*.c) $(wildcard third_party/zstd/compress/*.c) $(wildcard third_party/zstd/decompress/*.c)
+ZSTD_HEADERS := $(wildcard third_party/zstd/*.h) $(wildcard third_party/zstd/*/*.h)
+ZSTD_OBJS := $(patsubst third_party/zstd/%.c,build/zstd/%.o,$(ZSTD_SRCS))
+ZSTD_CFLAGS := -O2 -ffunction-sections -fdata-sections -DZSTD_DISABLE_ASM=1 -DZSTD_MULTITHREAD=0 -I$(ZSTD_INCLUDE) -I$(ZSTD_INCLUDE)/common
+
+FAST_SRCS := src/lzc_zstd_pack.c src/pfs_compress.c src/pfs_decompress.c src/pfs_repair.c src/pfs_ampr_hotswap.c src/pfs_block_pipeline.c src/pfs_validate_hash.c src/miniz_tinfl.c src/ampr_pack.c
 FAST_OBJS := $(patsubst %.c,build/%.o,$(FAST_SRCS))
 
 PFSC_ENCODER ?= runtime
@@ -99,6 +109,7 @@ FAST_CFLAGS := $(filter-out -Os,$(CFLAGS_COMMON)) -O2
 LDFLAGS_COMMON := -Wl,--gc-sections -flto
 LDADD := -lSceNotification -lSceSystemService
 LDADD += $(ZLIB_LIB)
+LDADD += $(ZSTD_LIB)
 
 all: $(BIN)
 
@@ -146,11 +157,18 @@ build/zlib/%.o: third_party/zlib/%.c $(ZLIB_HEADERS) Makefile
 $(ZLIB_LIB): $(ZLIB_OBJS)
 	"$(AR)" rcs $@ $(ZLIB_OBJS)
 
+build/zstd/%.o: third_party/zstd/%.c $(ZSTD_HEADERS) Makefile
+	mkdir -p $(dir $@)
+	"$(CC)" $(ZSTD_CFLAGS) -c $< -o $@
+
+$(ZSTD_LIB): $(ZSTD_OBJS)
+	"$(AR)" rcs $@ $(ZSTD_OBJS)
+
 build/%.o: %.c Makefile
 	mkdir -p $(dir $@)
 	"$(CC)" $(CFLAGS_COMMON) -c $< -o $@
 
-$(BIN): $(OBJS) $(APP_ASSETS) $(ZLIB_LIB) | check-sdk-fw1360
+$(BIN): $(OBJS) $(APP_ASSETS) $(ZLIB_LIB) $(ZSTD_LIB) | check-sdk-fw1360
 	"$(CC)" $(CFLAGS_COMMON) $(LDFLAGS_COMMON) -o $@ $(OBJS) $(LDADD)
 	"$(STRIP)" --strip-all $@
 

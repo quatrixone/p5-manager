@@ -29,6 +29,11 @@ They are used here only to describe what the software works with.
     [ps5-payload-dev/offact](https://github.com/ps5-payload-dev/offact) by
     John Törnblom and is under the GNU GPL version 3 or later (see
     [p5managerclient/offact/LICENSE](p5managerclient/offact/LICENSE)).
+  - `lz4-compression/third_party/zstd/` is a subset of
+    [zstd](https://github.com/facebook/zstd) 1.5.7 by Meta, dual licensed
+    BSD-3-Clause and GPL-2.0; it is used here under BSD-3-Clause, which is
+    compatible with the payload's GPL-3.0-or-later. Its own licence text is
+    kept beside it.
   - `lz4-compression/` is a P5 Manager build of
     [theghostonline/PS5-LZ4-Compression](https://theghostonline.dev/theghostonline/PS5-LZ4-Compression),
     including its `.ffpfsc`, exFAT, LZ4 asset pack, validation, repair and
