@@ -11270,6 +11270,18 @@ run_zstd_pack_op(lzc_operation_t *op) {
     snprintf(op->error, sizeof(op->error), "%s", err);
     return -1;
   }
+  /* Closing the title releases its on-demand mount, so an image source has
+   * to be mounted again before the tree can be read. */
+  if(game.source_kind != LZC_SOURCE_FOLDER) {
+    if(ensure_on_demand_mount(&game, 1, err, sizeof(err)) != 0 ||
+       lzc_lz4_game_root(&game, root, sizeof(root)) != 0) {
+      snprintf(op->error, sizeof(op->error), "%s",
+               err[0] ? err : "mount this image with ShadowMountPlus first so its files can be read");
+      lzc_log("zstd-pack remount failed title=%s err=%s", op->title_id, op->error);
+      return -1;
+    }
+    lzc_log("zstd-pack remounted title=%s root=%s", op->title_id, root);
+  }
   if(lzc_lz4_prepare_copy_target(op, &game, 0, LZC_ZSTD_SUFFIX, game.source_size,
                                 target, sizeof(target), temp, sizeof(temp)) != 0) {
     lzc_log("zstd-pack failed title=%s err=%s", op->title_id, op->error);

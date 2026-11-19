@@ -95,14 +95,28 @@ each learned from a game that would not boot:
   the runtime and the game dies with "failed to open descriptor file".
 - **Empty folders count.** Copying only files silently drops them.
 
-Verified working: a homebrew title with 1901 small files packed to 737 KB
-boots and the runtime reports `pack_format zstd` with `open_hit 60`.
+Verified working: Trifox (a 6.4 GB .exfat image) packed to 2.08 GB and
+boots, with the runtime reporting `pack_format zstd`, 1.19 GB
+`decoded_bytes`, `open_miss 0` and no failed read in the trace.
 
-**Known limit:** a game that reads a large Unreal IoStore container
-(`.ucas`) with kernel AIO does not boot - every pack read returns EIO and it
-ends on `aio-completion-nonretryable`. Not a data problem (the archive
-unpacks byte for byte and no chunk fails); it is ampr-emu-ng's AIO path, and
-upstream has open work there. `pread`/`loose_pread` make no difference.
+**Cross-check a container change against another implementation**, not only
+against your own reader. A whole evening went into "the runtime cannot serve
+packed reads", which was wrong: the volume header's CRC covers all 64 bytes
+with the CRC field zeroed, not the first 60, and our writer and our test
+agreed on the same misreading, so the round-trip passed while every real
+reader refused the volume. The symptoms pointed everywhere but at us - the
+index loaded (`idx join ok`, its CRC was right), no chunk ever failed (no
+`Z` event), and the first packed read returned EIO whatever the file's size
+or engine. ps5-dump-forge's Linux CLI settles this in a minute and needs no
+console:
+
+```bash
+# it reads our packs and blake3-checks them against the source
+ps5-dump-forge convert <our-packed-tree> --to folder --zstd-unpack -o /tmp/out
+```
+
+It wants a game-shaped tree (`eboot.bin`, `sce_sys/param.json`), and
+`inspect --json` reports `zstd_packed`.
 
 Diagnosing a packed game: put ampr-emu-ng's `libSceAmpr-debug.sprx` in
 `fakelib/` (chmod 777). It writes `/data/ampr_emu_trace.txt` - truncated at

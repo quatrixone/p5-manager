@@ -180,7 +180,11 @@ vol_write_headers(const vols_t *v, const unsigned char archive_id[16]) {
     put32(h + 20, v->count);
     memcpy(h + 24, archive_id, 16);
     put64(h + 40, v->sizes[i] - LZC_ZSTD_VOLUME_HDR);
-    put32(h + 60, crc_of(h, 60));
+    /* The whole 64-byte header with the CRC field zeroed - which it still is
+     * here - not just the 60 bytes before it. Getting this wrong makes every
+     * reader refuse the volume ("invalid zstd pack volume header") while a
+     * reader that skips the check, like ours did, sees nothing wrong. */
+    put32(h + 60, crc_of(h, LZC_ZSTD_VOLUME_HDR));
     int bad = fwrite(h, 1, sizeof(h), fp) != sizeof(h);
     if(fclose(fp) != 0 || bad) return -1;
   }

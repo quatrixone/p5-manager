@@ -144,7 +144,7 @@ int main(int argc, char **argv) {
     unsigned char vh[LZC_ZSTD_VOLUME_HDR];
     memcpy(vh, vol[i], sizeof(vh));
     memset(vh + 60, 0, 4);
-    CHECK(rd32(vol[i] + 60) == crc_of(vh, 60), "volume %u header CRC", i);
+    CHECK(rd32(vol[i] + 60) == crc_of(vh, sizeof(vh)), "volume %u header CRC", i);
     CHECK(rd64(ix + voff + 8 * i) == vlen[i], "volume record %u equals the file size", i);
   }
 
