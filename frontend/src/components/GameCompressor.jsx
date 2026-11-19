@@ -31,6 +31,7 @@ export default function GameCompressor({ profiles = [], onNotification }) {
   const [open, setOpen] = useState(false);
   const [games, setGames] = useState([]);
   const [job, setJob] = useState(null);
+  const [history, setHistory] = useState([]);
   const [filter, setFilter] = useState('');
   const [picked, setPicked] = useState('');
 
@@ -57,6 +58,9 @@ export default function GameCompressor({ profiles = [], onNotification }) {
   const loadJob = useCallback(async () => {
     if (!running) return;
     setJob(await apiSafe.get(`/gamecompressor/${ip}/engine/lzc/job`));
+    // A job that failed early leaves nothing in `job` - its reason is here.
+    const h = await apiSafe.get(`/gamecompressor/${ip}/engine/lzc/history`);
+    if (h?.history) setHistory(h.history.slice(0, 5));
   }, [ip, running]);
   useEffect(() => { loadGames(); loadJob(); }, [loadGames, loadJob]);
   useVisiblePolling(loadJob, running && open ? 2000 : 0, [running, open, ip]);
@@ -163,6 +167,17 @@ export default function GameCompressor({ profiles = [], onNotification }) {
                 </button>
               </div>
               {job.error && <div className="text-xs" style={{ color: 'var(--danger)' }}>{job.error}</div>}
+            </div>
+          )}
+
+          {running && history.length > 0 && (
+            <div className="flex-col gap-xs">
+              <div className="text-xs text-muted">Last jobs on this console</div>
+              {history.map(h => (
+                <div key={h.id} className="text-xs" style={{ color: h.status === 'failed' ? 'var(--danger)' : 'var(--muted)' }}>
+                  {h.displayName || h.titleId} · {h.action} · {h.status}{h.error ? ` — ${h.error}` : ''}
+                </div>
+              ))}
             </div>
           )}
 
