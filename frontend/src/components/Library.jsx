@@ -193,8 +193,18 @@ export default function Library({ profiles = [], onNotification }) {
     setEngine(null);
     // The engine runs one job at a time, and reading never starts it, so an
     // answer of "not running" is a real state to show, not an error.
-    try { setEngine({ job: await api.get(`/gamecompressor/${ip}/engine/lzc/job`) }); }
-    catch (e) { setEngine({ off: true, message: e.message }); }
+    // Its own entry for this title comes too: which formats a title can
+    // become is decided from the engine's fields (sourceKind, the lz4 flags),
+    // which the Library row does not carry.
+    try {
+      const [job, games] = await Promise.all([
+        api.get(`/gamecompressor/${ip}/engine/lzc/job`),
+        api.get(`/gamecompressor/${ip}/engine/lzc/games`),
+      ]);
+      const all = (games?.games || []).filter(g => g.titleId === game.title_id);
+      const mine = all.find(g => g.sourcePath === game.path) || all[0] || null;
+      setEngine({ job, game: mine });
+    } catch (e) { setEngine({ off: true, message: e.message }); }
   };
 
   useEffect(() => {
@@ -539,13 +549,20 @@ export default function Library({ profiles = [], onNotification }) {
                   The console is already working on {engine.job.current || 'another title'} ({engine.job.verb || 'running'}) - it runs one job at a time.
                 </div>
               )}
-              <ConsoleGameActions
-                ip={ip}
-                game={{ titleId: converting.title_id, sourcePath: converting.path, name: converting.title_name }}
-                busy={!!engine.job?.busy}
-                onStarted={(fmt, started) => setConvertJob({ id: started?.id, job: null })}
-                onError={m => onNotification?.(m, 'error')}
-              />
+              {engine.game ? (
+                <ConsoleGameActions
+                  ip={ip}
+                  game={engine.game}
+                  busy={!!engine.job?.busy}
+                  onStarted={(fmt, started) => setConvertJob({ id: started?.id, job: null })}
+                  onError={m => onNotification?.(m, 'error')}
+                />
+              ) : (
+                <div className="text-xs text-muted">
+                  P5 Converter does not see this title. It only converts what
+                  ShadowMountPlus has mounted, so mount it first and reopen this.
+                </div>
+              )}
             </div>
             )
           )
