@@ -22,7 +22,7 @@ stores nothing it does not have to.
 
 ## Where this starts from
 
-- **The engine already exists.** `p5managerclient/lz4-compression/` is a
+- **The engine already exists.** `p5managerclient/p5converter/` is a
   vendored copy of theghostonline's PS5-LZ4-Compression (GPL-3.0). Its
   payload `lz4-compression.elf` serves a REST API on port 5920 with every
   conversion action: `games`, `compress`, `uncompress`, `lz4-pack`,

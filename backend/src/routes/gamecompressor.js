@@ -16,8 +16,8 @@ import { engineUrl, ENGINE_PORT } from '../lib/engineProxy.js';
 const RELEASE = {
   version: '1.6.2-p5manager-zstd',
   filename: 'p5-converter.elf',
-  dir: 'lz4-compression',
-  sha256: '5d48dd1348f1ff39a16748d62c1bee613b34ad47e6b4324fc54c5075222d984b',
+  dir: 'p5converter',
+  sha256: '12839a242162eb90375d070450acd6eeeaeae91cf966ddcc3e50cf4961b49506',
 };
 const UI_PORT = ENGINE_PORT;
 const SHADOWMOUNT_PORT = 10101;

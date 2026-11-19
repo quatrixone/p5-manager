@@ -6,7 +6,7 @@
 
 **Architecture:** One guarded pass-through route forwards `/api/gamecompressor/:ip/engine/*` to the engine's own REST API on port 5920, so no per-action backend code exists and the frontend speaks the engine's own request shapes. The iframe panel becomes a native panel built from existing UI components. The transfer worker gains a stream path for console→console items. No C code and no new dependency in this phase.
 
-**Tech Stack:** Node 20 / Express 4, `basic-ftp`, React 18 + Vite, `node --test`, the vendored GPL engine payload (`p5managerclient/lz4-compression/`).
+**Tech Stack:** Node 20 / Express 4, `basic-ftp`, React 18 + Vite, `node --test`, the vendored GPL engine payload (`p5managerclient/p5converter/`).
 
 **Spec:** `docs/superpowers/specs/2026-11-17-on-console-jobs-design.md`
 
@@ -49,7 +49,7 @@
 ### Task 1: Engine on upstream 1.6.4
 
 **Files:**
-- Replace: `p5managerclient/lz4-compression/` (source tree and
+- Replace: `p5managerclient/p5converter/` (source tree and
   `lz4-compression.elf`, from upstream v1.6.4)
 - Modify: `backend/src/routes/gamecompressor.js:12-17` (the `RELEASE` object)
 - Modify: `backend/src/lib/defaultPayloads.js:23` (the `VENDORED_PAYLOADS`
@@ -99,7 +99,7 @@ Expected: FAIL — the vendored ELF is the local 1.6.2 build
 Download `lz4-compression.elf` and the source archive of tag `v1.6.4` from
 `https://theghostonline.dev/theghostonline/PS5-LZ4-Compression`, verify the
 ELF against the release's `SHA256SUMS`, and replace the contents of
-`p5managerclient/lz4-compression/` with the upstream tree plus that ELF.
+`p5managerclient/p5converter/` with the upstream tree plus that ELF.
 Keep the local `.gitignore`. Do not keep a local rebuild: the pinned
 checksum is upstream's.
 
@@ -118,7 +118,7 @@ Expected: PASS, 166 tests.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add p5managerclient/lz4-compression backend/src/routes/gamecompressor.js \
+git add p5managerclient/p5converter backend/src/routes/gamecompressor.js \
         backend/src/lib/defaultPayloads.js backend/src/lib/vendoredEngine.test.js
 git commit -m "Run the console engine upstream ships, 1.6.4"
 ```
