@@ -124,6 +124,8 @@ function QueueItem({ item, queuePaused, onRemove, onRetry, onMove, onStart, onPa
   const [logText, setLogText] = useState('');
   const [logErr, setLogErr] = useState(null);
   const logRef = useRef(null);
+  // Stick to the newest line only while the reader is already down there.
+  const logAtBottom = useRef(true);
   const logUrl = logUrlForItem(item);
   const hasLogEndpoint = !!logUrl;
 
@@ -150,13 +152,20 @@ function QueueItem({ item, queuePaused, onRemove, onRetry, onMove, onStart, onPa
     return () => { cancelled = true; clearInterval(h); };
   }, [logOpen, logUrl, isActive]);
 
-  // Auto-scroll the log pane to the bottom whenever new content arrives so
-  // the most recent line is always visible without manual scrolling.
+  useEffect(() => { logAtBottom.current = true; }, [logOpen]);
+
+  // Follow the newest line, but never yank the pane while someone is reading
+  // further up - and on a phone a forced scrollTop during a touch cancels the
+  // page's own scrolling, which made the whole Tasks tab feel stuck.
   useEffect(() => {
-    if (logOpen && logRef.current) {
-      logRef.current.scrollTop = logRef.current.scrollHeight;
-    }
+    const el = logRef.current;
+    if (logOpen && el && logAtBottom.current) el.scrollTop = el.scrollHeight;
   }, [logText, logOpen]);
+
+  const onLogScroll = () => {
+    const el = logRef.current;
+    if (el) logAtBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+  };
 
   // We expose Start / Pause / Resume per-task even though the actual work
   // happens in a per-type worker. From the user's point of view:
@@ -326,8 +335,10 @@ function QueueItem({ item, queuePaused, onRemove, onRetry, onMove, onStart, onPa
           <pre
             ref={logRef}
             className="queue-log"
+            onScroll={onLogScroll}
             style={{
-              maxHeight: 260,
+              // On a short screen a 260px log swallows most of the page.
+              maxHeight: 'min(260px, 40vh)',
               overflow: 'auto',
               margin: 0,
               padding: 'var(--space-xs) var(--space-sm)',
