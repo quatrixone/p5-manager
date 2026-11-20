@@ -192,16 +192,20 @@ export default function Library({ profiles = [], onNotification }) {
     setConvertJob(null);
     setEngine(null);
     // Reading never starts the payload, so "not running" is a real state to
-    // show rather than an error. Forge's own entry for this title comes too:
-    // the picker needs its kind and pack flags, which a Library row has not.
+    // show rather than an error. The picker needs this title's kind and pack
+    // flags, which a Library row has not, and those come from inspecting its
+    // own path - not from a library scan: that scan has a time budget and
+    // leaves titles "not probed" on a full console, a different set each
+    // run, so a game would go missing here for no reason the user can see.
     try {
-      const [jobs, scan] = await Promise.all([
-        api.get(`/forge/${ip}/api/jobs`),
-        api.post(`/forge/${ip}/api/library_scan`, {}),
+      const jobs = await api.get(`/forge/${ip}/api/jobs`);
+      const [info, places] = await Promise.all([
+        apiSafe.post(`/forge/${ip}/api/inspect`, { path: game.path }),
+        apiSafe.post(`/forge/${ip}/api/list_dir`, { path: null }),
       ]);
-      const all = (scan?.entries || []).filter(e => e.title_id === game.title_id);
-      const mine = all.find(e => e.path === game.path) || all[0] || null;
-      setEngine({ jobs: jobs?.jobs || [], game: mine, roots: scan?.roots || [] });
+      const entry = info?.title_id ? { ...info, path: game.path } : null;
+      const roots = (places?.entries || []).filter(e => e.dir).map(e => e.path);
+      setEngine({ jobs: jobs?.jobs || [], game: entry, roots });
     } catch (e) { setEngine({ off: true, message: e.message }); }
   };
 
@@ -560,9 +564,9 @@ export default function Library({ profiles = [], onNotification }) {
                 />
               ) : (
                 <div className="text-xs text-muted">
-                  PS5 Dump Forge does not see this title on the console.
-                  Rescan from Convert on console, or check the file sits on a
-                  drive it browses (/data or a mounted drive).
+                  PS5 Dump Forge cannot read this file as a game: {converting.path}
+                  . It converts a folder, an .exfat, .ffpkg, .ffpfs, .ffpfsc or
+                  .pkg, and a .zip, .7z or .rar holding one game folder.
                 </div>
               )}
             </div>
