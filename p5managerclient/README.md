@@ -19,10 +19,8 @@ host that builds payloads / talks to the PS5 directly:
   - `save-mounter/` — mounts and creates save data (File Ops → Saves). The payload of
     [n0llptr/Playstation-5-Save-Mounter](https://github.com/n0llptr/Playstation-5-Save-Mounter),
     GPL-3.0.
-  - `p5converter/` — bundled PS5 engine for on-console LZ4, zstd, `.ffpfsc`,
-    exFAT/PFS, validation, repair and unpack jobs. Based on
-    [theghostonline/PS5-LZ4-Compression](https://theghostonline.dev/theghostonline/PS5-LZ4-Compression),
-    GPL-3.0-or-later; build with PS5 Payload SDK 0.43 or newer.
+  - `forge/` — PS5 Dump Forge's console payload, which converts between every
+    format on the console itself (see LEGAL.md for its licence and source)
 
 ## Layout
 
@@ -38,7 +36,7 @@ p5managerclient/
 ├── offact/         ← headless PSN-activation payload (source + Makefile)
 ├── pkg-install/    ← fake-PKG installer payload (source + Makefile)
 ├── save-mounter/   ← save data mounter payload (source + Makefile)
-├── p5converter/    ← P5 Converter: console engine and source
+├── forge/          ← PS5 Dump Forge: the console converter payload
 └── rp-get-pin/     ← Remote Play PIN harvester payload (source + Makefile)
 ```
 

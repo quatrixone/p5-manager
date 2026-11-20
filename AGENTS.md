@@ -64,63 +64,46 @@ read it as a hang.
   The on-console downloader (`routes/downloader.js`) needs the 1.6.0+
   "zhttp" build.
 
-## P5 Converter and zstd asset packs
+## Converting on the console: PS5 Dump Forge
 
-The console engine is `p5managerclient/p5converter/` (it was called
-lz4-compression until the zstd work). Build it with the in-tree SDK:
+The console converter is `p5managerclient/forge/ps5-dump-forge.elf`, taken
+unchanged from its own release and pinned by checksum in
+`backend/src/routes/forge.js` and `backend/src/lib/defaultPayloads.js`. Send
+it with `POST /api/forge/<ip>/start`; it serves a REST API on 8095 and the
+app reaches it through one guarded pass-through,
+`ALL /api/forge/<ip>/api/<endpoint>`, which forwards JSON bodies and allows
+only the endpoints the app uses. `quit` is ours alone (`/stop`, with
+`if_idle`), and the debug build's `set`, `bench` and `crash` are refused -
+`crash` kills the running game by design.
 
-```bash
-cd p5managerclient/p5converter
-PS5_PAYLOAD_SDK=$(cd ../sdk && pwd) make -j"$(nproc)"
-```
+It reads the drives itself, so ShadowMountPlus is not needed to convert;
+mounting a title is still ours (`/api/library/<ip>/games/<id>/mount`).
+Switching the mount between two copies of one title through
+`refresh-mount` does not work - unmount, then mount, and ShadowMountPlus
+picks the surviving copy up.
 
-The SDK must be v0.43 or newer or the build refuses it: firmware 13.60 has
-no case in older CRTs (`tools/check_sdk_fw1360.py`). After a build, re-pin
-the checksum in **two** places - `RELEASE.sha256` in
-`backend/src/routes/gamecompressor.js` and the `VENDORED_PAYLOADS` entry in
-`backend/src/lib/defaultPayloads.js` - then rebuild the image, or the
-container keeps sending the old ELF. `docker compose build` can fail while
-`docker compose up -d` happily keeps the old container running, so check
-the build's exit status, not its last line.
+The same program runs on this machine for host conversions: the `forge`
+convert mode in `routes/convert.js`, with the CLI fetched once into
+`<DATA_DIR>/tools` (checksum from the release; `USER_DATA_DIR` is a bind
+mount we may not create folders in). Its flags come off `convert --help`:
+`--to lz4` and `--lz4-pack` are alternatives, `--level` belongs to .ffpfsc
+and `--kraken` to .pkg. An output name over 63 bytes (58 for .ffpfsc) cannot
+be mounted by ShadowMountPlus, and Forge refuses it.
 
-zstd packs (`AMPRZPK1`, `lzc_zstd_pack.c`) are read by ampr-emu-ng, which
-the pack installs into `fakelib/libSceAmpr.sprx`; the pinned PackedStdio
-runtime reads only the LZ4 packs. Three things a packed tree must get right,
-each learned from a game that would not boot:
+A target is a format plus flags, so packs are never a dead end: a source
+holding LZ4 or zstd packs is taken apart on the way by `zstd_unpack` or
+`lz4: unpack` in the same request. Every job is verified against its source
+and the checks are in the job's report; `--full-verify` re-reads every byte.
 
-- **`ampr_emu.index` must be rebuilt**, never copied. The runtime turns a
-  fileId into a path through it, so an index numbering another set of files
-  makes it read the wrong one (`pack-read` EIO).
-- **Every file needs its execute bit.** Without it the module loader refuses
-  the runtime and the game dies with "failed to open descriptor file".
-- **Empty folders count.** Copying only files silently drops them.
-
-Verified working: Trifox (a 6.4 GB .exfat image) packed to 2.08 GB and
-boots, with the runtime reporting `pack_format zstd`, 1.19 GB
-`decoded_bytes`, `open_miss 0` and no failed read in the trace.
-
-**Cross-check a container change against another implementation**, not only
-against your own reader. A whole evening went into "the runtime cannot serve
-packed reads", which was wrong: the volume header's CRC covers all 64 bytes
-with the CRC field zeroed, not the first 60, and our writer and our test
-agreed on the same misreading, so the round-trip passed while every real
-reader refused the volume. The symptoms pointed everywhere but at us - the
-index loaded (`idx join ok`, its CRC was right), no chunk ever failed (no
-`Z` event), and the first packed read returned EIO whatever the file's size
-or engine. ps5-dump-forge's Linux CLI settles this in a minute and needs no
-console:
+**Before changing anything about a pack format, check it with the other
+implementation.** An evening went into "the runtime cannot serve packed
+reads" when the real fault was ours: the zstd volume header's CRC covers all
+64 bytes with the CRC field zeroed, not the first 60, and our writer and our
+test agreed on the same misreading. Forge's reader found it in a minute:
 
 ```bash
-# it reads our packs and blake3-checks them against the source
-ps5-dump-forge convert <our-packed-tree> --to folder --zstd-unpack -o /tmp/out
+ps5-dump-forge convert <packed-tree> --to folder --zstd-unpack -o /tmp/out
 ```
 
 It wants a game-shaped tree (`eboot.bin`, `sce_sys/param.json`), and
 `inspect --json` reports `zstd_packed`.
-
-Diagnosing a packed game: put ampr-emu-ng's `libSceAmpr-debug.sprx` in
-`fakelib/` (chmod 777). It writes `/data/ampr_emu_trace.txt` - truncated at
-each launch, so copy it off - and serves `/metrics`, `/fsfail` and
-`/modules` on port 9090 while the game runs. In the trace, `Z` events mean a
-zstd chunk failed and point at us; `pack-read` errors without them point at
-the runtime.

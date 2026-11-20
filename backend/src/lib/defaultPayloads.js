@@ -21,7 +21,6 @@ export const VENDORED_PAYLOADS = [
   { filename: 'save-mounter.elf', dir: 'save-mounter', console_type: 'ps5' },
   { filename: 'save-mounter-ps4.bin', dir: 'save-mounter-ps4', console_type: 'ps4' },
   { filename: 'ps5-dump-forge.elf', dir: 'forge', console_type: 'ps5', version: '0.5.6' },
-  { filename: 'p5-converter.elf', dir: 'p5converter', console_type: 'ps5', version: '1.6.2-p5manager-zstd' },
 ];
 // Same bytes on both sides? Used to tell a payload that only needs its
 // version recorded from one that really has to be rewritten. Reads both

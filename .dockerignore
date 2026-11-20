@@ -1,4 +1,2 @@
-p5managerclient/p5converter/build/
-p5managerclient/p5converter/gen/
 backend/third_party/lz4-compression/runtime_blob.c
 backend/third_party/lz4-compression/lz4-pack-cli

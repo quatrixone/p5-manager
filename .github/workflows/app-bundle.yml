@@ -16,7 +16,6 @@ on:
       - 'frontend/**'
       - 'scripts/build-app-bundle.mjs'
       - 'scripts/update-check.mjs'
-      - 'p5managerclient/p5converter/**'
       - 'backend/third_party/lz4-compression/**'
       - 'LEGAL.md'
       - '.github/workflows/app-bundle.yml'

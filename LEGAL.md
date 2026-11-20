@@ -35,23 +35,6 @@ They are used here only to describe what the software works with.
     bundles the binary and ships it to the console; its corresponding source
     is the project above, recorded in `forge/ORIGIN.md` with the exact
     version and checksum.
-  - `p5converter/third_party/ampr_emu_ng/libSceAmpr.sprx` is the
-    ampr-emu-ng runtime, GPL-3.0, taken unchanged from
-    [ps5-dump-forge](https://github.com/quer3q/ps5-dump-forge); it is the
-    runtime that reads zstd asset packs, and derives from drakmor's
-    [ampr_emu](https://github.com/drakmor/ampr_emu).
-  - `p5converter/third_party/zstd/` is a subset of
-    [zstd](https://github.com/facebook/zstd) 1.5.7 by Meta, dual licensed
-    BSD-3-Clause and GPL-2.0; it is used here under BSD-3-Clause, which is
-    compatible with the payload's GPL-3.0-or-later. Its own licence text is
-    kept beside it.
-  - `p5converter/` is a P5 Manager build of
-    [theghostonline/PS5-LZ4-Compression](https://theghostonline.dev/theghostonline/PS5-LZ4-Compression),
-    including its `.ffpfsc`, exFAT, LZ4 asset pack, validation, repair and
-    unpack operations. It and the separately built host AMPR packer are under
-    GNU GPL version 3 or later. Their source and notices are included in
-    release bundles under `sources/` and in the container image under
-    `/app/sources/`.
   - `rp-get-pin/` is a patched copy of
     [idlesauce/ps5-remoteplay-get-pin](https://github.com/idlesauce/ps5-remoteplay-get-pin),
     whose repository states no licence. It is included with attribution

@@ -16,7 +16,6 @@ on:
       - 'rpnative/**'
       - 'packaging/**'
       - 'scripts/smoke.mjs'
-      - 'p5managerclient/p5converter/**'
       - 'backend/third_party/lz4-compression/**'
       - 'LEGAL.md'
       - '.github/workflows/windows-portable.yml'
@@ -86,9 +85,8 @@ jobs:
           Copy-Item frontend/builtin "$out/app/builtin" -Recurse
           # The app's own payloads, put into data\payloads on the first start.
           New-Item -ItemType Directory -Force "$out/app/backend/vendored" | Out-Null
-          Copy-Item p5managerclient/rp-get-pin/rp-get-pin.elf, p5managerclient/offact/offact.elf, p5managerclient/pkg-install/pkg-install.elf, p5managerclient/save-mounter/save-mounter.elf, p5managerclient/p5converter/p5-converter.elf, p5managerclient/forge/ps5-dump-forge.elf "$out/app/backend/vendored/"
+          Copy-Item p5managerclient/rp-get-pin/rp-get-pin.elf, p5managerclient/offact/offact.elf, p5managerclient/pkg-install/pkg-install.elf, p5managerclient/save-mounter/save-mounter.elf, p5managerclient/forge/ps5-dump-forge.elf "$out/app/backend/vendored/"
           Copy-Item p5managerclient/forge "$out/app/sources/forge" -Recurse
-          Copy-Item p5managerclient/p5converter "$out/app/sources/p5converter" -Recurse
           Copy-Item backend/third_party/lz4-compression "$out/app/sources/host-lz4-packer" -Recurse
           Copy-Item p5managerclient/rp-get-pin-ps4/rp-get-pin-ps4.bin, p5managerclient/offact-ps4/offact-ps4.bin "$out/app/backend/vendored/"
 

@@ -60,13 +60,11 @@ for (const platform of ['docker', 'windows']) {
   const vendoredElfs = [
     ['rp-get-pin', 'rp-get-pin.elf'], ['offact', 'offact.elf'],
     ['pkg-install', 'pkg-install.elf'], ['save-mounter', 'save-mounter.elf'],
-    ['p5converter', 'p5-converter.elf'], ['forge', 'ps5-dump-forge.elf'],
+    ['forge', 'ps5-dump-forge.elf'],
   ];
   for (const [dir, file] of vendoredElfs) zip.addLocalFile(path.join(root, 'p5managerclient', dir, file), 'vendored');
   // The bundled LZ4 payload and the host packer are GPL-3.0-or-later. Include
   // their corresponding source and notices alongside the update bundle.
-  zip.addLocalFolder(path.join(root, 'p5managerclient', 'p5converter'), 'sources/p5converter', (name) =>
-    !name.startsWith('build/') && !name.startsWith('gen/') && name !== 'p5-converter.elf' && !name.startsWith('.git/'));
   // Forge ships as a binary we did not build; its source offer is its ORIGIN.
   zip.addLocalFolder(path.join(root, 'p5managerclient', 'forge'), 'sources/forge', (name) =>
     name !== 'ps5-dump-forge.elf');
