@@ -2230,7 +2230,9 @@ pre { padding: 12px; overflow-x: auto; }
      the list runs edge to edge and scrolls with the page instead of in a
      450px box. */
   .fileops--files { gap: var(--space-sm); }
-  .fileops--files .fileops-header { display: none; }
+  /* The "Files & Operations" banner is a whole row of height on a phone and
+     the bottom nav already says where you are. */
+  .fileops-header { display: none; }
   .fileops--files .fb {
     margin-left: calc(-1 * var(--space-md));
     margin-right: calc(-1 * var(--space-md));
@@ -2847,7 +2849,6 @@ button, input, select, textarea { font: inherit; }
   }
   .app-main--fileops:has(.fileops--files) > .screen-fileops { flex: 1; min-height: 0; }
   .fileops--files { gap: 4px; }
-  .fileops--files .fileops-header { display: none; }
   .fileops-tabs { flex: 0 0 auto; margin-inline: 10px; gap: 1px; padding: 2px; }
   .fileops-tab { min-height: 42px; padding: 3px 2px; font-size: 0.72rem; }
   .fileops-tab-icon { font-size: 0.9rem; }
