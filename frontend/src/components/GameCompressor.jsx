@@ -42,12 +42,12 @@ export default function GameCompressor({ profiles = [], onNotification }) {
   }, [ps5Profiles, ip]);
 
   const refresh = useCallback(async () => {
-    if (!ip || !open) return;
+    if (!ip) return;
     const d = await apiSafe.get(`/gamecompressor/${ip}/status`);
     if (d) setSt(d);
-  }, [ip, open]);
+  }, [ip]);
   useEffect(() => { setSt(null); setGames([]); setJob(null); setPicked(''); refresh(); }, [refresh]);
-  useVisiblePolling(refresh, open ? 5000 : 0, [open, ip]);
+  useVisiblePolling(refresh, open ? 5000 : 15000, [open, ip]);
 
   const running = !!st?.running;
   const loadGames = useCallback(async () => {
@@ -63,7 +63,8 @@ export default function GameCompressor({ profiles = [], onNotification }) {
     if (h?.history) setHistory(h.history.slice(0, 5));
   }, [ip, running]);
   useEffect(() => { loadGames(); loadJob(); }, [loadGames, loadJob]);
-  useVisiblePolling(loadJob, running && open ? 2000 : 0, [running, open, ip]);
+  // A console job outlives this card, so follow it closed too, just slower.
+  useVisiblePolling(loadJob, running ? (open ? 2000 : 5000) : 0, [running, open, ip]);
   useVisiblePolling(loadGames, running && open ? 15000 : 0, [running, open, ip]);
 
   const start = async () => {
@@ -105,6 +106,15 @@ export default function GameCompressor({ profiles = [], onNotification }) {
       <div className="comp-card-header" style={{ cursor: 'pointer' }} onClick={() => setOpen(o => !o)}>
         <div>
           <span className="comp-card-title">🗜️ Convert on console</span>
+          {jobBusy && (
+            <span className="badge badge-info" style={{ marginLeft: 'var(--space-sm)' }}>
+              ⏳ {job.verb || 'working'}
+              {job.current ? ` · ${job.current}` : ''}
+              {Number(job.totalBytes) > 0
+                ? ` · ${Math.floor((Number(job.copiedBytes) || 0) / Number(job.totalBytes) * 100)}%`
+                : ''}
+            </span>
+          )}
           <div className="text-xs text-muted mt-xs">
             P5 Converter turns a title on the PS5 into LZ4 packs, a `.ffpfsc` image, a plain `.exfat`/`.ffpfs` image, or back into a folder - all on the console, with nothing copied to this machine. Jobs continue if you close this page.
           </div>
