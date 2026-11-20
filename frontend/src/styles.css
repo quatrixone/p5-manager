@@ -2244,10 +2244,12 @@ pre { padding: 12px; overflow-x: auto; }
   .fileops--files .fb > .fb-header { padding: 2px 12px 8px; border-bottom: none; }
   .fileops--files .fb > .comp-card-body { padding: 0; gap: var(--space-sm); }
   .fileops--files .fb > .comp-card-body > :not(.fb-list) { margin-left: 12px; margin-right: 12px; }
+  /* The crumb bar sits below the source tabs and the console picker in the
+     DOM. Sticking it to the top made it park over them on a phone: the
+     console row hid Local / Console and there was no way to switch back.
+     Nothing scrolls out from under it here anyway - the list is its own
+     scroller - so it stays where it belongs. */
   .fileops--files .fb .fb-nav {
-    position: sticky;
-    top: var(--topbar-h);
-    z-index: 5;
     margin: 0 !important;
     padding: 6px 12px;
     background: var(--bg);
