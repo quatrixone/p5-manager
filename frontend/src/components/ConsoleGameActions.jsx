@@ -8,37 +8,61 @@ import { api, apiSafe } from '../lib/api.js';
 // rest, so there is no point offering it. Same rules as the engine's own
 // screen (sourceKind plus the lz4 flags).
 const kindOf = g => String(g?.sourceKind || '').toLowerCase();
+
+// Asset packs need AMPR, and no codec packs what its own codec packed.
+const noAmpr = (g) =>
+  kindOf(g) !== 'folder' && g.isMounted === false
+    ? 'the engine cannot see inside this image - mount it with ShadowMountPlus and reopen this'
+    : 'this title does not use AMPR, so it cannot read asset packs - compress it to .ffpfsc instead';
+
+const lz4PackWhyNot = (g) => {
+  if (g.lz4Packed === true) return 'it is LZ4 packed already';
+  if (g.zstdPacked === true) return 'it is zstd packed - undo the zstd packs first, then pack with LZ4';
+  if (g.lz4Supported !== true) return noAmpr(g);
+  return '';
+};
+
+// The engine undoes LZ4 packs by itself on the way to zstd.
+const zstdPackWhyNot = (g) => {
+  if (g.zstdPacked === true) return 'it is zstd packed already';
+  if (g.lz4Supported !== true && g.lz4Packed !== true) return noAmpr(g);
+  return '';
+};
+const imageWhyNot = g => kindOf(g) === 'folder' ? '' : 'a plain image is built from a folder - turn it back into a folder first';
 const FORMATS = [
   { id: 'lz4', action: 'lz4-pack', args: {}, level: true,
-    supports: g => g.lz4Supported === true && g.lz4Packed !== true,
+    whyNot: lz4PackWhyNot,
     label: 'LZ4 packs — smallest, the game reads them while it runs',
     policies: ['keep', 'after', 'replace'] },
   { id: 'zstd', action: 'zstd-pack', args: {}, level: 'zstd',
-    supports: g => g.lz4Supported === true && g.lz4Packed !== true,
+    whyNot: zstdPackWhyNot,
     label: 'zstd packs — smaller than LZ4, read on the fly too',
     policies: ['keep', 'after'] },
   { id: 'ffpfsc', action: 'compress', args: { format: 'exfat' },
-    supports: g => ['folder', 'image'].includes(kindOf(g)),
+    whyNot: g => ['folder', 'image'].includes(kindOf(g)) ? '' : 'only a folder or a plain image can be compressed - this one is ' + (kindOf(g) || 'unknown'),
     label: '.ffpfsc compressed image (exFAT inside)',
     policies: ['keep', 'after', 'stream'] },
   { id: 'ffpfsc-pfs', action: 'compress', args: { format: 'pfs' },
-    supports: g => ['folder', 'image'].includes(kindOf(g)),
+    whyNot: g => ['folder', 'image'].includes(kindOf(g)) ? '' : 'only a folder or a plain image can be compressed - this one is ' + (kindOf(g) || 'unknown'),
     label: '.ffpfsc compressed image (PFS inside, experimental)',
     policies: ['keep', 'after', 'stream'] },
   { id: 'exfat', action: 'make-image', args: { format: 'exfat' },
-    supports: g => kindOf(g) === 'folder',
+    whyNot: imageWhyNot,
     label: 'Plain .exfat image', policies: ['keep', 'after'] },
   { id: 'ffpfs', action: 'make-image', args: { format: 'pfs' },
-    supports: g => kindOf(g) === 'folder',
+    whyNot: imageWhyNot,
     label: 'Plain .ffpfs image', policies: ['keep', 'after'] },
   // uncompress is the one job that does not accept destination=keep: next to
   // the original is spelled "in-place" there.
   { id: 'folder', action: 'uncompress', args: { mode: 'folder' }, here: 'in-place',
-    supports: g => ['compressed', 'image'].includes(kindOf(g)),
+    whyNot: g => ['compressed', 'image'].includes(kindOf(g)) ? '' : 'it is already a folder',
     label: 'Back to a normal folder', policies: ['keep', 'after'] },
   { id: 'unpack', action: 'lz4-unpack', args: {}, here: 'in-place',
-    supports: g => g.lz4Packed === true,
+    whyNot: g => g.lz4Packed === true ? '' : 'this title has no LZ4 packs to undo',
     label: 'Undo LZ4 packs — put the loose files back', policies: ['keep', 'after'] },
+  { id: 'unpack-zstd', action: 'zstd-unpack', args: {}, here: 'in-place',
+    whyNot: g => g.zstdPacked === true ? '' : 'this title has no zstd packs to undo',
+    label: 'Undo zstd packs — put the loose files back', policies: ['keep', 'after'] },
 ];
 
 const POLICY_LABEL = {
@@ -82,13 +106,23 @@ export default function ConsoleGameActions({ ip, game, busy, onStarted, onError 
   const [starting, setStarting] = useState(false);
   const [refusal, setRefusal] = useState('');
 
-  const offered = useMemo(() => FORMATS.filter(f => f.supports(game || {})), [game]);
-  const chosen = useMemo(() => offered.find(f => f.id === format) || offered[0] || null, [offered, format]);
+  // Every format is listed, whatever the title is: a hidden option only
+  // leaves you wondering. The ones it cannot do say why, and cannot start.
+  const reasons = useMemo(() => {
+    const out = {};
+    for (const f of FORMATS) out[f.id] = f.whyNot(game || {});
+    return out;
+  }, [game]);
+  const chosen = useMemo(() => FORMATS.find(f => f.id === format) || FORMATS[0], [format]);
+  const reason = reasons[chosen.id];
 
-  // The title decides the list, so the picked format has to follow it.
+  // Start on something this title can actually become.
   useEffect(() => {
-    if (offered.length && !offered.some(f => f.id === format)) setFormat(offered[0].id);
-  }, [offered, format]);
+    if (reasons[format]) {
+      const ok = FORMATS.find(f => !reasons[f.id]);
+      if (ok) setFormat(ok.id);
+    }
+  }, [reasons, format]);
 
   useEffect(() => {
     let live = true;
@@ -129,19 +163,23 @@ export default function ConsoleGameActions({ ip, game, busy, onStarted, onError 
     setStarting(false);
   };
 
-  const disabled = !!busy || starting || !chosen;
+  const disabled = !!busy || starting || !!reason;
 
   return (
     <div className="flex-col gap-sm">
-      {offered.length === 0 ? (
-        <div className="text-xs text-muted">The console reports this title as “{game?.sourceKind || 'unknown'}”, which it cannot convert into anything.</div>
-      ) : (
-        <label className="text-xs text-muted">Convert to
-          <select className="select mt-xs" value={chosen?.id || ''} disabled={disabled}
-                  onChange={e => setFormat(e.target.value)}>
-            {offered.map(f => <option key={f.id} value={f.id}>{f.label}</option>)}
-          </select>
-        </label>
+      <label className="text-xs text-muted">Convert to
+        <select className="select mt-xs" value={chosen.id} disabled={!!busy || starting}
+                onChange={e => setFormat(e.target.value)}>
+          {FORMATS.map(f => (
+            <option key={f.id} value={f.id}>{reasons[f.id] ? `${f.label} — not for this title` : f.label}</option>
+          ))}
+        </select>
+      </label>
+      {reason && <div className="text-xs" style={{ color: 'var(--warning, var(--muted))' }}>Not possible here: {reason}</div>}
+      {!reason && chosen.id === 'zstd' && game?.lz4Packed === true && (
+        <div className="text-xs text-muted">
+          It is LZ4 packed, so the console undoes those packs first and then writes the zstd ones. That needs room for both for a while.
+        </div>
       )}
 
       {chosen?.level === 'zstd' ? (

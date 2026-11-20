@@ -23,6 +23,7 @@
 
 #include "ampr_pack.h"
 #include "lzc_zstd_build.h"
+#include "lzc_zstd_pack.h"
 #include "ampr_pack_internal.h"
 #include "lzc_api.h"
 #include "lzc_diag.h"
@@ -178,6 +179,7 @@ typedef enum lzc_action {
   LZC_ACTION_LZ4_UNPACK,
   LZC_ACTION_LZ4_VERIFY,
   LZC_ACTION_ZSTD_PACK,
+  LZC_ACTION_ZSTD_UNPACK,
 } lzc_action_t;
 
 typedef enum lzc_op_status {
@@ -421,6 +423,7 @@ action_name(lzc_action_t action) {
   if(action == LZC_ACTION_LZ4_UNPACK) return "lz4-unpack";
   if(action == LZC_ACTION_LZ4_VERIFY) return "lz4-verify";
   if(action == LZC_ACTION_ZSTD_PACK) return "zstd-pack";
+  if(action == LZC_ACTION_ZSTD_UNPACK) return "zstd-unpack";
   return "unknown";
 }
 
@@ -11222,6 +11225,103 @@ lzc_lz4_pack_boot_files(lzc_operation_t *op, const char *root) {
  * target as lz4-pack, but the other container - and so the other runtime,
  * ampr-emu-ng, which lzc_zstd_build installs. Copy mode only for now: the
  * source tree is never written to. */
+/* zstd packs back to a loose tree. Copy mode only, like zstd-pack. */
+static int
+run_zstd_unpack_op(lzc_operation_t *op) {
+  lzc_game_t game = {0};
+  char err[256] = {0};
+  char root[1024] = {0};
+  char target[1024] = {0};
+  char temp[1024] = {0};
+  int delete_after = !strcmp(op->delete_policy, "after");
+  lzc_zstd_stats_t st;
+  lzc_zstd_cb_t cb;
+  lzc_lz4_job_t job = { op };
+
+  memset(&st, 0, sizeof(st));
+  memset(&cb, 0, sizeof(cb));
+  lzc_checkpoint("zstd-unpack find game");
+  lzc_log("zstd-unpack start op=%s title=%s policy=%s", op->id, op->title_id,
+         op->delete_policy);
+  if(!strcmp(op->delete_policy, "replace")) {
+    snprintf(op->error, sizeof(op->error), "%s",
+             "zstd unpacking writes a new folder; it cannot work in place yet");
+    return -1;
+  }
+  if(lzc_lz4_resolve(op, &game, root, sizeof(root), "zstd-unpack") != 0) return -1;
+  if(!lzc_zstd_probe(root)) {
+    snprintf(op->error, sizeof(op->error), "%s", "this game has no zstd packs to undo");
+    return -1;
+  }
+  if(close_title_if_running(op->title_id, err, sizeof(err)) != 0) {
+    snprintf(op->error, sizeof(op->error), "%s", err[0] ? err : "could not close game");
+    return -1;
+  }
+  if(game.source_kind != LZC_SOURCE_FOLDER) {
+    if(ensure_on_demand_mount(&game, 1, err, sizeof(err)) != 0 ||
+       lzc_lz4_game_root(&game, root, sizeof(root)) != 0) {
+      snprintf(op->error, sizeof(op->error), "%s",
+               err[0] ? err : "mount this image with ShadowMountPlus first so its files can be read");
+      return -1;
+    }
+  }
+  if(lzc_lz4_prepare_copy_target(op, &game, 1, LZC_ZSTD_SUFFIX, game.source_size * 3,
+                                target, sizeof(target), temp, sizeof(temp)) != 0) {
+    lzc_log("zstd-unpack failed title=%s err=%s", op->title_id, op->error);
+    return -1;
+  }
+  cb.ctx = &job;
+  cb.progress = lzc_lz4_progress_cb;
+  cb.current = lzc_lz4_current_cb;
+  cb.cancelled = lzc_lz4_cancelled_cb;
+  append_operation_phase(op, "zstd-unpack");
+  job_set_phase("zstd-unpack", 0, 0, "Undoing the zstd packs");
+  lzc_checkpoint("zstd-unpack");
+  if(lzc_zstd_unpack(root, temp, &cb, &st, err, sizeof(err)) != 0) {
+    remove_tree_lzc(temp);
+    snprintf(op->error, sizeof(op->error), "%s", err[0] ? err : "zstd unpack failed");
+    lzc_log("zstd-unpack failed title=%s err=%s", op->title_id, op->error);
+    return -1;
+  }
+  /* The loose files that were never packed, and nothing of the pack set. */
+  if(lzc_zstd_place_loose(root, temp, err, sizeof(err)) != 0) {
+    remove_tree_lzc(temp);
+    snprintf(op->error, sizeof(op->error), "%s", err[0] ? err : "could not copy the loose files");
+    lzc_log("zstd-unpack failed title=%s err=%s", op->title_id, op->error);
+    return -1;
+  }
+  if(rename(temp, target) != 0) {
+    snprintf(op->error, sizeof(op->error), "publish unpacked game: %s", strerror(errno));
+    remove_tree_lzc(temp);
+    return -1;
+  }
+  {
+    uint32_t fixed = 0;
+    if(fix_tree_modes_lzc(target, &fixed) == 0 && fixed) {
+      lzc_log("zstd-unpack fixed modes title=%s count=%u", op->title_id, fixed);
+    }
+  }
+  {
+    uint64_t after = source_size_bytes_exact(target, LZC_SOURCE_FOLDER);
+    lzc_size_cache_store(target, after);
+    lzc_lz4_store_sizes(op, after, game.source_size);
+  }
+  append_operation_phase(op, "zstd-unpacked");
+  if(game.source_kind == LZC_SOURCE_IMAGE || game.source_kind == LZC_SOURCE_COMPRESSED) {
+    release_shadowmount_mount_for_source(op->title_id, game.source_path);
+  }
+  {
+    int mrc = lzc_lz4_mount_folder_output(op, &game, target, delete_after);
+    if(mrc < 0) return -1;
+    if(mrc > 0) return 0;
+  }
+  snprintf(op->result, sizeof(op->result), "%s", "success");
+  lzc_log("zstd-unpack complete title=%s output=%s files=%llu bytes=%llu",
+         op->title_id, op->output_path, (unsigned long long)st.file_count,
+         (unsigned long long)st.logical_bytes);
+  return 0;
+}
+
 static int
 run_zstd_pack_op(lzc_operation_t *op) {
   lzc_game_t game = {0};
@@ -11233,10 +11333,15 @@ run_zstd_pack_op(lzc_operation_t *op) {
   int level = atoi(op->lz4_level[0] ? op->lz4_level : "5");
   lzc_zstd_build_stats_t st;
   lzc_zstd_build_opts_t o;
+  ampr_pack_stats_t lz4_sum;
+  ampr_pack_stats_t unpack_st;
+  char staging[1024] = {0};
   lzc_lz4_job_t job = { op };
 
   memset(&st, 0, sizeof(st));
   memset(&o, 0, sizeof(o));
+  memset(&lz4_sum, 0, sizeof(lz4_sum));
+  memset(&unpack_st, 0, sizeof(unpack_st));
   lzc_checkpoint("zstd-pack find game");
   lzc_log("zstd-pack start op=%s title=%s level=%d policy=%s targetRoot=%s",
          op->id, op->title_id, level, op->delete_policy, op->target_root);
@@ -11251,12 +11356,12 @@ run_zstd_pack_op(lzc_operation_t *op) {
   }
   if(lzc_lz4_resolve(op, &game, root, sizeof(root), "zstd-pack") != 0) return -1;
   populate_lz4_state(&game);
-  if(game.lz4_packed) {
+  if(game.lz4_packed && ampr_pack_summary(root, &lz4_sum, err, sizeof(err)) != 0) {
     snprintf(op->error, sizeof(op->error), "%s",
-             "this game is LZ4 packed; unpack it before packing it with zstd");
+             err[0] ? err : "could not read this game's LZ4 pack set");
     return -1;
   }
-  if(game.lz4_supported != 1) {
+  if(game.lz4_supported != 1 && !game.lz4_packed) {
     snprintf(op->error, sizeof(op->error), "%s",
              game.lz4_disk_packages ? LZC_DISK_PACKAGES_MSG :
              "this game doesn't use AMPR, so APR-EMU can't read zstd packs for it; compress it to .ffpfsc instead");
@@ -11282,10 +11387,37 @@ run_zstd_pack_op(lzc_operation_t *op) {
     }
     lzc_log("zstd-pack remounted title=%s root=%s", op->title_id, root);
   }
-  if(lzc_lz4_prepare_copy_target(op, &game, 0, LZC_ZSTD_SUFFIX, game.source_size,
-                                target, sizeof(target), temp, sizeof(temp)) != 0) {
-    lzc_log("zstd-pack failed title=%s err=%s", op->title_id, op->error);
-    return -1;
+  {
+    /* An LZ4-packed title is unpacked into a staging tree first, so the
+     * volume has to hold that tree and the packs we write from it. */
+    uint64_t loose = lz4_sum.logical_bytes + lz4_sum.loose_bytes;
+    uint64_t need = game.lz4_packed ? loose * 2 : game.source_size;
+    if(lzc_lz4_prepare_copy_target(op, &game, 0, LZC_ZSTD_SUFFIX, need,
+                                  target, sizeof(target), temp, sizeof(temp)) != 0) {
+      lzc_log("zstd-pack failed title=%s err=%s", op->title_id, op->error);
+      return -1;
+    }
+  }
+  if(game.lz4_packed) {
+    ampr_pack_callbacks_t ucb = lzc_lz4_callbacks(&job);
+    if(snprintf(staging, sizeof(staging), "%s-unpacked", temp) >= (int)sizeof(staging)) {
+      snprintf(op->error, sizeof(op->error), "%s", "output path too long");
+      return -1;
+    }
+    remove_tree_lzc(staging);
+    append_operation_phase(op, "lz4-unpack");
+    job_set_phase("lz4-unpack", 0, 0, "Undoing the LZ4 packs first");
+    lzc_checkpoint("zstd-pack lz4-unpack");
+    lzc_log("zstd-pack unpacking LZ4 first title=%s staging=%s", op->title_id, staging);
+    if(ampr_pack_unpack(root, staging, &ucb, &unpack_st, err, sizeof(err)) != 0) {
+      remove_tree_lzc(staging);
+      snprintf(op->error, sizeof(op->error), "%s",
+               err[0] ? err : "could not undo the LZ4 packs before packing with zstd");
+      lzc_log("zstd-pack failed title=%s err=%s", op->title_id, op->error);
+      return -1;
+    }
+    root[0] = 0;
+    snprintf(root, sizeof(root), "%s", staging);
   }
 
   o.source_root = root;
@@ -11302,9 +11434,14 @@ run_zstd_pack_op(lzc_operation_t *op) {
          lzc_zstd_runtime_sha256());
   if(lzc_zstd_build(&o, &st, err, sizeof(err)) != 0) {
     remove_tree_lzc(temp);
+    if(staging[0]) remove_tree_lzc(staging);
     snprintf(op->error, sizeof(op->error), "%s", err[0] ? err : "zstd packing failed");
     lzc_log("zstd-pack failed title=%s err=%s", op->title_id, op->error);
     return -1;
+  }
+  if(staging[0]) {
+    remove_tree_lzc(staging);
+    staging[0] = 0;
   }
   if(rename(temp, target) != 0) {
     snprintf(op->error, sizeof(op->error), "publish zstd output: %s", strerror(errno));
@@ -11813,6 +11950,8 @@ operation_thread(void *arg) {
 	    rc = run_lz4_pack_op(op);
 	  } else if(op->action == LZC_ACTION_ZSTD_PACK) {
 	    rc = run_zstd_pack_op(op);
+	  } else if(op->action == LZC_ACTION_ZSTD_UNPACK) {
+	    rc = run_zstd_unpack_op(op);
 	  } else if(op->action == LZC_ACTION_LZ4_UNPACK) {
 	    rc = run_lz4_unpack_op(op);
 	  } else if(op->action == LZC_ACTION_LZ4_VERIFY) {
@@ -12830,13 +12969,15 @@ enqueue_lz4_action(const http_request_t *req, lzc_action_t action) {
     return serve_error(req, 404, "game is unavailable");
   }
   int zstd = action == LZC_ACTION_ZSTD_PACK;
+  int zstd_unpack = action == LZC_ACTION_ZSTD_UNPACK;
   if(action == LZC_ACTION_LZ4_PACK || zstd) {
-    if(game.lz4_packed) {
-      return serve_error(req, 409, zstd ?
-                         "this game is LZ4 packed; unpack it before packing it with zstd" :
-                         "this game is already LZ4 packed");
+    /* zstd starts from LZ4 packs too: the job undoes them into a staging
+     * tree first, so the only thing it cannot do is pack what is packed
+     * with the same codec. */
+    if(game.lz4_packed && !zstd) {
+      return serve_error(req, 409, "this game is already LZ4 packed");
     }
-    if(!game.lz4_supported) {
+    if(!game.lz4_supported && !game.lz4_packed) {
       return serve_error(req, 400, game.lz4_disk_packages ? LZC_DISK_PACKAGES_MSG :
                          game.ampr_present && !game.is_mounted &&
                          game.source_kind != LZC_SOURCE_FOLDER ?
@@ -12875,6 +13016,9 @@ enqueue_lz4_action(const http_request_t *req, lzc_action_t action) {
         return serve_error(req, 400, "bad LZ4 profile");
       }
     }
+  } else if(zstd_unpack) {
+    /* Whether the tree really holds zstd packs needs its root, which only
+     * the job has (an image has to be mounted for it), so it checks there. */
   } else if(!game.lz4_packed && action != LZC_ACTION_LZ4_VERIFY) {
     /* Verify also checks a game's boot files when it has no packs. */
     return serve_error(req, 400, "this game is not LZ4 packed");
@@ -12941,7 +13085,7 @@ enqueue_lz4_action(const http_request_t *req, lzc_action_t action) {
   op->output_path[0] = 0;
   snprintf(op->source_kind, sizeof(op->source_kind), "%s",
            source_kind_name(game.source_kind));
-  snprintf(op->format, sizeof(op->format), "%s", zstd ? "zstd" : "lz4");
+  snprintf(op->format, sizeof(op->format), "%s", (zstd || zstd_unpack) ? "zstd" : "lz4");
   snprintf(op->delete_policy, sizeof(op->delete_policy), "%s", policy);
   snprintf(op->target_root, sizeof(op->target_root), "%s", target_root);
   if(action == LZC_ACTION_LZ4_PACK) {
@@ -13568,6 +13712,7 @@ append_game_summary(json_buf_t *b, int *first, const lzc_game_t *game,
                   "\"outputExists\":%s,\"canMoveToUsb\":%s,"
                   "\"canMoveToInternal\":%s,"
                   "\"lz4Packed\":%s,\"lz4Supported\":%s,\"lz4DiskPackages\":%s,"
+                  "\"zstdPacked\":%s,"
                   "\"lz4ProfileAvailable\":%s,\"lz4PackCount\":%u,"
                   "\"lz4Files\":%llu",
                   (unsigned long long)game->source_size,
@@ -13604,6 +13749,10 @@ append_game_summary(json_buf_t *b, int *first, const lzc_game_t *game,
                   game->lz4_packed ? "true" : "false",
                   game->lz4_supported ? "true" : "false",
                   game->lz4_disk_packages ? "true" : "false",
+                  /* Only a folder can be probed without mounting anything;
+                   * for an image the job finds out when it opens it. */
+                  (game->source_kind == LZC_SOURCE_FOLDER &&
+                   lzc_zstd_probe(game->source_path)) ? "true" : "false",
                   game->lz4_profile_available ? "true" : "false",
                   game->lz4_pack_count,
                   (unsigned long long)game->lz4_files) != 0) {
@@ -14794,6 +14943,9 @@ lzc_api_request(const http_request_t *req, const char *url) {
 	  }
 	  if(!strcmp(req->path, "/api/lzc/zstd-pack")) {
     return enqueue_lz4_action(req, LZC_ACTION_ZSTD_PACK);
+  }
+  if(!strcmp(req->path, "/api/lzc/zstd-unpack")) {
+    return enqueue_lz4_action(req, LZC_ACTION_ZSTD_UNPACK);
   }
   if(!strcmp(req->path, "/api/lzc/lz4-pack")) {
 	    return enqueue_lz4_action(req, LZC_ACTION_LZ4_PACK);

@@ -63,5 +63,15 @@ int lzc_zstd_pack(const char *source_root, const char *output_root,
 /* 1 when root holds an ampr_zstd.index with a valid header. */
 int lzc_zstd_probe(const char *root);
 
+/* Writes the packed files back as loose files under output_root, then the
+ * caller places the loose files and drops the pack set. Every chunk is
+ * checked against the record it came from. */
+int lzc_zstd_unpack(const char *packed_root, const char *output_root,
+                    const lzc_zstd_cb_t *cb, lzc_zstd_stats_t *stats,
+                    char *err, size_t err_size);
+
+/* 1 for the files that belong to a zstd pack set (the index and volumes). */
+int lzc_zstd_is_pack_file(const char *rel);
+
 /* FNV-1a 64 over the relative path, as the index sorts and looks up by. */
 uint64_t lzc_zstd_path_hash(const char *rel, size_t len);

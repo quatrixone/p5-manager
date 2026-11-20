@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -424,4 +425,189 @@ lzc_zstd_probe(const char *root) {
   }
   fclose(fp);
   return ok;
+}
+
+int
+lzc_zstd_is_pack_file(const char *rel) {
+  const char *base = rel ? strrchr(rel, '/') : NULL;
+  base = base ? base + 1 : rel;
+  if(!base) return 0;
+  return !strcmp(base, LZC_ZSTD_INDEX_NAME) || !strncmp(base, "ampr_zstd-", 10);
+}
+
+/* --- reading the pack set back ------------------------------------------- */
+
+static int
+read_at(FILE *fp, uint64_t off, void *buf, size_t n) {
+  return (fseeko(fp, (off_t)off, SEEK_SET) == 0 && fread(buf, 1, n, fp) == n) ? 0 : -1;
+}
+
+static uint16_t
+get16(const unsigned char *p) { return (uint16_t)(p[0] | (p[1] << 8)); }
+
+static uint32_t
+get32(const unsigned char *p) {
+  return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+static uint64_t
+get64(const unsigned char *p) {
+  uint64_t v = 0;
+  for(int i = 7; i >= 0; i--) v = (v << 8) | p[i];
+  return v;
+}
+
+static int
+mkdirs_to(const char *path) {
+  char tmp[2048];
+  if(snprintf(tmp, sizeof(tmp), "%s", path) >= (int)sizeof(tmp)) return -1;
+  char *slash = strrchr(tmp, '/');
+  if(!slash) return 0;
+  *slash = 0;
+  for(char *p = tmp + 1; *p; p++) {
+    if(*p != '/') continue;
+    *p = 0;
+    if(mkdir(tmp, 0777) != 0 && errno != EEXIST) return -1;
+    *p = '/';
+  }
+  return (mkdir(tmp, 0777) != 0 && errno != EEXIST) ? -1 : 0;
+}
+
+int
+lzc_zstd_unpack(const char *packed_root, const char *output_root,
+                const lzc_zstd_cb_t *cb, lzc_zstd_stats_t *stats,
+                char *err, size_t err_size) {
+  int rc = -1;
+  unsigned char *index = NULL, *raw = NULL, *comp = NULL;
+  FILE **vols = NULL;
+  uint32_t vol_count = 0;
+  FILE *out = NULL;
+  char path[2048];
+
+  if(err && err_size) err[0] = 0;
+  if(stats) memset(stats, 0, sizeof(*stats));
+  if(!packed_root || !output_root) FAIL("bad arguments");
+
+  snprintf(path, sizeof(path), "%s/%s", packed_root, LZC_ZSTD_INDEX_NAME);
+  FILE *fp = fopen(path, "rb");
+  if(!fp) FAIL("cannot read %s: %s", LZC_ZSTD_INDEX_NAME, strerror(errno));
+  if(fseeko(fp, 0, SEEK_END) != 0) { fclose(fp); FAIL("cannot read %s", LZC_ZSTD_INDEX_NAME); }
+  off_t ilen = ftello(fp);
+  rewind(fp);
+  if(ilen < LZC_ZSTD_INDEX_HDR || !(index = malloc((size_t)ilen)) ||
+     fread(index, 1, (size_t)ilen, fp) != (size_t)ilen) {
+    fclose(fp);
+    FAIL("%s is damaged", LZC_ZSTD_INDEX_NAME);
+  }
+  fclose(fp);
+
+  if(memcmp(index, "AMPRZPK1", 8) || get32(index + 8) != 1 ||
+     get32(index + 12) != LZC_ZSTD_INDEX_HDR || index[16] != LZC_ZSTD_CHUNK_SHIFT) {
+    FAIL("%s is not a zstd pack index this build can read", LZC_ZSTD_INDEX_NAME);
+  }
+  if(crc_of(index + LZC_ZSTD_INDEX_HDR, (size_t)ilen - LZC_ZSTD_INDEX_HDR) != get32(index + 112)) {
+    FAIL("%s failed its checksum", LZC_ZSTD_INDEX_NAME);
+  }
+  vol_count = get32(index + 20);
+  uint64_t file_count = get64(index + 40), chunk_count = get64(index + 48);
+  uint64_t files_off = get64(index + 56), chunks_off = get64(index + 64);
+  uint64_t strings_off = get64(index + 80), strings_len = get64(index + 88);
+  if(!vol_count || vol_count > LZC_ZSTD_MAX_VOLUMES ||
+     files_off != LZC_ZSTD_INDEX_HDR ||
+     chunks_off != files_off + 32 * file_count ||
+     strings_off + strings_len != (uint64_t)ilen) {
+    FAIL("%s does not describe a pack set", LZC_ZSTD_INDEX_NAME);
+  }
+
+  if(!(vols = calloc(vol_count, sizeof(*vols)))) FAIL("out of memory");
+  for(uint32_t v = 0; v < vol_count; v++) {
+    char name[32];
+    snprintf(name, sizeof(name), LZC_ZSTD_VOLUME_FMT, v);
+    snprintf(path, sizeof(path), "%s/%s", packed_root, name);
+    if(!(vols[v] = fopen(path, "rb"))) FAIL("cannot read %s: %s", name, strerror(errno));
+    unsigned char vh[LZC_ZSTD_VOLUME_HDR];
+    if(read_at(vols[v], 0, vh, sizeof(vh)) != 0) FAIL("%s is damaged", name);
+    uint32_t want = get32(vh + 60);
+    unsigned char copy[LZC_ZSTD_VOLUME_HDR];
+    memcpy(copy, vh, sizeof(copy));
+    memset(copy + 60, 0, 4);
+    if(memcmp(vh, "AMPRZDT1", 8) || get32(vh + 16) != v || get32(vh + 20) != vol_count ||
+       memcmp(vh + 24, index + 24, 16) || crc_of(copy, sizeof(copy)) != want) {
+      FAIL("%s is not this archive's volume %u", name, v);
+    }
+  }
+
+  if(!(raw = malloc(LZC_ZSTD_CHUNK_SIZE)) || !(comp = malloc(LZC_ZSTD_CHUNK_SIZE))) FAIL("out of memory");
+  if(mkdir(output_root, 0777) != 0 && errno != EEXIST) {
+    FAIL("cannot create %s: %s", output_root, strerror(errno));
+  }
+
+  uint64_t done = 0, logical_total = get64(index + 96);
+  for(uint64_t i = 0; i < file_count; i++) {
+    const unsigned char *r = index + files_off + 32 * i;
+    uint64_t size = get64(r + 8);
+    uint32_t first = get32(r + 16), poff = get32(r + 20);
+    uint16_t plen = get16(r + 24);
+    char rel[1024];
+    if(plen >= sizeof(rel) || poff + plen > strings_len) FAIL("a path in the index is out of range");
+    memcpy(rel, index + strings_off + poff, plen);
+    rel[plen] = 0;
+    if(!path_ok(rel, plen)) FAIL("the index names a path we will not write: %s", rel);
+    if(cb && cb->current) cb->current(cb->ctx, rel);
+    if(cb && cb->cancelled && cb->cancelled(cb->ctx)) FAIL("cancelled");
+
+    if(snprintf(path, sizeof(path), "%s/%s", output_root, rel) >= (int)sizeof(path)) {
+      FAIL("output path is too long: %s", rel);
+    }
+    if(mkdirs_to(path) != 0) FAIL("cannot create a folder for %s: %s", rel, strerror(errno));
+    if(!(out = fopen(path, "wb"))) FAIL("cannot write %s: %s", rel, strerror(errno));
+
+    uint32_t chunks = (uint32_t)((size + LZC_ZSTD_CHUNK_SIZE - 1) / LZC_ZSTD_CHUNK_SIZE);
+    for(uint32_t c = 0; c < chunks; c++) {
+      if((uint64_t)first + c >= chunk_count) FAIL("%s points past the chunk table", rel);
+      uint64_t rec = get64(index + chunks_off + 8 * ((uint64_t)first + c));
+      uint32_t off = (uint32_t)(rec & 0xFFFFFFFFULL);
+      uint32_t vid = (uint32_t)((rec >> 32) & 0xFFF);
+      uint32_t stored = (uint32_t)((rec >> 44) & 0x3FFFF) + 1;
+      unsigned codec = (unsigned)(rec >> 62);
+      size_t want = size - (uint64_t)c * LZC_ZSTD_CHUNK_SIZE;
+      if(want > LZC_ZSTD_CHUNK_SIZE) want = LZC_ZSTD_CHUNK_SIZE;
+      if(codec > 1 || vid >= vol_count || off < LZC_ZSTD_VOLUME_HDR) {
+        FAIL("chunk %u of %s is not readable", c, rel);
+      }
+      if(read_at(vols[vid], off, comp, stored) != 0) FAIL("chunk %u of %s is missing", c, rel);
+      const unsigned char *src = comp;
+      if(codec == 1) {
+        size_t got = ZSTD_decompress(raw, LZC_ZSTD_CHUNK_SIZE, comp, stored);
+        if(ZSTD_isError(got) || got != want) FAIL("chunk %u of %s does not decode", c, rel);
+        src = raw;
+      } else if(stored != want) {
+        FAIL("chunk %u of %s has the wrong stored size", c, rel);
+      }
+      if(fwrite(src, 1, want, out) != want) FAIL("cannot write %s: %s", rel, strerror(errno));
+      done += want;
+      if(cb && cb->progress) cb->progress(cb->ctx, done, logical_total);
+      if(cb && cb->cancelled && cb->cancelled(cb->ctx)) FAIL("cancelled");
+    }
+    if(fclose(out) != 0) { out = NULL; FAIL("cannot finish %s", rel); }
+    out = NULL;
+    if(chmod(path, 0777) != 0) FAIL("cannot set the mode of %s: %s", rel, strerror(errno));
+  }
+
+  if(stats) {
+    stats->file_count = file_count;
+    stats->chunk_count = chunk_count;
+    stats->logical_bytes = done;
+    stats->volume_count = vol_count;
+  }
+  rc = 0;
+
+done:
+  if(out) fclose(out);
+  for(uint32_t v = 0; vols && v < vol_count; v++) if(vols[v]) fclose(vols[v]);
+  free(vols);
+  free(comp);
+  free(raw);
+  free(index);
+  return rc;
 }

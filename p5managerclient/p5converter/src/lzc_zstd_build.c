@@ -17,6 +17,7 @@
 #include "ampr_pack.h"
 #include "ampr_pack_internal.h"
 #include "lzc_zstd_build.h"
+#include "lzc_zstd_pack.h"
 
 #define LZC_ZSTD_DEFAULT_LEVEL 5
 
@@ -280,5 +281,51 @@ done:
   free(packed);
   ap_config_free(&cfg);
   scan_free(&scan);
+  return rc;
+}
+
+int
+lzc_zstd_place_loose(const char *packed_root, const char *output_root,
+                     char *err, size_t err_size) {
+  int rc = -1;
+  ap_scan_t packed;
+  ap_scan_t placed;
+
+  memset(&packed, 0, sizeof(packed));
+  memset(&placed, 0, sizeof(placed));
+  if(err && err_size) err[0] = 0;
+  if(!packed_root || !output_root) FAIL("bad arguments");
+  if(walk(packed_root, "", &packed) != 0) FAIL("cannot read %s: %s", packed_root, strerror(errno));
+
+  for(size_t i = 0; i < packed.dirs.count; i++) {
+    char dir[2048];
+    if(snprintf(dir, sizeof(dir), "%s/%s/.", output_root, packed.dirs.items[i]) >= (int)sizeof(dir)) {
+      FAIL("path is too long: %s", packed.dirs.items[i]);
+    }
+    if(mkdirs_for(dir) != 0) FAIL("cannot create %s: %s", packed.dirs.items[i], strerror(errno));
+  }
+  for(size_t i = 0; i < packed.file_count; i++) {
+    const char *rel = packed.files[i].rel;
+    char from[2048], to[2048];
+    struct stat st;
+    /* The pack set stays behind, and the index is rebuilt below. */
+    if(lzc_zstd_is_pack_file(rel) || is_apr_index_file(rel)) continue;
+    if(snprintf(to, sizeof(to), "%s/%s", output_root, rel) >= (int)sizeof(to) ||
+       snprintf(from, sizeof(from), "%s/%s", packed_root, rel) >= (int)sizeof(from)) {
+      FAIL("path is too long: %s", rel);
+    }
+    /* A file the packs already restored is the authority; never overwrite it. */
+    if(stat(to, &st) == 0) continue;
+    if(copy_file(from, to, NULL) != 0) FAIL("cannot copy %s: %s", rel, strerror(errno));
+    if(chmod(to, 0777) != 0) FAIL("cannot set the mode of %s: %s", rel, strerror(errno));
+  }
+
+  if(walk(output_root, "", &placed) != 0) FAIL("cannot read %s: %s", output_root, strerror(errno));
+  if(build_apr_index(output_root, &placed, err, err_size) != 0) goto done;
+  rc = 0;
+
+done:
+  scan_free(&placed);
+  scan_free(&packed);
   return rc;
 }

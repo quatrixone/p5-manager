@@ -28,6 +28,13 @@ typedef struct lzc_zstd_build_stats {
   int runtime_installed;
 } lzc_zstd_build_stats_t;
 
+/* After lzc_zstd_unpack() has written the packed files into output_root,
+ * this copies the files that were never packed, recreates every folder and
+ * builds the resolver index for the tree that results. The pack set itself
+ * is left behind. */
+int lzc_zstd_place_loose(const char *packed_root, const char *output_root,
+                         char *err, size_t err_size);
+
 int lzc_zstd_build(const lzc_zstd_build_opts_t *opts,
                    lzc_zstd_build_stats_t *stats, char *err, size_t err_size);
 
