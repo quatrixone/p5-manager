@@ -82,6 +82,13 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
   const [folderImportJob, setFolderImportJob] = useState(null);
 
   const [mode, setMode] = useState('pack-file');
+  // PS5 Dump Forge on this machine: one request, any target, packs as flags.
+  const [forgeFormat, setForgeFormat] = useState('folder');
+  const [forgePack, setForgePack] = useState('zstd'); // 'none' | 'zstd' | 'lz4'
+  const [forgeZstdLevel, setForgeZstdLevel] = useState('5');
+  const [forgeLz4Level, setForgeLz4Level] = useState('9');
+  const [forgeInner, setForgeInner] = useState('ffpkg');
+  const [forgeFullVerify, setForgeFullVerify] = useState(false);
   const [selected, setSelected] = useState('');
   // When source lives on PS5 FTP, we keep ip+path here and present them as
   // ftp://ip/path in the Source field. The backend stages the file locally,
@@ -392,6 +399,16 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
     push_ip: pushIp || undefined,
     push_dest: pushDest || undefined,
     delete_source_after: deleteSource,
+    forge: mode === 'forge' ? {
+      format: forgeFormat,
+      inner: forgeFormat === 'ffpfsc' ? forgeInner : undefined,
+      zstd_pack: forgePack === 'zstd' || undefined,
+      zstd_level: forgePack === 'zstd' ? Number(forgeZstdLevel) : undefined,
+      lz4: forgePack === 'lz4' && forgeFormat !== 'lz4' ? 'pack' : undefined,
+      lz4_level: forgePack === 'lz4' ? Number(forgeLz4Level) : undefined,
+      full_verify: forgeFullVerify || undefined,
+      delete_source: deleteSource || undefined,
+    } : undefined,
   });
 
   // Legacy addToQueue() removed — both convert-now and convert-queue go
@@ -619,6 +636,7 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
                 { id: 'lz4-folder', label: 'Folder → LZ4' },
                 { id: 'exfat-lz4', label: '.exfat → LZ4' },
                 { id: 'ffpfsc-lz4', label: '.ffpfsc → LZ4' },
+                { id: 'forge', label: '⚒ Forge → any format' },
               ].map(m => (
                 <button key={m.id} style={styles.tab(mode === m.id)} onClick={() => {
                   setMode(m.id);
@@ -633,6 +651,69 @@ function ConvertSection({ profiles, onNotification, onOpenQueue, initialPick, on
               ))}
             </div>
           </div>
+
+          {mode === 'forge' && (
+            <div style={{ ...styles.card, background: C.bg, marginBottom: 0 }}>
+              <div style={{ ...styles.row, gap: '0.6rem', flexWrap: 'wrap', alignItems: 'flex-end' }}>
+                <div>
+                  <label style={styles.label}>Target</label>
+                  <select className="select" value={forgeFormat} onChange={e => setForgeFormat(e.target.value)}>
+                    <option value="folder">Folder</option>
+                    <option value="exfat">.exfat image</option>
+                    <option value="ffpkg">.ffpkg image</option>
+                    <option value="ffpfs">.ffpfs image</option>
+                    <option value="ffpfsc">.ffpfsc compressed image</option>
+                    <option value="pkg">.pkg package</option>
+                    <option value="lz4">LZ4 packed folder</option>
+                  </select>
+                </div>
+                <div>
+                  <label style={styles.label}>Asset packs</label>
+                  <select className="select" value={forgePack} onChange={e => setForgePack(e.target.value)}>
+                    <option value="none">None — plain files</option>
+                    <option value="zstd">zstd packs</option>
+                    <option value="lz4">LZ4 packs</option>
+                  </select>
+                </div>
+                {forgePack === 'zstd' && (
+                  <div>
+                    <label style={styles.label}>zstd level</label>
+                    <select className="select" value={forgeZstdLevel} onChange={e => setForgeZstdLevel(e.target.value)}>
+                      {Array.from({ length: 22 }, (_, i) => String(i + 1)).map(l => <option key={l} value={l}>{l}</option>)}
+                    </select>
+                  </div>
+                )}
+                {forgePack === 'lz4' && (
+                  <div>
+                    <label style={styles.label}>LZ4 level</label>
+                    <select className="select" value={forgeLz4Level} onChange={e => setForgeLz4Level(e.target.value)}>
+                      {['0', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12'].map(l => <option key={l} value={l}>{l}</option>)}
+                    </select>
+                  </div>
+                )}
+                {forgeFormat === 'ffpfsc' && (
+                  <div>
+                    <label style={styles.label}>Image inside</label>
+                    <select className="select" value={forgeInner} onChange={e => setForgeInner(e.target.value)}>
+                      <option value="ffpkg">.ffpkg</option>
+                      <option value="exfat">.exfat</option>
+                      <option value="ffpfs">.ffpfs</option>
+                    </select>
+                  </div>
+                )}
+                <label style={{ ...styles.label, display: 'flex', gap: '0.3rem', alignItems: 'center' }}>
+                  <input type="checkbox" checked={forgeFullVerify} onChange={e => setForgeFullVerify(e.target.checked)} />
+                  Re-read every byte
+                </label>
+              </div>
+              <div className="text-xs text-muted" style={{ marginTop: '0.4rem' }}>
+                The same program that converts on the console, run here. The source can be a
+                folder, any image, a .pkg, or a .zip/.7z/.rar holding a game - read without
+                unpacking it. A source that already holds LZ4 or zstd packs is taken apart on
+                the way, and the output is verified against the source either way.
+              </div>
+            </div>
+          )}
 
           <div>
             <label style={styles.label}>

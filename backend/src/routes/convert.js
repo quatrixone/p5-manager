@@ -9,6 +9,7 @@ import net from 'net';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { createRequire } from 'module';
+import { ensureForgeCli, forgeArgs, parseForgeLine, FORGE_VERSION } from '../lib/forgeCli.js';
 import { getRepo, log } from '../db/sqlite.js';
 
 // archiver is CJS and doesn't expose a clean ESM default export in Node 20,
@@ -3243,6 +3244,56 @@ async function runLz4Folder(job) {
   return spawnIntoJob(job, cli, ['pack', job.source, job.output, String(level)], { onStdout });
 }
 
+// PS5 Dump Forge on this machine. The same program that converts on the
+// console, so a host job and a console job take the same request and run the
+// same checks; it prints its progress as JSON lines, which is what we read
+// here rather than guessing from a percentage.
+async function runForgeConvert(job, request) {
+  let cli;
+  try {
+    cli = await ensureForgeCli({ onLog: (m) => appendLog(job, `[manager] ${m}\n`) });
+  } catch (e) {
+    return { code: -1, error: `PS5 Dump Forge ${FORGE_VERSION} is not available: ${e.message}` };
+  }
+  let args;
+  try {
+    args = forgeArgs({ ...request, source: job.source, output: job.output });
+  } catch (e) {
+    return { code: -1, error: e.message };
+  }
+  job.command = `${cli} ${args.join(' ')}`;
+  let pending = '';
+  let ending = null;
+  const onStdout = (chunk) => {
+    pending += chunk.toString();
+    const lines = pending.split('\n');
+    pending = lines.pop() || '';
+    for (const line of lines) {
+      const ev = parseForgeLine(line);
+      if (!ev) continue;
+      if (ev.kind === 'progress') {
+        job.phase = ev.stage;
+        job.phase_label = ev.stage;
+        if (ev.total > 0) {
+          job.progress = Math.max(job.progress || 0, Math.min(99, Math.floor(ev.done / ev.total * 99)));
+        }
+      } else if (ev.kind === 'done') {
+        ending = ev;
+      }
+    }
+  };
+  const run = await spawnIntoJob(job, cli, args, { onStdout });
+  if (ending && !ending.ok) return { code: run.code || 1, error: ending.error };
+  if (run.code !== 0) return run;
+  if (ending?.ok) {
+    // Its checks are the useful part: they say what was verified, and how.
+    for (const c of ending.checks) appendLog(job, `[manager] check: ${c}\n`);
+    job.forge_checks = ending.checks;
+    job.output_bytes = ending.bytes;
+  }
+  return run;
+}
+
 // Convert an existing image directly to LZ4 through a per-job extraction.
 async function runImageToLz4(job, imageKind, opts) {
   const tempRoot = path.join(path.dirname(job.output), `.lz4-convert-${job.id}`);
@@ -3324,7 +3375,17 @@ async function runUnpack(job, opts) {
 //   lz4-folder    — pack an AMPR game folder into seekable LZ4 asset packs
 //   exfat-lz4     — unpack an exFAT image and pack its game as LZ4
 //   ffpfsc-lz4    — unpack a .ffpfsc image and pack its game as LZ4
-const CONVERT_MODES = ['pack-file', 'pack-folder', 'unpack', 'exfat-file', 'exfat-folder', 'exfat-unpack', 'lz4-folder', 'exfat-lz4', 'ffpfsc-lz4'];
+//   forge         — PS5 Dump Forge on this machine: any source (a folder, an
+//                   image of any kind, a .pkg, or a .zip/.7z/.rar holding a
+//                   game) to any target, with LZ4 or zstd packs as flags, and
+//                   every output verified against its source. params.forge
+//                   carries its request; the same program runs on the console.
+const CONVERT_MODES = ['pack-file', 'pack-folder', 'unpack', 'exfat-file', 'exfat-folder', 'exfat-unpack', 'lz4-folder', 'exfat-lz4', 'ffpfsc-lz4', 'forge'];
+// Forge's own targets. A pack is a flag on one of these, never a target.
+const FORGE_FORMATS = ['folder', 'exfat', 'ffpkg', 'ffpfs', 'ffpfsc', 'pkg', 'lz4'];
+const FORGE_EXT = { exfat: '.exfat', ffpkg: '.ffpkg', ffpfs: '.ffpfs', ffpfsc: '.ffpfsc', pkg: '.pkg' };
+// ShadowMountPlus cannot mount a name longer than this, so Forge refuses it.
+const FORGE_NAME_MAX = { ffpfsc: 58, other: 63 };
 const UNPACKABLE_EXT_RE = /\.(ffpfs|ffpfsc|pfs|dat|bin)$/i;
 // .exfat is its own unpack source — kept in a separate regex so we don't
 // accidentally route .exfat into mkpfs (which would happily start and then
@@ -3339,6 +3400,14 @@ function validateConvertParams(params) {
     source_smb,
   } = params;
   if (!CONVERT_MODES.includes(mode)) return { error: 'invalid mode' };
+  if (mode === 'forge') {
+    const f = params.forge || {};
+    if (!FORGE_FORMATS.includes(f.format)) {
+      return { error: `forge.format must be one of ${FORGE_FORMATS.join(', ')}` };
+    }
+    if (f.zstd_pack && f.format === 'pkg') return { error: 'zstd packs cannot go into a .pkg' };
+    if (f.zstd_pack && f.zstd_unpack) return { error: 'pack and unpack cannot both be asked for' };
+  }
   if (['lz4-folder', 'exfat-lz4', 'ffpfsc-lz4'].includes(mode) && params.output_name != null) {
     const outputName = String(params.output_name).trim();
     if (!outputName || outputName === '.' || outputName === '..' || /[\\/]/.test(outputName)) {
@@ -3366,6 +3435,14 @@ function validateConvertParams(params) {
       return srcBase.replace(/\.(exfat|ffpkg|ffpfsc|iso|img|bin)$/i, '') + '.exfat';
     }
     if (mode === 'lz4-folder') return srcBase.replace(/\.(lz4)$/i, '') + '-lz4';
+    if (mode === 'forge') {
+      const f = params.forge || {};
+      const stem = srcBase.replace(/\.(exfat|ffpkg|ffpfs|ffpfsc|pkg|zip|7z|rar)$/i, '');
+      const limit = f.format === 'ffpfsc' ? FORGE_NAME_MAX.ffpfsc : FORGE_NAME_MAX.other;
+      const tag = f.zstd_pack ? '-zstd' : (f.format === 'lz4' ? '-lz4' : '');
+      const base = `${stem}${tag}`.slice(0, limit);
+      return base + (FORGE_EXT[f.format] || '');
+    }
     return srcBase.replace(/\.(exfat|ffpkg|ffpfsc)$/i, '') + '.ffpfsc';
   };
 
@@ -3809,6 +3886,7 @@ async function executeConvertJob(job) {
       }
       result = await runPackFolder(job, opts);
     }
+    else if (job.mode === 'forge') result = await runForgeConvert(job, params.forge || {});
     else if (job.mode === 'lz4-folder') result = await runLz4Folder(job);
     else if (job.mode === 'exfat-lz4' || job.mode === 'ffpfsc-lz4') {
       const unpackOpts = { ekpfs_key: params.ekpfs_key, new_crypt: !!params.new_crypt };

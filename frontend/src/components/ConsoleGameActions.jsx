@@ -83,7 +83,8 @@ export default function ConsoleGameActions({ ip, game, busy, roots = [], onStart
   const request = () => {
     const r = { source: game.path, format: chosen.format, output: preview };
     if (chosen.zstd) { r.zstd_pack = true; r.zstd_level = Number(zstdLevel); }
-    if (chosen.lz4) { r.lz4 = 'pack'; r.lz4_level = Number(lz4Level); }
+    // format 'lz4' already means packed; lz4: 'pack' is the other way to ask.
+    if (chosen.lz4) r.lz4_level = Number(lz4Level);
     if (chosen.inner) { r.inner = inner; r.ffpfsc_level = Number(ffpfscLevel); }
     if (chosen.kraken) r.kraken_level = kraken;
     // Packs in the source have to come apart before anything else is written.
