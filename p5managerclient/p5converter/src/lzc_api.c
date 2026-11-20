@@ -10909,6 +10909,29 @@ lzc_lz4_store_sizes(lzc_operation_t *op, uint64_t original, uint64_t result) {
   op->saved_bytes = original > result ? original - result : 0;
 }
 
+/* A converted folder carries one format suffix, never a chain of them:
+ * -app-lz4 packed with zstd becomes -app-zstd, not -app-lz4-zstd, and
+ * unpacking either one goes back to -app. Returns 1 when it removed one. */
+static int
+strip_format_suffix(char *base) {
+  static const char *const known[] = { LZC_LZ4_SUFFIX, LZC_ZSTD_SUFFIX };
+  int stripped = 0;
+  for(int again = 1; again; ) {
+    again = 0;
+    size_t len = strlen(base);
+    for(size_t i = 0; i < sizeof(known) / sizeof(*known); i++) {
+      size_t n = strlen(known[i]);
+      if(len > n && !strcasecmp(base + len - n, known[i])) {
+        base[len - n] = 0;
+        stripped = 1;
+        again = 1;
+        break;
+      }
+    }
+  }
+  return stripped;
+}
+
 static int
 build_lz4_target_path(const lzc_operation_t *op, const lzc_game_t *game,
                       int unpack, const char *suffix, char *out,
@@ -10925,14 +10948,12 @@ build_lz4_target_path(const lzc_operation_t *op, const lzc_game_t *game,
     snprintf(err, err_size, "%s", "bad output name");
     return -1;
   }
+  int had_suffix = strip_format_suffix(base);
   size_t len = strlen(base);
   size_t suffix_len = strlen(suffix);
   if(unpack) {
-    if(len > suffix_len && !strcasecmp(base + len - suffix_len, suffix)) {
-      base[len - suffix_len] = 0;
-    } else if(len + 10 < sizeof(base)) {
-      strcat(base, "-unpacked");
-    }
+    /* Nothing to drop means the name never said a format, so mark it. */
+    if(!had_suffix && len + 10 < sizeof(base)) strcat(base, "-unpacked");
   } else if(len + suffix_len < sizeof(base)) {
     strcat(base, suffix);
   }
