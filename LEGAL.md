@@ -29,6 +29,12 @@ They are used here only to describe what the software works with.
     [ps5-payload-dev/offact](https://github.com/ps5-payload-dev/offact) by
     John Törnblom and is under the GNU GPL version 3 or later (see
     [p5managerclient/offact/LICENSE](p5managerclient/offact/LICENSE)).
+  - `forge/ps5-dump-forge.elf` is the console payload of
+    [PS5 Dump Forge](https://github.com/quer3q/ps5-dump-forge) by quer3q,
+    GPL-3.0-or-later, copied unchanged from its own release. P5 Manager
+    bundles the binary and ships it to the console; its corresponding source
+    is the project above, recorded in `forge/ORIGIN.md` with the exact
+    version and checksum.
   - `p5converter/third_party/ampr_emu_ng/libSceAmpr.sprx` is the
     ampr-emu-ng runtime, GPL-3.0, taken unchanged from
     [ps5-dump-forge](https://github.com/quer3q/ps5-dump-forge); it is the

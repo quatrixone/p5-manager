@@ -46,7 +46,7 @@ export default function Library({ profiles = [], onNotification }) {
   const [deleteSource, setDeleteSource] = useState(false);
   const [deleting, setDeleting] = useState(null); // game pending delete confirmation
   const [renaming, setRenaming] = useState(null);
-  // "Convert to…": the title the P5 Converter dialog is open for, and what
+  // "Convert to…": the title the Forge dialog is open for, and what
   // the engine on that console says it is doing right now.
   const [converting, setConverting] = useState(null);
   const [engine, setEngine] = useState(null); // { job } | { off: true } | null while loading
@@ -191,32 +191,30 @@ export default function Library({ profiles = [], onNotification }) {
     setConverting(game);
     setConvertJob(null);
     setEngine(null);
-    // The engine runs one job at a time, and reading never starts it, so an
-    // answer of "not running" is a real state to show, not an error.
-    // Its own entry for this title comes too: which formats a title can
-    // become is decided from the engine's fields (sourceKind, the lz4 flags),
-    // which the Library row does not carry.
+    // Reading never starts the payload, so "not running" is a real state to
+    // show rather than an error. Forge's own entry for this title comes too:
+    // the picker needs its kind and pack flags, which a Library row has not.
     try {
-      const [job, games] = await Promise.all([
-        api.get(`/gamecompressor/${ip}/engine/lzc/job`),
-        api.get(`/gamecompressor/${ip}/engine/lzc/games`),
+      const [jobs, scan] = await Promise.all([
+        api.get(`/forge/${ip}/api/jobs`),
+        api.post(`/forge/${ip}/api/library_scan`, {}),
       ]);
-      const all = (games?.games || []).filter(g => g.titleId === game.title_id);
-      const mine = all.find(g => g.sourcePath === game.path) || all[0] || null;
-      setEngine({ job, game: mine });
+      const all = (scan?.entries || []).filter(e => e.title_id === game.title_id);
+      const mine = all.find(e => e.path === game.path) || all[0] || null;
+      setEngine({ jobs: jobs?.jobs || [], game: mine, roots: scan?.roots || [] });
     } catch (e) { setEngine({ off: true, message: e.message }); }
   };
 
   useEffect(() => {
-    if (!convertJob?.id || convertJob.done) return undefined;
+    if (convertJob?.id == null || convertJob.done) return undefined;
     let live = true;
     const tick = async () => {
-      const job = await apiSafe.get(`/gamecompressor/${ip}/engine/lzc/job`);
+      const d = await apiSafe.get(`/forge/${ip}/api/jobs`);
       if (!live) return;
-      if (job?.busy) { setConvertJob(c => (c ? { ...c, job } : c)); return; }
-      const h = await apiSafe.get(`/gamecompressor/${ip}/engine/lzc/history`);
-      const mine = (h?.history || []).find(e => e.id === convertJob.id);
-      if (live && mine && mine.status !== 'running') setConvertJob(c => (c ? { ...c, done: mine } : c));
+      const mine = (d?.jobs || []).find(j => j.id === convertJob.id);
+      if (!mine) return;
+      if (mine.done) setConvertJob(c => (c ? { ...c, done: mine.done } : c));
+      else setConvertJob(c => (c ? { ...c, job: mine } : c));
     };
     tick();
     const t = setInterval(tick, 2000);
@@ -224,15 +222,15 @@ export default function Library({ profiles = [], onNotification }) {
   }, [convertJob?.id, convertJob?.done, ip]);
 
   const cancelConvert = async () => {
-    try { await api.post(`/gamecompressor/${ip}/engine/lzc/job/cancel`); }
+    try { await api.post(`/forge/${ip}/api/cancel_job`, { id: convertJob?.id }); }
     catch (e) { onNotification?.(e.message, 'error'); }
   };
 
   const startConverter = async () => {
     setEngine(null);
     try {
-      await api.post(`/gamecompressor/${ip}/start`);
-      setEngine({ job: await api.get(`/gamecompressor/${ip}/engine/lzc/job`) });
+      await api.post(`/forge/${ip}/start`);
+      await openConvert(converting);
     } catch (e) { setEngine({ off: true, message: e.message }); }
   };
 
@@ -502,39 +500,42 @@ export default function Library({ profiles = [], onNotification }) {
           engine === null ? <div className="text-xs text-muted">Asking the console…</div>
           : engine.off ? (
             <div className="flex-col gap-sm">
-              <div className="text-xs text-muted">P5 Converter is not running on this console, so there is nothing to convert with yet. {engine.message}</div>
-              <button className="btn btn-primary btn-sm" onClick={startConverter}>▶ Start P5 Converter</button>
+              <div className="text-xs text-muted">PS5 Dump Forge is not running on this console, so there is nothing to convert with yet. {engine.message}</div>
+              <button className="btn btn-primary btn-sm" onClick={startConverter}>▶ Start PS5 Dump Forge</button>
             </div>
           ) : (
             convertJob ? (
               <div className="flex-col gap-sm">
                 {convertJob.done ? (
                   <>
-                    <div className="text-sm" style={{ color: convertJob.done.status === 'failed' ? 'var(--danger)' : 'var(--success)' }}>
-                      {convertJob.done.status === 'success' ? '✓ Converted on the console'
-                        : convertJob.done.status === 'cancelled' ? 'Cancelled'
-                        : `Failed: ${convertJob.done.error || 'the console did not say why'}`}
-                    </div>
-                    {convertJob.done.outputPath && (
-                      <div className="text-xs text-muted" style={{ wordBreak: 'break-all' }}>{convertJob.done.outputPath}</div>
-                    )}
+                    {(() => {
+                      const r = convertJob.done?.result || {};
+                      const ok = !!r.Ok;
+                      return (
+                        <>
+                          <div className="text-sm" style={{ color: ok ? 'var(--success)' : 'var(--danger)' }}>
+                            {ok ? `✓ Converted on the console · ${(r.Ok.checks || []).length} checks passed`
+                                : `Failed: ${typeof r.Err === 'string' ? r.Err : 'the console did not say why'}`}
+                          </div>
+                          {ok && <div className="text-xs text-muted" style={{ wordBreak: 'break-all' }}>{r.Ok.output}</div>}
+                        </>
+                      );
+                    })()}
                     <button className="btn btn-secondary btn-sm" onClick={() => { setConverting(null); load(); }}>Close</button>
                   </>
                 ) : (
                   <>
                     <ProgressBar
-                      value={Number(convertJob.job?.copiedBytes) || 0}
-                      max={Number(convertJob.job?.totalBytes) || 1}
-                      label={`${convertJob.job?.verb || 'Converting'} · ${convertJob.job?.phase || 'starting'}`}
+                      value={Number(convertJob.job?.progress?.done) || 0}
+                      max={Number(convertJob.job?.progress?.total) || 1}
+                      label={`Converting · ${convertJob.job?.progress?.stage || 'queued'}`}
                     />
                     <div className="text-xs text-muted">
-                      {fmtBytes(Number(convertJob.job?.copiedBytes) || 0)} of {fmtBytes(Number(convertJob.job?.totalBytes) || 0)}
-                      {convertJob.job?.speedBytesPerSec ? ` · ${fmtBytes(convertJob.job.speedBytesPerSec)}/s` : ''}
+                      {fmtBytes(Number(convertJob.job?.progress?.done) || 0)} of {fmtBytes(Number(convertJob.job?.progress?.total) || 0)}
+                      {(convertJob.job?.stages || []).length ? ` · ${convertJob.job.stages.join(' → ')}` : ''}
                     </div>
                     <div className="flex gap-sm">
-                      <button className="btn btn-ghost btn-sm" onClick={cancelConvert}
-                              disabled={!!convertJob.job?.cancelDisabled}
-                              title={convertJob.job?.cancelDisabledReason || ''}>✖ Cancel</button>
+                      <button className="btn btn-ghost btn-sm" onClick={cancelConvert}>✖ Cancel</button>
                       <button className="btn btn-secondary btn-sm" onClick={() => setConverting(null)}>
                         Close — it keeps running
                       </button>
@@ -544,23 +545,24 @@ export default function Library({ profiles = [], onNotification }) {
               </div>
             ) : (
             <div className="flex-col gap-sm">
-              {engine.job?.busy && (
+              {(engine.jobs || []).some(j => !j.done) && (
                 <div className="text-xs text-muted">
-                  The console is already working on {engine.job.current || 'another title'} ({engine.job.verb || 'running'}) - it runs one job at a time.
+                  The console already has {(engine.jobs || []).filter(j => !j.done).length} job(s) going; this one joins the queue.
                 </div>
               )}
               {engine.game ? (
                 <ConsoleGameActions
                   ip={ip}
                   game={engine.game}
-                  busy={!!engine.job?.busy}
-                  onStarted={(fmt, started) => setConvertJob({ id: started?.id, job: null })}
+                  roots={engine.roots || []}
+                  onStarted={(fmt, id) => setConvertJob({ id: typeof id === 'number' ? id : id?.id, job: null })}
                   onError={m => onNotification?.(m, 'error')}
                 />
               ) : (
                 <div className="text-xs text-muted">
-                  P5 Converter does not see this title. It only converts what
-                  ShadowMountPlus has mounted, so mount it first and reopen this.
+                  PS5 Dump Forge does not see this title on the console.
+                  Rescan from Convert on console, or check the file sits on a
+                  drive it browses (/data or a mounted drive).
                 </div>
               )}
             </div>

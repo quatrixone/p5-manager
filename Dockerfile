@@ -134,6 +134,7 @@ RUN sh ./third_party/lz4-compression/build.sh /usr/local/bin/lz4-pack-cli \
     && chmod 0755 /usr/local/bin/lz4-pack-cli \
     && chown 1000:1000 /usr/local/bin/lz4-pack-cli
 COPY p5managerclient/p5converter/ ./sources/p5converter/
+COPY p5managerclient/forge/ ./sources/forge/
 # Vite outputs to ../backend/dist in the frontend-builder stage,
 # i.e. /app/backend/dist. Copy that into /app/dist so the production
 # server can serve `__dirname/../dist` (matches local dev layout).
@@ -145,7 +146,7 @@ COPY frontend/builtin/payloads.json ./builtin/payloads.json
 
 # The app's own payloads, copied into the payloads folder on start when they
 # are not there (backend/src/lib/defaultPayloads.js).
-COPY p5managerclient/rp-get-pin/rp-get-pin.elf p5managerclient/offact/offact.elf p5managerclient/pkg-install/pkg-install.elf p5managerclient/save-mounter/save-mounter.elf p5managerclient/p5converter/p5-converter.elf ./vendored/
+COPY p5managerclient/rp-get-pin/rp-get-pin.elf p5managerclient/offact/offact.elf p5managerclient/pkg-install/pkg-install.elf p5managerclient/save-mounter/save-mounter.elf p5managerclient/p5converter/p5-converter.elf p5managerclient/forge/ps5-dump-forge.elf ./vendored/
 COPY p5managerclient/rp-get-pin-ps4/rp-get-pin-ps4.bin p5managerclient/offact-ps4/offact-ps4.bin ./vendored/
 
 RUN mkdir -p /app/data/payloads

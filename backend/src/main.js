@@ -22,6 +22,7 @@ import remoteplayRouter from './routes/remoteplay.js';
 import builtinRouter from './routes/builtin.js';
 import libraryRouter from './routes/library.js';
 import gameCompressorRouter from './routes/gamecompressor.js';
+import forgeRouter from './routes/forge.js';
 import savesRouter from './routes/saves.js';
 import storeRouter from './routes/store.js';
 import { ensureDefaultPayloads } from './lib/defaultPayloads.js';
@@ -116,6 +117,7 @@ const ACCESS_LOG_SILENCE = [
   /^\/api\/convert\/ftp\/upload\/queue$/, // queue poll
   /^\/api\/library\/[^/]+\/job$/, // storage job poll
   /^\/api\/gamecompressor\/[^/]+\/status$/,
+  /^\/api\/forge\/[^/]+\/status$/,
   /^\/api\/library\/[^/]+\/icon\//,
   /^\/api\/sequences$/,
   /^\/api\/sequences\/runs\/recent$/, // PS5 Control busy poll
@@ -163,6 +165,7 @@ app.use('/api/remoteplay', remoteplayRouter);
 app.use('/api/builtin', builtinRouter);
 app.use('/api/library', libraryRouter);
 app.use('/api/gamecompressor', gameCompressorRouter);
+app.use('/api/forge', forgeRouter);
 app.use('/api/saves', savesRouter);
 app.use('/api/store', storeRouter);
 
