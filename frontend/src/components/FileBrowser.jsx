@@ -120,6 +120,12 @@ export default function FileBrowser({
   const [path, setPath] = useState(initialLocation?.path || '/mnt');
   const [files, setFiles] = useState([]);
   const [parent, setParent] = useState(null);
+  // The Forge explorer starts above the mounts, at "Drives": you pick a
+  // drive and walk down, instead of knowing a path to type. ↑ from a
+  // top-level folder lands here.
+  const [atDrives, setAtDrives] = useState(false);
+  const [drives, setDrives] = useState([]);
+  const [filter, setFilter] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   // The backend may start PS5 zftpd while connecting; PS4 GoldHEN FTP must
@@ -301,6 +307,7 @@ export default function FileBrowser({
 
   const browse = useCallback(async (p) => {
     setLoading(true); setError(null);
+    setAtDrives(false); setFilter('');
     setSelectedFile(null);
     setSelected(new Set());
     setEditingPath(false);
@@ -473,7 +480,51 @@ export default function FileBrowser({
     browse(next);
   };
 
-  const goUp = () => { if (parent !== null && parent !== undefined) browse(parent); };
+  const hasParent = parent !== null && parent !== undefined;
+  // Mounts, read from the source itself - nothing is assumed to exist.
+  const loadDrives = useCallback(async () => {
+    setAtDrives(true); setFilter(''); setError(null);
+    if (kind === 'local') {
+      // Mounts before the folders inside them, the way a drive list reads.
+      const depth = (x) => x.split('/').filter(Boolean).length;
+      const sorted = [...localRoots].sort((x, y) => depth(x) - depth(y) || x.localeCompare(y));
+      setDrives(sorted.map(path => ({ path, label: path })));
+      return;
+    }
+    if (kind !== 'ftp' || !ftpIp) { setDrives([]); return; }
+    if (ftpPlatform === 'PS4') { setDrives([{ path: '/', label: '/' }]); return; }
+    setLoading(true);
+    try {
+      const [mnt, data] = await Promise.all([
+        apiSafe.post('/convert/ftp/browse', { ip: ftpIp, path: '/mnt' }),
+        apiSafe.post('/convert/ftp/browse', { ip: ftpIp, path: '/data' }),
+      ]);
+      const list = [];
+      if (data) list.push({ path: '/data', label: '/data' });
+      // /mnt also holds the firmware's own mounts (eap, sandbox, disc...).
+      // Only the ones a user keeps games on belong in a drive list; the
+      // rest stay reachable through the "/" entry below. The PS5 keeps a
+      // mount point for usb0..usb7 whether or not a stick is in it, so an
+      // empty one is left out - otherwise seven dead rows hide the real
+      // drives.
+      const mounts = (mnt?.files || []).filter(f => f.isDir && /^(ext|usb)\d*$/i.test(f.name)).map(f => `/mnt/${f.name}`);
+      const used = await Promise.all(mounts.map(async (m) => {
+        const d = await apiSafe.post('/convert/ftp/browse', { ip: ftpIp, path: m });
+        return !d || (d.files || []).length > 0;   // unreachable: keep it, don't hide a real drive
+      }));
+      mounts.forEach((m, i) => { if (used[i]) list.push({ path: m, label: m }); });
+      list.push({ path: '/', label: '/' });
+      setDrives(list);
+    } finally { setLoading(false); }
+  }, [kind, ftpIp, localRoots, ftpPlatform]);
+  // On the console a mount is the top of its tree: ↑ from /data or
+  // /mnt/ext1 goes to the drive list, not into the firmware's own root.
+  const atDriveRoot = kind === 'ftp' && (path === '/data' || /^\/mnt\/[^/]+$/.test(path));
+  const canGoUp = (hasParent && !atDriveRoot) || (!atDrives && (kind === 'local' ? localRoots.length > 0 : kind === 'ftp' && !!ftpIp));
+  const goUp = () => {
+    if (hasParent && !atDriveRoot) browse(parent);
+    else if (canGoUp) loadDrives();
+  };
   const refresh = () => browse(path);
 
   const saveDefault = async () => {
@@ -1095,7 +1146,9 @@ export default function FileBrowser({
     else { setSortBy(key); setSortDir('asc'); }
   };
 
-  const sortedFiles = [...files].sort(sortFiles);
+  const q = filter.trim().toLowerCase();
+  const sortedFiles = [...files].filter(f => !q || f.name.toLowerCase().includes(q)).sort(sortFiles);
+  const dirCount = sortedFiles.filter(f => f.isDir).length;
   const breadcrumbs = getBreadcrumbs();
 
   // Keep the newest (deepest) crumb in view in the scrollable mobile row.
@@ -1515,7 +1568,7 @@ export default function FileBrowser({
             while editing) + refresh + a ⋯ sheet holding the rarely used
             controls. The wide-screen rows below are hidden at this size. */}
         <div className="fb-nav fb-narrow">
-          <button className="btn btn-sm btn-ghost" onClick={goUp} disabled={parent === null || parent === undefined}>↑</button>
+          <button className="btn btn-sm btn-ghost" onClick={goUp} disabled={!canGoUp} title="Up one folder">↑</button>
           {editingPath ? (
             <>
               <input
@@ -1536,8 +1589,14 @@ export default function FileBrowser({
           ) : (
             <>
               <div className="fb-crumbs" ref={crumbsRef}>
-                {breadcrumbs.length === 0 && <span className="text-muted">/</span>}
-                {breadcrumbs.map((crumb, i) => {
+                {canGoUp || atDrives ? (
+                  <span className="fb-crumb-wrap">
+                    <button className={`fb-crumb ${atDrives ? 'is-current' : ''}`} onClick={loadDrives}>Drives</button>
+                    {!atDrives && <span className="text-muted">›</span>}
+                  </span>
+                ) : null}
+                {!atDrives && breadcrumbs.length === 0 && <span className="text-muted">/</span>}
+                {!atDrives && breadcrumbs.map((crumb, i) => {
                   const last = i === breadcrumbs.length - 1;
                   return (
                     <span key={i} className="fb-crumb-wrap">
@@ -1586,7 +1645,7 @@ export default function FileBrowser({
         )}
 
         <div className="flex gap-sm items-center fb-wide">
-          <button className="btn btn-sm btn-ghost" onClick={goUp} disabled={parent === null || parent === undefined}>↑</button>
+          <button className="btn btn-sm btn-ghost" onClick={goUp} disabled={!canGoUp} title="Up one folder">↑</button>
           <input
             className="input flex-1"
             value={pathInput}
@@ -1638,9 +1697,24 @@ export default function FileBrowser({
           </div>
         )}
 
-        <div className="flex justify-between items-center text-sm text-muted fb-wide">
-          <span>{files.length} items{loading ? ' · loading…' : ''}</span>
-          <div className="flex gap-xs">
+        <div className="flex justify-between items-center gap-sm text-sm text-muted fb-filter-row">
+          {!atDrives && (
+            <input
+              className="input"
+              type="search"
+              value={filter}
+              onChange={e => setFilter(e.target.value)}
+              placeholder="Filter by name"
+              aria-label="Filter by name"
+            />
+          )}
+          <span className="fb-count">
+            {atDrives
+              ? `${drives.length} drive${drives.length === 1 ? '' : 's'}`
+              : `${dirCount} folder${dirCount === 1 ? '' : 's'}, ${sortedFiles.length - dirCount} file${sortedFiles.length - dirCount === 1 ? '' : 's'}`}
+            {loading ? ' · loading…' : ''}
+          </span>
+          <div className="flex gap-xs fb-wide">
             {['name', 'size', 'type'].map(key => (
               <button key={key} className={`btn btn-ghost btn-sm ${sortBy === key ? 'btn-primary' : ''}`} onClick={() => toggleSort(key)}>
                 {key[0].toUpperCase() + key.slice(1)}
@@ -1649,7 +1723,19 @@ export default function FileBrowser({
           </div>
         </div>
 
-        {sortedFiles.length === 0 && !loading ? (
+        {atDrives ? (
+          <div className="flex-col gap-xs fb-list">
+            {drives.length === 0 && !loading && (
+              <div className="text-sm text-muted">No drives to show.</div>
+            )}
+            {drives.map(d => (
+              <button key={d.path} type="button" className="fb-drive" onClick={() => browse(d.path)}>
+                <span className="fb-drive-name">📁 {d.label}</span>
+                <span className="fb-drive-go" aria-hidden="true">›</span>
+              </button>
+            ))}
+          </div>
+        ) : sortedFiles.length === 0 && !loading ? (
           <div className="empty-state">
             <div className="empty-state-icon">📂</div>
             <div className="empty-state-title">This folder is empty</div>
