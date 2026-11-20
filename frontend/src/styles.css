@@ -2177,6 +2177,61 @@ pre { padding: 12px; overflow-x: auto; }
 
 .fb-nav { display: flex; align-items: center; gap: 6px; }
 
+/* Folder tree beside the list, as in the console's own Forge UI. It is
+   grid-only on a wide screen; narrower, the browser keeps the crumb bar
+   and .fb-panes is a plain block. */
+.fb-main { min-width: 0; display: flex; flex-direction: column; gap: var(--space-md); }
+.fb-panes.has-tree {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+.fb-tree {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 8px;
+  max-height: 70vh;
+  overflow: auto;
+  position: sticky;
+  top: calc(var(--topbar-h) + 8px);
+}
+.fb-tree-label {
+  margin: 2px 8px 6px;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+.fb-tree ul { margin: 0; padding: 0; list-style: none; }
+.fb-tree button {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: 30px;
+  padding: 0 8px;
+  gap: 8px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--text-soft);
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+.fb-tree button > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fb-tree button:hover { background: var(--bg-elev-2); color: var(--text); }
+.fb-tree button[aria-current='true'] {
+  background: var(--accent-dim);
+  box-shadow: inset 0 0 0 1px var(--accent-glow);
+  color: var(--accent);
+  font-weight: 600;
+}
+
 /* The explorer starts at "Drives" (the mounts), the way the console's own
    Forge UI does, so a folder is reachable by tapping instead of typing. */
 .fb-drive {

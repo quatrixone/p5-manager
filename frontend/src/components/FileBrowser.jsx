@@ -125,6 +125,11 @@ export default function FileBrowser({
   // top-level folder lands here.
   const [atDrives, setAtDrives] = useState(false);
   const [drives, setDrives] = useState([]);
+  // The folder tree beside the list, like the console's Forge UI. It needs
+  // room, so it is desktop-only and only in a browser that owns the screen
+  // (never in the two-pane compare view).
+  const [wide, setWide] = useState(() => typeof window !== 'undefined' && window.matchMedia('(min-width: 1100px)').matches);
+  const [siblings, setSiblings] = useState([]);
   const [filter, setFilter] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -482,41 +487,77 @@ export default function FileBrowser({
 
   const hasParent = parent !== null && parent !== undefined;
   // Mounts, read from the source itself - nothing is assumed to exist.
-  const loadDrives = useCallback(async () => {
-    setAtDrives(true); setFilter(''); setError(null);
+  const fetchDrives = useCallback(async () => {
     if (kind === 'local') {
       // Mounts before the folders inside them, the way a drive list reads.
       const depth = (x) => x.split('/').filter(Boolean).length;
-      const sorted = [...localRoots].sort((x, y) => depth(x) - depth(y) || x.localeCompare(y));
-      setDrives(sorted.map(path => ({ path, label: path })));
-      return;
+      return [...localRoots].sort((x, y) => depth(x) - depth(y) || x.localeCompare(y)).map(path => ({ path, label: path }));
     }
-    if (kind !== 'ftp' || !ftpIp) { setDrives([]); return; }
-    if (ftpPlatform === 'PS4') { setDrives([{ path: '/', label: '/' }]); return; }
-    setLoading(true);
-    try {
-      const [mnt, data] = await Promise.all([
-        apiSafe.post('/convert/ftp/browse', { ip: ftpIp, path: '/mnt' }),
-        apiSafe.post('/convert/ftp/browse', { ip: ftpIp, path: '/data' }),
-      ]);
-      const list = [];
-      if (data) list.push({ path: '/data', label: '/data' });
-      // /mnt also holds the firmware's own mounts (eap, sandbox, disc...).
-      // Only the ones a user keeps games on belong in a drive list; the
-      // rest stay reachable through the "/" entry below. The PS5 keeps a
-      // mount point for usb0..usb7 whether or not a stick is in it, so an
-      // empty one is left out - otherwise seven dead rows hide the real
-      // drives.
-      const mounts = (mnt?.files || []).filter(f => f.isDir && /^(ext|usb)\d*$/i.test(f.name)).map(f => `/mnt/${f.name}`);
-      const used = await Promise.all(mounts.map(async (m) => {
-        const d = await apiSafe.post('/convert/ftp/browse', { ip: ftpIp, path: m });
-        return !d || (d.files || []).length > 0;   // unreachable: keep it, don't hide a real drive
-      }));
-      mounts.forEach((m, i) => { if (used[i]) list.push({ path: m, label: m }); });
-      list.push({ path: '/', label: '/' });
-      setDrives(list);
-    } finally { setLoading(false); }
+    if (kind !== 'ftp' || !ftpIp) return [];
+    if (ftpPlatform === 'PS4') return [{ path: '/', label: '/' }];
+    const [mnt, data] = await Promise.all([
+      apiSafe.post('/convert/ftp/browse', { ip: ftpIp, path: '/mnt' }),
+      apiSafe.post('/convert/ftp/browse', { ip: ftpIp, path: '/data' }),
+    ]);
+    const list = [];
+    if (data) list.push({ path: '/data', label: '/data' });
+    // /mnt also holds the firmware's own mounts (eap, sandbox, disc...).
+    // Only the ones a user keeps games on belong in a drive list; the
+    // rest stay reachable through the "/" entry below. The PS5 keeps a
+    // mount point for usb0..usb7 whether or not a stick is in it, so an
+    // empty one is left out - otherwise seven dead rows hide the real
+    // drives.
+    const mounts = (mnt?.files || []).filter(f => f.isDir && /^(ext|usb)\d*$/i.test(f.name)).map(f => `/mnt/${f.name}`);
+    const used = await Promise.all(mounts.map(async (m) => {
+      const d = await apiSafe.post('/convert/ftp/browse', { ip: ftpIp, path: m });
+      return !d || (d.files || []).length > 0;   // unreachable: keep it, don't hide a real drive
+    }));
+    mounts.forEach((m, i) => { if (used[i]) list.push({ path: m, label: m }); });
+    list.push({ path: '/', label: '/' });
+    return list;
   }, [kind, ftpIp, localRoots, ftpPlatform]);
+
+  const loadDrives = useCallback(async () => {
+    setAtDrives(true); setFilter(''); setError(null);
+    setLoading(true);
+    try { setDrives(await fetchDrives()); } finally { setLoading(false); }
+  }, [fetchDrives]);
+
+  // Folders of one path, for the tree. Does not touch the open folder.
+  const listDirs = useCallback(async (dirPath) => {
+    let d = null;
+    if (kind === 'local') d = await apiSafe.post('/convert/local/browse', { path: dirPath });
+    else if (kind === 'smb') d = smbId ? await apiSafe.post(`/convert/sources/${smbId}/browse`, { subPath: dirPath }) : null;
+    else d = ftpIp ? await apiSafe.post('/convert/ftp/browse', { ip: ftpIp, path: dirPath }) : null;
+    const base = d?.path === '/' ? '' : (d?.path ?? dirPath);
+    return (d?.files || []).filter(f => f.isDir).map(f => ({ name: f.name, path: `${base}/${f.name}` }));
+  }, [kind, smbId, ftpIp]);
+
+  useEffect(() => {
+    const mq = window.matchMedia('(min-width: 1100px)');
+    const on = () => setWide(mq.matches);
+    mq.addEventListener('change', on);
+    return () => mq.removeEventListener('change', on);
+  }, []);
+
+  const showTree = wide && !paneId;
+  // The drive list is the tree's root, so it is fetched even when the open
+  // folder is somewhere deep.
+  useEffect(() => {
+    if (!showTree) return;
+    let gone = false;
+    fetchDrives().then(d => { if (!gone) setDrives(d); });
+    return () => { gone = true; };
+  }, [showTree, fetchDrives]);
+  // One listing of the parent, so the open folder's siblings are one click
+  // away - the rest of the tree is built from what is already on screen.
+  useEffect(() => {
+    if (!showTree || atDrives || parent === null || parent === undefined) { setSiblings([]); return undefined; }
+    let gone = false;
+    listDirs(parent).then(d => { if (!gone) setSiblings(d); });
+    return () => { gone = true; };
+  }, [showTree, atDrives, parent, listDirs]);
+
   // On the console a mount is the top of its tree: ↑ from /data or
   // /mnt/ext1 goes to the drive list, not into the firmware's own root.
   const atDriveRoot = kind === 'ftp' && (path === '/data' || /^\/mnt\/[^/]+$/.test(path));
@@ -1146,6 +1187,44 @@ export default function FileBrowser({
     else { setSortBy(key); setSortDir('asc'); }
   };
 
+  // The tree: Drives → the drives → the chain down to the open folder
+  // (with its siblings) → the folders inside it. Everything but the
+  // siblings is built from data the page already has.
+  const joinPath = (base, name) => (base === '/' ? `/${name}` : `${base}/${name}`);
+  const treeNodes = (() => {
+    if (!showTree) return [];
+    const here = atDrives ? '' : path;
+    const inside = (root) => !!here && (here === root || here.startsWith(root === '/' ? '/' : `${root}/`));
+    // "/" contains every path, so the deepest matching drive wins.
+    const open = drives.filter(d => inside(d.path)).sort((a, b) => b.path.length - a.path.length)[0];
+    const dirsHere = files.filter(f => f.isDir);
+    const out = [{ path: null, label: 'Drives', depth: 0, current: atDrives }];
+    const pushChildren = (depth) => {
+      for (const f of dirsHere) out.push({ path: joinPath(here, f.name), label: f.name, depth, current: false });
+    };
+    for (const d of drives) {
+      out.push({ path: d.path, label: d.label, depth: 1, current: here === d.path });
+      if (!open || d.path !== open.path) continue;
+      const root = d.path;
+      const rest = here === root ? [] : here.slice(root === '/' ? 1 : root.length + 1).split('/').filter(Boolean);
+      let acc = root === '/' ? '' : root;
+      rest.forEach((seg, i) => {
+        acc = `${acc}/${seg}`;
+        const depth = 2 + i;
+        if (i < rest.length - 1) { out.push({ path: acc, label: seg, depth, current: false }); return; }
+        const row = siblings.length ? siblings : [{ name: seg, path: acc }];
+        for (const sb of row) {
+          out.push({ path: sb.path, label: sb.name, depth, current: sb.path === here });
+          // the open folder's own subfolders belong under it, not after
+          // the whole row of its siblings
+          if (sb.path === here) pushChildren(depth + 1);
+        }
+      });
+      if (rest.length === 0) pushChildren(2);
+    }
+    return out;
+  })();
+
   const q = filter.trim().toLowerCase();
   const sortedFiles = [...files].filter(f => !q || f.name.toLowerCase().includes(q)).sort(sortFiles);
   const dirCount = sortedFiles.filter(f => f.isDir).length;
@@ -1567,6 +1646,27 @@ export default function FileBrowser({
         {/* Phone nav row: ↑ + scrollable breadcrumbs (or the path input
             while editing) + refresh + a ⋯ sheet holding the rarely used
             controls. The wide-screen rows below are hidden at this size. */}
+        <div className={`fb-panes${showTree ? ' has-tree' : ''}`}>
+        {showTree && (
+          <nav className="fb-tree" aria-label="Folders">
+            <p className="fb-tree-label">Folders</p>
+            <ul>
+              {treeNodes.map((n, i) => (
+                <li key={`${i}-${n.path ?? 'drives'}`} style={{ paddingInlineStart: `${n.depth * 10}px` }}>
+                  <button
+                    type="button"
+                    aria-current={n.current ? 'true' : undefined}
+                    title={n.path || 'Drives'}
+                    onClick={() => (n.path === null ? loadDrives() : browse(n.path))}
+                  >
+                    <span>{n.depth === 0 ? '🖴' : '📁'} {n.label}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </nav>
+        )}
+        <div className="fb-main">
         <div className="fb-nav fb-narrow">
           <button className="btn btn-sm btn-ghost" onClick={goUp} disabled={!canGoUp} title="Up one folder">↑</button>
           {editingPath ? (
@@ -1749,6 +1849,8 @@ export default function FileBrowser({
             {sortedFiles.map(f => renderFileCard(f))}
           </div>
         )}
+        </div>
+        </div>
 
       </div>
 
