@@ -667,6 +667,10 @@ function Sidebar({ activeTab, setActiveTab }) {
   );
 }
 
+// The bottom bar gives every label one line at ~11 px: "PS5 Control" and
+// "Marketplace" wrapped and were clipped by the bar.
+const SHORT_LABEL = { remote: 'Console', store: 'Store', files: 'Files' };
+
 function MobileNav({ activeTab, setActiveTab }) {
   const { mode } = usePlatform();
   const { total: updates } = useMarketplaceUpdates();
@@ -726,7 +730,7 @@ function MobileNav({ activeTab, setActiveTab }) {
               aria-current={activeTab === tab.id ? 'page' : undefined}
             >
               <span className="bottom-nav-icon" aria-hidden="true">{tab.icon}{tab.id === 'store' && updates > 0 ? <span className="bottom-nav-dot" aria-hidden="true" /> : null}</span>
-              <span>{effectiveTabLabel(tab.id, mode) || tab.label}</span>
+              <span>{SHORT_LABEL[tab.id] || effectiveTabLabel(tab.id, mode) || tab.label}</span>
             </button>
           ))}
           <button

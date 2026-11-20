@@ -1,43 +1,55 @@
 /* ============================================================
-   PS5 Payload Manager — refined "console" theme
-   - mint/lime accent (#7CFFB3, the PS5 power-LED green)
+   P5 Manager — console theme
+   - flat near-black surfaces and a blue accent, the same visual
+     language as the Dump Forge UI that runs on the console, so the
+     two feel like one product
    - Geist Sans for UI, JetBrains Mono for IPs/ports/MAC
-   - deep ink background with a faint gradient mesh + grain
+   - no gradient mesh or grain: on a phone a flat page keeps small
+     text and thin lines readable
    ============================================================ */
 
 :root {
   /* surfaces */
-  --bg: #080e17;
-  --bg-elev: #101a28;
-  --bg-elev-2: #172538;
-  --bg-elev-3: #22324833;
+  --bg: #0e0e15;
+  --bg-elev: #17171f;
+  --bg-elev-2: #24242f;
+  --bg-elev-3: rgba(255, 255, 255, 0.04);
+  /* sunken: inputs, logs, wells */
+  --inset: #101017;
   --panel: var(--bg-elev);
   --panel2: var(--bg-elev-2);
 
   /* lines */
-  --border: rgba(190, 211, 239, 0.1);
-  --border-strong: rgba(190, 211, 239, 0.2);
+  --border: rgba(255, 255, 255, 0.09);
+  --border-strong: rgba(255, 255, 255, 0.17);
 
   /* text */
-  --text: #f2f6fc;
-  --text-soft: #c9d4e3;
-  --muted: #9aaac0;
-  --muted-2: #71839b;
+  --text: #f2f2f7;
+  --text-soft: #d2d2dc;
+  --muted: #9a9aae;
+  --muted-2: #7e7e92;
 
   /* accents */
-  --accent: #7ce8bd;
-  --accent-soft: #65d9ae;
-  --accent-dim: rgba(124, 232, 189, 0.14);
-  --accent-glow: rgba(124, 232, 189, 0.28);
-  --accent-ink: #06251a;
+  /* --accent is accent-as-text (readable on dark); --accent-strong is
+     accent-as-a-filled-surface, which needs --accent-ink on top. */
+  --accent: #9db6ff;
+  --accent-soft: #7ba1ff;
+  --accent-strong: #3d6bff;
+  --accent-dim: rgba(61, 107, 255, 0.2);
+  --accent-glow: rgba(61, 107, 255, 0.35);
+  --accent-line: rgba(157, 182, 255, 0.5);
+  --accent-ink: #ffffff;
 
-  --blue: #7ddff5;
-  --blue-dim: rgba(125, 223, 245, 0.16);
-  --amber: #ffb86b;
-  --amber-dim: rgba(255, 184, 107, 0.16);
-  --red: #ff5d7a;
-  --red-dim: rgba(255, 93, 122, 0.18);
-  --green: var(--accent);
+  --blue: #7ee0e0;
+  --blue-dim: rgba(126, 224, 224, 0.16);
+  --blue-line: rgba(126, 224, 224, 0.42);
+  --amber: #ffcf8a;
+  --amber-dim: rgba(255, 181, 71, 0.16);
+  --red: #ff9b9b;
+  --red-dim: rgba(255, 93, 93, 0.18);
+  --green: #6fe3a3;
+  --green-dim: rgba(47, 210, 122, 0.16);
+  --green-line: rgba(47, 210, 122, 0.45);
   --magenta: #c490ff;
 
   /* spacing scale */
@@ -63,44 +75,21 @@
   /* layout */
   --sidebar-w: 248px;
   --topbar-h: 60px;
-  --bottom-nav-h: 64px;
+  --bottom-nav-h: 68px;
 }
 
 /* ---------- base ---------- */
 
 body {
   font-family: 'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  /* 15px base: one step up from the browser default at this font's
+     x-height, which is what makes the dense screens readable on a phone. */
+  font-size: 15px;
+  line-height: 1.45;
   background: var(--bg);
   color: var(--text);
   font-feature-settings: 'ss01' on, 'cv11' on;
   letter-spacing: -0.005em;
-}
-
-/* Background atmosphere: very subtle radial mints + ink + grain */
-body::before {
-  content: '';
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  z-index: -2;
-  background:
-    radial-gradient(900px 600px at 92% -10%, rgba(124, 232, 189, 0.075), transparent 60%),
-    radial-gradient(700px 500px at -10% 110%, rgba(125, 183, 245, 0.055), transparent 60%),
-    linear-gradient(180deg, #080e17 0%, #0b1320 100%);
-}
-body::after {
-  content: '';
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  z-index: -1;
-  opacity: 0.035;
-  mix-blend-mode: overlay;
-  background-image:
-    radial-gradient(rgba(255, 255, 255, 0.6) 1px, transparent 1px),
-    radial-gradient(rgba(255, 255, 255, 0.5) 1px, transparent 1px);
-  background-size: 3px 3px, 7px 7px;
-  background-position: 0 0, 1px 2px;
 }
 
 #root {
@@ -156,7 +145,7 @@ pre,
   gap: var(--space-md);
   padding: 0 var(--space-md);
   height: var(--topbar-h);
-  background: rgba(10, 11, 16, 0.72);
+  background: rgba(14, 14, 21, 0.72);
   backdrop-filter: saturate(160%) blur(14px);
   -webkit-backdrop-filter: saturate(160%) blur(14px);
   border-bottom: 1px solid var(--border);
@@ -174,7 +163,7 @@ pre,
   width: 28px;
   height: 28px;
   border-radius: 8px;
-  background: linear-gradient(135deg, var(--accent) 0%, #4dd9ff 100%);
+  background: linear-gradient(135deg, var(--accent-strong) 0%, #7ee0e0 100%);
   display: grid;
   place-items: center;
   color: var(--accent-ink);
@@ -218,7 +207,7 @@ pre,
 .onboarding-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(10, 11, 16, 0.78);
+  background: rgba(14, 14, 21, 0.78);
   backdrop-filter: blur(6px);
   -webkit-backdrop-filter: blur(6px);
   display: grid;
@@ -268,9 +257,9 @@ pre,
   letter-spacing: 0.08em;
   padding: 2px 6px;
   border-radius: 4px;
-  background: rgba(124, 255, 179, 0.12);
+  background: rgba(157, 182, 255, 0.12);
   color: var(--accent);
-  border: 1px solid rgba(124, 255, 179, 0.22);
+  border: 1px solid rgba(157, 182, 255, 0.22);
   text-transform: uppercase;
 }
 
@@ -288,7 +277,7 @@ pre,
   padding: 6px;
   display: flex;
   flex-direction: column;
-  background: var(--bg-elev, #14161b);
+  background: var(--bg-elev, #17171f);
   border: 1px solid var(--border-strong);
   border-radius: 12px;
   box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55);
@@ -392,9 +381,7 @@ pre,
   height: calc(100dvh - var(--topbar-h));
   padding: var(--space-lg) var(--space-md);
   border-right: 1px solid var(--border);
-  background:
-    linear-gradient(180deg, rgba(255,255,255,0.012), transparent 40%),
-    rgba(8, 9, 13, 0.6);
+  background: var(--bg);
   overflow-y: auto;
 }
 @media (min-width: 769px) {
@@ -433,7 +420,7 @@ pre,
 .nav-item:active { transform: translateY(1px); }
 .nav-item.active {
   background: var(--accent-dim);
-  border-color: rgba(124, 255, 179, 0.22);
+  border-color: rgba(157, 182, 255, 0.22);
   color: var(--accent);
 }
 .nav-item-icon {
@@ -477,7 +464,7 @@ pre,
   right: 0;
   height: calc(var(--bottom-nav-h) + env(safe-area-inset-bottom, 0));
   padding-bottom: env(safe-area-inset-bottom, 0);
-  background: rgba(10, 11, 16, 0.78);
+  background: rgba(14, 14, 21, 0.78);
   backdrop-filter: saturate(160%) blur(18px);
   -webkit-backdrop-filter: saturate(160%) blur(18px);
   border-top: 1px solid var(--border);
@@ -503,7 +490,7 @@ pre,
   border: none;
   background: transparent;
   color: var(--muted);
-  font-size: 0.66rem;
+  font-size: 0.72rem;
   letter-spacing: -0.01em;
   transition: color 0.15s ease;
   position: relative;
@@ -578,7 +565,7 @@ pre,
   box-shadow: var(--shadow-md);
   animation: toast-in 0.24s cubic-bezier(0.22, 1, 0.36, 1);
 }
-.app-toast.success { border-color: rgba(124, 255, 179, 0.45); }
+.app-toast.success { border-color: rgba(157, 182, 255, 0.45); }
 .app-toast.success::before {
   content: '';
   width: 8px; height: 8px; border-radius: 999px;
@@ -655,7 +642,7 @@ pre,
   border: 1px solid transparent;
   border-radius: 8px;
   cursor: pointer;
-  font-size: 0.82rem;
+  font-size: 0.875rem;
   font-weight: 500;
   letter-spacing: -0.005em;
   min-height: 34px;
@@ -675,14 +662,14 @@ pre,
 }
 
 .btn-primary {
-  background: #4dd99a;
+  background: var(--accent-strong);
   color: var(--accent-ink);
   font-weight: 600;
   box-shadow: 0 1px 0 0 rgba(255, 255, 255, 0.06) inset,
     0 6px 18px -10px var(--accent-glow);
 }
 .btn-primary:hover:not(:disabled) {
-  background: #5fe3a8;
+  background: var(--accent-soft);
   box-shadow: 0 1px 0 0 rgba(255, 255, 255, 0.08) inset,
     0 8px 22px -10px var(--accent-glow);
 }
@@ -692,16 +679,16 @@ pre,
   color: var(--text);
   border-color: var(--border);
 }
-.btn-secondary:hover:not(:disabled) { background: #232738; border-color: var(--border-strong); }
+.btn-secondary:hover:not(:disabled) { background: var(--bg-elev-2); border-color: var(--border-strong); }
 
 .btn-success {
-  background: rgba(124, 255, 179, 0.14);
+  background: rgba(157, 182, 255, 0.14);
   color: var(--accent);
-  border-color: rgba(124, 255, 179, 0.25);
+  border-color: rgba(157, 182, 255, 0.25);
 }
 .btn-success:hover:not(:disabled) {
-  background: rgba(124, 255, 179, 0.2);
-  border-color: rgba(124, 255, 179, 0.4);
+  background: rgba(157, 182, 255, 0.2);
+  border-color: rgba(157, 182, 255, 0.4);
 }
 
 .btn-danger {
@@ -717,11 +704,11 @@ pre,
 .btn-info {
   background: var(--blue-dim);
   color: var(--blue);
-  border-color: rgba(125, 223, 245, 0.28);
+  border-color: rgba(126, 224, 224, 0.28);
 }
 .btn-info:hover:not(:disabled) {
-  background: rgba(125, 223, 245, 0.22);
-  border-color: rgba(125, 223, 245, 0.42);
+  background: rgba(126, 224, 224, 0.22);
+  border-color: rgba(126, 224, 224, 0.42);
 }
 
 .btn-ghost {
@@ -746,7 +733,7 @@ pre,
    any flex/grid layout is automatic. We keep the smaller font, padding
    and border-radius for visual density - .btn-sm still LOOKS compact -
    only the outer height is normalised. */
-.btn-sm { min-height: 34px; padding: 4px 8px; font-size: 0.72rem; border-radius: 6px; gap: 4px; }
+.btn-sm { min-height: 34px; padding: 4px 10px; font-size: 0.8rem; border-radius: 7px; gap: 4px; }
 .btn-lg { min-height: 34px; padding: 4px 18px; font-size: 0.9rem; border-radius: 10px; }
 .btn-block { width: 100%; }
 
@@ -772,7 +759,7 @@ textarea.input {
 .input:hover, .select:hover { border-color: var(--border-strong); }
 .input:focus, .select:focus, textarea.input:focus {
   outline: none;
-  border-color: rgba(124, 255, 179, 0.45);
+  border-color: rgba(157, 182, 255, 0.45);
   box-shadow: 0 0 0 4px var(--accent-dim);
   background: rgba(255, 255, 255, 0.015);
 }
@@ -814,17 +801,17 @@ select option, select optgroup {
   gap: 6px;
   padding: 3px 9px;
   border-radius: 999px;
-  font-size: 0.66rem;
+  font-size: 0.7rem;
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: uppercase;
   border: 1px solid transparent;
   font-feature-settings: 'tnum';
 }
-.badge-success { background: var(--accent-dim); color: var(--accent); border-color: rgba(124, 255, 179, 0.28); }
+.badge-success { background: var(--green-dim); color: var(--green); border-color: var(--green-line); }
 .badge-warning { background: var(--amber-dim); color: var(--amber); border-color: rgba(255, 184, 107, 0.28); }
 .badge-danger { background: var(--red-dim); color: var(--red); border-color: rgba(255, 93, 122, 0.32); }
-.badge-info { background: var(--blue-dim); color: var(--blue); border-color: rgba(125, 223, 245, 0.32); }
+.badge-info { background: var(--blue-dim); color: var(--blue); border-color: rgba(126, 224, 224, 0.32); }
 .badge-muted { background: rgba(255, 255, 255, 0.04); color: var(--muted); border-color: var(--border); }
 
 /* ---------- cards (universal) ---------- */
@@ -1030,7 +1017,7 @@ select option, select optgroup {
 }
 .progress-fill {
   height: 100%;
-  background: linear-gradient(90deg, var(--accent) 0%, #5cf0ff 100%);
+  background: linear-gradient(90deg, var(--accent-strong) 0%, #7ee0e0 100%);
   transition: width 0.3s ease;
   border-radius: 999px;
   box-shadow: 0 0 8px var(--accent-glow);
@@ -1144,7 +1131,7 @@ select option, select optgroup {
   bottom: calc(var(--bottom-nav-h) + env(safe-area-inset-bottom, 0));
   left: 0;
   right: 0;
-  background: rgba(10, 11, 16, 0.92);
+  background: rgba(14, 14, 21, 0.92);
   backdrop-filter: blur(14px);
   border-top: 1px solid var(--border-strong);
   padding: 10px 16px;
@@ -1202,7 +1189,7 @@ select option, select optgroup {
   cursor: pointer;
 }
 .file-card:hover { background: var(--bg-elev-2); border-color: var(--border-strong); }
-.file-card-selected { background: var(--accent-dim); border-color: rgba(124, 255, 179, 0.28); }
+.file-card-selected { background: var(--accent-dim); border-color: rgba(157, 182, 255, 0.28); }
 .file-card-active { box-shadow: 0 0 0 2px var(--accent); border-color: var(--accent); }
 
 .file-menu {
@@ -1405,11 +1392,11 @@ pre { padding: 12px; overflow-x: auto; }
 .fileops-stat-pill.is-active {
   background: var(--blue-dim);
   color: var(--blue);
-  border-color: rgba(125, 223, 245, 0.32);
+  border-color: rgba(126, 224, 224, 0.32);
   cursor: pointer;
   transition: transform 120ms ease, background 120ms ease;
 }
-.fileops-stat-pill.is-active:hover { transform: translateY(-1px); background: rgba(125, 223, 245, 0.22); }
+.fileops-stat-pill.is-active:hover { transform: translateY(-1px); background: rgba(126, 224, 224, 0.22); }
 .fileops-stat-dot {
   width: 8px;
   height: 8px;
@@ -1502,8 +1489,8 @@ pre { padding: 12px; overflow-x: auto; }
   max-height: min(90vh, 720px);
   display: flex;
   flex-direction: column;
-  background: var(--bg-elev, #14161b);
-  color: var(--text, #e6e9ef);
+  background: var(--bg-elev, #17171f);
+  color: var(--text, #f2f2f7);
   border: 1px solid var(--border, rgba(255,255,255,0.1));
   border-radius: 14px;
   box-shadow: 0 24px 60px rgba(0,0,0,0.55);
@@ -1569,7 +1556,7 @@ pre { padding: 12px; overflow-x: auto; }
 .fileops-tab.is-active {
   color: var(--accent);
   background: var(--accent-dim);
-  border-color: rgba(124, 255, 179, 0.32);
+  border-color: rgba(157, 182, 255, 0.32);
 }
 .fileops-tab-icon { font-size: 1rem; }
 .fileops-tab-label { letter-spacing: 0.01em; }
@@ -1581,7 +1568,7 @@ pre { padding: 12px; overflow-x: auto; }
   height: 18px;
   padding: 0 5px;
   background: var(--blue);
-  color: #0c1117;
+  color: #0e0e15;
   border-radius: 999px;
   font-size: 0.66rem;
   font-weight: 700;
@@ -1589,7 +1576,7 @@ pre { padding: 12px; overflow-x: auto; }
 }
 .fileops-tab.is-active .fileops-tab-badge {
   background: var(--accent);
-  color: #0c1117;
+  color: #0e0e15;
 }
 
 .fileops-body { display: flex; flex-direction: column; gap: var(--space-md); }
@@ -1953,7 +1940,7 @@ pre { padding: 12px; overflow-x: auto; }
    enough on its own. Suppress the default focus ring - the highlight
    background above already marks it. */
 .step-line:focus { outline: none; }
-.step-line.current { background: var(--blue-dim); border-color: rgba(125, 223, 245, 0.4); }
+.step-line.current { background: var(--blue-dim); border-color: rgba(126, 224, 224, 0.4); }
 .step-line.done { background: transparent; border-color: transparent; opacity: 0.55; }
 .step-line-num { color: var(--text-soft); min-width: 22px; text-align: right; font-size: 0.68rem; flex-shrink: 0; }
 .step-line-text { flex: 1; word-break: break-all; }
@@ -2077,7 +2064,7 @@ pre { padding: 12px; overflow-x: auto; }
 /* Sony's own face-button colors, applied to the glyph only - background
    stays the same dark chip as every other control so the grid doesn't
    turn into a toy. */
-.face-triangle { color: #7ce0b3; }
+.face-triangle { color: var(--green); }
 .face-square { color: #f28bd6; }
 .face-circle { color: #ff8a8a; }
 .face-cross { color: #7bb8ff; }
@@ -2303,7 +2290,7 @@ pre { padding: 12px; overflow-x: auto; }
   flex-direction: column;
   gap: 8px;
   padding: 10px;
-  background: var(--bg-elev, #14161b);
+  background: var(--bg-elev, #17171f);
   border: 1px solid var(--border);
   border-radius: 12px;
   box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
@@ -2407,7 +2394,7 @@ pre { padding: 12px; overflow-x: auto; }
   flex-direction: column;
   gap: 8px;
   padding: 12px;
-  background: var(--bg-elev, #14161b);
+  background: var(--bg-elev, #17171f);
   border: 1px solid var(--border);
   border-radius: 12px;
   box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55);
@@ -2509,7 +2496,7 @@ pre { padding: 12px; overflow-x: auto; }
   flex-shrink: 0;
   border-radius: 10px;
   object-fit: cover;
-  background: linear-gradient(145deg, #1d2c43, #0c111a);
+  background: var(--inset);
   border: 1px solid var(--border);
 }
 .lib-icon-fallback {
@@ -2553,35 +2540,36 @@ pre { padding: 12px; overflow-x: auto; }
 /* ---------- usability refresh ---------- */
 
 .app-topbar {
-  background: rgba(8, 14, 23, 0.84);
-  border-bottom-color: rgba(190, 211, 239, 0.1);
+  background: rgba(14, 14, 21, 0.88);
+  border-bottom-color: var(--border);
 }
 .app-sidebar {
-  background: linear-gradient(180deg, rgba(17, 29, 45, 0.9), rgba(10, 18, 29, 0.88));
-  border-right-color: rgba(190, 211, 239, 0.1);
+  background: var(--bg);
+  border-right-color: var(--border);
 }
-.app-sidebar h6 { color: #91a5bd; letter-spacing: 0.12em; }
+.app-sidebar h6 { color: var(--muted-2); letter-spacing: 0.12em; }
 .nav-item { min-height: 46px; border-radius: 11px; font-weight: 550; }
 .nav-item.active {
-  background: linear-gradient(90deg, rgba(124, 232, 189, 0.15), rgba(124, 232, 189, 0.055));
-  border-color: rgba(124, 232, 189, 0.17);
-  box-shadow: inset 3px 0 0 var(--accent);
+  background: var(--accent-dim);
+  border-color: transparent;
+  box-shadow: inset 0 0 0 1px var(--accent-line);
+  color: var(--accent);
 }
 .app-main { max-width: 1440px; }
 .page-title { margin-bottom: 1.25rem; }
 .page-title h1, .page-title h2 { letter-spacing: -0.035em; }
 .page-title .page-title-icon { border-radius: 12px; }
 .comp-card, .card {
-  border-color: rgba(190, 211, 239, 0.1);
+  border-color: var(--border);
   border-radius: 15px;
-  background: linear-gradient(145deg, rgba(255,255,255,0.025), transparent 54%), var(--bg-elev);
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.12);
+  background: var(--bg-elev);
+  box-shadow: none;
 }
 .comp-card-header { padding: 16px 18px; }
 .comp-card-title { font-size: 0.96rem; }
 .btn { border-radius: 10px; }
-.btn-primary { background: var(--accent); }
-.input, .select, textarea.input { border-color: rgba(190, 211, 239, 0.15); }
+.btn-primary { background: var(--accent-strong); }
+.input, .select, textarea.input { background: var(--inset); border-color: var(--border); }
 button, input, select, textarea { -webkit-tap-highlight-color: transparent; }
 :focus-visible { scroll-margin-block: 100px; }
 
@@ -2591,7 +2579,7 @@ button, input, select, textarea { -webkit-tap-highlight-color: transparent; }
   z-index: 109;
   width: 100%;
   border: 0;
-  background: rgba(2, 7, 13, 0.62);
+  background: rgba(8, 8, 13, 0.66);
   backdrop-filter: blur(3px);
 }
 .mobile-more-sheet {
@@ -2605,7 +2593,7 @@ button, input, select, textarea { -webkit-tap-highlight-color: transparent; }
   padding: 16px;
   border: 1px solid var(--border-strong);
   border-radius: 20px;
-  background: #111d2b;
+  background: var(--bg-elev);
   box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
   animation: mobile-sheet-in 160ms ease-out;
 }
@@ -2630,7 +2618,7 @@ button, input, select, textarea { -webkit-tap-highlight-color: transparent; }
   font-size: 0.8rem;
   cursor: pointer;
 }
-.mobile-more-item.active { color: var(--accent); border-color: rgba(124,232,189,0.34); background: var(--accent-dim); }
+.mobile-more-item.active { color: var(--accent); border-color: rgba(157,182,255,0.34); background: var(--accent-dim); }
 .mobile-more-icon { font-size: 1.35rem; line-height: 1; }
 .mobile-more-check { position: absolute; top: 7px; right: 8px; font-size: 0.75rem; }
 @keyframes mobile-sheet-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
@@ -2653,8 +2641,8 @@ button, input, select, textarea { -webkit-tap-highlight-color: transparent; }
   .bottom-nav {
     height: calc(var(--bottom-nav-h) + env(safe-area-inset-bottom, 0));
     padding: 5px 8px env(safe-area-inset-bottom, 0);
-    background: rgba(10, 19, 30, 0.94);
-    border-top-color: rgba(190, 211, 239, 0.13);
+    background: rgba(14, 14, 21, 0.94);
+    border-top-color: rgba(255, 255, 255, 0.13);
     box-shadow: 0 -12px 34px rgba(0, 0, 0, 0.24);
   }
   .bottom-nav-inner { width: 100%; height: var(--bottom-nav-h); gap: 4px; overflow: visible; }
@@ -2664,17 +2652,27 @@ button, input, select, textarea { -webkit-tap-highlight-color: transparent; }
     border-radius: 12px;
     font-size: 0.68rem;
     font-weight: 550;
-    color: #9aacc2;
+    color: var(--muted);
+    white-space: nowrap;
   }
   .bottom-nav-item .bottom-nav-icon { font-size: 1.25rem; line-height: 1.05; }
-  .bottom-nav-item.active { background: rgba(124, 232, 189, 0.09); color: var(--accent); }
+  .bottom-nav-item.active { background: rgba(157, 182, 255, 0.09); color: var(--accent); }
   .bottom-nav-item.active::before { width: 22px; height: 2px; top: 2px; }
   .bottom-nav-more .bottom-nav-icon { font-size: 1.5rem; font-weight: 700; letter-spacing: 1px; }
   .page-title { gap: 10px; align-items: flex-start; }
   .page-title h1 { font-size: clamp(1.3rem, 6vw, 1.75rem); line-height: 1.15; }
   .page-subtitle { font-size: 0.84rem; line-height: 1.45; }
-  .comp-card-header { padding: 14px; align-items: flex-start; }
-  .comp-card-header > :first-child { min-width: 0; }
+  /* A phone is too narrow for a title and its controls side by side:
+     the title column collapsed to a few characters a line. */
+  .comp-card-header { padding: 14px; flex-direction: column; align-items: stretch; gap: 10px; }
+  .comp-card-header > * { min-width: 0; }
+  /* A console/sort picker gets the full width, its buttons the row below. */
+  .comp-card-header .select { flex: 1 1 100%; }
+  /* Pill rows (storage filters, sub-tabs) scroll sideways instead of
+     squeezing every pill until the last one is cut off. */
+  .tabs { flex-wrap: nowrap; scrollbar-width: none; }
+  .tabs::-webkit-scrollbar { display: none; }
+  .tab-item { flex: 0 0 auto; }
   .comp-card-body { padding: 14px; }
   .btn, .btn-sm, .btn-lg { min-height: 42px; }
   .btn-icon { min-width: 42px; }
@@ -2734,7 +2732,7 @@ button, input, select, textarea { -webkit-tap-highlight-color: transparent; }
 .screen-payloads .comp-card > .flex.items-center { min-height: 52px; transition: background 140ms ease; }
 .screen-payloads .comp-card > .flex.items-center:hover { background: rgba(255,255,255,0.025); }
 .screen-payloads .comp-card > .flex.items-center:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-.screen-payloads .comp-card-footer { border-top-color: rgba(190, 211, 239, 0.09); }
+.screen-payloads .comp-card-footer { border-top-color: rgba(255, 255, 255, 0.09); }
 .screen-library .lib-grid { grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr)); gap: 12px; }
 .screen-library .lib-card { min-height: 94px; padding: 12px; border-radius: 14px; }
 .settings-tabs { position: sticky; top: calc(var(--topbar-h) + 8px); z-index: 10; }
@@ -3007,4 +3005,49 @@ button, input, select, textarea { font: inherit; }
   .system-log-message { flex-basis: 100%; }
   .save-transfer-steps { font-size: 0.88rem; }
   .save-transfer-stage-title { margin-top: 16px; }
+}
+
+/* ---------- touch screens ----------
+   One rule for the whole app instead of per-component mobile tweaks: on a
+   touch device every control is at least 42 px tall and every text field
+   is 16 px, which is the size below which iOS Safari zooms the page on
+   focus (and the zoom is what used to leave the UI half off-screen). */
+@media (pointer: coarse) {
+  .btn,
+  .btn-sm,
+  .btn-lg,
+  .input,
+  .select,
+  textarea.input,
+  select,
+  input[type='text'],
+  input[type='number'],
+  input[type='password'],
+  input[type='search'] {
+    min-height: 42px;
+  }
+  .btn-icon { min-width: 42px; }
+  .btn-sm { padding-inline: 12px; }
+  input,
+  textarea,
+  select,
+  .input,
+  .select {
+    font-size: 16px;
+  }
+  input[type='checkbox'],
+  input[type='radio'] { width: 20px; height: 20px; }
+  /* Tap rows the finger has to hit: list rows, fold headers, tabs. */
+  summary,
+  .nav-item,
+  .fileops-tab,
+  .lib-card,
+  .list-row { min-height: 44px; }
+}
+
+/* A phone has no pixels to spare on page gutters. */
+@media (max-width: 599px) {
+  .app-main { padding-inline: 12px; }
+  .card { padding: 12px; }
+  .comp-card-header { padding: 12px 14px; }
 }
