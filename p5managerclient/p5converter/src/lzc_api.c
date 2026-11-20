@@ -4439,9 +4439,23 @@ find_game_for_operation_source_path(const lzc_operation_t *op, lzc_game_t *out,
   set_game_mount_status(&candidate, 0, "not-mounted");
 
   if(S_ISREG(st.st_mode) && ends_with_ci(name, ".ffpfsc")) {
-    if(strip_extension_base(name, title_id, sizeof(title_id)) != 0 ||
-       strcmp(title_id, op->title_id) ||
-       pfs_decompress_detect_nested(op->source_path, &dec,
+    /* The name only has to start with the title id: "PPSA01234.ffpfsc" and
+     * "PPSA01234 Some Game.ffpfsc" are the same title, and demanding an exact
+     * match made the second one unconvertible ("game is unavailable").
+     * Images and folders take their id from the file itself; upstream 1.6.4
+     * reads param.json here too, which this older base cannot. */
+    char base[256] = {0};
+    size_t id_len = strlen(op->title_id);
+    if(strip_extension_base(name, base, sizeof(base)) != 0 || !id_len ||
+       strncmp(base, op->title_id, id_len) != 0) {
+      return -1;
+    }
+    if(base[id_len] && base[id_len] != ' ' && base[id_len] != '-' &&
+       base[id_len] != '_' && base[id_len] != '.') {
+      return -1;
+    }
+    snprintf(title_id, sizeof(title_id), "%s", op->title_id);
+    if(pfs_decompress_detect_nested(op->source_path, &dec,
                                     err, sizeof(err)) != 0) {
       return -1;
     }
