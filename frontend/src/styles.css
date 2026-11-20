@@ -1197,16 +1197,20 @@ select option, select optgroup {
 
 /* ---------- file cards (FileBrowser) ---------- */
 
+/* One row per file, the density of the console's own Forge explorer:
+   a card per file put three items on a phone screen. */
 .file-card {
-  background: var(--bg-elev);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  margin-bottom: 6px;
-  transition: background 0.15s ease, border-color 0.15s ease;
+  background: none;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  margin-bottom: 0;
+  transition: background 0.15s ease;
   cursor: pointer;
 }
-.file-card:hover { background: var(--bg-elev-2); border-color: var(--border-strong); }
-.file-card-selected { background: var(--accent-dim); border-color: rgba(124, 255, 179, 0.28); }
+.file-card:last-child { border-bottom: 0; }
+.file-card:hover { background: rgba(255, 255, 255, 0.035); }
+.file-card-selected { background: var(--accent-dim); }
 .file-card-active { box-shadow: 0 0 0 2px var(--accent); border-color: var(--accent); }
 
 .file-menu {
@@ -2181,6 +2185,11 @@ pre { padding: 12px; overflow-x: auto; }
    grid-only on a wide screen; narrower, the browser keeps the crumb bar
    and .fb-panes is a plain block. */
 .fb-main { min-width: 0; display: flex; flex-direction: column; gap: var(--space-md); }
+/* Without the tree the two wrappers must not exist as boxes: the rest of
+   the browser's layout (and the phone one especially) is written against
+   these rows being children of the card body. */
+.fb-panes:not(.has-tree),
+.fb-panes:not(.has-tree) > .fb-main { display: contents; }
 .fb-panes.has-tree {
   display: grid;
   grid-template-columns: 220px minmax(0, 1fr);
@@ -2240,19 +2249,21 @@ pre { padding: 12px; overflow-x: auto; }
   justify-content: space-between;
   gap: 10px;
   width: 100%;
-  min-height: 48px;
-  padding: 10px 14px;
-  background: var(--bg-elev);
-  border: 1px solid var(--border);
-  border-radius: 10px;
+  min-height: 40px;
+  padding: 2px 12px;
+  background: none;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
   color: var(--text);
   cursor: pointer;
   text-align: left;
 }
-.fb-drive:hover { border-color: var(--border-strong); background: var(--bg-elev-2); }
+.fb-drive:last-child { border-bottom: 0; }
+.fb-drive:hover { background: rgba(255, 255, 255, 0.035); }
 .fb-drive-name {
   font-family: 'JetBrains Mono', ui-monospace, monospace;
-  font-size: 0.9rem;
+  font-size: 0.82rem;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2288,7 +2299,29 @@ pre { padding: 12px; overflow-x: auto; }
 }
 .fb-crumb.is-current { color: var(--text); font-weight: 600; }
 
-.fb-list { max-height: 450px; overflow-y: auto; }
+/* The list sits in a well of its own, with a header that stays put. */
+.fb-list {
+  max-height: min(60vh, 520px);
+  overflow-y: auto;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+.fb-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 12px;
+  min-height: 30px;
+  align-items: center;
+  background: var(--bg-elev);
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 0.75rem;
+}
 
 @media (min-width: 769px) {
   .fb-narrow { display: none !important; }
@@ -2314,8 +2347,8 @@ pre { padding: 12px; overflow-x: auto; }
   .fb-actionbar { flex-wrap: wrap; }
   .fb-actionbar > .btn { flex: 1 1 auto; }
   .fb .fb-title { display: none; }
-  .fb .file-card-content { min-height: 52px; }
-  .fb .file-card-kebab { min-width: 44px !important; min-height: 44px; font-size: 1.1rem; }
+  .fb .file-card-content { min-height: 44px; }
+  .fb .file-card-kebab { min-width: 40px !important; min-height: 40px; font-size: 1.05rem; }
 
   /* Browse tab on a phone: drop the title banner and the card chrome so
      the list runs edge to edge and scrolls with the page instead of in a
@@ -2334,7 +2367,8 @@ pre { padding: 12px; overflow-x: auto; }
   }
   .fileops--files .fb > .fb-header { padding: 2px 12px 8px; border-bottom: none; }
   .fileops--files .fb > .comp-card-body { padding: 0; gap: var(--space-sm); }
-  .fileops--files .fb > .comp-card-body > :not(.fb-list) { margin-left: 12px; margin-right: 12px; }
+  .fileops--files .fb > .comp-card-body > :not(.fb-list),
+  .fileops--files .fb .fb-main > :not(.fb-list) { margin-left: 12px; margin-right: 12px; }
   /* The crumb bar sits below the source tabs and the console picker in the
      DOM. Sticking it to the top made it park over them on a phone: the
      console row hid Local / Console and there was no way to switch back.
@@ -2980,8 +3014,8 @@ button, input, select, textarea { font: inherit; }
   .fileops--files .fb .file-card-content {
     box-sizing: border-box;
     min-height: 44px;
-    gap: 6px;
-    padding: 5px 8px;
+    gap: 8px;
+    padding: 0 2px 0 8px;
   }
   .fileops--files .fb .fb-list {
     flex: 1;
@@ -3017,12 +3051,15 @@ button, input, select, textarea { font: inherit; }
 .app-toast { display: flex; align-items: center; gap: 10px; text-align: start; }
 .app-toast > span { flex: 1; min-width: 0; }
 .app-toast-dismiss { flex: 0 0 auto; min-width: 32px; min-height: 32px; border: 0; border-radius: 8px; background: transparent; color: var(--text); font: inherit; font-size: 1.25rem; cursor: pointer; }
-.file-card-content { display: flex; align-items: center; gap: var(--space-sm); padding: var(--space-sm) var(--space-md); }
+.file-card-content { display: flex; align-items: center; gap: 10px; min-height: 38px; padding: 0 4px 0 10px; }
+/* The kebab fills the row instead of setting its height. */
+.file-card-kebab.btn-sm { min-height: 34px; }
 .file-card-check { flex: 0 0 20px; color: var(--accent); font-size: 1.2rem; }
-.file-card-main { display: flex; align-items: center; gap: var(--space-sm); flex: 1; min-width: 0; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: start; cursor: pointer; }
+.file-card-main { display: flex; align-items: center; align-self: stretch; gap: var(--space-sm); flex: 1; min-width: 0; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: start; cursor: pointer; }
 .file-card-main:not(button) { cursor: default; }
-.file-card-icon { flex: 0 0 auto; font-size: 1.5rem; }
-.file-card-name-wrap { display: flex; flex: 1; flex-direction: column; min-width: 0; text-align: start; }
+.file-card-icon { flex: 0 0 auto; font-size: 1rem; line-height: 1; }
+.file-card-name-wrap { display: flex; flex: 1; align-items: center; justify-content: space-between; gap: 10px; min-width: 0; text-align: start; }
+.file-card-name-wrap > :last-child { flex: 0 0 auto; font-variant-numeric: tabular-nums; }
 .file-card-folder-name { color: var(--blue); }
 .list-tools, .library-list-tools { display: flex; align-items: center; gap: var(--space-sm); margin-block: var(--space-sm); }
 .list-tools .input, .library-list-tools .input { flex: 1 1 220px; min-width: 0; }
@@ -3089,9 +3126,13 @@ button, input, select, textarea { font: inherit; }
   .app-status { gap: 6px; }
   .app-status-state { font-size: 0.64rem; }
   .fileops-pane-toggle { flex-wrap: wrap; gap: 6px 10px; padding-inline: 10px; }
-  .fileops-pane-toggle-hint { max-width: 42ch; }
-  .fileops--files .fb .file-card-content { min-height: 44px; gap: 6px; padding: 5px 8px; }
-  .file-card-main { min-height: 42px; }
+  /* Every line above the list costs a row of files on a phone: the
+     explanation of Compare folders and the item count that the filter
+     row now prints anyway. */
+  .fileops-pane-toggle-hint { display: none; }
+  .fileops--files .fb .fb-header .fb-count-items { display: none; }
+  .fileops--files .fb .file-card-content { min-height: 44px; gap: 8px; padding: 0 2px 0 8px; }
+
   .autoload-template-card { align-items: flex-start; }
   .autoload-template-actions { align-items: flex-end; }
   .marketplace-search-row { align-items: stretch; }
@@ -3152,4 +3193,9 @@ button, input, select, textarea { font: inherit; }
   .app-main { padding-inline: 12px; }
   .card { padding: 12px; }
   .comp-card-header { padding: 12px 14px; }
+}
+
+@media (pointer: coarse) {
+  .file-card-content, .fb-drive { min-height: 44px; }
+  .file-card-kebab.btn-sm { min-height: 40px; }
 }

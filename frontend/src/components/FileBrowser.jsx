@@ -1533,7 +1533,7 @@ export default function FileBrowser({
             <div>
               <span className="comp-card-title fb-title">{title}</span>
               {description && <div className="text-xs text-muted mt-xs fb-title">{description}</div>}
-              <span className="text-sm text-muted fb-narrow">{files.length} items{loading ? ' · loading…' : ''}</span>
+              <span className="text-sm text-muted fb-narrow fb-count-items">{files.length} items{loading ? ' · loading…' : ''}</span>
             </div>
             <div className="flex gap-xs items-center">
               {canDeviceUpload && (
@@ -1612,7 +1612,9 @@ export default function FileBrowser({
             widget that used to live here was removed to avoid two
             places to keep in sync. */}
 
-        {kind === 'ftp' && (
+        {/* With one console there is nothing to pick: the row would only
+            push the list further down. */}
+        {kind === 'ftp' && profiles.length > 1 && (
           <select className="select" value={ftpIp} onChange={e => setFtpIp(e.target.value)}>
             <option value="">— Select a console —</option>
             {profiles.map(p => <option key={p.id} value={p.ip_address}>{String(p.console_type || '').toLowerCase() === 'ps4' ? 'PS4' : 'PS5'} · {p.name} ({p.ip_address})</option>)}
@@ -1824,7 +1826,8 @@ export default function FileBrowser({
         </div>
 
         {atDrives ? (
-          <div className="flex-col gap-xs fb-list">
+          <div className="fb-list">
+            <div className="fb-head"><span>Name</span></div>
             {drives.length === 0 && !loading && (
               <div className="text-sm text-muted">No drives to show.</div>
             )}
@@ -1844,8 +1847,9 @@ export default function FileBrowser({
         ) : (
           <div
             ref={listRef}
-            className="flex-col gap-xs fb-list"
+            className="fb-list"
           >
+            <div className="fb-head"><span>Name</span><span>Size</span></div>
             {sortedFiles.map(f => renderFileCard(f))}
           </div>
         )}
