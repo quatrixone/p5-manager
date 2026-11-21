@@ -1686,7 +1686,7 @@ pre { padding: 12px; overflow-x: auto; }
   .fileops-title-h { font-size: 0.98rem; }
   .fileops-title-sub { display: none; }
   .fileops-tabs { display: flex; flex-wrap: nowrap; gap: 2px; overflow: hidden; }
-  .fileops-tab { flex: 1 1 0; min-width: 0; flex-direction: column; justify-content: center; gap: 2px; padding: 7px 2px; font-size: 0.72rem; white-space: nowrap; }
+  .fileops-tab { flex: 1 1 0; min-width: 0; flex-direction: row; justify-content: center; gap: 4px; padding: 5px 2px; font-size: 0.72rem; white-space: nowrap; }
   .fileops-tab-icon { line-height: 1.1; }
   .fileops-tab-label { display: inline; }
 }
@@ -2404,8 +2404,11 @@ pre { padding: 12px; overflow-x: auto; }
     border-radius: 12px;
     overflow: hidden;
   }
-  .fileops--files .dual-pane .fb > .fb-header { padding: 8px 12px; border-bottom: 1px solid var(--border); }
-  .fileops--files .dual-pane .fb .comp-card-title.fb-title { display: block; white-space: nowrap; }
+  .fileops--files .dual-pane .fb > .fb-header { padding: 5px 12px; border-bottom: 1px solid var(--border); }
+  /* "Pane 1 · 3 items" on one line: stacked, the name alone was 70px of
+     a pane that only has 307. */
+  .fileops--files .dual-pane .fb .comp-card-title.fb-title { display: inline; white-space: nowrap; }
+  .fileops--files .dual-pane .fb .fb-count-items::before { content: ' · '; }
   .fileops--files .dual-pane .fb > .fb-header .fb-narrow { white-space: nowrap; }
   .fileops--files .dual-pane .fb > .comp-card-body { padding-top: var(--space-sm); }
   .fileops--files .dual-pane .fb .fb-nav { position: static; background: none; }
@@ -2920,7 +2923,7 @@ button, input, select, textarea { -webkit-tap-highlight-color: transparent; }
   .settings-profile-actions > .btn { flex: 1 1 72px; }
   .settings-tabs { top: calc(var(--topbar-h) + 4px); }
   .fileops-tabs { gap: 2px; padding: 3px; }
-  .fileops-tab { flex: 0 0 auto; min-height: 44px; padding: 8px 12px; font-size: 0.8rem; }
+  .fileops-tab { flex: 0 0 auto; min-height: 38px; padding: 5px 10px; font-size: 0.78rem; }
   .log-toolbar-actions { width: 100%; }
   .log-toolbar-actions > .flex { width: 100%; }
   .log-toolbar-actions > .btn { flex: 1 1 auto; }
@@ -2987,8 +2990,8 @@ button, input, select, textarea { font: inherit; }
   .app-main--fileops:has(.fileops--files) > .screen-fileops { flex: 1; min-height: 0; }
   .fileops--files { gap: 4px; }
   .fileops-tabs { flex: 0 0 auto; margin-inline: 10px; gap: 1px; padding: 2px; }
-  .fileops-tab { min-height: 42px; padding: 3px 2px; font-size: 0.72rem; }
-  .fileops-tab-icon { font-size: 0.9rem; }
+  .fileops-tab { min-height: 38px; padding: 3px 2px; font-size: 0.72rem; }
+  .fileops-tab-icon { font-size: 0.85rem; }
   .fileops--files .fileops-body { flex: 1; min-height: 0; }
   .fileops--files .fileops-body > .fb,
   .fileops--files .fileops-body > .dual-pane {
@@ -3025,13 +3028,27 @@ button, input, select, textarea { font: inherit; }
     overscroll-behavior: contain;
   }
   .fileops--files .fb .empty-state { flex: 1; margin-inline: 12px; }
+  /* Each pane gets half of what is left and scrolls its own list: two
+     40dvh panes plus their headers did not fit, so the whole compare view
+     scrolled and the lower pane lived under the fold. */
   .fileops--files .dual-pane {
     display: flex;
     flex-direction: column;
-    overflow-y: auto;
-    overscroll-behavior: contain;
+    gap: 6px;
+    overflow: hidden;
   }
-  .fileops--files .dual-pane .fb { flex: 0 0 auto; min-height: 40dvh; }
+  .fileops--files .dual-pane .fb {
+    flex: 1 1 0;
+    min-height: 0;
+    width: 100%;
+    align-self: stretch;
+    display: flex;
+    flex-direction: column;
+  }
+  .fileops--files .dual-pane .fb > .comp-card-body { flex: 1; min-height: 0; }
+  .fileops--files .dual-pane .fb .fb-list { flex: 1; min-height: 44px; max-height: none; }
+  /* Filtering by name is a nicety; two lists on one phone screen are not. */
+  .fileops--files .dual-pane .fb .fb-filter-row { display: none; }
   .fb-source-tabs .tab-item { flex: 1; justify-content: center; }
 }
 
@@ -3135,6 +3152,10 @@ button, input, select, textarea { font: inherit; }
      whole header goes - except while picking items, when it is the only
      way out of selection mode. */
   .fileops--files .fb > .fb-header:not(.fb-header-select) { display: none; }
+  /* ...except while comparing, where the header is the pane's name. */
+  .fileops--files .dual-pane .fb > .fb-header { display: flex; }
+  /* ...the name only: the actions are in each pane's own ⋯ sheet. */
+  .fileops--files .dual-pane .fb > .fb-header .fb-header-actions { display: none; }
   .fileops--files .fb > .comp-card-body { gap: 6px; }
   .fileops--files .fb .fb-filter-row .input { min-height: 38px; padding: 6px 10px; }
   .fileops--files .fb .file-card-content { min-height: 44px; gap: 8px; padding: 0 2px 0 8px; }
@@ -3194,9 +3215,11 @@ button, input, select, textarea { font: inherit; }
   input[type='radio'] { width: 20px; height: 20px; }
   summary,
   .nav-item,
-  .fileops-tab,
   .lib-card,
   .list-row { min-height: 44px; }
+  /* The Files sub-tabs are a pill bar, not a list row: at 44px they cost
+     a file's worth of screen. They stay a comfortable 38. */
+  .fileops-tab { min-height: 38px; }
 }
 
 /* A phone has no pixels to spare on page gutters. */
