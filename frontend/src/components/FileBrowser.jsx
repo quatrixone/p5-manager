@@ -1517,7 +1517,7 @@ export default function FileBrowser({
       onDragLeave={dragEnabled ? (e) => { if (!e.currentTarget.contains(e.relatedTarget)) setDropTarget(null); } : undefined}
       onDrop={dragEnabled ? (e) => onTargetDrop(e, path) : undefined}
     >
-      <div className="comp-card-header fb-header">
+      <div className={`comp-card-header fb-header${multiSelect ? ' fb-header-select' : ''}`}>
         {multiSelect ? (
           <div className="flex justify-between items-center flex-1 gap-sm">
             <span className="comp-card-title">{selected.size} selected</span>
@@ -1535,7 +1535,7 @@ export default function FileBrowser({
               {description && <div className="text-xs text-muted mt-xs fb-title">{description}</div>}
               <span className="text-sm text-muted fb-narrow fb-count-items">{files.length} items{loading ? ' · loading…' : ''}</span>
             </div>
-            <div className="flex gap-xs items-center">
+            <div className="flex gap-xs items-center fb-header-actions">
               {canDeviceUpload && (
                 <button
                   className="btn btn-ghost btn-sm"
@@ -1725,9 +1725,17 @@ export default function FileBrowser({
             <div className="file-menu-backdrop" onClick={closeMenu} />
             <div className="file-menu file-menu-sheet" onClick={closeMenu}>
               <div className="file-menu-head">
-                <div className="file-menu-title">Sort by</div>
+                <div className="file-menu-title">Folder</div>
                 <button type="button" className="file-menu-close" aria-label="Close" onClick={closeMenu}>×</button>
               </div>
+              {canMakeFolder && (
+                <button className="file-menu-item" onClick={makeFolder}>📁＋ New folder</button>
+              )}
+              {canDeviceUpload && (
+                <button className="file-menu-item" onClick={() => setUploadMenuOpen(o => !o)} disabled={!!deviceUpload}>📱 From device</button>
+              )}
+              <button className="file-menu-item" onClick={toggleMultiSelect}>☰ Select items</button>
+              <div className="file-menu-title">Sort by</div>
               {['name', 'size', 'type'].map(key => (
                 <button key={key} className="file-menu-item" onClick={() => toggleSort(key)}>
                   {key[0].toUpperCase() + key.slice(1)}{sortBy === key ? (sortDir === 'asc' ? ' ↑' : ' ↓') : ''}

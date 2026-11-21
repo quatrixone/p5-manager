@@ -2170,7 +2170,7 @@ pre { padding: 12px; overflow-x: auto; }
   padding: 6px 0 calc(8px + env(safe-area-inset-bottom, 0));
   z-index: 1500;
 }
-.file-menu-sheet .file-menu-item { padding: 14px 18px; font-size: 0.95rem; }
+.file-menu-sheet .file-menu-item { padding: 11px 18px; font-size: 0.95rem; }
 .file-menu-title {
   padding: 10px 18px 6px;
   font-size: 0.72rem;
@@ -3130,7 +3130,13 @@ button, input, select, textarea { font: inherit; }
      explanation of Compare folders and the item count that the filter
      row now prints anyway. */
   .fileops-pane-toggle-hint { display: none; }
-  .fileops--files .fb .fb-header .fb-count-items { display: none; }
+  .fileops-pane-toggle, .fileops-pane-toggle .btn { min-height: 32px; }
+  /* The header's three actions live in the ⋯ sheet on a phone, so the
+     whole header goes - except while picking items, when it is the only
+     way out of selection mode. */
+  .fileops--files .fb > .fb-header:not(.fb-header-select) { display: none; }
+  .fileops--files .fb > .comp-card-body { gap: 6px; }
+  .fileops--files .fb .fb-filter-row .input { min-height: 38px; padding: 6px 10px; }
   .fileops--files .fb .file-card-content { min-height: 44px; gap: 8px; padding: 0 2px 0 8px; }
 
   .autoload-template-card { align-items: flex-start; }
@@ -3161,9 +3167,7 @@ button, input, select, textarea { font: inherit; }
   .btn-sm,
   .btn-lg,
   .input,
-  .select,
   textarea.input,
-  select,
   input[type='text'],
   input[type='number'],
   input[type='password'],
@@ -3172,11 +3176,18 @@ button, input, select, textarea { font: inherit; }
   }
   .btn-icon { min-width: 42px; }
   .btn-sm { padding-inline: 12px; }
+  /* A <select> opens the platform's own picker instead of zooming the
+     page, so it does not need the 16px that text fields do - at 16px it
+     was the tallest thing on the screen. */
+  select,
+  .select {
+    min-height: 36px;
+    font-size: 0.9rem;
+    padding-block: 4px;
+  }
   input,
   textarea,
-  select,
-  .input,
-  .select {
+  .input {
     font-size: 16px;
   }
   input[type='checkbox'],
