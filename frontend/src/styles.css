@@ -2109,7 +2109,8 @@ pre { padding: 12px; overflow-x: auto; }
 }
 .file-card-cut { opacity: 0.45; }
 
-.fb-has-bar { margin-bottom: 76px; }
+.fb-has-bar { margin-bottom: calc(var(--fb-bar-h, 76px) + 8px); }
+.fb-select-close { min-width: 34px; padding-inline: 8px; }
 
 .fb-actionbar {
   position: fixed;
@@ -2344,8 +2345,8 @@ pre { padding: 12px; overflow-x: auto; }
   /* A selection can offer six actions (two panes add Copy / Move to the
      other pane). On one line the last ones ended up off screen with no way
      to reach them, so here they wrap onto as many rows as they need. */
-  .fb-actionbar { flex-wrap: wrap; }
-  .fb-actionbar > .btn { flex: 1 1 auto; }
+  .fb-actionbar { flex-wrap: wrap; gap: 6px; padding: 6px 8px; }
+  .fb-actionbar > .btn { flex: 1 1 auto; min-height: 38px; font-size: 0.78rem; padding-inline: 10px; }
   .fb .fb-title { display: none; }
   .fb .file-card-content { min-height: 44px; }
   .fb .file-card-kebab { min-width: 40px !important; min-height: 40px; font-size: 1.05rem; }
@@ -3213,6 +3214,19 @@ button, input, select, textarea { font: inherit; }
   /* ...and while comparing it stays hidden: each pane is named by the
      number in front of its path instead, which costs no line of its own. */
   .fileops--files .fb > .comp-card-body { gap: 6px; }
+  /* Picking items on a phone: the header, the action bar and the list all
+     want the same screen, so while selecting the chrome gets out of the
+     way and the filter field - which is not what the user is doing right
+     now - goes entirely. */
+  .fileops--files .fb > .fb-header-select { min-height: 34px; padding: 0 4px 0 10px; }
+  .fileops--files .fb > .fb-header-select .comp-card-title { font-size: 0.85rem; }
+  .fileops--files .fb > .fb-header-select .btn { min-height: 32px; font-size: 0.75rem; padding-inline: 8px; }
+  .fileops--files .fb:has(> .fb-header-select) .fb-filter-row { display: none; }
+  /* Two panes while picking items: one list, the action bar and both sets
+     of controls do not fit, so the pane that is not picking keeps only its
+     controls - its path is what the "to other pane" actions need. */
+  .fileops--files .dual-pane:has(.fb-header-select) .fb:not(:has(.fb-header-select)) { flex: 0 0 auto; }
+  .fileops--files .dual-pane:has(.fb-header-select) .fb:not(:has(.fb-header-select)) .fb-list { display: none; }
   .fileops--files .fb .fb-filter-row .input { min-height: 38px; padding: 6px 10px; }
   .fileops--files .fb .file-card-content { min-height: 44px; gap: 8px; padding: 0 2px 0 8px; }
 

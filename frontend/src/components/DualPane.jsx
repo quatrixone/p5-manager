@@ -27,6 +27,9 @@ export default function DualPane({ profiles, onNotification, onOpenQueue, onPick
   const [locs, setLocs] = useState({ left: null, right: null });
   const [reload, setReload] = useState(0);
   const [pending, setPending] = useState(null); // { src, dst, items, point, op?, conflicts?, busy? }
+  // Which pane is picking items: both panes' action bars are fixed to the
+  // same place, so only one may be in selection mode at a time.
+  const [selOwner, setSelOwner] = useState(null);
   const watched = useRef(new Set()); // batch ids still in the queue
 
   // Moves the console carries out itself (same console, rename). Within one
@@ -259,6 +262,8 @@ export default function DualPane({ profiles, onNotification, onOpenQueue, onPick
       <FileBrowser
         {...paneProps}
         paneId="left"
+        selectionOwner={selOwner}
+        onSelectionOwner={setSelOwner}
         title="Pane 1"
         initialLocation={leftInitial}
         onLocationChange={onLeftLoc}
@@ -269,6 +274,8 @@ export default function DualPane({ profiles, onNotification, onOpenQueue, onPick
       <FileBrowser
         {...paneProps}
         paneId="right"
+        selectionOwner={selOwner}
+        onSelectionOwner={setSelOwner}
         title="Pane 2"
         defaultKind="ftp"
         initialLocation={rightInitial}

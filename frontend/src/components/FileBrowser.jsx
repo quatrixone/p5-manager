@@ -78,6 +78,8 @@ export default function FileBrowser({
   //                       the browser into the folder that is open here
   enableDeviceUpload = false,
   paneId,
+  selectionOwner,
+  onSelectionOwner,
   initialLocation,
   onLocationChange,
   onDropItems,
@@ -265,24 +267,45 @@ export default function FileBrowser({
   const crumbsRef = useRef(null);
 
   // Long-press on a row (touch only) enters selection mode and picks that
-  // row. `longPressed` swallows the click that follows the touch release so
-  // the row isn't immediately toggled back / the folder opened.
+  // row. The browser then synthesises a click from the same touch - in two
+  // panes more than one, on the row and on its button - so the press is
+  // remembered by time and every click right after it is ignored. A
+  // one-shot flag was cleared by the first of those clicks and the second
+  // deselected what the press had just selected.
   const pressTimer = useRef(null);
-  const longPressed = useRef(false);
+  const longPressAt = useRef(0);
+  const afterLongPress = () => Date.now() - longPressAt.current < 700;
   const pressStart = useRef(null);
   const startPress = (e, name) => {
     const t = e.touches[0];
     pressStart.current = { x: t.clientX, y: t.clientY };
-    longPressed.current = false;
+    longPressAt.current = 0;
     clearTimeout(pressTimer.current);
     pressTimer.current = setTimeout(() => {
-      longPressed.current = true;
+      longPressAt.current = Date.now();
+      onSelectionOwner?.(paneId);
       setMultiSelect(true);
       setSelected(prev => new Set(prev).add(name));
       navigator.vibrate?.(15);
+      // Opening selection mode re-lays out the pane under the finger, so
+      // that synthesised click can land anywhere - on a phone it hit the
+      // ↑ button and browsed to the parent folder. Swallow it wherever
+      // it lands, not just on the row it started from.
+      swallowClicks();
     }, 450);
   };
   const cancelPress = () => clearTimeout(pressTimer.current);
+  const swallowRef = useRef(null);
+  const swallowClicks = () => {
+    if (swallowRef.current) return;
+    const stop = (e) => { e.stopPropagation(); e.preventDefault(); };
+    document.addEventListener('click', stop, true);
+    swallowRef.current = stop;
+    setTimeout(() => {
+      document.removeEventListener('click', stop, true);
+      swallowRef.current = null;
+    }, 600);
+  };
   // A resting finger jitters by a pixel or two - only a real drag (scroll)
   // should abort the press.
   const movePress = (e) => {
@@ -599,6 +622,13 @@ export default function FileBrowser({
   };
 
   const allSelected = files.length > 0 && selected.size === files.length;
+  // Two panes, one action bar: the bars are fixed to the same spot, so a
+  // selection in one pane ends the other's.
+  useEffect(() => {
+    if (paneId && selectionOwner && selectionOwner !== paneId && multiSelect) clearSelection();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectionOwner]);
+
   const toggleSelectAll = () => {
     setSelected(allSelected ? new Set() : new Set(files.map(f => f.name)));
   };
@@ -1246,6 +1276,21 @@ export default function FileBrowser({
   const selectionBar = multiSelect && selected.size > 0;
   const showBar = selectionBar || !!clipboard;
 
+  // The action bar is fixed above the bottom nav and wraps onto as many
+  // rows as its actions need, so only the bar itself knows how much room
+  // to keep free below the list. A guessed margin left the last rows of
+  // the list underneath it on a phone.
+  const barRef = useRef(null);
+  useEffect(() => {
+    const el = barRef.current;
+    if (!showBar || !el) return undefined;
+    const set = () => document.body.style.setProperty('--fb-bar-h', `${el.offsetHeight}px`);
+    set();
+    const ro = new ResizeObserver(set);
+    ro.observe(el);
+    return () => { ro.disconnect(); document.body.style.removeProperty('--fb-bar-h'); };
+  }, [showBar]);
+
   const renderFileCard = (f) => {
     const isSelected = selected.has(f.name);
     const isActive = selectedFile === f.name;
@@ -1407,9 +1452,9 @@ export default function FileBrowser({
         onTouchMove={movePress}
         onTouchEnd={cancelPress}
         onTouchCancel={cancelPress}
-        onContextMenu={(e) => { if (longPressed.current) e.preventDefault(); }}
+        onContextMenu={(e) => { if (afterLongPress()) e.preventDefault(); }}
         onClick={() => {
-          if (longPressed.current) { longPressed.current = false; return; }
+          if (afterLongPress()) return;
           if (multiSelect) { toggleSelect(f.name); return; }
           if (f.isDir) open(f);
         }}
@@ -1428,6 +1473,10 @@ export default function FileBrowser({
               aria-pressed={multiSelect ? isSelected : undefined}
               onClick={e => {
                 e.stopPropagation();
+                // The click the browser synthesises after a long press lands
+                // here, not on the row - without this it undid the selection
+                // the press had just made.
+                if (afterLongPress()) return;
                 if (multiSelect) toggleSelect(f.name);
                 else if (f.isDir) open(f);
               }}
@@ -1525,7 +1574,14 @@ export default function FileBrowser({
               <button className="btn btn-ghost btn-sm" onClick={toggleSelectAll} disabled={files.length === 0}>
                 {allSelected ? 'Select none' : 'Select all'}
               </button>
-              <button className="btn btn-ghost btn-sm" onClick={clearSelection}>✕ Done</button>
+              <button
+                className="btn btn-ghost btn-sm fb-select-close"
+                onClick={clearSelection}
+                title="Done selecting"
+                aria-label="Done selecting"
+              >
+                ✕
+              </button>
             </div>
           </div>
         ) : (
@@ -1552,7 +1608,7 @@ export default function FileBrowser({
                   📁＋ New folder
                 </button>
               )}
-              <button className="btn btn-ghost btn-sm" onClick={toggleMultiSelect}>☰ Select</button>
+              <button className="btn btn-ghost btn-sm" onClick={() => { onSelectionOwner?.(paneId); toggleMultiSelect(); }}>☰ Select</button>
             </div>
           </div>
         )}
@@ -1871,7 +1927,7 @@ export default function FileBrowser({
           the destination, so Paste is always one tap away. Portalled for the
           same reason as the ⋮ menu (transformed ancestor vs position:fixed). */}
       {showBar && createPortal(
-        <div className="fb-actionbar">
+        <div className="fb-actionbar" ref={barRef}>
           {selectionBar ? (
             <>
               {enableFtpUpload && ((kind === 'smb' && smbId) || kind === 'local') && uploadIp && (
