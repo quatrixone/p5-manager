@@ -3049,12 +3049,51 @@ button, input, select, textarea { font: inherit; }
   .fileops--files .dual-pane .fb .fb-list { flex: 1; min-height: 44px; max-height: none; }
   /* Filtering by name is a nicety; two lists on one phone screen are not. */
   .fileops--files .dual-pane .fb .fb-filter-row { display: none; }
-  /* Every pane repeats the source tabs, the console picker and the path
-     row: 160px of the 310 a pane has, so only two files were left in
-     view. Comparing is about the files, so that chrome shrinks here. */
-  .fileops--files .dual-pane .fb > .comp-card-body { gap: 4px; padding-top: 4px; }
+  /* Every pane repeats the name, the source tabs, the console picker and
+     the path row. On a 664px-tall phone that was 150px of the 220 a pane
+     gets - one file row left. So here the tabs and the picker share a
+     line, the Name/Size head goes, and the pane's number rides in front
+     of its path instead of on a line of its own. */
+  .fileops--files .dual-pane .fb > .comp-card-body {
+    display: grid;
+    grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+    grid-template-rows: auto auto minmax(0, 1fr);
+    align-content: start;
+    gap: 4px 6px;
+    padding-top: 4px;
+  }
+  .fileops--files .dual-pane .fb .fb-source-tabs { grid-column: 1 / 2; }
+  .fileops--files .dual-pane .fb > .comp-card-body:not(:has(.select)) .fb-source-tabs { grid-column: 1 / -1; }
+  .fileops--files .dual-pane .fb > .comp-card-body .select { grid-column: 2 / 3; width: auto; }
+  .fileops--files .dual-pane .fb .fb-nav,
+  .fileops--files .dual-pane .fb .fb-list,
+  .fileops--files .dual-pane .fb .empty-state { grid-column: 1 / -1; }
+  .fileops--files .dual-pane .fb .fb-head { display: none; }
+  /* The pane's name, where it costs nothing: in front of its path. */
+  .fileops--files .dual-pane .fb .fb-nav::before {
+    content: '1';
+    flex: 0 0 auto;
+    align-self: center;
+    min-width: 17px;
+    padding: 1px 4px;
+    border-radius: 5px;
+    background: var(--accent-dim);
+    color: var(--accent);
+    font-size: 0.68rem;
+    font-weight: 700;
+    text-align: center;
+  }
+  .fileops--files .dual-pane .fb:last-child .fb-nav::before { content: '2'; }
   .fileops--files .dual-pane .fb .fb-source-tabs { padding: 2px; }
-  .fileops--files .dual-pane .fb .fb-source-tabs .tab-item { min-height: 30px; padding: 3px 6px; font-size: 0.75rem; }
+  .fileops--files .dual-pane .fb .fb-source-tabs .tab-item {
+    min-height: 30px;
+    min-width: 0;
+    padding: 3px 2px;
+    font-size: 0.66rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
   .fileops--files .dual-pane .fb .select { min-height: 30px; padding-block: 2px; font-size: 0.78rem; }
   .fileops--files .dual-pane .fb .fb-nav { padding: 0 8px; }
   .fileops--files .dual-pane .fb .fb-nav .btn { min-height: 28px; }
@@ -3166,10 +3205,8 @@ button, input, select, textarea { font: inherit; }
      whole header goes - except while picking items, when it is the only
      way out of selection mode. */
   .fileops--files .fb > .fb-header:not(.fb-header-select) { display: none; }
-  /* ...except while comparing, where the header is the pane's name. */
-  .fileops--files .dual-pane .fb > .fb-header { display: flex; }
-  /* ...the name only: the actions are in each pane's own ⋯ sheet. */
-  .fileops--files .dual-pane .fb > .fb-header .fb-header-actions { display: none; }
+  /* ...and while comparing it stays hidden: each pane is named by the
+     number in front of its path instead, which costs no line of its own. */
   .fileops--files .fb > .comp-card-body { gap: 6px; }
   .fileops--files .fb .fb-filter-row .input { min-height: 38px; padding: 6px 10px; }
   .fileops--files .fb .file-card-content { min-height: 44px; gap: 8px; padding: 0 2px 0 8px; }
