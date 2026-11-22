@@ -2111,6 +2111,7 @@ pre { padding: 12px; overflow-x: auto; }
 
 .fb-has-bar { margin-bottom: calc(var(--fb-bar-h, 76px) + 8px); }
 .fb-select-close { min-width: 34px; padding-inline: 8px; }
+.fb-actionbar-top { display: none; }
 
 .fb-actionbar {
   position: fixed;
@@ -2347,6 +2348,9 @@ pre { padding: 12px; overflow-x: auto; }
      to reach them, so here they wrap onto as many rows as they need. */
   .fb-actionbar { flex-wrap: wrap; gap: 6px; padding: 6px 8px; }
   .fb-actionbar > .btn { flex: 1 1 auto; min-height: 38px; font-size: 0.78rem; padding-inline: 10px; }
+  .fb-actionbar-top { display: flex; flex: 1 0 100%; justify-content: flex-end; }
+  .fb-actionbar-top .btn { min-height: 30px; }
+  .fb > .fb-header-select .fb-select-close { display: none; }
   .fb .fb-title { display: none; }
   .fb .file-card-content { min-height: 44px; }
   .fb .file-card-kebab { min-width: 40px !important; min-height: 40px; font-size: 1.05rem; }

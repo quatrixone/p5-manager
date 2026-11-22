@@ -1930,6 +1930,19 @@ export default function FileBrowser({
         <div className="fb-actionbar" ref={barRef}>
           {selectionBar ? (
             <>
+              {/* Phone-only: the way out of selection mode, in the corner
+                  right above the actions (the header ✕ is out of reach down
+                  here). */}
+              <div className="fb-actionbar-top">
+                <button
+                  className="btn btn-ghost btn-sm fb-select-close"
+                  onClick={clearSelection}
+                  title="Done selecting"
+                  aria-label="Done selecting"
+                >
+                  ✕
+                </button>
+              </div>
               {enableFtpUpload && ((kind === 'smb' && smbId) || kind === 'local') && uploadIp && (
                 <button
                   className="btn btn-success"
