@@ -2498,6 +2498,8 @@ pre { padding: 12px; overflow-x: auto; }
 }
 
 /* ─── Dual-pane file manager (DualPane.jsx) ─────────────────────────── */
+.fileops-pane-toggle-short { display: none; }
+
 .fileops-pane-toggle {
   display: flex;
   align-items: center;
@@ -3200,6 +3202,9 @@ button, input, select, textarea { font: inherit; }
      explanation of Compare folders and the item count that the filter
      row now prints anyway. */
   .fileops-pane-toggle-hint { display: none; }
+  /* "Compare folders" is what it is for; on a phone the short name fits. */
+  .fileops-pane-toggle-long { display: none; }
+  .fileops-pane-toggle-short { display: inline; }
   .fileops-pane-toggle, .fileops-pane-toggle .btn { min-height: 32px; }
   /* The header's three actions live in the ⋯ sheet on a phone, so the
      whole header goes - except while picking items, when it is the only

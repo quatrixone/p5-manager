@@ -178,7 +178,8 @@ export default function FileOps({ profiles, onNotification }) {
                 onClick={toggleDualPane}
                 title="Show two browsers side by side and drag files between them"
               >
-                ◫ Compare folders
+                <span className="fileops-pane-toggle-long">◫ Compare folders</span>
+                <span className="fileops-pane-toggle-short">◫ Dual pane</span>
               </button>
               <span className="text-xs text-muted fileops-pane-toggle-hint">Compare two locations, then copy or move files between them.</span>
             </div>
