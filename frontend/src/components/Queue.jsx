@@ -9,7 +9,30 @@ const TYPE_META = {
   convert: { icon: '🔄', label: 'Convert' },
   upload: { icon: '⬆️', label: 'Upload' },
   install: { icon: '📥', label: 'Install' },
+  console: { icon: '🎮', label: 'On console' },
 };
+
+// A PS5 Dump Forge job, as the console reports it, in the shape this list
+// already renders. Forge runs its own queue, so there is nothing to pause,
+// reorder or retry here - only watch and cancel.
+function consoleJobItem(ip, j) {
+  const res = j?.done?.result;
+  const req = j.request || {};
+  const total = Number(j.progress?.total) || 0;
+  const done = Number(j.progress?.done) || 0;
+  return {
+    type: 'console',
+    id: `${ip}:${j.id}`,
+    ip,
+    source_name: String(req.output || req.source || `job ${j.id}`).split('/').pop(),
+    status: res ? (res.Ok ? 'completed' : 'failed') : (j.progress?.stage ? 'running' : 'queued'),
+    progress: total > 0 ? Math.floor((done / total) * 100) : 0,
+    bytes_written: done || null,
+    bytes_total: total || null,
+    stage: j.progress?.stage || '',
+    error: res && !res.Ok ? (typeof res.Err === 'string' ? res.Err : JSON.stringify(res.Err)) : undefined,
+  };
+}
 
 // Map a queue item to the per-job REST endpoint that returns its `.log`.
 // Returns null when the underlying job hasn't been created yet (item still
@@ -77,6 +100,7 @@ function itemSubtitle(item) {
     }
     return item.dest_path || '';
   }
+  if (item.type === 'console') return [item.ip, item.stage].filter(Boolean).join(' · ');
   if (item.type === 'convert') return `${item.mode || ''}${item.output_name ? ` → ${item.output_name}` : ''}`;
   if (item.type === 'extract') return `${item.archive_type || ''}${item.dest ? ` → ${item.dest}` : ''}`;
   if (item.type === 'upload') {
@@ -106,14 +130,16 @@ function QueueItem({ item, queuePaused, onRemove, onRetry, onMove, onStart, onPa
   const isActive = ['running', 'starting', 'staging', 'pushing', 'sending', 'installing', 'unpacking'].includes(item.status);
   const isDone = ['completed', 'failed', 'cancelled', 'push_failed'].includes(item.status);
   const isQueued = item.status === 'queued';
-  const canMove = isQueued;
+  // Forge owns its queue on the console: we can watch it and cancel it.
+  const isConsole = item.type === 'console';
+  const canMove = isQueued && !isConsole;
   // Retry is offered on EVERY terminal status (failed / cancelled /
   // push_failed / completed), not just failures. The user asked for
   // "moznost retry pri kazdom jobe" — completed gets it too so they can
   // re-run a finished conversion or re-upload an artefact without
   // re-queuing from scratch (executeConvertJob overwrites the existing
   // output, uploadFileResilient overwrites the destination file).
-  const canRetry = ['failed', 'cancelled', 'push_failed', 'completed'].includes(item.status);
+  const canRetry = !isConsole && ['failed', 'cancelled', 'push_failed', 'completed'].includes(item.status);
   const needsPassword = item.type === 'extract' && item.status === 'failed' && !!item.needs_password;
 
   // ── Log dropdown state ─────────────────────────────────────────────────
@@ -173,9 +199,9 @@ function QueueItem({ item, queuePaused, onRemove, onRetry, onMove, onStart, onPa
   //   - Pause (running or queued): freeze processing of this queue type.
   //   - Resume (queue type paused): unfreeze.
   //   - Stop: cancel-and-remove this item.
-  const showStart = isQueued && queuePaused;
-  const showResume = queuePaused && (isActive || isQueued);
-  const showPause = !queuePaused && (isActive || isQueued);
+  const showStart = isQueued && queuePaused && !isConsole;
+  const showResume = queuePaused && (isActive || isQueued) && !isConsole;
+  const showPause = !queuePaused && (isActive || isQueued) && !isConsole;
 
   // Effective per-task label: a queued item under a paused queue is also "paused".
   const effectiveLabel = (isQueued || isActive) && queuePaused ? 'Paused' : statusMeta.label;
@@ -276,14 +302,16 @@ function QueueItem({ item, queuePaused, onRemove, onRetry, onMove, onStart, onPa
           {canRetry && (
             <button className="btn btn-secondary btn-sm" onClick={() => onRetry(item.type, item.id)} title="Retry">↻</button>
           )}
-          <button
-            className={`btn btn-sm ${logOpen ? 'btn-primary' : 'btn-ghost'}`}
-            onClick={() => setLogOpen(v => !v)}
-            title={logOpen ? 'Hide log' : 'Show log'}
-            aria-expanded={logOpen}
-          >
-            📜
-          </button>
+          {!isConsole && (
+            <button
+              className={`btn btn-sm ${logOpen ? 'btn-primary' : 'btn-ghost'}`}
+              onClick={() => setLogOpen(v => !v)}
+              title={logOpen ? 'Hide log' : 'Show log'}
+              aria-expanded={logOpen}
+            >
+              📜
+            </button>
+          )}
           <button
             className="btn btn-ghost btn-sm"
             onClick={() => onRemove(item.type, item.id, isActive)}
@@ -366,6 +394,8 @@ export default function Queue() {
   const [data, setData] = useState(null);
   const [downloads, setDownloads] = useState([]);
   const [downloaderPaused, setDownloaderPaused] = useState(true);
+  const [consoleIps, setConsoleIps] = useState([]);
+  const [consoleJobs, setConsoleJobs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState('all');
@@ -399,6 +429,24 @@ export default function Queue() {
     }
   }, []);
 
+  // Jobs converting on the console itself (PS5 Dump Forge). A GET never
+  // starts the payload - it answers 409 while Forge is not running, which
+  // apiSafe swallows - so this poll costs nothing on an idle console.
+  useEffect(() => {
+    apiSafe.get('/profiles').then(ps => setConsoleIps(
+      (ps || []).filter(p => String(p.console_type || 'ps5').toLowerCase() !== 'ps4').map(p => p.ip_address),
+    ));
+  }, []);
+  const fetchConsoleJobs = useCallback(async () => {
+    if (consoleIps.length === 0) return;
+    const lists = await Promise.all(consoleIps.map(async (ip) => {
+      const d = await apiSafe.get(`/forge/${ip}/api/jobs`);
+      return (d?.jobs || []).map(j => consoleJobItem(ip, j));
+    }));
+    setConsoleJobs(lists.flat());
+  }, [consoleIps]);
+  useVisiblePolling(fetchConsoleJobs, 5000, [consoleIps]);
+
   // 2 s while the Tasks tab is visible (was a fixed 1.5 s setInterval that
   // kept running even when the user was on another tab). The visibility
   // hook also fires immediately on tab-resume so the bar isn't stale.
@@ -426,6 +474,7 @@ export default function Queue() {
     convert: !!data?.convert?.paused,
     upload: !!data?.upload?.paused,
     install: !!data?.install?.paused,
+    console: false,
   }), [data, downloaderPaused]);
 
   // The upload queue is mounted under /ftp/upload/... not /upload/..., so
@@ -461,6 +510,13 @@ export default function Queue() {
 
   const handleRemove = async (type, id, isActive) => {
     if (isActive && !window.confirm('Cancel this running task?')) return;
+    if (type === 'console') {
+      const at = id.lastIndexOf(':');
+      const jobId = id.slice(at + 1);
+      await apiSafe.post(`/forge/${id.slice(0, at)}/api/cancel_job`, { id: /^\d+$/.test(jobId) ? Number(jobId) : jobId });
+      fetchConsoleJobs();
+      return;
+    }
     await apiSafe.del(
       type === 'download'
         ? `/downloader/${id}`
@@ -509,6 +565,7 @@ export default function Queue() {
     ...uploadItems,
     ...installItems,
     ...downloads,
+    ...consoleJobs,
   ].sort((a, b) => {
     const statusOrder = { running: 0, starting: 0, staging: 0, pushing: 0, sending: 0, installing: 0, unpacking: 0, queued: 1, completed: 2, failed: 3, push_failed: 3, cancelled: 4 };
     const aOrder = statusOrder[a.status] ?? 5;
@@ -526,15 +583,17 @@ export default function Queue() {
     convert: activeCount(convertItems),
     upload: activeCount(uploadItems),
     install: activeCount(installItems),
+    console: activeCount(consoleJobs),
   };
 
-  const totalActive = counts.download + counts.extract + counts.convert + counts.upload + counts.install;
+  const totalActive = counts.download + counts.extract + counts.convert + counts.upload + counts.install + counts.console;
 
   const byType = filter === 'all' ? allItems
     : filter === 'download' ? downloads
     : filter === 'extract' ? extractItems
     : filter === 'convert' ? convertItems
     : filter === 'install' ? installItems
+    : filter === 'console' ? consoleJobs
     : uploadItems;
   const activeStatuses = ['queued', 'running', 'starting', 'staging', 'pushing', 'sending', 'installing', 'unpacking'];
   const filtered = byType.filter(item => {
@@ -578,6 +637,7 @@ export default function Queue() {
             { key: 'convert', label: `🔄 Convert (${counts.convert})` },
             { key: 'upload', label: `⬆️ Upload (${counts.upload})` },
             { key: 'install', label: `📥 Install (${counts.install})` },
+            { key: 'console', label: `🎮 On console (${counts.console})` },
           ].map(f => (
             <button
               key={f.key}
