@@ -3049,6 +3049,20 @@ button, input, select, textarea { font: inherit; }
   .fileops--files .dual-pane .fb .fb-list { flex: 1; min-height: 44px; max-height: none; }
   /* Filtering by name is a nicety; two lists on one phone screen are not. */
   .fileops--files .dual-pane .fb .fb-filter-row { display: none; }
+  /* Every pane repeats the source tabs, the console picker and the path
+     row: 160px of the 310 a pane has, so only two files were left in
+     view. Comparing is about the files, so that chrome shrinks here. */
+  .fileops--files .dual-pane .fb > .comp-card-body { gap: 4px; padding-top: 4px; }
+  .fileops--files .dual-pane .fb .fb-source-tabs { padding: 2px; }
+  .fileops--files .dual-pane .fb .fb-source-tabs .tab-item { min-height: 30px; padding: 3px 6px; font-size: 0.75rem; }
+  .fileops--files .dual-pane .fb .select { min-height: 30px; padding-block: 2px; font-size: 0.78rem; }
+  .fileops--files .dual-pane .fb .fb-nav { padding: 0 8px; }
+  .fileops--files .dual-pane .fb .fb-nav .btn { min-height: 28px; }
+  .fileops--files .dual-pane .fb .fb-crumb { padding: 3px; font-size: 0.76rem; }
+  .fileops--files .dual-pane .fb .fb-head { min-height: 24px; padding: 3px 10px; }
+  .fileops--files .dual-pane .fb .file-card-content { min-height: 36px; }
+  .fileops--files .dual-pane .fb .file-card-kebab.btn-sm { min-height: 30px; }
+  .fileops--files .dual-pane .fb .fb-list { margin-inline: 8px; }
   .fb-source-tabs .tab-item { flex: 1; justify-content: center; }
 }
 
